@@ -1,0 +1,97 @@
+# values-test.yaml - Single-instance test deployment overlay
+#
+# Used by create-test-namespace.sh to deploy an isolated test environment.
+# Image tags are overridden at deploy time via --set.
+
+backend:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-backend
+    tag: dev
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  env:
+    ENVIRONMENT: test
+    RUST_LOG: info
+  persistence:
+    size: 2Gi
+
+web:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-web
+    tag: dev
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+postgres:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    size: 2Gi
+  password: "test-db-password"
+
+meilisearch:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  persistence:
+    size: 1Gi
+  masterKey: "artifact-keeper-test-key"
+
+secrets:
+  jwtSecret: "test-jwt-secret-not-for-production"
+
+# Disabled services: not needed for basic test runs
+trivy:
+  enabled: false
+
+dependencyTrack:
+  enabled: false
+
+edge:
+  enabled: false
+
+ingress:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+cosign:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+pdb:
+  enabled: false
+
+scanWorkspace:
+  enabled: false

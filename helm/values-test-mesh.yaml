@@ -1,0 +1,103 @@
+# values-test-mesh.yaml - Mesh topology test overlay
+#
+# Used to deploy each mesh node (main + peers). Each node gets its own
+# namespace, database, and meilisearch instance.
+#
+# The following values are injected at deploy time via --set flags per node:
+#   fullnameOverride          - unique name per mesh node
+#   backend.env.PEER_INSTANCE_NAME   - this node's identity
+#   backend.env.PEER_PUBLIC_ENDPOINT - this node's public URL
+#   backend.env.PEER_API_KEY         - shared peer API key
+#   secrets.jwtSecret                - shared JWT secret across mesh
+#   web.enabled                      - true for main, false for peers
+
+backend:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-backend
+    tag: dev
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  env:
+    ENVIRONMENT: mesh-test
+    RUST_LOG: info
+  persistence:
+    size: 2Gi
+
+web:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-web
+    tag: dev
+    pullPolicy: Always
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+postgres:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    size: 2Gi
+  password: "mesh-test-db-password"
+
+meilisearch:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  persistence:
+    size: 1Gi
+  masterKey: "artifact-keeper-mesh-test-key"
+
+# Disabled services: same as single-instance test overlay
+trivy:
+  enabled: false
+
+dependencyTrack:
+  enabled: false
+
+edge:
+  enabled: false
+
+ingress:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+cosign:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+pdb:
+  enabled: false
+
+scanWorkspace:
+  enabled: false
