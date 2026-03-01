@@ -44,10 +44,9 @@ ADMIN_TOKEN=""
 
 auth_admin() {
   local resp
-  resp=$(curl -sf -X POST "${BASE_URL}/api/v1/auth/login" \
+  if ! resp=$(curl -sf -X POST "${BASE_URL}/api/v1/auth/login" \
     -H "Content-Type: application/json" \
-    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}")
-  if [ $? -ne 0 ] || [ -z "$resp" ]; then
+    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) || [ -z "$resp" ]; then
     echo "FATAL: failed to authenticate as ${ADMIN_USER} at ${BASE_URL}"
     exit 1
   fi
