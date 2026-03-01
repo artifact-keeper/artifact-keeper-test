@@ -2,7 +2,7 @@
 # run-suite.sh - Discover and run test scripts for a given suite
 #
 # Usage:
-#   ./run-suite.sh --suite <name> [--filter <pattern>]
+#   ./run-suite.sh --suite <name> [--filter <pattern>] [--run-id <id>]
 #
 # Discovers test scripts by globbing tests/<suite>/**/test-*.sh, applies an
 # optional filter pattern, then runs each script with a timeout. Prints a
@@ -29,9 +29,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --suite)  SUITE="$2"; shift 2 ;;
     --filter) FILTER="$2"; shift 2 ;;
+    --run-id) export RUN_ID="$2"; shift 2 ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: run-suite.sh --suite <name> [--filter <pattern>]"
+      echo "Usage: run-suite.sh --suite <name> [--filter <pattern>] [--run-id <id>]"
       exit 1
       ;;
   esac

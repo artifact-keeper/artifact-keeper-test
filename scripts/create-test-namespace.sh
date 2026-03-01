@@ -2,7 +2,7 @@
 # create-test-namespace.sh - Create an isolated Kubernetes namespace for testing
 #
 # Usage:
-#   ./create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>]
+#   ./create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>] [--values <file>]
 #
 # Creates namespace test-<run-id>, applies resource quotas, deploys the Helm
 # chart with test overlays, and waits for the backend to become healthy.
@@ -25,16 +25,18 @@ RUN_ID=""
 BACKEND_TAG="dev"
 WEB_TAG="dev"
 IAC_REPO=""
+EXTRA_VALUES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --run-id)    RUN_ID="$2"; shift 2 ;;
+    --run-id)      RUN_ID="$2"; shift 2 ;;
     --backend-tag) BACKEND_TAG="$2"; shift 2 ;;
-    --web-tag)   WEB_TAG="$2"; shift 2 ;;
-    --iac-repo)  IAC_REPO="$2"; shift 2 ;;
+    --web-tag)     WEB_TAG="$2"; shift 2 ;;
+    --iac-repo)    IAC_REPO="$2"; shift 2 ;;
+    --values)      EXTRA_VALUES="$2"; shift 2 ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>]"
+      echo "Usage: create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>] [--values <file>]"
       exit 1
       ;;
   esac
@@ -119,13 +121,20 @@ fi
 
 echo "Installing Helm release: ${RELEASE_NAME}"
 
-helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
-  --namespace "$NAMESPACE" \
-  --values "${REPO_ROOT}/helm/values-test.yaml" \
-  --set backend.image.tag="$BACKEND_TAG" \
-  --set web.image.tag="$WEB_TAG" \
-  --wait \
+HELM_CMD=(helm upgrade --install "$RELEASE_NAME" "$CHART_DIR"
+  --namespace "$NAMESPACE"
+  --values "${REPO_ROOT}/helm/values-test.yaml"
+  --set backend.image.tag="$BACKEND_TAG"
+  --set web.image.tag="$WEB_TAG"
+  --wait
   --timeout 5m
+)
+
+if [ -n "$EXTRA_VALUES" ]; then
+  HELM_CMD+=(--values "${REPO_ROOT}/${EXTRA_VALUES}")
+fi
+
+"${HELM_CMD[@]}"
 
 # ---------------------------------------------------------------------------
 # Wait for backend health
