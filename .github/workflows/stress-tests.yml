@@ -1,0 +1,35 @@
+name: Stress Tests
+
+on:
+  workflow_call:
+    inputs:
+      backend_url:
+        required: true
+        type: string
+      run_id:
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ inputs.backend_url }}
+      RUN_ID: ${{ inputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run stress tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite stress --run-id "${RUN_ID}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-stress
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore

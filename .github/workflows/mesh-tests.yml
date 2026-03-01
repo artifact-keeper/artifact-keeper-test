@@ -1,0 +1,86 @@
+name: Mesh Tests
+
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        required: true
+        type: string
+      backend_tag:
+        required: true
+        type: string
+      web_tag:
+        required: false
+        type: string
+        default: 'latest'
+      skip_teardown:
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ak-e2e-runners
+    env:
+      RUN_ID: ${{ inputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy mesh topology (4 instances)
+        id: deploy
+        run: |
+          chmod +x scripts/create-test-namespace.sh
+          MESH_RUN_ID="${RUN_ID}"
+
+          for i in main peer1 peer2 peer3; do
+            ./scripts/create-test-namespace.sh \
+              --run-id "${MESH_RUN_ID}-mesh-${i}" \
+              --backend-tag "${{ inputs.backend_tag }}" \
+              --web-tag "${{ inputs.web_tag }}" \
+              --values helm/values-test-mesh.yaml
+          done
+
+          BASE_NS="test-${MESH_RUN_ID}-mesh"
+          echo "MAIN_URL=http://artifact-keeper-backend.${BASE_NS}-main.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+          echo "PEER1_URL=http://artifact-keeper-backend.${BASE_NS}-peer1.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+          echo "PEER2_URL=http://artifact-keeper-backend.${BASE_NS}-peer2.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+          echo "PEER3_URL=http://artifact-keeper-backend.${BASE_NS}-peer3.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for all instances ready
+        run: |
+          chmod +x tests/lib/wait-for-ready.sh
+          for url in "${{ steps.deploy.outputs.MAIN_URL }}" \
+                     "${{ steps.deploy.outputs.PEER1_URL }}" \
+                     "${{ steps.deploy.outputs.PEER2_URL }}" \
+                     "${{ steps.deploy.outputs.PEER3_URL }}"; do
+            ./tests/lib/wait-for-ready.sh "$url" 180
+          done
+
+      - name: Run mesh tests
+        env:
+          MAIN_URL: ${{ steps.deploy.outputs.MAIN_URL }}
+          PEER1_URL: ${{ steps.deploy.outputs.PEER1_URL }}
+          PEER2_URL: ${{ steps.deploy.outputs.PEER2_URL }}
+          PEER3_URL: ${{ steps.deploy.outputs.PEER3_URL }}
+          BASE_URL: ${{ steps.deploy.outputs.MAIN_URL }}
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite mesh --run-id "${RUN_ID}"
+
+      - name: Teardown mesh namespaces
+        if: always() && inputs.skip_teardown != true
+        run: |
+          chmod +x scripts/teardown-test-namespace.sh
+          for i in main peer1 peer2 peer3; do
+            ./scripts/teardown-test-namespace.sh --run-id "${RUN_ID}-mesh-${i}" || true
+          done
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-mesh
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore

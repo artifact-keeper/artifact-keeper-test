@@ -1,0 +1,432 @@
+name: Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_tag:
+        description: Backend image tag to test
+        required: true
+        type: string
+      web_tag:
+        description: Web image tag to test
+        required: false
+        type: string
+        default: 'latest'
+      test_suite:
+        description: Test suite to run
+        required: false
+        type: choice
+        options:
+          - all
+          - formats
+          - stress
+          - resilience
+          - mesh
+          - security
+          - compatibility
+        default: 'all'
+      skip_teardown:
+        description: Skip teardown (for debugging)
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      backend_tag:
+        required: true
+        type: string
+      web_tag:
+        required: false
+        type: string
+        default: 'latest'
+      test_suite:
+        required: false
+        type: string
+        default: 'all'
+      skip_teardown:
+        required: false
+        type: boolean
+        default: false
+
+env:
+  NAMESPACE_CPU: ${{ vars.TEST_NAMESPACE_CPU || '4000m' }}
+  NAMESPACE_MEMORY: ${{ vars.TEST_NAMESPACE_MEMORY || '8Gi' }}
+
+jobs:
+  # -------------------------------------------------------------------
+  # Deploy test environment
+  # -------------------------------------------------------------------
+  deploy:
+    runs-on: ak-e2e-runners
+    outputs:
+      run_id: ${{ steps.setup.outputs.run_id }}
+      namespace: ${{ steps.setup.outputs.namespace }}
+      backend_url: ${{ steps.deploy.outputs.backend_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate run ID
+        id: setup
+        run: |
+          RUN_ID="e2e-$(date +%s)-${GITHUB_RUN_NUMBER}"
+          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "namespace=test-${RUN_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy test namespace
+        id: deploy
+        env:
+          RUN_ID: ${{ steps.setup.outputs.run_id }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+        run: |
+          chmod +x scripts/create-test-namespace.sh
+          ./scripts/create-test-namespace.sh \
+            --run-id "${RUN_ID}" \
+            --backend-tag "${BACKEND_TAG}" \
+            --web-tag "${WEB_TAG}"
+
+          NAMESPACE="test-${RUN_ID}"
+          BACKEND_URL="http://artifact-keeper-backend.${NAMESPACE}.svc.cluster.local:8080"
+          echo "backend_url=${BACKEND_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for stack ready
+        env:
+          RUN_ID: ${{ steps.setup.outputs.run_id }}
+        run: |
+          NAMESPACE="test-${RUN_ID}"
+          BACKEND_URL="http://artifact-keeper-backend.${NAMESPACE}.svc.cluster.local:8080"
+          chmod +x tests/lib/wait-for-ready.sh
+          ./tests/lib/wait-for-ready.sh "${BACKEND_URL}" 180
+
+  # -------------------------------------------------------------------
+  # Format tests (8 parallel batches)
+  # -------------------------------------------------------------------
+  format-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'formats'
+    runs-on: ak-e2e-runners
+    strategy:
+      fail-fast: false
+      matrix:
+        batch:
+          - name: node
+            scripts: "test-npm.sh test-vscode.sh"
+          - name: python
+            scripts: "test-pypi.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
+          - name: jvm
+            scripts: "test-maven.sh test-sbt.sh"
+          - name: rust-go-swift
+            scripts: "test-cargo.sh test-go.sh test-swift.sh test-pub.sh"
+          - name: system-packages
+            scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-opkg.sh"
+          - name: containers
+            scripts: "test-oci.sh test-helm.sh test-incus.sh"
+          - name: misc-native
+            scripts: "test-terraform.sh test-composer.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
+          - name: generic-protocol
+            scripts: "test-generic.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ${{ matrix.batch.name }} format tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          exit_code=0
+          for script in ${{ matrix.batch.scripts }}; do
+            echo "=== Running ${script} ==="
+            if ! bash "tests/formats/${script}"; then
+              echo "FAILED: ${script}"
+              exit_code=1
+            fi
+          done
+          exit $exit_code
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-formats-${{ matrix.batch.name }}
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Security tests
+  # -------------------------------------------------------------------
+  security-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'security'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run security tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite security --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-security
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Compatibility tests
+  # -------------------------------------------------------------------
+  compatibility-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'compatibility'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run compatibility tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite compatibility --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-compatibility
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Stress tests (after formats + security pass)
+  # -------------------------------------------------------------------
+  stress-tests:
+    needs: [deploy, format-tests, security-tests]
+    if: |
+      always() &&
+      (inputs.test_suite == 'all' || inputs.test_suite == 'stress') &&
+      (needs.format-tests.result == 'success' || needs.format-tests.result == 'skipped') &&
+      (needs.security-tests.result == 'success' || needs.security-tests.result == 'skipped')
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run stress tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite stress --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-stress
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Resilience tests (after stress passes)
+  # -------------------------------------------------------------------
+  resilience-tests:
+    needs: [deploy, stress-tests]
+    if: |
+      always() &&
+      (inputs.test_suite == 'all' || inputs.test_suite == 'resilience') &&
+      (needs.stress-tests.result == 'success' || needs.stress-tests.result == 'skipped')
+    runs-on: ak-e2e-runners
+    strategy:
+      fail-fast: false
+      matrix:
+        category: [crash, restart, network, storage, data]
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      NAMESPACE: ${{ needs.deploy.outputs.namespace }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ${{ matrix.category }} resilience tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          for script in tests/resilience/${{ matrix.category }}/test-*.sh; do
+            [ -f "$script" ] || continue
+            echo "=== Running ${script} ==="
+            bash "$script" || true
+          done
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-resilience-${{ matrix.category }}
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Mesh tests (after resilience passes)
+  # -------------------------------------------------------------------
+  mesh-tests:
+    needs: [deploy, resilience-tests]
+    if: |
+      always() &&
+      (inputs.test_suite == 'all' || inputs.test_suite == 'mesh') &&
+      (needs.resilience-tests.result == 'success' || needs.resilience-tests.result == 'skipped')
+    runs-on: ak-e2e-runners
+    env:
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy mesh topology
+        id: mesh-deploy
+        run: |
+          MESH_RUN_ID="${RUN_ID}"
+          chmod +x scripts/create-test-namespace.sh
+
+          # Deploy 4 mesh instances
+          for i in main peer1 peer2 peer3; do
+            MESH_NS="test-${MESH_RUN_ID}-mesh-${i}"
+            ./scripts/create-test-namespace.sh \
+              --run-id "${MESH_RUN_ID}-mesh-${i}" \
+              --backend-tag "${{ inputs.backend_tag }}" \
+              --web-tag "${{ inputs.web_tag }}" \
+              --values helm/values-test-mesh.yaml
+          done
+
+          # Output URLs
+          BASE_NS="test-${MESH_RUN_ID}-mesh"
+          echo "MAIN_URL=http://artifact-keeper-backend.${BASE_NS}-main.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+          echo "PEER1_URL=http://artifact-keeper-backend.${BASE_NS}-peer1.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+          echo "PEER2_URL=http://artifact-keeper-backend.${BASE_NS}-peer2.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+          echo "PEER3_URL=http://artifact-keeper-backend.${BASE_NS}-peer3.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for mesh instances ready
+        run: |
+          chmod +x tests/lib/wait-for-ready.sh
+          for url in "${{ steps.mesh-deploy.outputs.MAIN_URL }}" \
+                     "${{ steps.mesh-deploy.outputs.PEER1_URL }}" \
+                     "${{ steps.mesh-deploy.outputs.PEER2_URL }}" \
+                     "${{ steps.mesh-deploy.outputs.PEER3_URL }}"; do
+            ./tests/lib/wait-for-ready.sh "$url" 180
+          done
+
+      - name: Run mesh tests
+        env:
+          MAIN_URL: ${{ steps.mesh-deploy.outputs.MAIN_URL }}
+          PEER1_URL: ${{ steps.mesh-deploy.outputs.PEER1_URL }}
+          PEER2_URL: ${{ steps.mesh-deploy.outputs.PEER2_URL }}
+          PEER3_URL: ${{ steps.mesh-deploy.outputs.PEER3_URL }}
+          BASE_URL: ${{ steps.mesh-deploy.outputs.MAIN_URL }}
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite mesh --run-id "${RUN_ID}"
+
+      - name: Teardown mesh namespaces
+        if: always() && inputs.skip_teardown != true
+        run: |
+          chmod +x scripts/teardown-test-namespace.sh
+          for i in main peer1 peer2 peer3; do
+            ./scripts/teardown-test-namespace.sh --run-id "${RUN_ID}-mesh-${i}" || true
+          done
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-mesh
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Collect results and publish summary
+  # -------------------------------------------------------------------
+  collect-results:
+    needs: [deploy, format-tests, security-tests, compatibility-tests, stress-tests, resilience-tests, mesh-tests]
+    if: always()
+    runs-on: ak-e2e-runners
+    steps:
+      - name: Download all test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-*
+          path: /tmp/all-results
+          merge-multiple: true
+
+      - name: Publish test summary
+        if: always()
+        run: |
+          echo "## Release Gate Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+
+          for job in format-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+            status="skipped"
+            case "$job" in
+              format-tests) status="${{ needs.format-tests.result }}" ;;
+              security-tests) status="${{ needs.security-tests.result }}" ;;
+              compatibility-tests) status="${{ needs.compatibility-tests.result }}" ;;
+              stress-tests) status="${{ needs.stress-tests.result }}" ;;
+              resilience-tests) status="${{ needs.resilience-tests.result }}" ;;
+              mesh-tests) status="${{ needs.mesh-tests.result }}" ;;
+            esac
+            echo "| ${job} | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Backend tag:** \`${{ inputs.backend_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Web tag:** \`${{ inputs.web_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Run ID:** \`${{ needs.deploy.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload combined results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-results
+          path: /tmp/all-results/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Teardown
+  # -------------------------------------------------------------------
+  teardown:
+    needs: [deploy, collect-results]
+    if: always() && inputs.skip_teardown != true
+    runs-on: ak-e2e-runners
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Teardown test namespace
+        env:
+          RUN_ID: ${{ needs.deploy.outputs.run_id }}
+        run: |
+          chmod +x scripts/teardown-test-namespace.sh
+          ./scripts/teardown-test-namespace.sh --run-id "${RUN_ID}"
+
+      - name: Upload pod logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pod-logs
+          path: /tmp/test-logs/
+          if-no-files-found: ignore

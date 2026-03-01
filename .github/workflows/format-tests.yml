@@ -1,0 +1,67 @@
+name: Format Tests
+
+on:
+  workflow_call:
+    inputs:
+      backend_url:
+        required: true
+        type: string
+      run_id:
+        required: true
+        type: string
+      batch:
+        required: false
+        type: string
+        default: 'all'
+
+jobs:
+  test:
+    runs-on: ak-e2e-runners
+    strategy:
+      fail-fast: false
+      matrix:
+        batch:
+          - name: node
+            scripts: "test-npm.sh test-vscode.sh"
+          - name: python
+            scripts: "test-pypi.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
+          - name: jvm
+            scripts: "test-maven.sh test-sbt.sh"
+          - name: rust-go-swift
+            scripts: "test-cargo.sh test-go.sh test-swift.sh test-pub.sh"
+          - name: system-packages
+            scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-opkg.sh"
+          - name: containers
+            scripts: "test-oci.sh test-helm.sh test-incus.sh"
+          - name: misc-native
+            scripts: "test-terraform.sh test-composer.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
+          - name: generic-protocol
+            scripts: "test-generic.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
+    env:
+      BASE_URL: ${{ inputs.backend_url }}
+      RUN_ID: ${{ inputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ${{ matrix.batch.name }} tests
+        if: inputs.batch == 'all' || inputs.batch == matrix.batch.name
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          exit_code=0
+          for script in ${{ matrix.batch.scripts }}; do
+            echo "=== Running ${script} ==="
+            if ! bash "tests/formats/${script}"; then
+              echo "FAILED: ${script}"
+              exit_code=1
+            fi
+          done
+          exit $exit_code
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-formats-${{ matrix.batch.name }}
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
