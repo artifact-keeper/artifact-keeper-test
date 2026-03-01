@@ -101,13 +101,13 @@ fi
 # ---------------------------------------------------------------------------
 
 if [ -n "$IAC_REPO" ]; then
-  CHART_DIR="${IAC_REPO}/charts/artifact-keeper"
+  CHART_DIR="${IAC_REPO}/helm"
 else
   echo "Cloning artifact-keeper-iac for Helm chart..."
   TMPDIR="$(mktemp -d)"
   trap "rm -rf '$TMPDIR'" EXIT
   git clone --depth 1 https://github.com/artifact-keeper/artifact-keeper-iac.git "$TMPDIR/iac"
-  CHART_DIR="${TMPDIR}/iac/charts/artifact-keeper"
+  CHART_DIR="${TMPDIR}/iac/helm"
 fi
 
 if [ ! -f "${CHART_DIR}/Chart.yaml" ]; then
