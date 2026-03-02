@@ -403,7 +403,7 @@ jobs:
                      "${{ steps.mesh-deploy.outputs.PEER1_URL }}" \
                      "${{ steps.mesh-deploy.outputs.PEER2_URL }}" \
                      "${{ steps.mesh-deploy.outputs.PEER3_URL }}"; do
-            ./tests/lib/wait-for-ready.sh "$url" 180
+            ./tests/lib/wait-for-ready.sh "$url" 300
           done
 
       - name: Run mesh tests

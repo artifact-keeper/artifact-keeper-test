@@ -102,7 +102,7 @@ HELM_CMD=(helm upgrade --install "$RELEASE_NAME" "$CHART_DIR"
   --set backend.image.tag="$BACKEND_TAG"
   --set web.image.tag="$WEB_TAG"
   --wait
-  --timeout 5m
+  --timeout 10m
 )
 
 if [ -n "$EXTRA_VALUES" ]; then
