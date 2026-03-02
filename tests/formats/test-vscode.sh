@@ -33,9 +33,6 @@ fi
 # ---------------------------------------------------------------------------
 # Build a minimal VSIX file
 # ---------------------------------------------------------------------------
-# A VSIX is a ZIP file containing at minimum:
-#   - extension.vsixmanifest (XML metadata)
-#   - extension/package.json
 
 begin_test "Build minimal VSIX file"
 
@@ -85,14 +82,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Publish VSIX via API
+# Publish VSIX via API (format endpoints require Basic auth)
 # ---------------------------------------------------------------------------
 
 begin_test "Publish VSIX extension"
-
 PUBLISH_URL="${BASE_URL}/vscode/${REPO_KEY}/api/extensions"
 if resp=$(curl -sf -X POST "$PUBLISH_URL" \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   -H "x-publisher: ${PUBLISHER}" \
   -H "x-extension-name: ${EXT_NAME}" \
@@ -109,13 +105,13 @@ fi
 
 begin_test "Query extension via extensionquery"
 sleep 1
-QUERY_URL="/vscode/${REPO_KEY}/api/extensionquery"
-if resp=$(api_get "$QUERY_URL"); then
+if resp=$(curl -sf -H "$(format_auth_header)" \
+  "${BASE_URL}/vscode/${REPO_KEY}/api/extensionquery"); then
   if assert_contains "$resp" "$EXT_NAME" "query response should contain extension name"; then
     pass
   fi
 else
-  fail "GET ${QUERY_URL} returned error"
+  fail "GET extensionquery returned error"
 fi
 
 # ---------------------------------------------------------------------------
@@ -123,13 +119,13 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Get latest version info"
-LATEST_URL="/vscode/${REPO_KEY}/api/extensions/${PUBLISHER}/${EXT_NAME}/latest"
-if resp=$(api_get "$LATEST_URL"); then
+if resp=$(curl -sf -H "$(format_auth_header)" \
+  "${BASE_URL}/vscode/${REPO_KEY}/api/extensions/${PUBLISHER}/${EXT_NAME}/latest"); then
   if assert_contains "$resp" "$EXT_VERSION" "latest info should contain version"; then
     pass
   fi
 else
-  fail "GET ${LATEST_URL} returned error"
+  fail "GET latest version returned error"
 fi
 
 # ---------------------------------------------------------------------------
@@ -137,10 +133,9 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Download VSIX file"
-DL_URL="/vscode/${REPO_KEY}/extensions/${PUBLISHER}/${EXT_NAME}/${EXT_VERSION}/download"
 DL_FILE="${WORK_DIR}/downloaded.vsix"
-if curl -sf -H "$(auth_header)" -o "$DL_FILE" "${BASE_URL}${DL_URL}"; then
-  # Verify it is a valid ZIP
+if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
+  "${BASE_URL}/vscode/${REPO_KEY}/extensions/${PUBLISHER}/${EXT_NAME}/${EXT_VERSION}/download"; then
   if file "$DL_FILE" | grep -q "Zip\|zip"; then
     pass
   else

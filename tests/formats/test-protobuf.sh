@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Protobuf / BSR format E2E test
-# Tests proto descriptor upload and module listing via /proto/{repo_key}/.
+# Tests proto module upload and retrieval via Connect RPC endpoints at /proto/{repo_key}/.
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "protobuf"
@@ -21,7 +21,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Create proto descriptor file
+# Create proto file and encode as base64
 # ---------------------------------------------------------------------------
 
 begin_test "Create proto descriptor file"
@@ -42,49 +42,42 @@ message InvoiceList {
 }
 PROTOEOF
 
+PROTO_B64=$(base64 < billing.proto | tr -d '\n')
 pass
 
 # ---------------------------------------------------------------------------
-# Upload proto descriptor via PUT
+# Upload proto module via Connect RPC UploadService
 # ---------------------------------------------------------------------------
 
-begin_test "Upload proto descriptor file"
-if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@${WORK_DIR}/billing.proto" \
-  "${BASE_URL}/proto/${REPO_KEY}/acme/billing/v1/billing.proto" 2>&1); then
+begin_test "Upload proto module via Connect RPC"
+UPLOAD_URL="${BASE_URL}/proto/${REPO_KEY}/buf.registry.module.v1beta1.UploadService/Upload"
+UPLOAD_BODY="{\"contents\":[{\"moduleRef\":{\"owner\":\"acme\",\"module\":\"billing\"},\"files\":[{\"path\":\"acme/billing/v1/billing.proto\",\"content\":\"${PROTO_B64}\"}]}]}"
+
+if resp=$(curl -sf -X POST "$UPLOAD_URL" \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/json" \
+  -d "$UPLOAD_BODY" 2>&1); then
   pass
 else
-  fail "upload billing.proto failed: ${resp}"
+  fail "Connect RPC upload failed: ${resp}"
 fi
 
 # ---------------------------------------------------------------------------
-# Query module listing
+# Query modules via GetModules
 # ---------------------------------------------------------------------------
 
-begin_test "Query module listing"
+begin_test "Query modules via Connect RPC"
 sleep 1
-if resp=$(curl -sf "${BASE_URL}/proto/${REPO_KEY}/" -H "$(auth_header)"); then
-  if assert_contains "$resp" "billing" "module listing should contain billing"; then
+MODULES_URL="${BASE_URL}/proto/${REPO_KEY}/buf.registry.module.v1.ModuleService/GetModules"
+if resp=$(curl -sf -X POST "$MODULES_URL" \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/json" \
+  -d "{\"moduleRefs\":[{\"owner\":\"acme\",\"module\":\"billing\"}]}" 2>&1); then
+  if assert_contains "$resp" "billing" "modules response should contain billing"; then
     pass
   fi
 else
-  fail "GET /proto/${REPO_KEY}/ returned error"
-fi
-
-# ---------------------------------------------------------------------------
-# Download proto descriptor
-# ---------------------------------------------------------------------------
-
-begin_test "Download proto descriptor"
-if resp=$(curl -sf -H "$(auth_header)" \
-  "${BASE_URL}/proto/${REPO_KEY}/acme/billing/v1/billing.proto"); then
-  if assert_contains "$resp" "Invoice" "downloaded proto should contain Invoice message"; then
-    pass
-  fi
-else
-  fail "download billing.proto failed"
+  fail "GetModules returned error"
 fi
 
 # ---------------------------------------------------------------------------

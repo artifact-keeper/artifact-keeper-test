@@ -67,7 +67,7 @@ PKG_ARCHIVE="$WORK_DIR/${VENDOR}-${PACKAGE}-${PACKAGE_VERSION}.zip"
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/zip" \
   --data-binary "@${PKG_ARCHIVE}" \
   "${BASE_URL}/composer/${REPO_KEY}/${VENDOR}/${PACKAGE}/${PACKAGE_VERSION}") || true
@@ -82,7 +82,7 @@ fi
 # Verify packages.json
 # -----------------------------------------------------------------------
 begin_test "Query packages.json"
-packages_resp=$(curl -sf -H "$(auth_header)" \
+packages_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/composer/${REPO_KEY}/packages.json" 2>/dev/null) || true
 
 if [ -z "$packages_resp" ]; then

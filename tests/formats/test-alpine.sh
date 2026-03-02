@@ -71,7 +71,7 @@ fi
 begin_test "Upload .apk via PUT endpoint"
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X PUT \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/vnd.android.package-archive" \
     --data-binary "@${WORK_DIR}/${APK_FILE}" \
     "${BASE_URL}/alpine/${REPO_KEY}/${BRANCH}/${REPOSITORY}/${ARCH}/${APK_FILE}")
@@ -88,7 +88,7 @@ fi
 
 begin_test "Verify APKINDEX.tar.gz"
 sleep 1
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/APKINDEX.tar.gz" \
     "${BASE_URL}/alpine/${REPO_KEY}/${BRANCH}/${REPOSITORY}/${ARCH}/APKINDEX.tar.gz" 2>/dev/null; then
   if [ -s "${WORK_DIR}/APKINDEX.tar.gz" ]; then
@@ -120,7 +120,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Download .apk from repository"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/downloaded.apk" \
     "${BASE_URL}/alpine/${REPO_KEY}/${BRANCH}/${REPOSITORY}/${ARCH}/${APK_FILE}" 2>/dev/null; then
   if [ -s "${WORK_DIR}/downloaded.apk" ]; then
@@ -139,7 +139,7 @@ fi
 begin_test "Upload .apk via POST upload endpoint"
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${WORK_DIR}/${APK_FILE}" \
     "${BASE_URL}/alpine/${REPO_KEY}/upload")
@@ -160,7 +160,7 @@ fi
 
 begin_test "Verify public key endpoint"
 key_code=$(curl -s -o /dev/null -w '%{http_code}' \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     "${BASE_URL}/alpine/${REPO_KEY}/${BRANCH}/keys/artifact-keeper.rsa.pub")
 
 if [ "$key_code" -ge 200 ] && [ "$key_code" -lt 300 ]; then

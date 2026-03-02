@@ -56,7 +56,7 @@ EOF
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/json" \
   --data-binary "@${WORK_DIR}/${POD_NAME}.podspec.json" \
   "${BASE_URL}/cocoapods/${REPO_KEY}/${POD_NAME}/${POD_VERSION}") || true
@@ -67,7 +67,7 @@ else
   # Try alternate upload paths
   upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/json" \
     --data-binary "@${WORK_DIR}/${POD_NAME}.podspec.json" \
     "${BASE_URL}/cocoapods/${REPO_KEY}/pods/${POD_NAME}/versions/${POD_VERSION}/podspec.json") || true
@@ -82,12 +82,12 @@ fi
 # Verify spec listing
 # -----------------------------------------------------------------------
 begin_test "Verify spec listing"
-list_resp=$(curl -sf -H "$(auth_header)" \
+list_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/cocoapods/${REPO_KEY}/pods/${POD_NAME}" 2>/dev/null) || true
 
 if [ -z "$list_resp" ]; then
   # Try alternate listing path
-  list_resp=$(curl -sf -H "$(auth_header)" \
+  list_resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/cocoapods/${REPO_KEY}/${POD_NAME}" 2>/dev/null) || true
 fi
 
@@ -101,11 +101,11 @@ fi
 # Verify version info
 # -----------------------------------------------------------------------
 begin_test "Verify version info"
-ver_resp=$(curl -sf -H "$(auth_header)" \
+ver_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/cocoapods/${REPO_KEY}/pods/${POD_NAME}/versions/${POD_VERSION}/podspec.json" 2>/dev/null) || true
 
 if [ -z "$ver_resp" ]; then
-  ver_resp=$(curl -sf -H "$(auth_header)" \
+  ver_resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/cocoapods/${REPO_KEY}/${POD_NAME}/${POD_VERSION}" 2>/dev/null) || true
 fi
 
@@ -121,12 +121,12 @@ fi
 begin_test "Download podspec"
 dl_file="$WORK_DIR/downloaded.podspec.json"
 dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/cocoapods/${REPO_KEY}/pods/${POD_NAME}/versions/${POD_VERSION}/podspec.json" 2>/dev/null) || true
 
 if [ "$dl_status" != "200" ]; then
   dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     "${BASE_URL}/cocoapods/${REPO_KEY}/${POD_NAME}/${POD_VERSION}" 2>/dev/null) || true
 fi
 

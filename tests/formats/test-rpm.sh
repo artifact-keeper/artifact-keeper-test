@@ -85,7 +85,7 @@ fi
 begin_test "Upload .rpm via packages endpoint"
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X PUT \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/x-rpm" \
     --data-binary "@${WORK_DIR}/${RPM_FILE}" \
     "${BASE_URL}/rpm/${REPO_KEY}/packages/${RPM_FILE}")
@@ -115,7 +115,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify primary.xml.gz"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/primary.xml.gz" \
     "${BASE_URL}/rpm/${REPO_KEY}/repodata/primary.xml.gz" 2>/dev/null; then
   if [ -s "${WORK_DIR}/primary.xml.gz" ]; then
@@ -132,7 +132,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Download .rpm from packages endpoint"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/downloaded.rpm" \
     "${BASE_URL}/rpm/${REPO_KEY}/packages/${RPM_FILE}" 2>/dev/null; then
   if [ -s "${WORK_DIR}/downloaded.rpm" ]; then
@@ -149,7 +149,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify filelists.xml.gz"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/filelists.xml.gz" \
     "${BASE_URL}/rpm/${REPO_KEY}/repodata/filelists.xml.gz" 2>/dev/null; then
   if [ -s "${WORK_DIR}/filelists.xml.gz" ]; then
@@ -162,7 +162,7 @@ else
 fi
 
 begin_test "Verify other.xml.gz"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/other.xml.gz" \
     "${BASE_URL}/rpm/${REPO_KEY}/repodata/other.xml.gz" 2>/dev/null; then
   if [ -s "${WORK_DIR}/other.xml.gz" ]; then
@@ -181,7 +181,7 @@ fi
 begin_test "Upload .rpm via POST upload endpoint"
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/x-rpm" \
     --data-binary "@${WORK_DIR}/${RPM_FILE}" \
     "${BASE_URL}/rpm/${REPO_KEY}/upload")

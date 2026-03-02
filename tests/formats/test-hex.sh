@@ -61,7 +61,7 @@ tar cf "$HEX_TARBALL" -C "$WORK_DIR" VERSION metadata.config contents.tar.gz
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${HEX_TARBALL}" \
   "${BASE_URL}/hex/${REPO_KEY}/packages/${PACKAGE_NAME}/releases/${PACKAGE_VERSION}") || true
@@ -72,7 +72,7 @@ else
   # Try alternate publish endpoint
   upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${HEX_TARBALL}" \
     "${BASE_URL}/hex/${REPO_KEY}/publish" 2>/dev/null) || true
@@ -87,12 +87,12 @@ fi
 # Query package info
 # -----------------------------------------------------------------------
 begin_test "Query package info"
-pkg_resp=$(curl -sf -H "$(auth_header)" \
+pkg_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/hex/${REPO_KEY}/packages/${PACKAGE_NAME}" 2>/dev/null) || true
 
 if [ -z "$pkg_resp" ]; then
   # Try the /api/packages endpoint
-  pkg_resp=$(curl -sf -H "$(auth_header)" \
+  pkg_resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/hex/${REPO_KEY}/api/packages/${PACKAGE_NAME}" 2>/dev/null) || true
 fi
 

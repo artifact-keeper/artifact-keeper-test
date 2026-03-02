@@ -36,9 +36,12 @@ fi
 begin_test "Build sdist package"
 
 cd "$WORK_DIR"
-mkdir -p "${PKG_NAME}"
 
-cat > "${PKG_NAME}/setup.py" <<EOF
+# Build a minimal sdist tarball manually (avoids setup.py which is broken on Python 3.12+)
+SDIST_DIR="${PKG_NAME}-${PKG_VERSION}"
+mkdir -p "${SDIST_DIR}"
+
+cat > "${SDIST_DIR}/setup.py" <<EOF
 from setuptools import setup
 setup(
     name="${PKG_NAME}",
@@ -48,22 +51,25 @@ setup(
 )
 EOF
 
-cat > "${PKG_NAME}/${PKG_NAME}.py" <<EOF
+cat > "${SDIST_DIR}/${PKG_NAME}.py" <<EOF
 __version__ = "${PKG_VERSION}"
 def hello():
     return "Hello from ${PKG_NAME}"
 EOF
 
-cd "${PKG_NAME}"
-if python3 setup.py sdist --formats=gztar > /dev/null 2>&1; then
-  SDIST_FILE=$(ls dist/*.tar.gz 2>/dev/null | head -1)
-  if [ -n "$SDIST_FILE" ]; then
-    pass
-  else
-    fail "sdist created but no .tar.gz found"
-  fi
+cat > "${SDIST_DIR}/PKG-INFO" <<EOF
+Metadata-Version: 1.0
+Name: ${PKG_NAME}
+Version: ${PKG_VERSION}
+Summary: E2E test package for PyPI format
+EOF
+
+mkdir -p dist
+SDIST_FILE="dist/${PKG_NAME}-${PKG_VERSION}.tar.gz"
+if tar czf "$SDIST_FILE" "$SDIST_DIR"; then
+  pass
 else
-  fail "python3 setup.py sdist failed"
+  fail "failed to create sdist tarball"
 fi
 
 # ---------------------------------------------------------------------------

@@ -78,7 +78,7 @@ begin_test "Upload conda package"
 
 UPLOAD_URL="${CONDA_URL}/upload"
 if resp=$(curl -sf -X POST "$UPLOAD_URL" \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   -H "X-Conda-Subdir: ${SUBDIR}" \
   -H "X-Package-Filename: ${CONDA_FILENAME}" \
@@ -94,7 +94,7 @@ fi
 
 begin_test "Verify channeldata.json"
 sleep 1
-if resp=$(curl -sf "${CONDA_URL}/channeldata.json" -H "$(auth_header)"); then
+if resp=$(curl -sf "${CONDA_URL}/channeldata.json" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$PKG_NAME" "channeldata should contain package name"; then
     pass
   fi
@@ -107,7 +107,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Verify repodata.json for ${SUBDIR}"
-if resp=$(curl -sf "${CONDA_URL}/${SUBDIR}/repodata.json" -H "$(auth_header)"); then
+if resp=$(curl -sf "${CONDA_URL}/${SUBDIR}/repodata.json" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$PKG_NAME" "repodata should contain package name"; then
     if assert_contains "$resp" "$PKG_VERSION" "repodata should contain version"; then
       pass
@@ -124,7 +124,7 @@ fi
 begin_test "Download conda package"
 DL_URL="${CONDA_URL}/${SUBDIR}/${CONDA_FILENAME}"
 DL_FILE="${WORK_DIR}/downloaded.tar.bz2"
-if curl -sf -H "$(auth_header)" -o "$DL_FILE" "$DL_URL"; then
+if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" "$DL_URL"; then
   # Verify it is a valid bzip2 file
   if file "$DL_FILE" | grep -qi "bzip2\|bz2"; then
     pass

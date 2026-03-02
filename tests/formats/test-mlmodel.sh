@@ -61,7 +61,7 @@ pass
 begin_test "Upload model metadata"
 UPLOAD_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model-metadata.json"
 if resp=$(curl -sf -X PUT "${BASE_URL}${UPLOAD_PATH}" \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/json" \
   --data-binary "@${WORK_DIR}/model-metadata.json" 2>&1); then
   pass
@@ -76,7 +76,7 @@ fi
 begin_test "Upload model binary"
 UPLOAD_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model.bin"
 if resp=$(curl -sf -X PUT "${BASE_URL}${UPLOAD_PATH}" \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/model.bin" 2>&1); then
   pass
@@ -91,7 +91,7 @@ fi
 begin_test "Download model metadata"
 sleep 1
 DL_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model-metadata.json"
-if resp=$(curl -sf "${BASE_URL}${DL_PATH}" -H "$(auth_header)"); then
+if resp=$(curl -sf "${BASE_URL}${DL_PATH}" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$MODEL_NAME" "metadata should contain model name"; then
     if assert_contains "$resp" "$MODEL_VERSION" "metadata should contain version"; then
       pass
@@ -108,7 +108,7 @@ fi
 begin_test "Download model binary"
 DL_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model.bin"
 DL_FILE="${WORK_DIR}/downloaded_model.bin"
-if curl -sf -H "$(auth_header)" -o "$DL_FILE" "${BASE_URL}${DL_PATH}"; then
+if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" "${BASE_URL}${DL_PATH}"; then
   DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
   ORIG_SIZE=$(wc -c < "${WORK_DIR}/model.bin" | tr -d ' ')
   if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded file size should match original"; then

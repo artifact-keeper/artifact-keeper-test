@@ -72,7 +72,7 @@ NUPKG_FILE="$WORK_DIR/${PACKAGE_ID}.${PACKAGE_VERSION}.nupkg"
 # NuGet push uses PUT with multipart/form-data
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -F "package=@${NUPKG_FILE};type=application/octet-stream" \
   "${BASE_URL}/nuget/${REPO_KEY}/") || true
 
@@ -82,7 +82,7 @@ else
   # Try alternate push style (raw body)
   upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
     -X PUT \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${NUPKG_FILE}" \
     "${BASE_URL}/nuget/${REPO_KEY}/") || true
@@ -97,12 +97,12 @@ fi
 # Verify NuGet v3 service index
 # -----------------------------------------------------------------------
 begin_test "Verify service index"
-service_resp=$(curl -sf -H "$(auth_header)" \
+service_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/nuget/${REPO_KEY}/index.json" 2>/dev/null) || true
 
 if [ -z "$service_resp" ]; then
   # Try v3 path
-  service_resp=$(curl -sf -H "$(auth_header)" \
+  service_resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/nuget/${REPO_KEY}/v3/index.json" 2>/dev/null) || true
 fi
 
@@ -130,7 +130,7 @@ begin_test "Verify package registration"
 # NuGet v3 uses lowercase package IDs in URLs
 PACKAGE_ID_LOWER=$(echo "$PACKAGE_ID" | tr '[:upper:]' '[:lower:]')
 
-reg_resp=$(curl -sf -H "$(auth_header)" \
+reg_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/nuget/${REPO_KEY}/registration/${PACKAGE_ID_LOWER}/index.json" 2>/dev/null) || true
 
 if [ -n "$reg_resp" ] && echo "$reg_resp" | grep -qi "$PACKAGE_ID"; then
@@ -145,7 +145,7 @@ fi
 begin_test "Download package"
 dl_file="$WORK_DIR/downloaded.nupkg"
 dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/nuget/${REPO_KEY}/download/${PACKAGE_ID_LOWER}/${PACKAGE_VERSION}/${PACKAGE_ID_LOWER}.${PACKAGE_VERSION}.nupkg" 2>/dev/null) || true
 
 if [ "$dl_status" = "200" ]; then
@@ -157,7 +157,7 @@ if [ "$dl_status" = "200" ]; then
 else
   # Try flat container path
   dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     "${BASE_URL}/nuget/${REPO_KEY}/flatcontainer/${PACKAGE_ID_LOWER}/${PACKAGE_VERSION}/${PACKAGE_ID_LOWER}.${PACKAGE_VERSION}.nupkg" 2>/dev/null) || true
   if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
     pass

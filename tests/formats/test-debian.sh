@@ -93,7 +93,7 @@ fi
 begin_test "Upload .deb via pool endpoint"
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X PUT \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/vnd.debian.binary-package" \
     --data-binary "@${WORK_DIR}/${DEB_FILE}" \
     "${BASE_URL}/debian/${REPO_KEY}/pool/${COMPONENT}/${DEB_FILE}")
@@ -134,7 +134,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify Packages.gz compressed index"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/Packages.gz" \
     "${BASE_URL}/debian/${REPO_KEY}/dists/${DISTRIBUTION}/${COMPONENT}/binary-${PKG_ARCH}/Packages.gz" 2>/dev/null; then
   if [ -s "${WORK_DIR}/Packages.gz" ]; then
@@ -156,7 +156,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Download .deb from pool"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/downloaded.deb" \
     "${BASE_URL}/debian/${REPO_KEY}/pool/${COMPONENT}/${DEB_FILE}" 2>/dev/null; then
   if [ -s "${WORK_DIR}/downloaded.deb" ]; then
@@ -175,7 +175,7 @@ fi
 begin_test "Upload .deb via POST upload endpoint"
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/vnd.debian.binary-package" \
     --data-binary "@${WORK_DIR}/${DEB_FILE}" \
     "${BASE_URL}/debian/${REPO_KEY}/upload")

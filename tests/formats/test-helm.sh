@@ -75,7 +75,7 @@ begin_test "Upload chart"
 # Try uploading via the REST API endpoint
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/gzip" \
   --data-binary "@${CHART_FILE}" \
   "${BASE_URL}/helm/${REPO_KEY}/charts/${CHART_NAME}-${CHART_VERSION}.tgz") || true
@@ -86,7 +86,7 @@ else
   # Fall back to POST for Helm chart museum style API
   upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/gzip" \
     --data-binary "@${CHART_FILE}" \
     "${BASE_URL}/helm/${REPO_KEY}/api/charts") || true
@@ -102,7 +102,7 @@ fi
 # Verify chart via index
 # ---------------------------------------------------------------------------
 begin_test "Verify chart in repository index"
-index_resp=$(curl -sf -H "$(auth_header)" "${BASE_URL}/helm/${REPO_KEY}/index.yaml" 2>/dev/null) || true
+index_resp=$(curl -sf -H "$(format_auth_header)" "${BASE_URL}/helm/${REPO_KEY}/index.yaml" 2>/dev/null) || true
 
 if [ -n "$index_resp" ]; then
   if echo "$index_resp" | grep -q "$CHART_NAME"; then
@@ -112,7 +112,7 @@ if [ -n "$index_resp" ]; then
   fi
 else
   # Might be at a different path
-  index_resp=$(curl -sf -H "$(auth_header)" "${BASE_URL}/helm/${REPO_KEY}/api/charts" 2>/dev/null) || true
+  index_resp=$(curl -sf -H "$(format_auth_header)" "${BASE_URL}/helm/${REPO_KEY}/api/charts" 2>/dev/null) || true
   if [ -n "$index_resp" ] && echo "$index_resp" | grep -q "$CHART_NAME"; then
     pass
   else
@@ -140,7 +140,7 @@ fi
 # Fall back to direct download if helm pull did not succeed
 if ! $pull_ok; then
   dl_status=$(curl -sf -o "$WORK_DIR/pull-dest/${CHART_NAME}-${CHART_VERSION}.tgz" \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     "${BASE_URL}/helm/${REPO_KEY}/charts/${CHART_NAME}-${CHART_VERSION}.tgz" \
     -w '%{http_code}' 2>/dev/null) || true
   if [ -f "$WORK_DIR/pull-dest/${CHART_NAME}-${CHART_VERSION}.tgz" ]; then

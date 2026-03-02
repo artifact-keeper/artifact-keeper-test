@@ -45,7 +45,7 @@ pass
 
 begin_test "Upload WASM binary"
 if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/wasm" \
   --data-binary "@${WORK_DIR}/test-module.wasm" \
   "${EXT_URL}/${MODULE_NAME}/${MODULE_VERSION}/test-module.wasm" 2>&1); then
@@ -60,13 +60,13 @@ fi
 
 begin_test "Query WASM module listing"
 sleep 1
-if resp=$(curl -sf "${EXT_URL}/" -H "$(auth_header)"); then
+if resp=$(curl -sf "${EXT_URL}/" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$MODULE_NAME" "listing should contain module name"; then
     pass
   fi
 else
   # Try querying the specific module path
-  if resp=$(curl -sf "${EXT_URL}/${MODULE_NAME}/" -H "$(auth_header)"); then
+  if resp=$(curl -sf "${EXT_URL}/${MODULE_NAME}/" -H "$(format_auth_header)"); then
     if assert_contains "$resp" "$MODULE_NAME" "module path should contain module name"; then
       pass
     fi
@@ -81,7 +81,7 @@ fi
 
 begin_test "Download WASM binary"
 DL_FILE="${WORK_DIR}/downloaded.wasm"
-if curl -sf -H "$(auth_header)" -o "$DL_FILE" \
+if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
   "${EXT_URL}/${MODULE_NAME}/${MODULE_VERSION}/test-module.wasm"; then
   DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
   ORIG_SIZE=$(wc -c < "${WORK_DIR}/test-module.wasm" | tr -d ' ')

@@ -59,7 +59,7 @@ pass
 
 begin_test "Upload box file"
 if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/test.box" \
   "${EXT_URL}/${BOX_NAME}/${BOX_VERSION}/${BOX_PROVIDER}/test.box" 2>&1); then
@@ -74,13 +74,13 @@ fi
 
 begin_test "Query box listing"
 sleep 1
-if resp=$(curl -sf "${EXT_URL}/${BOX_NAME}" -H "$(auth_header)"); then
+if resp=$(curl -sf "${EXT_URL}/${BOX_NAME}" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$BOX_NAME" "box listing should contain box name"; then
     pass
   fi
 else
   # Try querying the root listing
-  if resp=$(curl -sf "${EXT_URL}/" -H "$(auth_header)"); then
+  if resp=$(curl -sf "${EXT_URL}/" -H "$(format_auth_header)"); then
     if assert_contains "$resp" "$BOX_NAME" "root listing should contain box name"; then
       pass
     fi
@@ -95,7 +95,7 @@ fi
 
 begin_test "Download box file"
 DL_FILE="${WORK_DIR}/downloaded.box"
-if curl -sf -H "$(auth_header)" -o "$DL_FILE" \
+if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
   "${EXT_URL}/${BOX_NAME}/${BOX_VERSION}/${BOX_PROVIDER}/test.box"; then
   DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
   ORIG_SIZE=$(wc -c < "${WORK_DIR}/test.box" | tr -d ' ')

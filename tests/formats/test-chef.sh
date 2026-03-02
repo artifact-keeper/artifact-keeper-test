@@ -63,7 +63,7 @@ tar czf "$CB_TARBALL" -C "$WORK_DIR" "$COOKBOOK_NAME"
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${CB_TARBALL}" \
   "${BASE_URL}/chef/${REPO_KEY}/${COOKBOOK_NAME}/${COOKBOOK_VERSION}") || true
@@ -74,7 +74,7 @@ else
   # Try alternate upload path (api/v1/cookbooks style)
   upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
     -X PUT \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${CB_TARBALL}" \
     "${BASE_URL}/chef/${REPO_KEY}/api/v1/cookbooks/${COOKBOOK_NAME}/versions/${COOKBOOK_VERSION}" 2>/dev/null) || true
@@ -89,12 +89,12 @@ fi
 # Query universe endpoint
 # -----------------------------------------------------------------------
 begin_test "Query universe endpoint"
-universe_resp=$(curl -sf -H "$(auth_header)" \
+universe_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/chef/${REPO_KEY}/universe" 2>/dev/null) || true
 
 if [ -z "$universe_resp" ]; then
   # Try alternate universe path
-  universe_resp=$(curl -sf -H "$(auth_header)" \
+  universe_resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/chef/${REPO_KEY}/api/v1/universe" 2>/dev/null) || true
 fi
 

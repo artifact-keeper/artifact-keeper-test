@@ -92,7 +92,7 @@ fi
 begin_test "Upload .ipk via ext/opkg endpoint"
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X PUT \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${WORK_DIR}/${IPK_FILE}" \
     "${BASE_URL}/ext/opkg/${REPO_KEY}/${IPK_FILE}")
@@ -113,7 +113,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Download .ipk via ext/opkg endpoint"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/downloaded.ipk" \
     "${BASE_URL}/ext/opkg/${REPO_KEY}/${IPK_FILE}" 2>/dev/null; then
   if [ -s "${WORK_DIR}/downloaded.ipk" ]; then
@@ -134,7 +134,7 @@ if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); the
   pass
 else
   # Fall back to ext proxy index
-  if resp=$(curl -sf -H "$(auth_header)" \
+  if resp=$(curl -sf -H "$(format_auth_header)" \
       "${BASE_URL}/ext/opkg/${REPO_KEY}/Packages" 2>/dev/null); then
     pass
   else

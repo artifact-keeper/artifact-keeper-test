@@ -36,7 +36,7 @@ PYEOF
 REVISION="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
 
 UPLOAD_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/conanfile.py" \
   "${BASE_URL}/conan/${REPO_KEY}/v2/conans/testlib/1.0.0/_/_/revisions/${REVISION}/files/conanfile.py") || true
@@ -57,7 +57,7 @@ conanfile.py: d41d8cd98f00b204e9800998ecf8427e" > "${WORK_DIR}/conanmanifest.txt
 tar czf "${WORK_DIR}/conan_export.tgz" -C "${WORK_DIR}" conanmanifest.txt
 
 EXPORT_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/conan_export.tgz" \
   "${BASE_URL}/conan/${REPO_KEY}/v2/conans/testlib/1.0.0/_/_/revisions/${REVISION}/files/conan_export.tgz") || true
@@ -72,7 +72,7 @@ fi
 begin_test "Query search endpoint"
 # -----------------------------------------------------------------------
 SEARCH_RESP=$(curl -sf \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/conan/${REPO_KEY}/v2/conans/search?q=testlib") || true
 
 if [ -n "$SEARCH_RESP" ]; then
@@ -87,7 +87,7 @@ fi
 begin_test "Verify recipe exists"
 # -----------------------------------------------------------------------
 LATEST_RESP=$(curl -sf \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/conan/${REPO_KEY}/v2/conans/testlib/1.0.0/_/_/latest") || true
 
 if [ -n "$LATEST_RESP" ]; then

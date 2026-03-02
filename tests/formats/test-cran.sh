@@ -63,7 +63,7 @@ tar czf "$PKG_TARBALL" -C "$WORK_DIR" "$PACKAGE_NAME"
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/gzip" \
   --data-binary "@${PKG_TARBALL}" \
   "${BASE_URL}/cran/${REPO_KEY}/src/contrib/${PACKAGE_NAME}_${PACKAGE_VERSION}.tar.gz") || true
@@ -78,14 +78,14 @@ fi
 # Verify PACKAGES index
 # -----------------------------------------------------------------------
 begin_test "Verify PACKAGES index"
-packages_resp=$(curl -sf -H "$(auth_header)" \
+packages_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/cran/${REPO_KEY}/src/contrib/PACKAGES" 2>/dev/null) || true
 
 if [ -z "$packages_resp" ]; then
   # Try gzipped variant
   packages_gz="$WORK_DIR/PACKAGES.gz"
   dl_status=$(curl -sf -o "$packages_gz" -w '%{http_code}' \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     "${BASE_URL}/cran/${REPO_KEY}/src/contrib/PACKAGES.gz" 2>/dev/null) || true
   if [ "$dl_status" = "200" ] && [ -s "$packages_gz" ]; then
     packages_resp=$(gzip -dc "$packages_gz" 2>/dev/null) || true
@@ -114,7 +114,7 @@ fi
 begin_test "Download package"
 dl_file="$WORK_DIR/downloaded.tar.gz"
 dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/cran/${REPO_KEY}/src/contrib/${PACKAGE_NAME}_${PACKAGE_VERSION}.tar.gz" 2>/dev/null) || true
 
 if [ "$dl_status" = "200" ]; then

@@ -46,15 +46,17 @@ dd if=/dev/urandom bs=1024 count=4 of=model.safetensors 2>/dev/null
 pass
 
 # ---------------------------------------------------------------------------
-# Upload config.json
+# Upload config.json via the upload endpoint
+# Backend: POST /api/models/{model_id}/upload/{revision} with x-filename header
 # ---------------------------------------------------------------------------
 
 begin_test "Upload config.json to model"
-if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
+if resp=$(curl -sf -X POST \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
+  -H "x-filename: config.json" \
   --data-binary "@${WORK_DIR}/config.json" \
-  "${HF_URL}/models/${MODEL_ID}/resolve/${REVISION}/config.json" 2>&1); then
+  "${HF_URL}/api/models/${MODEL_ID}/upload/${REVISION}" 2>&1); then
   pass
 else
   fail "upload config.json failed: ${resp}"
@@ -65,23 +67,24 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Upload model weights file"
-if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
+if resp=$(curl -sf -X POST \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
+  -H "x-filename: model.safetensors" \
   --data-binary "@${WORK_DIR}/model.safetensors" \
-  "${HF_URL}/models/${MODEL_ID}/resolve/${REVISION}/model.safetensors" 2>&1); then
+  "${HF_URL}/api/models/${MODEL_ID}/upload/${REVISION}" 2>&1); then
   pass
 else
   fail "upload model.safetensors failed: ${resp}"
 fi
 
 # ---------------------------------------------------------------------------
-# Query model card / listing
+# Query model listing
 # ---------------------------------------------------------------------------
 
 begin_test "Query model listing"
 sleep 1
-if resp=$(curl -sf "${HF_URL}/api/models" -H "$(auth_header)"); then
+if resp=$(curl -sf "${HF_URL}/api/models" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$MODEL_ID" "model listing should contain model ID"; then
     pass
   fi
@@ -94,7 +97,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Get model info"
-if resp=$(curl -sf "${HF_URL}/api/models/${MODEL_ID}" -H "$(auth_header)"); then
+if resp=$(curl -sf "${HF_URL}/api/models/${MODEL_ID}" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$MODEL_ID" "model info should contain model ID"; then
     pass
   fi

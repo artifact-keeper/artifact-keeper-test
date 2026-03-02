@@ -67,7 +67,7 @@ tar czf "${WORK_DIR}/testns-testcoll-1.0.0.tar.gz" -C "${COLL_DIR}" testns/testc
 # Upload as multipart (Galaxy API expects multipart with 'file' field)
 UPLOAD_STATUS=$(curl -s -o "${WORK_DIR}/upload-resp.json" -w '%{http_code}' \
   -X POST \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -F "file=@${WORK_DIR}/testns-testcoll-1.0.0.tar.gz" \
   -F 'collection={"namespace":"testns","name":"testcoll","version":"1.0.0"};type=application/json' \
   "${BASE_URL}/ansible/${REPO_KEY}/api/v3/artifacts/collections/") || true
@@ -82,7 +82,7 @@ fi
 begin_test "Query Galaxy-compatible API endpoint"
 # -----------------------------------------------------------------------
 LIST_RESP=$(curl -sf \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/ansible/${REPO_KEY}/api/v3/collections/") || true
 
 if [ -n "$LIST_RESP" ]; then

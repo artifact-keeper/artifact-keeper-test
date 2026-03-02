@@ -58,7 +58,7 @@ pass
 
 begin_test "Upload plugin JAR"
 if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/java-archive" \
   --data-binary "@${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" \
   "${JB_URL}/plugins/${PLUGIN_ID}/${PLUGIN_VERSION}/test-plugin-${PLUGIN_VERSION}.jar" 2>&1); then
@@ -73,13 +73,13 @@ fi
 
 begin_test "Query plugin repository XML"
 sleep 1
-if resp=$(curl -sf "${JB_URL}/plugins.xml" -H "$(auth_header)"); then
+if resp=$(curl -sf "${JB_URL}/plugins.xml" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$PLUGIN_ID" "plugins.xml should contain plugin ID"; then
     pass
   fi
 else
   # Try updatePlugins.xml as an alternative endpoint
-  if resp=$(curl -sf "${JB_URL}/updatePlugins.xml" -H "$(auth_header)"); then
+  if resp=$(curl -sf "${JB_URL}/updatePlugins.xml" -H "$(format_auth_header)"); then
     if assert_contains "$resp" "$PLUGIN_ID" "updatePlugins.xml should contain plugin ID"; then
       pass
     fi
@@ -94,7 +94,7 @@ fi
 
 begin_test "Download plugin JAR"
 DL_FILE="${WORK_DIR}/downloaded-plugin.jar"
-if curl -sf -H "$(auth_header)" -o "$DL_FILE" \
+if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
   "${JB_URL}/plugins/${PLUGIN_ID}/${PLUGIN_VERSION}/test-plugin-${PLUGIN_VERSION}.jar"; then
   DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
   ORIG_SIZE=$(wc -c < "${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" | tr -d ' ')

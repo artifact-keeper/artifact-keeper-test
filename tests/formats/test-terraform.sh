@@ -57,7 +57,7 @@ tar czf "$MODULE_ARCHIVE" -C "$MODULE_DIR" .
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/gzip" \
   --data-binary "@${MODULE_ARCHIVE}" \
   "${BASE_URL}/terraform/${REPO_KEY}/${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/${MODULE_VERSION}") || true
@@ -72,7 +72,7 @@ fi
 # Verify version listing
 # -----------------------------------------------------------------------
 begin_test "List module versions"
-versions_resp=$(curl -sf -H "$(auth_header)" \
+versions_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/terraform/${REPO_KEY}/${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/versions" 2>/dev/null) || true
 
 if [ -z "$versions_resp" ]; then
@@ -91,7 +91,7 @@ fi
 begin_test "Download module"
 dl_file="$WORK_DIR/downloaded-module.tar.gz"
 dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/terraform/${REPO_KEY}/${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/${MODULE_VERSION}/download" 2>/dev/null) || true
 
 if [ "$dl_status" = "200" ] || [ "$dl_status" = "204" ]; then
@@ -99,7 +99,7 @@ if [ "$dl_status" = "200" ] || [ "$dl_status" = "204" ]; then
 else
   # Some implementations return a redirect with the download URL
   dl_status=$(curl -sf -L -o "$dl_file" -w '%{http_code}' \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     "${BASE_URL}/terraform/${REPO_KEY}/${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/${MODULE_VERSION}/download" 2>/dev/null) || true
   if [ "$dl_status" = "200" ]; then
     pass

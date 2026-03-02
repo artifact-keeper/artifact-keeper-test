@@ -61,7 +61,7 @@ pass
 
 begin_test "Upload P2 bundle"
 if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/java-archive" \
   --data-binary "@${WORK_DIR}/bundle.jar" \
   "${EXT_URL}/plugins/${BUNDLE_ID}_${BUNDLE_VERSION}.jar" 2>&1); then
@@ -77,7 +77,7 @@ fi
 begin_test "Query P2 content metadata"
 sleep 1
 CONTENT_STATUS=$(curl -s -o "${WORK_DIR}/content.xml" -w '%{http_code}' \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${EXT_URL}/content.xml") || true
 
 if [ "$CONTENT_STATUS" -ge 200 ] 2>/dev/null && [ "$CONTENT_STATUS" -lt 300 ] 2>/dev/null; then
@@ -85,7 +85,7 @@ if [ "$CONTENT_STATUS" -ge 200 ] 2>/dev/null && [ "$CONTENT_STATUS" -lt 300 ] 2>
 else
   # Try compositeContent.xml as an alternative
   COMPOSITE_STATUS=$(curl -s -o "${WORK_DIR}/compositeContent.xml" -w '%{http_code}' \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     "${EXT_URL}/compositeContent.xml") || true
 
   if [ "$COMPOSITE_STATUS" -ge 200 ] 2>/dev/null && [ "$COMPOSITE_STATUS" -lt 300 ] 2>/dev/null; then

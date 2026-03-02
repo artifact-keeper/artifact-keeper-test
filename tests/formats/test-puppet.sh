@@ -64,7 +64,7 @@ tar czf "$MOD_TARBALL" -C "$WORK_DIR" "${FULL_MODULE_NAME}-${MODULE_VERSION}"
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${MOD_TARBALL}" \
   "${BASE_URL}/puppet/${REPO_KEY}/${FULL_MODULE_NAME}/${MODULE_VERSION}") || true
@@ -75,7 +75,7 @@ else
   # Try alternate upload path (POST with file field)
   upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -F "file=@${MOD_TARBALL}" \
     "${BASE_URL}/puppet/${REPO_KEY}/v3/releases" 2>/dev/null) || true
   if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
@@ -89,12 +89,12 @@ fi
 # Query Forge API modules listing
 # -----------------------------------------------------------------------
 begin_test "Query Forge API modules"
-forge_resp=$(curl -sf -H "$(auth_header)" \
+forge_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/puppet/${REPO_KEY}/v3/modules" 2>/dev/null) || true
 
 if [ -z "$forge_resp" ]; then
   # Try with query parameter
-  forge_resp=$(curl -sf -H "$(auth_header)" \
+  forge_resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/puppet/${REPO_KEY}/v3/modules?query=${MODULE_NAME}" 2>/dev/null) || true
 fi
 

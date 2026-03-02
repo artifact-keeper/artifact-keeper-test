@@ -36,7 +36,7 @@ bazel_dep(name = "rules_cc", version = "0.0.9")
 MODEOF
 
 if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/MODULE.bazel" \
   "${BASE_URL}/ext/bazel/${REPO_KEY}/modules/test_lib/1.0.0/MODULE.bazel" 2>&1); then
@@ -55,7 +55,7 @@ echo "// test_lib source" > "${WORK_DIR}/src/test_lib/lib.cc"
 tar czf "${WORK_DIR}/source.tar.gz" -C "${WORK_DIR}/src" test_lib
 
 if resp=$(curl -sf -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/gzip" \
   --data-binary "@${WORK_DIR}/source.tar.gz" \
   "${BASE_URL}/ext/bazel/${REPO_KEY}/modules/test_lib/1.0.0/source.tar.gz" 2>&1); then
@@ -69,7 +69,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Retrieve MODULE.bazel"
-if resp=$(curl -sf -H "$(auth_header)" \
+if resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/ext/bazel/${REPO_KEY}/modules/test_lib/1.0.0/MODULE.bazel"); then
   if assert_contains "$resp" "test_lib" "MODULE.bazel should contain module name"; then
     pass
@@ -84,7 +84,7 @@ fi
 
 begin_test "Query registry index"
 RESP_STATUS=$(curl -s -o "${WORK_DIR}/bazel_registry.json" -w '%{http_code}' \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/ext/bazel/${REPO_KEY}/bazel_registry.json") || true
 
 if [ "$RESP_STATUS" -ge 200 ] 2>/dev/null && [ "$RESP_STATUS" -lt 300 ] 2>/dev/null; then

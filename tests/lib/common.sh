@@ -64,6 +64,13 @@ auth_header() {
   echo "Authorization: Bearer ${ADMIN_TOKEN}"
 }
 
+# Format-native endpoints (e.g. /conan/, /vscode/, /lfs/, /huggingface/) have
+# their own auth middleware that only accepts Basic auth.  Use this header for
+# any call that hits a format-native route.
+format_auth_header() {
+  echo "Authorization: Basic $(printf '%s:%s' "$ADMIN_USER" "$ADMIN_PASS" | base64)"
+}
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 #

@@ -115,7 +115,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Download source archive"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/downloaded.zip" \
     "${BASE_URL}/swift/${REPO_KEY}/${SCOPE}/${PACKAGE_NAME}/${PACKAGE_VERSION}.zip" 2>/dev/null; then
   if [ -s "${WORK_DIR}/downloaded.zip" ]; then
@@ -132,7 +132,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Fetch Package.swift manifest"
-if resp=$(curl -sf -H "$(auth_header)" \
+if resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/swift/${REPO_KEY}/${SCOPE}/${PACKAGE_NAME}/${PACKAGE_VERSION}/Package.swift" 2>/dev/null); then
   if assert_contains "$resp" "PackageDescription"; then
     pass
@@ -148,7 +148,7 @@ fi
 
 begin_test "Lookup identifiers by URL"
 PKG_URL="https://github.com/${SCOPE}/${PACKAGE_NAME}"
-if resp=$(curl -sf -H "$(auth_header)" \
+if resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/swift/${REPO_KEY}/identifiers?url=${PKG_URL}" 2>/dev/null); then
   # Any valid JSON response is acceptable
   pass

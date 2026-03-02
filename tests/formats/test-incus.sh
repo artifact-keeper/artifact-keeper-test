@@ -50,7 +50,7 @@ UNIFIED_TARBALL="$WORK_DIR/incus.tar.gz"
 tar czf "$UNIFIED_TARBALL" -C "$UNIFIED_DIR" metadata.yaml rootfs
 
 upload_resp=$(curl -s -w "\n%{http_code}" -X PUT \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/gzip" \
   --data-binary "@${UNIFIED_TARBALL}" \
   "${BASE_URL}/incus/${REPO_KEY}/images/ubuntu-noble/20240215/incus.tar.gz") || true
@@ -127,7 +127,7 @@ fi
 # -----------------------------------------------------------------------
 begin_test "Delete image"
 del_status=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/incus/${REPO_KEY}/images/ubuntu-noble/20240215/incus.tar.gz") || true
 
 if [ "$del_status" = "204" ] || [ "$del_status" = "200" ]; then

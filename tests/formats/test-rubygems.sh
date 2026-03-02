@@ -102,7 +102,7 @@ tar cf "$GEM_FILE" -C "$WORK_DIR" metadata.gz data.tar.gz
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X POST \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${GEM_FILE}" \
   "${BASE_URL}/gems/${REPO_KEY}/api/v1/gems") || true
@@ -119,7 +119,7 @@ fi
 begin_test "Verify specs index"
 # RubyGems serves specs at /specs.4.8.gz (marshalled) or via API
 specs_status=$(curl -s -o /dev/null -w '%{http_code}' \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/gems/${REPO_KEY}/specs.4.8.gz") || true
 
 if [ "$specs_status" = "200" ]; then
@@ -127,7 +127,7 @@ if [ "$specs_status" = "200" ]; then
 else
   # Try latest_specs
   specs_status=$(curl -s -o /dev/null -w '%{http_code}' \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     "${BASE_URL}/gems/${REPO_KEY}/latest_specs.4.8.gz") || true
   if [ "$specs_status" = "200" ]; then
     pass
@@ -140,14 +140,14 @@ fi
 # Verify gem info via API
 # -----------------------------------------------------------------------
 begin_test "Verify gem info via API"
-info_resp=$(curl -sf -H "$(auth_header)" \
+info_resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/gems/${REPO_KEY}/api/v1/gems/${GEM_NAME}.json" 2>/dev/null) || true
 
 if [ -n "$info_resp" ] && echo "$info_resp" | grep -q "$GEM_NAME"; then
   pass
 else
   # Try alternate endpoint
-  info_resp=$(curl -sf -H "$(auth_header)" \
+  info_resp=$(curl -sf -H "$(format_auth_header)" \
     "${BASE_URL}/gems/${REPO_KEY}/api/v1/versions/${GEM_NAME}.json" 2>/dev/null) || true
   if [ -n "$info_resp" ] && echo "$info_resp" | grep -q "$GEM_VERSION"; then
     pass
@@ -162,7 +162,7 @@ fi
 begin_test "Download gem"
 dl_file="$WORK_DIR/downloaded.gem"
 dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   "${BASE_URL}/gems/${REPO_KEY}/gems/${GEM_NAME}-${GEM_VERSION}.gem" 2>/dev/null) || true
 
 if [ "$dl_status" = "200" ]; then

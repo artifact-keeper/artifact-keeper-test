@@ -37,7 +37,7 @@ pass
 
 begin_test "POST batch upload request"
 BATCH_RESP=$(curl -sf -X POST \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: ${LFS_MEDIA_TYPE}" \
   -H "Accept: ${LFS_MEDIA_TYPE}" \
   -d "{\"operation\":\"upload\",\"transfers\":[\"basic\"],\"objects\":[{\"oid\":\"${OBJ_OID}\",\"size\":${OBJ_SIZE}}]}" \
@@ -65,7 +65,7 @@ fi
 
 begin_test "Upload LFS object via PUT"
 if curl -sf -X PUT \
-    -H "$(auth_header)" \
+    -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${WORK_DIR}/lfs-object.bin" \
     "${BASE_URL}/lfs/${REPO_KEY}/objects/${OBJ_OID}" > /dev/null; then
@@ -80,7 +80,7 @@ fi
 
 begin_test "Verify uploaded object"
 VERIFY_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: ${LFS_MEDIA_TYPE}" \
   -d "{\"oid\":\"${OBJ_OID}\",\"size\":${OBJ_SIZE}}" \
   "${BASE_URL}/lfs/${REPO_KEY}/verify") || true
@@ -97,7 +97,7 @@ fi
 
 begin_test "POST batch download request"
 DL_BATCH_RESP=$(curl -sf -X POST \
-  -H "$(auth_header)" \
+  -H "$(format_auth_header)" \
   -H "Content-Type: ${LFS_MEDIA_TYPE}" \
   -H "Accept: ${LFS_MEDIA_TYPE}" \
   -d "{\"operation\":\"download\",\"transfers\":[\"basic\"],\"objects\":[{\"oid\":\"${OBJ_OID}\",\"size\":${OBJ_SIZE}}]}" \
@@ -117,7 +117,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Download object and verify content"
-if curl -sf -H "$(auth_header)" \
+if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/downloaded-lfs.bin" \
     "${BASE_URL}/lfs/${REPO_KEY}/objects/${OBJ_OID}"; then
   DL_SHA256=$(shasum -a 256 "${WORK_DIR}/downloaded-lfs.bin" | awk '{print $1}')
