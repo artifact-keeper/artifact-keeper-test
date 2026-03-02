@@ -142,6 +142,47 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Install test dependencies
+        run: |
+          BATCH="${{ matrix.batch.name }}"
+          echo "Installing dependencies for batch: $BATCH"
+
+          # Common: ensure zip is available (used by maven, swift, vscode, go)
+          if ! command -v zip &>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq zip > /dev/null
+          fi
+
+          case "$BATCH" in
+            python)
+              if ! command -v python3 &>/dev/null; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-pip python3-setuptools > /dev/null
+              fi
+              ;;
+            rust-go-swift)
+              if ! command -v go &>/dev/null; then
+                GO_VERSION="1.23.6"
+                curl -sSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
+                echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+              fi
+              if ! command -v cargo &>/dev/null; then
+                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+                echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+              fi
+              ;;
+            containers)
+              # Helm is needed for test-helm.sh
+              if ! command -v helm &>/dev/null; then
+                curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              fi
+              ;;
+            system-packages)
+              # ar (from binutils) for Debian package assembly
+              if ! command -v ar &>/dev/null; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq binutils > /dev/null
+              fi
+              ;;
+          esac
+
       - name: Run ${{ matrix.batch.name }} format tests
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
