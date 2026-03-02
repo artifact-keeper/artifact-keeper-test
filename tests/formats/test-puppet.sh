@@ -62,27 +62,21 @@ EOF
 MOD_TARBALL="$WORK_DIR/${FULL_MODULE_NAME}-${MODULE_VERSION}.tar.gz"
 tar czf "$MOD_TARBALL" -C "$WORK_DIR" "${FULL_MODULE_NAME}-${MODULE_VERSION}"
 
+# Puppet Forge publish: POST multipart with "file" (tarball) and "module" (JSON metadata)
+MODULE_JSON=$(printf '{"owner":"%s","name":"%s","version":"%s"}' \
+  "$MODULE_AUTHOR" "$MODULE_NAME" "$MODULE_VERSION")
+
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
-  -X PUT \
+  -X POST \
   -H "$(format_auth_header)" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@${MOD_TARBALL}" \
-  "${BASE_URL}/puppet/${REPO_KEY}/${FULL_MODULE_NAME}/${MODULE_VERSION}") || true
+  -F "file=@${MOD_TARBALL}" \
+  -F "module=${MODULE_JSON}" \
+  "${BASE_URL}/puppet/${REPO_KEY}/v3/releases") || true
 
 if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
   pass
 else
-  # Try alternate upload path (POST with file field)
-  upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
-    -X POST \
-    -H "$(format_auth_header)" \
-    -F "file=@${MOD_TARBALL}" \
-    "${BASE_URL}/puppet/${REPO_KEY}/v3/releases" 2>/dev/null) || true
-  if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
-    pass
-  else
-    fail "module upload returned ${upload_status}, expected 200 or 201"
-  fi
+  fail "module upload returned ${upload_status}, expected 200 or 201"
 fi
 
 # -----------------------------------------------------------------------

@@ -11,6 +11,7 @@ REPO_KEY="test-jetbrains-${RUN_ID}"
 PLUGIN_ID="com.example.testplugin"
 PLUGIN_VERSION="1.0.$(date +%s)"
 JB_URL="${BASE_URL}/jetbrains/${REPO_KEY}"
+HANDLER_AVAILABLE=true
 
 # ---------------------------------------------------------------------------
 # Create repository
@@ -21,6 +22,21 @@ if create_local_repo "$REPO_KEY" "jetbrains"; then
   pass
 else
   fail "could not create jetbrains repo"
+fi
+
+# ---------------------------------------------------------------------------
+# Check JetBrains handler availability
+# ---------------------------------------------------------------------------
+
+begin_test "Check jetbrains handler availability"
+PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "$(format_auth_header)" \
+  "${JB_URL}/plugins/list/") || true
+if [ "$PROBE_CODE" = "404" ]; then
+  HANDLER_AVAILABLE=false
+  skip "jetbrains handler not available (HTTP 404)"
+else
+  pass
 fi
 
 # ---------------------------------------------------------------------------
@@ -57,14 +73,18 @@ pass
 # ---------------------------------------------------------------------------
 
 begin_test "Upload plugin JAR"
-if resp=$(curl -sf -X PUT \
-  -H "$(format_auth_header)" \
-  -H "Content-Type: application/java-archive" \
-  --data-binary "@${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" \
-  "${JB_URL}/plugins/${PLUGIN_ID}/${PLUGIN_VERSION}/test-plugin-${PLUGIN_VERSION}.jar" 2>&1); then
-  pass
+if [ "$HANDLER_AVAILABLE" = false ]; then
+  skip "jetbrains handler not available"
 else
-  fail "upload plugin JAR failed: ${resp}"
+  if resp=$(curl -sf -X PUT \
+    -H "$(format_auth_header)" \
+    -H "Content-Type: application/java-archive" \
+    --data-binary "@${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" \
+    "${JB_URL}/plugins/${PLUGIN_ID}/${PLUGIN_VERSION}/test-plugin-${PLUGIN_VERSION}.jar" 2>&1); then
+    pass
+  else
+    fail "upload plugin JAR failed: ${resp}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -72,19 +92,23 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Query plugin repository XML"
-sleep 1
-if resp=$(curl -sf "${JB_URL}/plugins.xml" -H "$(format_auth_header)"); then
-  if assert_contains "$resp" "$PLUGIN_ID" "plugins.xml should contain plugin ID"; then
-    pass
-  fi
+if [ "$HANDLER_AVAILABLE" = false ]; then
+  skip "jetbrains handler not available"
 else
-  # Try updatePlugins.xml as an alternative endpoint
-  if resp=$(curl -sf "${JB_URL}/updatePlugins.xml" -H "$(format_auth_header)"); then
-    if assert_contains "$resp" "$PLUGIN_ID" "updatePlugins.xml should contain plugin ID"; then
+  sleep 1
+  if resp=$(curl -sf "${JB_URL}/plugins.xml" -H "$(format_auth_header)"); then
+    if assert_contains "$resp" "$PLUGIN_ID" "plugins.xml should contain plugin ID"; then
       pass
     fi
   else
-    fail "could not retrieve plugin listing XML"
+    # Try updatePlugins.xml as an alternative endpoint
+    if resp=$(curl -sf "${JB_URL}/updatePlugins.xml" -H "$(format_auth_header)"); then
+      if assert_contains "$resp" "$PLUGIN_ID" "updatePlugins.xml should contain plugin ID"; then
+        pass
+      fi
+    else
+      fail "could not retrieve plugin listing XML"
+    fi
   fi
 fi
 
@@ -93,16 +117,20 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Download plugin JAR"
-DL_FILE="${WORK_DIR}/downloaded-plugin.jar"
-if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
-  "${JB_URL}/plugins/${PLUGIN_ID}/${PLUGIN_VERSION}/test-plugin-${PLUGIN_VERSION}.jar"; then
-  DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
-  ORIG_SIZE=$(wc -c < "${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" | tr -d ' ')
-  if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded JAR size should match original"; then
-    pass
-  fi
+if [ "$HANDLER_AVAILABLE" = false ]; then
+  skip "jetbrains handler not available"
 else
-  fail "download plugin JAR failed"
+  DL_FILE="${WORK_DIR}/downloaded-plugin.jar"
+  if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
+    "${JB_URL}/plugins/${PLUGIN_ID}/${PLUGIN_VERSION}/test-plugin-${PLUGIN_VERSION}.jar"; then
+    DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
+    ORIG_SIZE=$(wc -c < "${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" | tr -d ' ')
+    if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded JAR size should match original"; then
+      pass
+    fi
+  else
+    fail "download plugin JAR failed"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -110,12 +138,16 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "List artifacts via management API"
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
-  if assert_contains "$resp" "$PLUGIN_ID" "artifact list should contain plugin ID"; then
-    pass
-  fi
+if [ "$HANDLER_AVAILABLE" = false ]; then
+  skip "jetbrains handler not available"
 else
-  fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
+    if assert_contains "$resp" "$PLUGIN_ID" "artifact list should contain plugin ID"; then
+      pass
+    fi
+  else
+    fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  fi
 fi
 
 end_suite

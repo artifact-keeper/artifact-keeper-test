@@ -70,7 +70,7 @@ upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "$(format_auth_header)" \
   -H "Content-Type: application/zip" \
   --data-binary "@${PKG_ARCHIVE}" \
-  "${BASE_URL}/composer/${REPO_KEY}/${VENDOR}/${PACKAGE}/${PACKAGE_VERSION}") || true
+  "${BASE_URL}/composer/${REPO_KEY}/api/packages") || true
 
 if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
   pass

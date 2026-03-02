@@ -72,30 +72,17 @@ fi
 # Push chart
 # ---------------------------------------------------------------------------
 begin_test "Upload chart"
-# Try uploading via the REST API endpoint
+# ChartMuseum-compatible upload: POST multipart with field name "chart"
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
-  -X PUT \
+  -X POST \
   -H "$(format_auth_header)" \
-  -H "Content-Type: application/gzip" \
-  --data-binary "@${CHART_FILE}" \
-  "${BASE_URL}/helm/${REPO_KEY}/charts/${CHART_NAME}-${CHART_VERSION}.tgz") || true
+  -F "chart=@${CHART_FILE}" \
+  "${BASE_URL}/helm/${REPO_KEY}/api/charts") || true
 
 if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
   pass
 else
-  # Fall back to POST for Helm chart museum style API
-  upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
-    -X POST \
-    -H "$(format_auth_header)" \
-    -H "Content-Type: application/gzip" \
-    --data-binary "@${CHART_FILE}" \
-    "${BASE_URL}/helm/${REPO_KEY}/api/charts") || true
-
-  if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
-    pass
-  else
-    fail "chart upload returned ${upload_status}, expected 200 or 201"
-  fi
+  fail "chart upload returned ${upload_status}, expected 200 or 201"
 fi
 
 # ---------------------------------------------------------------------------

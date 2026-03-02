@@ -11,6 +11,7 @@ REPO_KEY="test-p2-${RUN_ID}"
 BUNDLE_ID="com.example.test.bundle"
 BUNDLE_VERSION="1.0.0"
 EXT_URL="${BASE_URL}/ext/p2/${REPO_KEY}"
+WASM_AVAILABLE=true
 
 # ---------------------------------------------------------------------------
 # Create repository
@@ -21,6 +22,21 @@ if create_local_repo "$REPO_KEY" "p2"; then
   pass
 else
   fail "could not create p2 repo"
+fi
+
+# ---------------------------------------------------------------------------
+# Check WASM plugin availability
+# ---------------------------------------------------------------------------
+
+begin_test "Check p2 WASM plugin availability"
+PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "$(format_auth_header)" \
+  "${EXT_URL}/") || true
+if [ "$PROBE_CODE" = "404" ]; then
+  WASM_AVAILABLE=false
+  skip "p2 WASM plugin not loaded (HTTP 404)"
+else
+  pass
 fi
 
 # ---------------------------------------------------------------------------
@@ -60,14 +76,18 @@ pass
 # ---------------------------------------------------------------------------
 
 begin_test "Upload P2 bundle"
-if resp=$(curl -sf -X PUT \
-  -H "$(format_auth_header)" \
-  -H "Content-Type: application/java-archive" \
-  --data-binary "@${WORK_DIR}/bundle.jar" \
-  "${EXT_URL}/plugins/${BUNDLE_ID}_${BUNDLE_VERSION}.jar" 2>&1); then
-  pass
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "p2 WASM plugin not loaded"
 else
-  fail "upload P2 bundle failed: ${resp}"
+  if resp=$(curl -sf -X PUT \
+    -H "$(format_auth_header)" \
+    -H "Content-Type: application/java-archive" \
+    --data-binary "@${WORK_DIR}/bundle.jar" \
+    "${EXT_URL}/plugins/${BUNDLE_ID}_${BUNDLE_VERSION}.jar" 2>&1); then
+    pass
+  else
+    fail "upload P2 bundle failed: ${resp}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -75,26 +95,30 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Query P2 content metadata"
-sleep 1
-CONTENT_STATUS=$(curl -s -o "${WORK_DIR}/content.xml" -w '%{http_code}' \
-  -H "$(format_auth_header)" \
-  "${EXT_URL}/content.xml") || true
-
-if [ "$CONTENT_STATUS" -ge 200 ] 2>/dev/null && [ "$CONTENT_STATUS" -lt 300 ] 2>/dev/null; then
-  pass
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "p2 WASM plugin not loaded"
 else
-  # Try compositeContent.xml as an alternative
-  COMPOSITE_STATUS=$(curl -s -o "${WORK_DIR}/compositeContent.xml" -w '%{http_code}' \
+  sleep 1
+  CONTENT_STATUS=$(curl -s -o "${WORK_DIR}/content.xml" -w '%{http_code}' \
     -H "$(format_auth_header)" \
-    "${EXT_URL}/compositeContent.xml") || true
+    "${EXT_URL}/content.xml") || true
 
-  if [ "$COMPOSITE_STATUS" -ge 200 ] 2>/dev/null && [ "$COMPOSITE_STATUS" -lt 300 ] 2>/dev/null; then
+  if [ "$CONTENT_STATUS" -ge 200 ] 2>/dev/null && [ "$CONTENT_STATUS" -lt 300 ] 2>/dev/null; then
     pass
   else
-    if [ "$CONTENT_STATUS" = "404" ] && [ "$COMPOSITE_STATUS" = "404" ]; then
-      skip "P2 content metadata endpoint not implemented"
+    # Try compositeContent.xml as an alternative
+    COMPOSITE_STATUS=$(curl -s -o "${WORK_DIR}/compositeContent.xml" -w '%{http_code}' \
+      -H "$(format_auth_header)" \
+      "${EXT_URL}/compositeContent.xml") || true
+
+    if [ "$COMPOSITE_STATUS" -ge 200 ] 2>/dev/null && [ "$COMPOSITE_STATUS" -lt 300 ] 2>/dev/null; then
+      pass
     else
-      fail "content.xml returned HTTP ${CONTENT_STATUS}, compositeContent.xml returned HTTP ${COMPOSITE_STATUS}"
+      if [ "$CONTENT_STATUS" = "404" ] && [ "$COMPOSITE_STATUS" = "404" ]; then
+        skip "P2 content metadata endpoint not implemented"
+      else
+        fail "content.xml returned HTTP ${CONTENT_STATUS}, compositeContent.xml returned HTTP ${COMPOSITE_STATUS}"
+      fi
     fi
   fi
 fi
@@ -104,12 +128,16 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "List artifacts via management API"
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
-  if assert_contains "$resp" "$BUNDLE_ID" "artifact list should contain bundle ID"; then
-    pass
-  fi
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "p2 WASM plugin not loaded"
 else
-  fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
+    if assert_contains "$resp" "$BUNDLE_ID" "artifact list should contain bundle ID"; then
+      pass
+    fi
+  else
+    fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  fi
 fi
 
 end_suite

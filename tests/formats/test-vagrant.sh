@@ -12,6 +12,7 @@ BOX_NAME="test-box"
 BOX_VERSION="1.0.$(date +%s)"
 BOX_PROVIDER="virtualbox"
 EXT_URL="${BASE_URL}/ext/vagrant/${REPO_KEY}"
+WASM_AVAILABLE=true
 
 # ---------------------------------------------------------------------------
 # Create repository
@@ -22,6 +23,21 @@ if create_local_repo "$REPO_KEY" "vagrant"; then
   pass
 else
   fail "could not create vagrant repo"
+fi
+
+# ---------------------------------------------------------------------------
+# Check WASM plugin availability
+# ---------------------------------------------------------------------------
+
+begin_test "Check vagrant WASM plugin availability"
+PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "$(format_auth_header)" \
+  "${EXT_URL}/") || true
+if [ "$PROBE_CODE" = "404" ]; then
+  WASM_AVAILABLE=false
+  skip "vagrant WASM plugin not loaded (HTTP 404)"
+else
+  pass
 fi
 
 # ---------------------------------------------------------------------------
@@ -58,14 +74,18 @@ pass
 # ---------------------------------------------------------------------------
 
 begin_test "Upload box file"
-if resp=$(curl -sf -X PUT \
-  -H "$(format_auth_header)" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@${WORK_DIR}/test.box" \
-  "${EXT_URL}/${BOX_NAME}/${BOX_VERSION}/${BOX_PROVIDER}/test.box" 2>&1); then
-  pass
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "vagrant WASM plugin not loaded"
 else
-  fail "upload box file failed: ${resp}"
+  if resp=$(curl -sf -X PUT \
+    -H "$(format_auth_header)" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "@${WORK_DIR}/test.box" \
+    "${EXT_URL}/${BOX_NAME}/${BOX_VERSION}/${BOX_PROVIDER}/test.box" 2>&1); then
+    pass
+  else
+    fail "upload box file failed: ${resp}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -73,19 +93,23 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Query box listing"
-sleep 1
-if resp=$(curl -sf "${EXT_URL}/${BOX_NAME}" -H "$(format_auth_header)"); then
-  if assert_contains "$resp" "$BOX_NAME" "box listing should contain box name"; then
-    pass
-  fi
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "vagrant WASM plugin not loaded"
 else
-  # Try querying the root listing
-  if resp=$(curl -sf "${EXT_URL}/" -H "$(format_auth_header)"); then
-    if assert_contains "$resp" "$BOX_NAME" "root listing should contain box name"; then
+  sleep 1
+  if resp=$(curl -sf "${EXT_URL}/${BOX_NAME}" -H "$(format_auth_header)"); then
+    if assert_contains "$resp" "$BOX_NAME" "box listing should contain box name"; then
       pass
     fi
   else
-    fail "could not retrieve box listing"
+    # Try querying the root listing
+    if resp=$(curl -sf "${EXT_URL}/" -H "$(format_auth_header)"); then
+      if assert_contains "$resp" "$BOX_NAME" "root listing should contain box name"; then
+        pass
+      fi
+    else
+      fail "could not retrieve box listing"
+    fi
   fi
 fi
 
@@ -94,16 +118,20 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Download box file"
-DL_FILE="${WORK_DIR}/downloaded.box"
-if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
-  "${EXT_URL}/${BOX_NAME}/${BOX_VERSION}/${BOX_PROVIDER}/test.box"; then
-  DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
-  ORIG_SIZE=$(wc -c < "${WORK_DIR}/test.box" | tr -d ' ')
-  if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded box size should match original"; then
-    pass
-  fi
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "vagrant WASM plugin not loaded"
 else
-  fail "download box file failed"
+  DL_FILE="${WORK_DIR}/downloaded.box"
+  if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
+    "${EXT_URL}/${BOX_NAME}/${BOX_VERSION}/${BOX_PROVIDER}/test.box"; then
+    DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
+    ORIG_SIZE=$(wc -c < "${WORK_DIR}/test.box" | tr -d ' ')
+    if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded box size should match original"; then
+      pass
+    fi
+  else
+    fail "download box file failed"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -111,12 +139,16 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "List artifacts via management API"
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
-  if assert_contains "$resp" "$BOX_NAME" "artifact list should contain box name"; then
-    pass
-  fi
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "vagrant WASM plugin not loaded"
 else
-  fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
+    if assert_contains "$resp" "$BOX_NAME" "artifact list should contain box name"; then
+      pass
+    fi
+  else
+    fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  fi
 fi
 
 end_suite

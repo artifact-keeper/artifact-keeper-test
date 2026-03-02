@@ -27,8 +27,10 @@ fi
 # ---------------------------------------------------------------------------
 # Determine whether to use docker or curl
 # ---------------------------------------------------------------------------
+# In CI/k8s environments, docker login typically can't reach the in-cluster
+# registry by hostname, so prefer the curl-based OCI distribution tests.
 USE_DOCKER=false
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+if [ "${FORCE_DOCKER_TESTS:-}" = "true" ] && command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   USE_DOCKER=true
 fi
 

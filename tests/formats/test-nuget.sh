@@ -74,7 +74,7 @@ upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
   -H "$(format_auth_header)" \
   -F "package=@${NUPKG_FILE};type=application/octet-stream" \
-  "${BASE_URL}/nuget/${REPO_KEY}/") || true
+  "${BASE_URL}/nuget/${REPO_KEY}/api/v2/package") || true
 
 if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
   pass
@@ -85,7 +85,7 @@ else
     -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${NUPKG_FILE}" \
-    "${BASE_URL}/nuget/${REPO_KEY}/") || true
+    "${BASE_URL}/nuget/${REPO_KEY}/api/v2/package") || true
   if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
     pass
   else

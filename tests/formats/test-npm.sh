@@ -56,13 +56,17 @@ module.exports = {
 EOF
 
 # Configure npm to use our registry with basic auth
-AUTH_B64=$(echo -n "${ADMIN_USER}:${ADMIN_PASS}" | base64)
+AUTH_B64=$(printf '%s:%s' "${ADMIN_USER}" "${ADMIN_PASS}" | base64)
 REGISTRY_HOST=$(echo "$NPM_REGISTRY" | sed -E 's|https?:||')
 
+# Write auth to both project and user .npmrc for compatibility
+NPM_AUTH_LINE="//${REGISTRY_HOST}:_auth=${AUTH_B64}"
 cat > .npmrc <<EOF
 registry=${NPM_REGISTRY}
-//${REGISTRY_HOST}:_auth=${AUTH_B64}
+${NPM_AUTH_LINE}
+always-auth=true
 EOF
+cp .npmrc "${HOME}/.npmrc" 2>/dev/null || true
 
 if npm publish --registry "$NPM_REGISTRY" 2>&1; then
   pass

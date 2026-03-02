@@ -61,47 +61,33 @@ EOF
 CB_TARBALL="$WORK_DIR/${COOKBOOK_NAME}-${COOKBOOK_VERSION}.tar.gz"
 tar czf "$CB_TARBALL" -C "$WORK_DIR" "$COOKBOOK_NAME"
 
+# The backend expects POST to /api/v1/cookbooks with multipart form data:
+#   - "tarball" field: the cookbook .tar.gz
+#   - "cookbook" field: JSON with cookbook_name and version
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
-  -X PUT \
+  -X POST \
   -H "$(format_auth_header)" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@${CB_TARBALL}" \
-  "${BASE_URL}/chef/${REPO_KEY}/${COOKBOOK_NAME}/${COOKBOOK_VERSION}") || true
+  -F "tarball=@${CB_TARBALL};type=application/gzip" \
+  -F "cookbook={\"cookbook_name\":\"${COOKBOOK_NAME}\",\"version\":\"${COOKBOOK_VERSION}\"};type=application/json" \
+  "${BASE_URL}/chef/${REPO_KEY}/api/v1/cookbooks") || true
 
 if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
   pass
 else
-  # Try alternate upload path (api/v1/cookbooks style)
-  upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
-    -X PUT \
-    -H "$(format_auth_header)" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary "@${CB_TARBALL}" \
-    "${BASE_URL}/chef/${REPO_KEY}/api/v1/cookbooks/${COOKBOOK_NAME}/versions/${COOKBOOK_VERSION}" 2>/dev/null) || true
-  if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
-    pass
-  else
-    fail "cookbook upload returned ${upload_status}, expected 200 or 201"
-  fi
+  fail "cookbook upload returned ${upload_status}, expected 200 or 201"
 fi
 
 # -----------------------------------------------------------------------
-# Query universe endpoint
+# Query cookbooks list endpoint (GET /:repo_key/api/v1/cookbooks)
 # -----------------------------------------------------------------------
-begin_test "Query universe endpoint"
-universe_resp=$(curl -sf -H "$(format_auth_header)" \
-  "${BASE_URL}/chef/${REPO_KEY}/universe" 2>/dev/null) || true
+begin_test "Query cookbooks list endpoint"
+list_resp=$(curl -sf -H "$(format_auth_header)" \
+  "${BASE_URL}/chef/${REPO_KEY}/api/v1/cookbooks" 2>/dev/null) || true
 
-if [ -z "$universe_resp" ]; then
-  # Try alternate universe path
-  universe_resp=$(curl -sf -H "$(format_auth_header)" \
-    "${BASE_URL}/chef/${REPO_KEY}/api/v1/universe" 2>/dev/null) || true
-fi
-
-if [ -n "$universe_resp" ] && echo "$universe_resp" | grep -q "$COOKBOOK_NAME"; then
+if [ -n "$list_resp" ] && echo "$list_resp" | grep -q "$COOKBOOK_NAME"; then
   pass
 else
-  fail "cookbook ${COOKBOOK_NAME} not found in universe endpoint"
+  fail "cookbook ${COOKBOOK_NAME} not found in cookbooks list endpoint"
 fi
 
 # -----------------------------------------------------------------------

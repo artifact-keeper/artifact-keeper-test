@@ -25,7 +25,7 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# Generate and upload a podspec
+# Generate and upload a podspec (as tar.gz archive containing .podspec.json)
 # -----------------------------------------------------------------------
 begin_test "Upload podspec"
 cat > "$WORK_DIR/${POD_NAME}.podspec.json" <<EOF
@@ -54,42 +54,29 @@ cat > "$WORK_DIR/${POD_NAME}.podspec.json" <<EOF
 }
 EOF
 
+# The backend push_pod handler expects a tar.gz archive containing a .podspec.json
+POD_TARBALL="$WORK_DIR/${POD_NAME}-${POD_VERSION}.tar.gz"
+tar czf "$POD_TARBALL" -C "$WORK_DIR" "${POD_NAME}.podspec.json"
+
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
-  -X PUT \
+  -X POST \
   -H "$(format_auth_header)" \
-  -H "Content-Type: application/json" \
-  --data-binary "@${WORK_DIR}/${POD_NAME}.podspec.json" \
-  "${BASE_URL}/cocoapods/${REPO_KEY}/${POD_NAME}/${POD_VERSION}") || true
+  -H "Content-Type: application/gzip" \
+  --data-binary "@${POD_TARBALL}" \
+  "${BASE_URL}/cocoapods/${REPO_KEY}/pods") || true
 
 if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
   pass
 else
-  # Try alternate upload paths
-  upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
-    -X POST \
-    -H "$(format_auth_header)" \
-    -H "Content-Type: application/json" \
-    --data-binary "@${WORK_DIR}/${POD_NAME}.podspec.json" \
-    "${BASE_URL}/cocoapods/${REPO_KEY}/pods/${POD_NAME}/versions/${POD_VERSION}/podspec.json") || true
-  if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
-    pass
-  else
-    fail "podspec upload returned ${upload_status}, expected 200 or 201"
-  fi
+  fail "podspec upload returned ${upload_status}, expected 200 or 201"
 fi
 
 # -----------------------------------------------------------------------
-# Verify spec listing
+# Verify spec listing (GET /:repo_key/all_specs)
 # -----------------------------------------------------------------------
 begin_test "Verify spec listing"
 list_resp=$(curl -sf -H "$(format_auth_header)" \
-  "${BASE_URL}/cocoapods/${REPO_KEY}/pods/${POD_NAME}" 2>/dev/null) || true
-
-if [ -z "$list_resp" ]; then
-  # Try alternate listing path
-  list_resp=$(curl -sf -H "$(format_auth_header)" \
-    "${BASE_URL}/cocoapods/${REPO_KEY}/${POD_NAME}" 2>/dev/null) || true
-fi
+  "${BASE_URL}/cocoapods/${REPO_KEY}/all_specs" 2>/dev/null) || true
 
 if [ -n "$list_resp" ] && echo "$list_resp" | grep -q "$POD_NAME"; then
   pass
@@ -98,16 +85,11 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# Verify version info
+# Verify version info (GET /:repo_key/Specs/{name}/{version}/{name}.podspec.json)
 # -----------------------------------------------------------------------
 begin_test "Verify version info"
 ver_resp=$(curl -sf -H "$(format_auth_header)" \
-  "${BASE_URL}/cocoapods/${REPO_KEY}/pods/${POD_NAME}/versions/${POD_VERSION}/podspec.json" 2>/dev/null) || true
-
-if [ -z "$ver_resp" ]; then
-  ver_resp=$(curl -sf -H "$(format_auth_header)" \
-    "${BASE_URL}/cocoapods/${REPO_KEY}/${POD_NAME}/${POD_VERSION}" 2>/dev/null) || true
-fi
+  "${BASE_URL}/cocoapods/${REPO_KEY}/Specs/${POD_NAME}/${POD_VERSION}/${POD_NAME}.podspec.json" 2>/dev/null) || true
 
 if [ -n "$ver_resp" ] && echo "$ver_resp" | grep -q "$POD_VERSION"; then
   pass
@@ -116,19 +98,13 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# Download podspec
+# Download podspec (GET /:repo_key/Specs/{name}/{version}/{name}.podspec.json)
 # -----------------------------------------------------------------------
 begin_test "Download podspec"
 dl_file="$WORK_DIR/downloaded.podspec.json"
 dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
   -H "$(format_auth_header)" \
-  "${BASE_URL}/cocoapods/${REPO_KEY}/pods/${POD_NAME}/versions/${POD_VERSION}/podspec.json" 2>/dev/null) || true
-
-if [ "$dl_status" != "200" ]; then
-  dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}/cocoapods/${REPO_KEY}/${POD_NAME}/${POD_VERSION}" 2>/dev/null) || true
-fi
+  "${BASE_URL}/cocoapods/${REPO_KEY}/Specs/${POD_NAME}/${POD_VERSION}/${POD_NAME}.podspec.json" 2>/dev/null) || true
 
 if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
   # Verify the content looks like our podspec

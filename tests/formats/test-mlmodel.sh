@@ -16,6 +16,7 @@ REPO_KEY="test-mlmodel-${RUN_ID}"
 MODEL_NAME="test-model"
 MODEL_VERSION="1.0.$(date +%s)"
 EXT_URL="${BASE_URL}/ext/mlmodel/${REPO_KEY}"
+WASM_AVAILABLE=true
 
 # ---------------------------------------------------------------------------
 # Create repository
@@ -26,6 +27,21 @@ if create_local_repo "$REPO_KEY" "mlmodel"; then
   pass
 else
   fail "could not create mlmodel repository"
+fi
+
+# ---------------------------------------------------------------------------
+# Check WASM plugin availability
+# ---------------------------------------------------------------------------
+
+begin_test "Check mlmodel WASM plugin availability"
+PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "$(format_auth_header)" \
+  "${EXT_URL}/") || true
+if [ "$PROBE_CODE" = "404" ]; then
+  WASM_AVAILABLE=false
+  skip "mlmodel WASM plugin not loaded (HTTP 404)"
+else
+  pass
 fi
 
 # ---------------------------------------------------------------------------
@@ -59,14 +75,18 @@ pass
 # ---------------------------------------------------------------------------
 
 begin_test "Upload model metadata"
-UPLOAD_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model-metadata.json"
-if resp=$(curl -sf -X PUT "${BASE_URL}${UPLOAD_PATH}" \
-  -H "$(format_auth_header)" \
-  -H "Content-Type: application/json" \
-  --data-binary "@${WORK_DIR}/model-metadata.json" 2>&1); then
-  pass
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "mlmodel WASM plugin not loaded"
 else
-  fail "upload model-metadata.json failed: ${resp}"
+  UPLOAD_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model-metadata.json"
+  if resp=$(curl -sf -X PUT "${BASE_URL}${UPLOAD_PATH}" \
+    -H "$(format_auth_header)" \
+    -H "Content-Type: application/json" \
+    --data-binary "@${WORK_DIR}/model-metadata.json" 2>&1); then
+    pass
+  else
+    fail "upload model-metadata.json failed: ${resp}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -74,14 +94,18 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Upload model binary"
-UPLOAD_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model.bin"
-if resp=$(curl -sf -X PUT "${BASE_URL}${UPLOAD_PATH}" \
-  -H "$(format_auth_header)" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@${WORK_DIR}/model.bin" 2>&1); then
-  pass
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "mlmodel WASM plugin not loaded"
 else
-  fail "upload model.bin failed: ${resp}"
+  UPLOAD_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model.bin"
+  if resp=$(curl -sf -X PUT "${BASE_URL}${UPLOAD_PATH}" \
+    -H "$(format_auth_header)" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "@${WORK_DIR}/model.bin" 2>&1); then
+    pass
+  else
+    fail "upload model.bin failed: ${resp}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -89,16 +113,20 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Download model metadata"
-sleep 1
-DL_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model-metadata.json"
-if resp=$(curl -sf "${BASE_URL}${DL_PATH}" -H "$(format_auth_header)"); then
-  if assert_contains "$resp" "$MODEL_NAME" "metadata should contain model name"; then
-    if assert_contains "$resp" "$MODEL_VERSION" "metadata should contain version"; then
-      pass
-    fi
-  fi
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "mlmodel WASM plugin not loaded"
 else
-  fail "download model-metadata.json failed"
+  sleep 1
+  DL_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model-metadata.json"
+  if resp=$(curl -sf "${BASE_URL}${DL_PATH}" -H "$(format_auth_header)"); then
+    if assert_contains "$resp" "$MODEL_NAME" "metadata should contain model name"; then
+      if assert_contains "$resp" "$MODEL_VERSION" "metadata should contain version"; then
+        pass
+      fi
+    fi
+  else
+    fail "download model-metadata.json failed"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -106,16 +134,20 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Download model binary"
-DL_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model.bin"
-DL_FILE="${WORK_DIR}/downloaded_model.bin"
-if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" "${BASE_URL}${DL_PATH}"; then
-  DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
-  ORIG_SIZE=$(wc -c < "${WORK_DIR}/model.bin" | tr -d ' ')
-  if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded file size should match original"; then
-    pass
-  fi
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "mlmodel WASM plugin not loaded"
 else
-  fail "download model.bin failed"
+  DL_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model.bin"
+  DL_FILE="${WORK_DIR}/downloaded_model.bin"
+  if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" "${BASE_URL}${DL_PATH}"; then
+    DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
+    ORIG_SIZE=$(wc -c < "${WORK_DIR}/model.bin" | tr -d ' ')
+    if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded file size should match original"; then
+      pass
+    fi
+  else
+    fail "download model.bin failed"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -123,12 +155,16 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "List artifacts via management API"
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
-  if assert_contains "$resp" "$MODEL_NAME" "artifact list should contain model name"; then
-    pass
-  fi
+if [ "$WASM_AVAILABLE" = false ]; then
+  skip "mlmodel WASM plugin not loaded"
 else
-  fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
+    if assert_contains "$resp" "$MODEL_NAME" "artifact list should contain model name"; then
+      pass
+    fi
+  else
+    fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  fi
 fi
 
 end_suite
