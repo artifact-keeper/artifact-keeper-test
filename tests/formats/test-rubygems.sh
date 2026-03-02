@@ -20,7 +20,7 @@ GEM_VERSION="1.0.$(date +%s)"
 # Create repository
 # -----------------------------------------------------------------------
 begin_test "Create RubyGems repository"
-if create_local_repo "$REPO_KEY" "gems"; then
+if create_local_repo "$REPO_KEY" "rubygems"; then
   pass
 else
   fail "could not create gems repository"

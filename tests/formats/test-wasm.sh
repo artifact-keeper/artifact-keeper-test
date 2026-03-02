@@ -17,7 +17,7 @@ EXT_URL="${BASE_URL}/ext/wasm/${REPO_KEY}"
 # ---------------------------------------------------------------------------
 
 begin_test "Create wasm local repository"
-if create_local_repo "$REPO_KEY" "wasm"; then
+if create_local_repo "$REPO_KEY" "wasm_oci"; then
   pass
 else
   fail "could not create wasm repo"

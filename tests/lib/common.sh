@@ -143,7 +143,7 @@ create_repo() {
   local upstream_url="${4:-}"
 
   local payload
-  payload="{\"key\":\"${key}\",\"name\":\"${key}\",\"format\":\"${format}\",\"repo_type\":\"${repo_type}\""
+  payload="{\"key\":\"${key}\",\"name\":\"${key}\",\"format\":\"${format}\",\"repo_type\":\"${repo_type}\",\"is_public\":true"
   if [ -n "$upstream_url" ]; then
     payload="${payload},\"upstream_url\":\"${upstream_url}\""
   fi
