@@ -115,7 +115,7 @@ fi
 # Wait for backend health
 # ---------------------------------------------------------------------------
 
-BACKEND_SVC="http://${RELEASE_NAME}-backend.${NAMESPACE}.svc.cluster.local:8080"
+BACKEND_SVC="http://artifact-keeper-backend.${NAMESPACE}.svc.cluster.local:8080"
 
 echo "Waiting for backend to become healthy..."
 "${REPO_ROOT}/tests/lib/wait-for-ready.sh" "$BACKEND_SVC" 120

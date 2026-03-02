@@ -3,6 +3,9 @@
 # Used by create-test-namespace.sh to deploy an isolated test environment.
 # Image tags are overridden at deploy time via --set.
 
+# Use a stable name so service URLs are predictable regardless of release name
+fullnameOverride: artifact-keeper
+
 backend:
   image:
     repository: ghcr.io/artifact-keeper/artifact-keeper-backend
