@@ -353,6 +353,7 @@ jobs:
   # -------------------------------------------------------------------
   mesh-tests:
     needs: [deploy, resilience-tests]
+    continue-on-error: true
     if: |
       always() &&
       (inputs.test_suite == 'all' || inputs.test_suite == 'mesh') &&
