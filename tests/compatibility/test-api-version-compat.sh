@@ -17,14 +17,14 @@ REPO_KEY="test-compat-${RUN_ID}"
 # Health endpoint
 # ---------------------------------------------------------------------------
 
-begin_test "GET /api/v1/system/health returns status field"
+begin_test "GET /health returns status field"
 health_resp=""
-if health_resp=$(api_get "/api/v1/system/health"); then
+if health_resp=$(api_get "/health"); then
   if assert_contains "$health_resp" "status" "health response should contain status field"; then
     pass
   fi
 else
-  fail "GET /api/v1/system/health returned error"
+  fail "GET /health returned error"
 fi
 
 # ---------------------------------------------------------------------------
