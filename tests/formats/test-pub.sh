@@ -62,35 +62,40 @@ begin_test "Upload package via newUpload endpoint"
 BASIC_AUTH=$(echo -n "${ADMIN_USER}:${ADMIN_PASS}" | base64)
 
 # Step 1: Request upload URL
+upload_url=""
 upload_resp=$(curl -sf -X POST \
     -H "Authorization: Basic ${BASIC_AUTH}" \
     "${BASE_URL}/pub/${REPO_KEY}/api/packages/versions/new" 2>/dev/null) || true
 
 if [ -n "$upload_resp" ]; then
   # The response should contain an upload URL
-  upload_url=$(echo "$upload_resp" | jq -r '.url // empty' 2>/dev/null)
+  upload_url=$(echo "$upload_resp" | jq -r '.url // empty' 2>/dev/null) || true
 fi
 
 # Step 2: Upload the archive via multipart form
 if [ -n "$upload_url" ] && [ "$upload_url" != "null" ]; then
+  # Make relative URLs absolute
+  if [[ "$upload_url" != http* ]]; then
+    upload_url="${BASE_URL}${upload_url}"
+  fi
   HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
       -X POST \
       -H "Authorization: Basic ${BASIC_AUTH}" \
       -F "file=@${WORK_DIR}/package.tar.gz" \
-      "${upload_url}")
+      "${upload_url}") || true
 else
   # Fallback: post directly to the newUpload endpoint
   HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
       -X POST \
       -H "Authorization: Basic ${BASIC_AUTH}" \
       -F "file=@${WORK_DIR}/package.tar.gz" \
-      "${BASE_URL}/pub/${REPO_KEY}/api/packages/versions/newUpload")
+      "${BASE_URL}/pub/${REPO_KEY}/api/packages/versions/newUpload") || true
 fi
 
-if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
+if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" -ge 200 ] 2>/dev/null && [ "$HTTP_CODE" -lt 400 ] 2>/dev/null; then
   pass
 else
-  fail "upload returned HTTP ${HTTP_CODE}"
+  fail "upload returned HTTP ${HTTP_CODE:-empty}"
 fi
 
 # Step 3: Finalize upload
