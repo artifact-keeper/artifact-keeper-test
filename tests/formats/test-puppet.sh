@@ -80,22 +80,16 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# Query Forge API modules listing
+# Query Forge API module info
 # -----------------------------------------------------------------------
-begin_test "Query Forge API modules"
+begin_test "Query Forge API module info"
 forge_resp=$(curl -sf -H "$(format_auth_header)" \
-  "${BASE_URL}/puppet/${REPO_KEY}/v3/modules" 2>/dev/null) || true
-
-if [ -z "$forge_resp" ]; then
-  # Try with query parameter
-  forge_resp=$(curl -sf -H "$(format_auth_header)" \
-    "${BASE_URL}/puppet/${REPO_KEY}/v3/modules?query=${MODULE_NAME}" 2>/dev/null) || true
-fi
+  "${BASE_URL}/puppet/${REPO_KEY}/v3/modules/${FULL_MODULE_NAME}" 2>/dev/null) || true
 
 if [ -n "$forge_resp" ] && echo "$forge_resp" | grep -q "$MODULE_NAME"; then
   pass
 else
-  fail "module ${MODULE_NAME} not found in Forge API modules listing"
+  fail "module ${MODULE_NAME} not found via Forge API module info endpoint"
 fi
 
 # -----------------------------------------------------------------------

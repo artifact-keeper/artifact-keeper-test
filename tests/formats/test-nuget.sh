@@ -98,13 +98,7 @@ fi
 # -----------------------------------------------------------------------
 begin_test "Verify service index"
 service_resp=$(curl -sf -H "$(format_auth_header)" \
-  "${BASE_URL}/nuget/${REPO_KEY}/index.json" 2>/dev/null) || true
-
-if [ -z "$service_resp" ]; then
-  # Try v3 path
-  service_resp=$(curl -sf -H "$(format_auth_header)" \
-    "${BASE_URL}/nuget/${REPO_KEY}/v3/index.json" 2>/dev/null) || true
-fi
+  "${BASE_URL}/nuget/${REPO_KEY}/v3/index.json" 2>/dev/null) || true
 
 if [ -n "$service_resp" ]; then
   version=$(echo "$service_resp" | jq -r '.version // empty' 2>/dev/null) || true
@@ -131,7 +125,7 @@ begin_test "Verify package registration"
 PACKAGE_ID_LOWER=$(echo "$PACKAGE_ID" | tr '[:upper:]' '[:lower:]')
 
 reg_resp=$(curl -sf -H "$(format_auth_header)" \
-  "${BASE_URL}/nuget/${REPO_KEY}/registration/${PACKAGE_ID_LOWER}/index.json" 2>/dev/null) || true
+  "${BASE_URL}/nuget/${REPO_KEY}/v3/registration/${PACKAGE_ID_LOWER}/index.json" 2>/dev/null) || true
 
 if [ -n "$reg_resp" ] && echo "$reg_resp" | grep -qi "$PACKAGE_ID"; then
   pass
@@ -146,7 +140,7 @@ begin_test "Download package"
 dl_file="$WORK_DIR/downloaded.nupkg"
 dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
   -H "$(format_auth_header)" \
-  "${BASE_URL}/nuget/${REPO_KEY}/download/${PACKAGE_ID_LOWER}/${PACKAGE_VERSION}/${PACKAGE_ID_LOWER}.${PACKAGE_VERSION}.nupkg" 2>/dev/null) || true
+  "${BASE_URL}/nuget/${REPO_KEY}/v3/flatcontainer/${PACKAGE_ID_LOWER}/${PACKAGE_VERSION}/${PACKAGE_ID_LOWER}.${PACKAGE_VERSION}.nupkg" 2>/dev/null) || true
 
 if [ "$dl_status" = "200" ]; then
   if [ -s "$dl_file" ]; then
@@ -155,15 +149,7 @@ if [ "$dl_status" = "200" ]; then
     fail "downloaded nupkg is empty"
   fi
 else
-  # Try flat container path
-  dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}/nuget/${REPO_KEY}/flatcontainer/${PACKAGE_ID_LOWER}/${PACKAGE_VERSION}/${PACKAGE_ID_LOWER}.${PACKAGE_VERSION}.nupkg" 2>/dev/null) || true
-  if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
-    pass
-  else
-    fail "package download returned ${dl_status}, expected 200"
-  fi
+  fail "package download returned ${dl_status}, expected 200"
 fi
 
 end_suite

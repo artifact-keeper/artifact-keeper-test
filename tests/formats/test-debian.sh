@@ -177,6 +177,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
     -H "$(format_auth_header)" \
     -H "Content-Type: application/vnd.debian.binary-package" \
+    -H "X-Filename: ${DEB_FILE}" \
     --data-binary "@${WORK_DIR}/${DEB_FILE}" \
     "${BASE_URL}/debian/${REPO_KEY}/upload")
 

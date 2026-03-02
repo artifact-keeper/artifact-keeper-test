@@ -183,6 +183,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
     -H "$(format_auth_header)" \
     -H "Content-Type: application/x-rpm" \
+    -H "X-Package-Filename: ${RPM_FILE}" \
     --data-binary "@${WORK_DIR}/${RPM_FILE}" \
     "${BASE_URL}/rpm/${REPO_KEY}/upload")
 

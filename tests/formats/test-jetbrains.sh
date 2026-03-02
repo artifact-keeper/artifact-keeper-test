@@ -76,11 +76,12 @@ begin_test "Upload plugin JAR"
 if [ "$HANDLER_AVAILABLE" = false ]; then
   skip "jetbrains handler not available"
 else
-  if resp=$(curl -sf -X PUT \
+  if resp=$(curl -sf -X POST \
     -H "$(format_auth_header)" \
-    -H "Content-Type: application/java-archive" \
-    --data-binary "@${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" \
-    "${JB_URL}/plugins/${PLUGIN_ID}/${PLUGIN_VERSION}/test-plugin-${PLUGIN_VERSION}.jar" 2>&1); then
+    -F "name=${PLUGIN_ID}" \
+    -F "version=${PLUGIN_VERSION}" \
+    -F "file=@${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar;type=application/octet-stream" \
+    "${JB_URL}/plugin/uploadPlugin" 2>&1); then
     pass
   else
     fail "upload plugin JAR failed: ${resp}"
@@ -96,19 +97,12 @@ if [ "$HANDLER_AVAILABLE" = false ]; then
   skip "jetbrains handler not available"
 else
   sleep 1
-  if resp=$(curl -sf "${JB_URL}/plugins.xml" -H "$(format_auth_header)"); then
-    if assert_contains "$resp" "$PLUGIN_ID" "plugins.xml should contain plugin ID"; then
+  if resp=$(curl -sf "${JB_URL}/plugins/list/" -H "$(format_auth_header)"); then
+    if assert_contains "$resp" "$PLUGIN_ID" "plugin list XML should contain plugin ID"; then
       pass
     fi
   else
-    # Try updatePlugins.xml as an alternative endpoint
-    if resp=$(curl -sf "${JB_URL}/updatePlugins.xml" -H "$(format_auth_header)"); then
-      if assert_contains "$resp" "$PLUGIN_ID" "updatePlugins.xml should contain plugin ID"; then
-        pass
-      fi
-    else
-      fail "could not retrieve plugin listing XML"
-    fi
+    fail "could not retrieve plugin listing XML from /plugins/list/"
   fi
 fi
 
@@ -122,7 +116,7 @@ if [ "$HANDLER_AVAILABLE" = false ]; then
 else
   DL_FILE="${WORK_DIR}/downloaded-plugin.jar"
   if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" \
-    "${JB_URL}/plugins/${PLUGIN_ID}/${PLUGIN_VERSION}/test-plugin-${PLUGIN_VERSION}.jar"; then
+    "${JB_URL}/plugin/download/${PLUGIN_ID}/${PLUGIN_VERSION}"; then
     DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
     ORIG_SIZE=$(wc -c < "${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" | tr -d ' ')
     if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded JAR size should match original"; then

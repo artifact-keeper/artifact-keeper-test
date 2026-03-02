@@ -141,6 +141,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
     -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
+    -H "X-Package-Filename: ${APK_FILE}" \
     --data-binary "@${WORK_DIR}/${APK_FILE}" \
     "${BASE_URL}/alpine/${REPO_KEY}/upload")
 
