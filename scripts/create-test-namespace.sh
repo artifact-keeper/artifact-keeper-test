@@ -4,12 +4,10 @@
 # Usage:
 #   ./create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>] [--values <file>]
 #
-# Creates namespace test-<run-id>, applies resource quotas, deploys the Helm
-# chart with test overlays, and waits for the backend to become healthy.
+# Creates namespace test-<run-id>, deploys the Helm chart with test overlays,
+# and waits for the backend to become healthy.
 #
 # Environment variables:
-#   TEST_NAMESPACE_CPU     - ResourceQuota CPU limit (default: 4000m)
-#   TEST_NAMESPACE_MEMORY  - ResourceQuota memory limit (default: 8Gi)
 #   GHCR_DOCKER_CONFIG     - Base64-encoded Docker config for ghcr.io pull secret
 
 set -euo pipefail
@@ -50,9 +48,6 @@ fi
 NAMESPACE="test-${RUN_ID}"
 RELEASE_NAME="ak-${RUN_ID}"
 
-CPU_QUOTA="${TEST_NAMESPACE_CPU:-4000m}"
-MEM_QUOTA="${TEST_NAMESPACE_MEMORY:-8Gi}"
-
 echo "Creating test namespace: ${NAMESPACE}"
 echo "  Backend tag: ${BACKEND_TAG}"
 echo "  Web tag:     ${WEB_TAG}"
@@ -62,26 +57,6 @@ echo "  Web tag:     ${WEB_TAG}"
 # ---------------------------------------------------------------------------
 
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-
-# ---------------------------------------------------------------------------
-# Apply ResourceQuota
-# ---------------------------------------------------------------------------
-
-echo "Applying ResourceQuota (CPU: ${CPU_QUOTA}, Memory: ${MEM_QUOTA})"
-
-kubectl apply -n "$NAMESPACE" -f - <<EOF
-apiVersion: v1
-kind: ResourceQuota
-metadata:
-  name: test-quota
-  namespace: ${NAMESPACE}
-spec:
-  hard:
-    requests.cpu: "${CPU_QUOTA}"
-    requests.memory: "${MEM_QUOTA}"
-    limits.cpu: "${CPU_QUOTA}"
-    limits.memory: "${MEM_QUOTA}"
-EOF
 
 # ---------------------------------------------------------------------------
 # Create image pull secret (if GHCR_DOCKER_CONFIG is set)
