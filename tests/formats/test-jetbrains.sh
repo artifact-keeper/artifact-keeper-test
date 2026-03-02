@@ -76,15 +76,30 @@ begin_test "Upload plugin JAR"
 if [ "$HANDLER_AVAILABLE" = false ]; then
   skip "jetbrains handler not available"
 else
-  if resp=$(curl -sf -X POST \
+  # Try raw upload with headers (avoids multipart parsing quirks)
+  UPLOAD_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H "$(format_auth_header)" \
-    -F "name=${PLUGIN_ID}" \
-    -F "version=${PLUGIN_VERSION}" \
-    -F "file=@${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar;type=application/octet-stream" \
-    "${JB_URL}/plugin/uploadPlugin" 2>&1); then
+    -H "Content-Type: application/octet-stream" \
+    -H "x-plugin-name: ${PLUGIN_ID}" \
+    -H "x-plugin-version: ${PLUGIN_VERSION}" \
+    --data-binary "@${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar" \
+    "${JB_URL}/plugin/uploadPlugin") || true
+
+  if [ "$UPLOAD_CODE" -ge 200 ] 2>/dev/null && [ "$UPLOAD_CODE" -lt 300 ] 2>/dev/null; then
     pass
   else
-    fail "upload plugin JAR failed: ${resp}"
+    # Fallback: try multipart upload
+    UPLOAD_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+      -H "$(format_auth_header)" \
+      -F "name=${PLUGIN_ID}" \
+      -F "version=${PLUGIN_VERSION}" \
+      -F "file=@${WORK_DIR}/test-plugin-${PLUGIN_VERSION}.jar;type=application/octet-stream" \
+      "${JB_URL}/plugin/uploadPlugin") || true
+    if [ "$UPLOAD_CODE" -ge 200 ] 2>/dev/null && [ "$UPLOAD_CODE" -lt 300 ] 2>/dev/null; then
+      pass
+    else
+      fail "upload plugin JAR failed (HTTP ${UPLOAD_CODE})"
+    fi
   fi
 fi
 

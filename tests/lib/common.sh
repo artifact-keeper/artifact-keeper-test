@@ -80,9 +80,12 @@ format_auth_header() {
 # is expected.
 # ---------------------------------------------------------------------------
 
+# All curl calls use --max-time to prevent indefinite hangs in CI.
+CURL_TIMEOUT="--max-time 60 --connect-timeout 10"
+
 api_get() {
   local path="$1"; shift
-  curl -sf -H "$(auth_header)" "$@" "${BASE_URL}${path}"
+  curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"
 }
 
 api_post() {
@@ -90,12 +93,12 @@ api_post() {
   local data="${2:-}"
   shift; shift 2>/dev/null || true
   if [ -n "$data" ]; then
-    curl -sf -X POST \
+    curl -sf $CURL_TIMEOUT -X POST \
       -H "$(auth_header)" \
       -H "Content-Type: application/json" \
       -d "$data" "$@" "${BASE_URL}${path}"
   else
-    curl -sf -X POST \
+    curl -sf $CURL_TIMEOUT -X POST \
       -H "$(auth_header)" "$@" "${BASE_URL}${path}"
   fi
 }
@@ -105,26 +108,26 @@ api_put() {
   local data="${2:-}"
   shift; shift 2>/dev/null || true
   if [ -n "$data" ]; then
-    curl -sf -X PUT \
+    curl -sf $CURL_TIMEOUT -X PUT \
       -H "$(auth_header)" \
       -H "Content-Type: application/json" \
       -d "$data" "$@" "${BASE_URL}${path}"
   else
-    curl -sf -X PUT \
+    curl -sf $CURL_TIMEOUT -X PUT \
       -H "$(auth_header)" "$@" "${BASE_URL}${path}"
   fi
 }
 
 api_delete() {
   local path="$1"; shift
-  curl -sf -X DELETE -H "$(auth_header)" "$@" "${BASE_URL}${path}"
+  curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" "$@" "${BASE_URL}${path}"
 }
 
 api_upload() {
   local path="$1"
   local file="$2"
   local content_type="${3:-application/octet-stream}"
-  curl -sf -X PUT \
+  curl -sf $CURL_TIMEOUT -X PUT \
     -H "$(auth_header)" \
     -H "Content-Type: ${content_type}" \
     --data-binary "@${file}" \

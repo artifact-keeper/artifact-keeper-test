@@ -95,7 +95,7 @@ begin_test "Upload JAR"
 JAR_PATH="${ARTIFACT_BASE}/${ARTIFACT_ID}-${VERSION}.jar"
 ORIG_SHA256=$(shasum -a 256 "$JAR_FILE" | awk '{print $1}')
 
-if curl -sf -X PUT "${MAVEN_URL}/${JAR_PATH}" \
+if curl -sf $CURL_TIMEOUT -X PUT "${MAVEN_URL}/${JAR_PATH}" \
   -u "${ADMIN_USER}:${ADMIN_PASS}" \
   -H "Content-Type: application/java-archive" \
   --data-binary "@${JAR_FILE}" > /dev/null 2>&1; then
@@ -111,7 +111,7 @@ fi
 begin_test "Upload POM"
 
 POM_PATH="${ARTIFACT_BASE}/${ARTIFACT_ID}-${VERSION}.pom"
-if curl -sf -X PUT "${MAVEN_URL}/${POM_PATH}" \
+if curl -sf $CURL_TIMEOUT -X PUT "${MAVEN_URL}/${POM_PATH}" \
   -u "${ADMIN_USER}:${ADMIN_PASS}" \
   -H "Content-Type: application/xml" \
   --data-binary "@${POM_FILE}" > /dev/null 2>&1; then
@@ -127,7 +127,7 @@ fi
 begin_test "Verify maven-metadata.xml"
 sleep 1
 METADATA_PATH="${GROUP_PATH}/${ARTIFACT_ID}/maven-metadata.xml"
-if resp=$(curl -sf "${MAVEN_URL}/${METADATA_PATH}" -u "${ADMIN_USER}:${ADMIN_PASS}"); then
+if resp=$(curl -sf $CURL_TIMEOUT "${MAVEN_URL}/${METADATA_PATH}" -u "${ADMIN_USER}:${ADMIN_PASS}"); then
   if assert_contains "$resp" "$VERSION" "metadata should list the uploaded version"; then
     pass
   fi
@@ -142,7 +142,7 @@ fi
 
 begin_test "Download JAR and verify checksum"
 DL_FILE="${WORK_DIR}/downloaded.jar"
-if curl -sf -u "${ADMIN_USER}:${ADMIN_PASS}" -o "$DL_FILE" "${MAVEN_URL}/${JAR_PATH}"; then
+if curl -sf $CURL_TIMEOUT -u "${ADMIN_USER}:${ADMIN_PASS}" -o "$DL_FILE" "${MAVEN_URL}/${JAR_PATH}"; then
   DL_SHA256=$(shasum -a 256 "$DL_FILE" | awk '{print $1}')
   if assert_eq "$DL_SHA256" "$ORIG_SHA256" "SHA256 mismatch after round-trip"; then
     pass

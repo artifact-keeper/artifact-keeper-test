@@ -100,7 +100,7 @@ fi
 begin_test "Upload ivy.xml"
 
 IVY_PATH="${IVY_BASE}/ivys/ivy.xml"
-if curl -sf -X PUT "${IVY_URL}/${IVY_PATH}" \
+if curl -sf $CURL_TIMEOUT -X PUT "${IVY_URL}/${IVY_PATH}" \
   -H "$(format_auth_header)" \
   -H "Content-Type: application/xml" \
   --data-binary "@${WORK_DIR}/ivy.xml" > /dev/null 2>&1; then
@@ -116,7 +116,7 @@ fi
 begin_test "Upload JAR"
 
 JAR_PATH="${IVY_BASE}/jars/${MODULE_NAME}_${SCALA_VERSION}-${VERSION}.jar"
-if curl -sf -X PUT "${IVY_URL}/${JAR_PATH}" \
+if curl -sf $CURL_TIMEOUT -X PUT "${IVY_URL}/${JAR_PATH}" \
   -H "$(format_auth_header)" \
   -H "Content-Type: application/java-archive" \
   --data-binary "@${JAR_FILE}" > /dev/null 2>&1; then
@@ -131,7 +131,7 @@ fi
 
 begin_test "Verify ivy.xml exists (HEAD)"
 sleep 1
-STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X HEAD \
+STATUS=$(curl -s $CURL_TIMEOUT -o /dev/null -w '%{http_code}' -X HEAD \
   -H "$(format_auth_header)" "${IVY_URL}/${IVY_PATH}") || true
 if [ "$STATUS" -ge 200 ] 2>/dev/null && [ "$STATUS" -lt 300 ] 2>/dev/null; then
   pass
@@ -144,7 +144,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Download ivy.xml"
-if resp=$(curl -sf "${IVY_URL}/${IVY_PATH}" -H "$(format_auth_header)"); then
+if resp=$(curl -sf $CURL_TIMEOUT "${IVY_URL}/${IVY_PATH}" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$ORG" "ivy.xml should contain organisation"; then
     if assert_contains "$resp" "$MODULE_NAME" "ivy.xml should contain module name"; then
       if assert_contains "$resp" "$VERSION" "ivy.xml should contain revision"; then
@@ -162,7 +162,7 @@ fi
 
 begin_test "Download JAR"
 DL_FILE="${WORK_DIR}/downloaded.jar"
-if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" "${IVY_URL}/${JAR_PATH}"; then
+if curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" -o "$DL_FILE" "${IVY_URL}/${JAR_PATH}"; then
   DL_SIZE=$(wc -c < "$DL_FILE" | tr -d ' ')
   ORIG_SIZE=$(wc -c < "$JAR_FILE" | tr -d ' ')
   if assert_eq "$DL_SIZE" "$ORIG_SIZE" "downloaded JAR size should match original"; then
@@ -193,7 +193,7 @@ zip -r "$SOURCES_JAR" com/ > /dev/null 2>&1
 SRCS_PATH="${IVY_BASE}/srcs/${MODULE_NAME}_${SCALA_VERSION}-${VERSION}-sources.jar"
 
 UPLOAD_OK=true
-if ! curl -sf -X PUT "${IVY_URL}/${SRCS_PATH}" \
+if ! curl -sf $CURL_TIMEOUT -X PUT "${IVY_URL}/${SRCS_PATH}" \
   -H "$(format_auth_header)" \
   -H "Content-Type: application/java-archive" \
   --data-binary "@${SOURCES_JAR}" > /dev/null 2>&1; then
@@ -202,7 +202,7 @@ fi
 
 if [ "$UPLOAD_OK" = true ]; then
   DL_SRCS="${WORK_DIR}/downloaded-sources.jar"
-  if curl -sf -H "$(format_auth_header)" -o "$DL_SRCS" "${IVY_URL}/${SRCS_PATH}"; then
+  if curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" -o "$DL_SRCS" "${IVY_URL}/${SRCS_PATH}"; then
     DL_SIZE=$(wc -c < "$DL_SRCS" | tr -d ' ')
     ORIG_SIZE=$(wc -c < "$SOURCES_JAR" | tr -d ' ')
     if assert_eq "$DL_SIZE" "$ORIG_SIZE" "sources JAR size should match"; then
