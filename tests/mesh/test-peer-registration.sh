@@ -24,33 +24,33 @@ auth_admin
 # ---------------------------------------------------------------------------
 
 begin_test "Register peer1 on main instance"
-PEER1_PAYLOAD="{\"name\":\"peer1-${RUN_ID}\",\"url\":\"${PEER1_URL}\",\"enabled\":true}"
-if resp=$(api_post "/api/v1/mesh/peers" "$PEER1_PAYLOAD"); then
+PEER1_PAYLOAD="{\"name\":\"peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"mesh-test-key\"}"
+if resp=$(api_post "/api/v1/peers" "$PEER1_PAYLOAD"); then
   if assert_contains "$resp" "peer1" "response should contain peer name"; then
     pass
   fi
 else
-  fail "POST /api/v1/mesh/peers failed for peer1"
+  fail "POST /api/v1/peers failed for peer1"
 fi
 
 begin_test "Register peer2 on main instance"
-PEER2_PAYLOAD="{\"name\":\"peer2-${RUN_ID}\",\"url\":\"${PEER2_URL}\",\"enabled\":true}"
-if resp=$(api_post "/api/v1/mesh/peers" "$PEER2_PAYLOAD"); then
+PEER2_PAYLOAD="{\"name\":\"peer2-${RUN_ID}\",\"endpoint_url\":\"${PEER2_URL}\",\"api_key\":\"mesh-test-key\"}"
+if resp=$(api_post "/api/v1/peers" "$PEER2_PAYLOAD"); then
   if assert_contains "$resp" "peer2" "response should contain peer name"; then
     pass
   fi
 else
-  fail "POST /api/v1/mesh/peers failed for peer2"
+  fail "POST /api/v1/peers failed for peer2"
 fi
 
 begin_test "Register peer3 on main instance"
-PEER3_PAYLOAD="{\"name\":\"peer3-${RUN_ID}\",\"url\":\"${PEER3_URL}\",\"enabled\":true}"
-if resp=$(api_post "/api/v1/mesh/peers" "$PEER3_PAYLOAD"); then
+PEER3_PAYLOAD="{\"name\":\"peer3-${RUN_ID}\",\"endpoint_url\":\"${PEER3_URL}\",\"api_key\":\"mesh-test-key\"}"
+if resp=$(api_post "/api/v1/peers" "$PEER3_PAYLOAD"); then
   if assert_contains "$resp" "peer3" "response should contain peer name"; then
     pass
   fi
 else
-  fail "POST /api/v1/mesh/peers failed for peer3"
+  fail "POST /api/v1/peers failed for peer3"
 fi
 
 # ---------------------------------------------------------------------------
@@ -58,14 +58,14 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "List peers on main instance"
-if resp=$(api_get "/api/v1/mesh/peers"); then
+if resp=$(api_get "/api/v1/peers"); then
   if assert_contains "$resp" "peer1" "peer list should contain peer1" && \
      assert_contains "$resp" "peer2" "peer list should contain peer2" && \
      assert_contains "$resp" "peer3" "peer list should contain peer3"; then
     pass
   fi
 else
-  fail "GET /api/v1/mesh/peers failed"
+  fail "GET /api/v1/peers failed"
 fi
 
 # ---------------------------------------------------------------------------
@@ -80,12 +80,12 @@ if [ -z "$PEER1_ID" ]; then
 fi
 
 if [ -n "$PEER1_ID" ]; then
-  if detail=$(api_get "/api/v1/mesh/peers/${PEER1_ID}"); then
+  if detail=$(api_get "/api/v1/peers/${PEER1_ID}"); then
     if assert_contains "$detail" "$PEER1_URL" "peer detail should contain URL"; then
       pass
     fi
   else
-    fail "GET /api/v1/mesh/peers/${PEER1_ID} failed"
+    fail "GET /api/v1/peers/${PEER1_ID} failed"
   fi
 else
   skip "could not extract peer1 ID from response"
@@ -102,8 +102,8 @@ ORIG_TOKEN="$ADMIN_TOKEN"
 export BASE_URL="$PEER1_URL"
 auth_admin
 
-MAIN_PAYLOAD="{\"name\":\"main-${RUN_ID}\",\"url\":\"${ORIG_BASE_URL}\",\"enabled\":true}"
-if resp=$(api_post "/api/v1/mesh/peers" "$MAIN_PAYLOAD"); then
+MAIN_PAYLOAD="{\"name\":\"main-${RUN_ID}\",\"endpoint_url\":\"${ORIG_BASE_URL}\",\"api_key\":\"mesh-test-key\"}"
+if resp=$(api_post "/api/v1/peers" "$MAIN_PAYLOAD"); then
   if assert_contains "$resp" "main" "response should contain main peer name"; then
     pass
   fi

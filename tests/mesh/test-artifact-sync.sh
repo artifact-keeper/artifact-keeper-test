@@ -49,12 +49,12 @@ export ADMIN_TOKEN="$ORIG_TOKEN"
 
 begin_test "Register peer and create push sync policy"
 # Register peer1 (may already exist)
-PEER1_PAYLOAD="{\"name\":\"sync-peer1-${RUN_ID}\",\"url\":\"${PEER1_URL}\",\"enabled\":true}"
-api_post "/api/v1/mesh/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
+PEER1_PAYLOAD="{\"name\":\"sync-peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"mesh-test-key\"}"
+api_post "/api/v1/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
 
 # Create push sync policy
-POLICY="{\"name\":\"sync-artifacts-${RUN_ID}\",\"source_repo\":\"${REPO_KEY}\",\"target_peer\":\"sync-peer1-${RUN_ID}\",\"target_repo\":\"${REPO_KEY}\",\"sync_mode\":\"push\",\"enabled\":true}"
-if api_post "/api/v1/mesh/sync-policies" "$POLICY" > /dev/null 2>&1; then
+POLICY="{\"name\":\"sync-artifacts-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"push\",\"enabled\":true}"
+if api_post "/api/v1/sync-policies" "$POLICY" > /dev/null 2>&1; then
   pass
 else
   fail "could not create sync policy"

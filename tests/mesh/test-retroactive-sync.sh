@@ -75,11 +75,11 @@ export ADMIN_TOKEN="$ORIG_TOKEN"
 # ---------------------------------------------------------------------------
 
 begin_test "Register peer and create sync policy"
-PEER1_PAYLOAD="{\"name\":\"retro-peer1-${RUN_ID}\",\"url\":\"${PEER1_URL}\",\"enabled\":true}"
-api_post "/api/v1/mesh/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
+PEER1_PAYLOAD="{\"name\":\"retro-peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"mesh-test-key\"}"
+api_post "/api/v1/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
 
-POLICY="{\"name\":\"retro-sync-${RUN_ID}\",\"source_repo\":\"${REPO_KEY}\",\"target_peer\":\"retro-peer1-${RUN_ID}\",\"target_repo\":\"${REPO_KEY}\",\"sync_mode\":\"push\",\"enabled\":true}"
-if api_post "/api/v1/mesh/sync-policies" "$POLICY" > /dev/null 2>&1; then
+POLICY="{\"name\":\"retro-sync-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"push\",\"enabled\":true}"
+if api_post "/api/v1/sync-policies" "$POLICY" > /dev/null 2>&1; then
   pass
 else
   fail "could not create sync policy"
@@ -90,13 +90,13 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Trigger retroactive sync"
-# Some implementations auto-sync on policy creation, others need a trigger
-if api_post "/api/v1/mesh/sync-policies/trigger" "{\"repo\":\"${REPO_KEY}\"}" > /dev/null 2>&1; then
-  pass
-else
-  # Trigger endpoint may not exist; policy creation may auto-trigger
-  pass
+# Policy creation should auto-trigger sync for pre-existing artifacts.
+# If a peer ID is available, explicitly trigger sync as a fallback.
+PEER1_ID=$(api_get "/api/v1/peers" 2>/dev/null | jq -r '[.[] // .items[]?] | map(select(.name | contains("retro-peer1"))) | .[0].id // empty' 2>/dev/null || true)
+if [ -n "$PEER1_ID" ]; then
+  api_post "/api/v1/peers/${PEER1_ID}/sync" "" > /dev/null 2>&1 || true
 fi
+pass
 
 # ---------------------------------------------------------------------------
 # Wait for pre-existing artifacts to appear on peer1
