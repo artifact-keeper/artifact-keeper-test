@@ -19,6 +19,14 @@ on:
         options:
           - all
           - formats
+          - repos
+          - promotion
+          - rbac
+          - lifecycle
+          - webhooks
+          - search
+          - platform
+          - auth
           - stress
           - resilience
           - mesh
@@ -271,6 +279,246 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
+  # Repository type tests (virtual, remote, CRUD, labels)
+  # -------------------------------------------------------------------
+  repo-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'repos'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run repo type tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite repos --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-repos
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Promotion tests
+  # -------------------------------------------------------------------
+  promotion-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'promotion'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run promotion tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite promotion --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-promotion
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # RBAC tests
+  # -------------------------------------------------------------------
+  rbac-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'rbac'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run RBAC tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite rbac --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-rbac
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Lifecycle tests
+  # -------------------------------------------------------------------
+  lifecycle-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'lifecycle'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run lifecycle tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite lifecycle --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-lifecycle
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Webhook tests
+  # -------------------------------------------------------------------
+  webhook-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'webhooks'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run webhook tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite webhooks --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-webhooks
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Search tests
+  # -------------------------------------------------------------------
+  search-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'search'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run search tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite search --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-search
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Platform tests (signing, SBOM, curation, labels, audit, backup)
+  # -------------------------------------------------------------------
+  platform-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'platform'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run platform tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite platform --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-platform
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Auth tests (tokens, TOTP, rate limiting)
+  # -------------------------------------------------------------------
+  auth-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'auth'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run auth tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite auth --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-auth
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
   # Stress tests (after formats + security pass)
   # -------------------------------------------------------------------
   stress-tests:
@@ -438,7 +686,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [deploy, format-tests, security-tests, compatibility-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [deploy, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
     runs-on: ak-e2e-runners
     steps:
@@ -457,10 +705,18 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in format-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
             status="skipped"
             case "$job" in
               format-tests) status="${{ needs.format-tests.result }}" ;;
+              repo-tests) status="${{ needs.repo-tests.result }}" ;;
+              promotion-tests) status="${{ needs.promotion-tests.result }}" ;;
+              rbac-tests) status="${{ needs.rbac-tests.result }}" ;;
+              lifecycle-tests) status="${{ needs.lifecycle-tests.result }}" ;;
+              webhook-tests) status="${{ needs.webhook-tests.result }}" ;;
+              search-tests) status="${{ needs.search-tests.result }}" ;;
+              platform-tests) status="${{ needs.platform-tests.result }}" ;;
+              auth-tests) status="${{ needs.auth-tests.result }}" ;;
               security-tests) status="${{ needs.security-tests.result }}" ;;
               compatibility-tests) status="${{ needs.compatibility-tests.result }}" ;;
               stress-tests) status="${{ needs.stress-tests.result }}" ;;
