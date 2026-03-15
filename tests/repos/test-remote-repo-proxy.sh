@@ -55,7 +55,7 @@ sleep 2
 
 begin_test "Fetch artifact via remote proxy"
 if resp=$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts" 2>/dev/null); then
-  if assert_contains "$resp" "artifact"; then
+  if [[ "$resp" == *"artifact"* ]]; then
     pass
   else
     skip "remote proxy did not auto-cache artifact on creation"

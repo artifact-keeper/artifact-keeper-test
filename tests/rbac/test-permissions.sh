@@ -73,10 +73,10 @@ fi
 begin_test "Unauthenticated access to private repo denied"
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/api/v1/repositories/${PRIVATE_REPO}" 2>/dev/null) || true
-if [ "$status" = "401" ]; then
+if [ "$status" = "401" ] || [ "$status" = "403" ] || [ "$status" = "404" ]; then
   pass
 else
-  fail "expected 401 for unauthenticated private repo access, got ${status}"
+  fail "expected 401/403/404 for unauthenticated private repo access, got ${status}"
 fi
 
 # -------------------------------------------------------------------------

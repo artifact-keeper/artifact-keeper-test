@@ -43,6 +43,21 @@ _JUNIT_CASES=""
 ADMIN_TOKEN=""
 
 auth_admin() {
+  # Wait for backend readiness (handles parallel suite load bursts)
+  local _ready=false
+  for _i in $(seq 1 15); do
+    if curl -sf --max-time 5 "${BASE_URL}/readyz" >/dev/null 2>&1 || \
+       curl -sf --max-time 5 "${BASE_URL}/health" >/dev/null 2>&1; then
+      _ready=true
+      break
+    fi
+    sleep 2
+  done
+  if ! $_ready; then
+    echo "FATAL: backend not ready at ${BASE_URL} after 30s"
+    exit 1
+  fi
+
   local resp
   if ! resp=$(curl -sf -X POST "${BASE_URL}/api/v1/auth/login" \
     -H "Content-Type: application/json" \

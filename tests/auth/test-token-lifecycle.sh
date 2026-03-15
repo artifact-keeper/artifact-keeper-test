@@ -14,6 +14,11 @@ setup_workdir
 # -------------------------------------------------------------------------
 
 begin_test "Login returns access token"
+# Wait for backend readiness (may be under load from parallel suites)
+for _i in $(seq 1 10); do
+  curl -sf $CURL_TIMEOUT "${BASE_URL}/readyz" >/dev/null 2>&1 && break
+  sleep 2
+done
 if resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null); then
