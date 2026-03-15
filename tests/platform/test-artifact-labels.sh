@@ -30,10 +30,10 @@ if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); the
 fi
 if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" != "null" ]; then
   if api_put "/api/v1/artifacts/${ARTIFACT_ID}/labels" \
-      '{"labels":{"release":"candidate","build":"123"}}' > /dev/null 2>&1; then
+      '{"labels":[{"key":"release","value":"candidate"},{"key":"build","value":"123"}]}' > /dev/null 2>&1; then
     pass
   elif api_post "/api/v1/artifacts/${ARTIFACT_ID}/labels" \
-      '{"labels":{"release":"candidate","build":"123"}}' > /dev/null 2>&1; then
+      '{"labels":[{"key":"release","value":"candidate"},{"key":"build","value":"123"}]}' > /dev/null 2>&1; then
     pass
   else
     skip "artifact labels not available"

@@ -21,7 +21,7 @@ TEST_EMAIL="e2e-${RUN_ID}@test.local"
 begin_test "Create user"
 if resp=$(api_post "/api/v1/users" \
     "{\"username\":\"${TEST_USER}\",\"password\":\"${TEST_PASS}\",\"email\":\"${TEST_EMAIL}\",\"display_name\":\"E2E Test User\"}" 2>/dev/null); then
-  USER_ID=$(echo "$resp" | jq -r '.id // .user_id // empty') || true
+  USER_ID=$(echo "$resp" | jq -r '.user.id // .id // .user_id // empty') || true
   pass
 else
   fail "could not create user"
