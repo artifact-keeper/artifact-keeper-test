@@ -26,10 +26,10 @@ fi
 
 begin_test "Set labels on repository"
 if api_put "/api/v1/repositories/${REPO_KEY}/labels" \
-    '{"labels":{"env":"staging","team":"platform"}}' > /dev/null 2>&1; then
+    '{"labels":[{"key":"env","value":"staging"},{"key":"team","value":"platform"}]}' > /dev/null 2>&1; then
   pass
 elif api_post "/api/v1/repositories/${REPO_KEY}/labels" \
-    '{"labels":{"env":"staging","team":"platform"}}' > /dev/null 2>&1; then
+    '{"labels":[{"key":"env","value":"staging"},{"key":"team","value":"platform"}]}' > /dev/null 2>&1; then
   pass
 else
   skip "repository labels endpoint not available"
@@ -58,7 +58,7 @@ fi
 
 begin_test "Update labels"
 if api_put "/api/v1/repositories/${REPO_KEY}/labels" \
-    '{"labels":{"env":"production","team":"platform","tier":"critical"}}' > /dev/null 2>&1; then
+    '{"labels":[{"key":"env","value":"production"},{"key":"team","value":"platform"},{"key":"tier","value":"critical"}]}' > /dev/null 2>&1; then
   resp=$(api_get "/api/v1/repositories/${REPO_KEY}/labels" 2>/dev/null) || \
     resp=$(api_get "/api/v1/repositories/${REPO_KEY}" 2>/dev/null) || true
   if [ -n "$resp" ] && assert_contains "$resp" "production"; then

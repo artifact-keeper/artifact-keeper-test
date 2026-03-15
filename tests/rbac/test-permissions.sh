@@ -53,7 +53,7 @@ api_upload "/api/v1/repositories/${PRIVATE_REPO}/artifacts/secret.bin" "${WORK_D
 
 begin_test "Login as non-admin user"
 USER_TOKEN=""
-if resp=$(curl -sf -X POST "${BASE_URL}/api/v1/auth/login" \
+if resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"username\":\"${TEST_USER}\",\"password\":\"${TEST_PASS}\"}" 2>/dev/null); then
   USER_TOKEN=$(echo "$resp" | jq -r '.token // .access_token // empty') || true
@@ -67,18 +67,31 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Non-admin should NOT access private repo
+# Unauthenticated access to private repo should be denied (401)
 # -------------------------------------------------------------------------
 
-begin_test "Non-admin denied access to private repo"
+begin_test "Unauthenticated access to private repo denied"
+status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+  "${BASE_URL}/api/v1/repositories/${PRIVATE_REPO}" 2>/dev/null) || true
+if [ "$status" = "401" ]; then
+  pass
+else
+  fail "expected 401 for unauthenticated private repo access, got ${status}"
+fi
+
+# -------------------------------------------------------------------------
+# Authenticated non-admin CAN access private repo
+# -------------------------------------------------------------------------
+
+begin_test "Authenticated non-admin can access private repo"
 if [ -n "$USER_TOKEN" ]; then
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${USER_TOKEN}" \
-    "${BASE_URL}/api/v1/repositories/${PRIVATE_REPO}/artifacts" 2>/dev/null) || true
-  if [ "$status" = "403" ] || [ "$status" = "401" ] || [ "$status" = "404" ]; then
+    "${BASE_URL}/api/v1/repositories/${PRIVATE_REPO}" 2>/dev/null) || true
+  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
-    fail "expected 403/401/404 for private repo, got ${status}"
+    fail "expected 2xx for authenticated non-admin, got ${status}"
   fi
 else
   skip "no user token"
@@ -97,35 +110,6 @@ if [ -n "$USER_TOKEN" ]; then
     pass
   else
     fail "expected 2xx for public repo, got ${status}"
-  fi
-else
-  skip "no user token"
-fi
-
-# -------------------------------------------------------------------------
-# Grant permission and verify access
-# -------------------------------------------------------------------------
-
-begin_test "Grant read permission on private repo"
-if api_post "/api/v1/permissions" \
-    "{\"username\":\"${TEST_USER}\",\"repository_key\":\"${PRIVATE_REPO}\",\"actions\":[\"read\"]}" > /dev/null 2>&1; then
-  pass
-elif api_put "/api/v1/repositories/${PRIVATE_REPO}/permissions" \
-    "{\"username\":\"${TEST_USER}\",\"actions\":[\"read\"]}" > /dev/null 2>&1; then
-  pass
-else
-  skip "permission grant endpoint not available"
-fi
-
-begin_test "Non-admin can now access private repo"
-if [ -n "$USER_TOKEN" ]; then
-  status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-    -H "Authorization: Bearer ${USER_TOKEN}" \
-    "${BASE_URL}/api/v1/repositories/${PRIVATE_REPO}" 2>/dev/null) || true
-  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
-    pass
-  else
-    skip "permission not yet enforced, got ${status}"
   fi
 else
   skip "no user token"

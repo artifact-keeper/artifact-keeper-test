@@ -15,11 +15,24 @@ STAGING_KEY="test-promorules-staging-${RUN_ID}"
 RELEASE_KEY="test-promorules-release-${RUN_ID}"
 
 begin_test "Create staging and release repos"
-if create_local_repo "$STAGING_KEY" "generic" && \
-   create_local_repo "$RELEASE_KEY" "generic"; then
+if create_repo "$STAGING_KEY" "generic" "staging" && \
+   create_repo "$RELEASE_KEY" "generic" "local"; then
   pass
 else
   fail "could not create repos"
+fi
+
+# -------------------------------------------------------------------------
+# Get repo UUIDs for rule creation
+# -------------------------------------------------------------------------
+
+SOURCE_ID=""
+TARGET_ID=""
+if resp=$(api_get "/api/v1/repositories/${STAGING_KEY}" 2>/dev/null); then
+  SOURCE_ID=$(echo "$resp" | jq -r '.id') || true
+fi
+if resp=$(api_get "/api/v1/repositories/${RELEASE_KEY}" 2>/dev/null); then
+  TARGET_ID=$(echo "$resp" | jq -r '.id') || true
 fi
 
 # -------------------------------------------------------------------------
@@ -29,10 +42,9 @@ fi
 begin_test "Create auto-promotion rule"
 RULE_PAYLOAD='{
   "name": "auto-promote-'"${RUN_ID}"'",
-  "source_repo": "'"${STAGING_KEY}"'",
-  "target_repo": "'"${RELEASE_KEY}"'",
-  "criteria": {"min_age_hours": 0},
-  "enabled": true
+  "source_repo_id": "'"${SOURCE_ID}"'",
+  "target_repo_id": "'"${TARGET_ID}"'",
+  "is_enabled": true
 }'
 if resp=$(api_post "/api/v1/promotion-rules" "$RULE_PAYLOAD" 2>/dev/null); then
   RULE_ID=$(echo "$resp" | jq -r '.id // empty') || true

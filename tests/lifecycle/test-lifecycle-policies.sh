@@ -15,10 +15,20 @@ REPO_KEY="test-lifecycle-${RUN_ID}"
 POLICY_NAME="cleanup-${RUN_ID}"
 
 begin_test "Create repo"
-if create_local_repo "$REPO_KEY" "generic"; then
+REPO_ID=""
+if resp=$(api_post "/api/v1/repositories" \
+    "{\"key\":\"${REPO_KEY}\",\"name\":\"${REPO_KEY}\",\"format\":\"generic\",\"repo_type\":\"local\",\"is_public\":true}" 2>/dev/null); then
+  REPO_ID=$(echo "$resp" | jq -r '.id // empty') || true
   pass
 else
   fail "could not create repo"
+fi
+
+# If we did not capture the repo ID from creation, fetch it
+if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
+  if resp=$(api_get "/api/v1/repositories/${REPO_KEY}" 2>/dev/null); then
+    REPO_ID=$(echo "$resp" | jq -r '.id // empty') || true
+  fi
 fi
 
 # Upload some artifacts
@@ -33,20 +43,25 @@ done
 # -------------------------------------------------------------------------
 
 begin_test "Create lifecycle policy"
-POLICY_PAYLOAD='{
-  "name": "'"${POLICY_NAME}"'",
-  "repository_key": "'"${REPO_KEY}"'",
-  "rules": [{"type": "max_count", "value": 1}],
-  "enabled": true
-}'
-if resp=$(api_post "/api/v1/admin/lifecycle" "$POLICY_PAYLOAD" 2>/dev/null); then
-  POLICY_ID=$(echo "$resp" | jq -r '.id // empty') || true
-  pass
-elif resp=$(api_post "/api/v1/admin/lifecycle/policies" "$POLICY_PAYLOAD" 2>/dev/null); then
-  POLICY_ID=$(echo "$resp" | jq -r '.id // empty') || true
-  pass
+if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
+  skip "no repository ID available for lifecycle policy"
 else
-  skip "lifecycle policy endpoint not available"
+  POLICY_PAYLOAD='{
+    "name": "'"${POLICY_NAME}"'",
+    "repository_id": "'"${REPO_ID}"'",
+    "policy_type": "max_versions",
+    "config": {"max_versions": 1},
+    "priority": 10
+  }'
+  if resp=$(api_post "/api/v1/admin/lifecycle" "$POLICY_PAYLOAD" 2>/dev/null); then
+    POLICY_ID=$(echo "$resp" | jq -r '.id // empty') || true
+    pass
+  elif resp=$(api_post "/api/v1/admin/lifecycle/policies" "$POLICY_PAYLOAD" 2>/dev/null); then
+    POLICY_ID=$(echo "$resp" | jq -r '.id // empty') || true
+    pass
+  else
+    skip "lifecycle policy endpoint not available"
+  fi
 fi
 
 # -------------------------------------------------------------------------

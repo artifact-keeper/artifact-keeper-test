@@ -37,7 +37,7 @@ if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); the
 fi
 
 if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" != "null" ]; then
-  if resp=$(api_post "/api/v1/sbom/generate" \
+  if resp=$(api_post "/api/v1/sbom" \
       "{\"artifact_id\":\"${ARTIFACT_ID}\",\"format\":\"cyclonedx\"}" 2>/dev/null); then
     pass
   else

@@ -14,7 +14,7 @@ setup_workdir
 # -------------------------------------------------------------------------
 
 begin_test "Login returns access token"
-if resp=$(curl -sf -X POST "${BASE_URL}/api/v1/auth/login" \
+if resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null); then
   ACCESS_TOKEN=$(echo "$resp" | jq -r '.token // .access_token // empty') || true
@@ -52,7 +52,7 @@ fi
 
 begin_test "Refresh token"
 if [ -n "${REFRESH_TOKEN:-}" ] && [ "$REFRESH_TOKEN" != "null" ]; then
-  if resp=$(curl -sf -X POST "${BASE_URL}/api/v1/auth/refresh" \
+  if resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/refresh" \
       -H "Content-Type: application/json" \
       -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" 2>/dev/null); then
     new_token=$(echo "$resp" | jq -r '.token // .access_token // empty') || true
@@ -75,7 +75,7 @@ fi
 
 begin_test "Logout invalidates token"
 if [ -n "${ACCESS_TOKEN:-}" ]; then
-  curl -sf -X POST "${BASE_URL}/api/v1/auth/logout" \
+  curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/logout" \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" > /dev/null 2>&1 || true
   # After logout, token should be rejected
   sleep 1

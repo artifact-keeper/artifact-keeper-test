@@ -14,8 +14,8 @@ STAGING_KEY="test-bulk-staging-${RUN_ID}"
 RELEASE_KEY="test-bulk-release-${RUN_ID}"
 
 begin_test "Create repos"
-if create_local_repo "$STAGING_KEY" "generic" && \
-   create_local_repo "$RELEASE_KEY" "generic"; then
+if create_repo "$STAGING_KEY" "generic" "staging" && \
+   create_repo "$RELEASE_KEY" "generic" "local"; then
   pass
 else
   fail "could not create repos"
@@ -70,10 +70,8 @@ fi
 
 begin_test "Bulk promote all artifacts"
 if [ "$(echo "$ARTIFACT_IDS" | jq 'length')" -gt 0 ] 2>/dev/null; then
-  BULK_PAYLOAD="{\"source_repo\":\"${STAGING_KEY}\",\"target_repo\":\"${RELEASE_KEY}\",\"artifact_ids\":${ARTIFACT_IDS}}"
-  if api_post "/api/v1/promotion/promote" "$BULK_PAYLOAD" > /dev/null 2>&1; then
-    pass
-  elif api_post "/api/v1/promotion" "$BULK_PAYLOAD" > /dev/null 2>&1; then
+  BULK_PAYLOAD="{\"target_repository\":\"${RELEASE_KEY}\",\"artifact_ids\":${ARTIFACT_IDS}}"
+  if api_post "/api/v1/promotion/repositories/${STAGING_KEY}/promote" "$BULK_PAYLOAD" > /dev/null 2>&1; then
     pass
   else
     fail "bulk promotion failed"

@@ -20,14 +20,14 @@ RELEASE_KEY="test-promo-release-${RUN_ID}"
 # -------------------------------------------------------------------------
 
 begin_test "Create staging repo"
-if create_local_repo "$STAGING_KEY" "generic"; then
+if create_repo "$STAGING_KEY" "generic" "staging"; then
   pass
 else
   fail "could not create staging repo"
 fi
 
 begin_test "Create release repo"
-if create_local_repo "$RELEASE_KEY" "generic"; then
+if create_repo "$RELEASE_KEY" "generic" "local"; then
   pass
 else
   fail "could not create release repo"
@@ -77,10 +77,8 @@ begin_test "Promote artifact from staging to release"
 if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
   skip "no artifact ID available"
 else
-  PROMO_PAYLOAD="{\"source_repo\":\"${STAGING_KEY}\",\"target_repo\":\"${RELEASE_KEY}\",\"artifact_ids\":[\"${ARTIFACT_ID}\"]}"
-  if api_post "/api/v1/promotion/promote" "$PROMO_PAYLOAD" > /dev/null 2>&1; then
-    pass
-  elif api_post "/api/v1/promotion" "$PROMO_PAYLOAD" > /dev/null 2>&1; then
+  PROMO_PAYLOAD="{\"target_repository\":\"${RELEASE_KEY}\"}"
+  if api_post "/api/v1/promotion/repositories/${STAGING_KEY}/artifacts/${ARTIFACT_ID}/promote" "$PROMO_PAYLOAD" > /dev/null 2>&1; then
     pass
   else
     fail "promotion request failed"
@@ -107,11 +105,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify promotion history"
-if resp=$(api_get "/api/v1/promotion/history?source_repo=${STAGING_KEY}" 2>/dev/null); then
-  if assert_contains "$resp" "$RELEASE_KEY"; then
-    pass
-  fi
-elif resp=$(api_get "/api/v1/promotion?source_repo=${STAGING_KEY}" 2>/dev/null); then
+if resp=$(api_get "/api/v1/promotion/repositories/${STAGING_KEY}/promotion-history" 2>/dev/null); then
   if assert_contains "$resp" "$RELEASE_KEY"; then
     pass
   fi

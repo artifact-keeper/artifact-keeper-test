@@ -13,11 +13,7 @@ KEY_NAME="e2e-signing-key-${RUN_ID}"
 
 begin_test "Create signing key"
 if resp=$(api_post "/api/v1/signing/keys" \
-    "{\"name\":\"${KEY_NAME}\",\"type\":\"rsa\",\"key_size\":2048}" 2>/dev/null); then
-  KEY_ID=$(echo "$resp" | jq -r '.id // .key_id // empty') || true
-  pass
-elif resp=$(api_post "/api/v1/signing" \
-    "{\"name\":\"${KEY_NAME}\",\"type\":\"rsa\"}" 2>/dev/null); then
+    "{\"name\":\"${KEY_NAME}\",\"key_type\":\"rsa\",\"algorithm\":\"rsa4096\"}" 2>/dev/null); then
   KEY_ID=$(echo "$resp" | jq -r '.id // .key_id // empty') || true
   pass
 else
@@ -26,11 +22,13 @@ fi
 
 begin_test "List signing keys"
 if resp=$(api_get "/api/v1/signing/keys" 2>/dev/null); then
-  if assert_contains "$resp" "$KEY_NAME"; then
-    pass
+  # Response may have .keys array or be a top-level array
+  if echo "$resp" | jq -e '.keys' > /dev/null 2>&1; then
+    keys_json=$(echo "$resp" | jq -r '.keys')
+  else
+    keys_json="$resp"
   fi
-elif resp=$(api_get "/api/v1/signing" 2>/dev/null); then
-  if assert_contains "$resp" "$KEY_NAME"; then
+  if assert_contains "$keys_json" "$KEY_NAME"; then
     pass
   fi
 else
@@ -39,10 +37,14 @@ fi
 
 begin_test "Get public key"
 if [ -n "${KEY_ID:-}" ] && [ "$KEY_ID" != "null" ]; then
-  if resp=$(api_get "/api/v1/signing/keys/${KEY_ID}/public" 2>/dev/null); then
+  # Public key endpoint returns raw PEM, not JSON
+  status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/signing/keys/${KEY_ID}/public" 2>/dev/null) || true
+  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
-    skip "public key endpoint not available"
+    skip "public key endpoint not available (HTTP ${status})"
   fi
 else
   skip "no key ID"

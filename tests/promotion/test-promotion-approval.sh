@@ -15,8 +15,8 @@ STAGING_KEY="test-approval-staging-${RUN_ID}"
 RELEASE_KEY="test-approval-release-${RUN_ID}"
 
 begin_test "Create staging and release repos"
-if create_local_repo "$STAGING_KEY" "generic" && \
-   create_local_repo "$RELEASE_KEY" "generic"; then
+if create_repo "$STAGING_KEY" "generic" "staging" && \
+   create_repo "$RELEASE_KEY" "generic" "local"; then
   pass
 else
   fail "could not create repos"
@@ -52,15 +52,11 @@ if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
   skip "could not get artifact ID"
 else
   APPROVAL_PAYLOAD='{
-    "source_repo": "'"${STAGING_KEY}"'",
-    "target_repo": "'"${RELEASE_KEY}"'",
-    "artifact_ids": ["'"${ARTIFACT_ID}"'"],
-    "comment": "E2E test promotion request"
+    "source_repository": "'"${STAGING_KEY}"'",
+    "target_repository": "'"${RELEASE_KEY}"'",
+    "artifact_id": "'"${ARTIFACT_ID}"'"
   }'
   if resp=$(api_post "/api/v1/approval/request" "$APPROVAL_PAYLOAD" 2>/dev/null); then
-    APPROVAL_ID=$(echo "$resp" | jq -r '.id // .approval_id // empty') || true
-    pass
-  elif resp=$(api_post "/api/v1/approval" "$APPROVAL_PAYLOAD" 2>/dev/null); then
     APPROVAL_ID=$(echo "$resp" | jq -r '.id // .approval_id // empty') || true
     pass
   else
@@ -75,8 +71,6 @@ fi
 begin_test "List pending approvals"
 if resp=$(api_get "/api/v1/approval/pending" 2>/dev/null); then
   pass
-elif resp=$(api_get "/api/v1/approval?status=pending" 2>/dev/null); then
-  pass
 else
   skip "pending approvals endpoint not available"
 fi
@@ -88,7 +82,7 @@ fi
 begin_test "Approve promotion request"
 if [ -n "${APPROVAL_ID:-}" ] && [ "$APPROVAL_ID" != "null" ]; then
   if api_post "/api/v1/approval/${APPROVAL_ID}/approve" \
-      '{"comment":"Approved by E2E test"}' > /dev/null 2>&1; then
+      '{"notes":"Approved by E2E test"}' > /dev/null 2>&1; then
     pass
   else
     fail "could not approve"
