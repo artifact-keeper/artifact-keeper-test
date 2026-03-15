@@ -58,11 +58,20 @@ auth_admin() {
     exit 1
   fi
 
-  local resp
-  if ! resp=$(curl -sf -X POST "${BASE_URL}/api/v1/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) || [ -z "$resp" ]; then
-    echo "FATAL: failed to authenticate as ${ADMIN_USER} at ${BASE_URL}"
+  local resp=""
+  local _attempt
+  for _attempt in 1 2 3 4 5; do
+    if resp=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) && [ -n "$resp" ]; then
+      break
+    fi
+    resp=""
+    echo "  auth attempt ${_attempt}/5 failed, retrying in 3s..."
+    sleep 3
+  done
+  if [ -z "$resp" ]; then
+    echo "FATAL: failed to authenticate as ${ADMIN_USER} at ${BASE_URL} after 5 attempts"
     exit 1
   fi
 
