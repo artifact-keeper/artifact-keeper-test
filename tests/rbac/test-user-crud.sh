@@ -44,17 +44,17 @@ fi
 # Get user
 # -------------------------------------------------------------------------
 
-begin_test "Get user by username"
-if resp=$(api_get "/api/v1/users/${TEST_USER}" 2>/dev/null); then
-  if assert_contains "$resp" "$TEST_EMAIL"; then
-    pass
-  fi
-elif [ -n "${USER_ID:-}" ] && resp=$(api_get "/api/v1/users/${USER_ID}" 2>/dev/null); then
-  if assert_contains "$resp" "$TEST_EMAIL"; then
-    pass
+begin_test "Get user by ID"
+if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
+  if resp=$(api_get "/api/v1/users/${USER_ID}" 2>/dev/null); then
+    if assert_contains "$resp" "$TEST_EMAIL"; then
+      pass
+    fi
+  else
+    fail "could not get user by ID"
   fi
 else
-  fail "could not get user"
+  fail "no user ID from create response"
 fi
 
 # -------------------------------------------------------------------------
@@ -80,14 +80,18 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Update user display name"
-if api_put "/api/v1/users/${TEST_USER}" \
-    '{"display_name":"Updated E2E User"}' > /dev/null 2>&1; then
-  pass
-elif [ -n "${USER_ID:-}" ] && api_put "/api/v1/users/${USER_ID}" \
-    '{"display_name":"Updated E2E User"}' > /dev/null 2>&1; then
-  pass
+if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
+  # PATCH is the correct verb per the router
+  if curl -sf $CURL_TIMEOUT -X PATCH \
+      -H "$(auth_header)" -H "Content-Type: application/json" \
+      -d '{"display_name":"Updated E2E User"}' \
+      "${BASE_URL}/api/v1/users/${USER_ID}" > /dev/null 2>&1; then
+    pass
+  else
+    skip "user update not supported"
+  fi
 else
-  skip "user update not supported"
+  skip "no user ID"
 fi
 
 # -------------------------------------------------------------------------
@@ -95,12 +99,14 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Delete user"
-if api_delete "/api/v1/users/${TEST_USER}" > /dev/null 2>&1; then
-  pass
-elif [ -n "${USER_ID:-}" ] && api_delete "/api/v1/users/${USER_ID}" > /dev/null 2>&1; then
-  pass
+if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
+  if api_delete "/api/v1/users/${USER_ID}" > /dev/null 2>&1; then
+    pass
+  else
+    fail "could not delete user"
+  fi
 else
-  fail "could not delete user"
+  fail "no user ID for delete"
 fi
 
 begin_test "Deleted user cannot login"

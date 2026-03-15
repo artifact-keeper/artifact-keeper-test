@@ -45,11 +45,8 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Add local repos as virtual repo members"
-if api_post "/api/v1/repositories/${VIRTUAL_KEY}/members" \
-    "{\"members\":[\"${LOCAL_A}\",\"${LOCAL_B}\"]}" > /dev/null 2>&1; then
-  pass
-elif api_put "/api/v1/repositories/${VIRTUAL_KEY}" \
-    "{\"members\":[\"${LOCAL_A}\",\"${LOCAL_B}\"]}" > /dev/null 2>&1; then
+MEMBERS_PAYLOAD="{\"members\":[{\"member_key\":\"${LOCAL_A}\",\"priority\":1},{\"member_key\":\"${LOCAL_B}\",\"priority\":2}]}"
+if api_put "/api/v1/repositories/${VIRTUAL_KEY}/members" "$MEMBERS_PAYLOAD" > /dev/null 2>&1; then
   pass
 else
   fail "could not add members to virtual repo"

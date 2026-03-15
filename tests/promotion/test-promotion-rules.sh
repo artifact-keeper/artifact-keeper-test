@@ -77,7 +77,7 @@ fi
 begin_test "Get promotion rule by ID"
 if [ -n "${RULE_ID:-}" ] && [ "$RULE_ID" != "null" ]; then
   if resp=$(api_get "/api/v1/promotion-rules/${RULE_ID}" 2>/dev/null); then
-    if assert_contains "$resp" "$STAGING_KEY"; then
+    if assert_contains "$resp" "auto-promote-${RUN_ID}"; then
       pass
     fi
   else
