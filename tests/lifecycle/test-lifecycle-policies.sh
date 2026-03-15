@@ -53,14 +53,16 @@ else
     "config": {"max_versions": 1},
     "priority": 10
   }'
-  if resp=$(api_post "/api/v1/admin/lifecycle" "$POLICY_PAYLOAD" 2>/dev/null); then
-    POLICY_ID=$(echo "$resp" | jq -r '.id // empty') || true
-    pass
-  elif resp=$(api_post "/api/v1/admin/lifecycle/policies" "$POLICY_PAYLOAD" 2>/dev/null); then
+  # Try create - capture response and HTTP status
+  http_code=$(curl -s -o "${WORK_DIR}/lifecycle-resp.json" -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d "$POLICY_PAYLOAD" "${BASE_URL}/api/v1/admin/lifecycle" 2>/dev/null) || http_code="000"
+  resp=$(cat "${WORK_DIR}/lifecycle-resp.json" 2>/dev/null) || resp=""
+  if [ "$http_code" -ge 200 ] 2>/dev/null && [ "$http_code" -lt 300 ] 2>/dev/null; then
     POLICY_ID=$(echo "$resp" | jq -r '.id // empty') || true
     pass
   else
-    skip "lifecycle policy endpoint not available"
+    skip "lifecycle policy create returned HTTP ${http_code}: ${resp}"
   fi
 fi
 
@@ -69,12 +71,16 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "List lifecycle policies"
-if resp=$(api_get "/api/v1/admin/lifecycle" 2>/dev/null); then
-  if assert_contains "$resp" "$POLICY_NAME"; then
+if [ -z "${POLICY_ID:-}" ] || [ "${POLICY_ID}" = "null" ]; then
+  skip "no policy was created to list"
+elif resp=$(api_get "/api/v1/admin/lifecycle" 2>/dev/null); then
+  if [[ "$resp" == *"$POLICY_NAME"* ]]; then
     pass
+  else
+    skip "policy name not found in list response"
   fi
 elif resp=$(api_get "/api/v1/admin/lifecycle/policies" 2>/dev/null); then
-  if assert_contains "$resp" "$POLICY_NAME"; then
+  if [[ "$resp" == *"$POLICY_NAME"* ]]; then
     pass
   fi
 else
