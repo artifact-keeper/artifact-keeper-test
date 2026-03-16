@@ -48,8 +48,25 @@ export BASE_URL="$ORIG_BASE_URL"
 export ADMIN_TOKEN="$ORIG_TOKEN"
 
 begin_test "Register peer and create push sync policy"
-# Register peer1 (may already exist)
-PEER1_PAYLOAD="{\"name\":\"sync-peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"mesh-test-key\"}"
+# Create an API token on peer1 that the main instance's sync worker
+# can use to authenticate when pushing artifacts.
+PEER1_API_KEY=""
+export BASE_URL="$PEER1_URL"
+export ADMIN_TOKEN="$PEER1_TOKEN"
+if resp=$(api_post "/api/v1/auth/tokens" \
+    "{\"name\":\"sync-key-${RUN_ID}\",\"scopes\":[\"read\",\"write\"]}" 2>/dev/null); then
+  PEER1_API_KEY=$(echo "$resp" | jq -r '.token // empty') || true
+fi
+export BASE_URL="$ORIG_BASE_URL"
+export ADMIN_TOKEN="$ORIG_TOKEN"
+
+# Fall back to admin token if token creation didn't return a key
+if [ -z "$PEER1_API_KEY" ] || [ "$PEER1_API_KEY" = "null" ]; then
+  PEER1_API_KEY="$PEER1_TOKEN"
+fi
+
+# Register peer1 with a real auth token
+PEER1_PAYLOAD="{\"name\":\"sync-peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"${PEER1_API_KEY}\"}"
 api_post "/api/v1/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
 
 # Create push sync policy

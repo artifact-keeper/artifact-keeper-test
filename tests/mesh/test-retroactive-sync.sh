@@ -75,7 +75,21 @@ export ADMIN_TOKEN="$ORIG_TOKEN"
 # ---------------------------------------------------------------------------
 
 begin_test "Register peer and create sync policy"
-PEER1_PAYLOAD="{\"name\":\"retro-peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"mesh-test-key\"}"
+# Create an API token on peer1 for the sync worker to use
+PEER1_API_KEY=""
+export BASE_URL="$PEER1_URL"
+export ADMIN_TOKEN="$PEER1_TOKEN"
+if resp=$(api_post "/api/v1/auth/tokens" \
+    "{\"name\":\"retro-sync-key-${RUN_ID}\",\"scopes\":[\"read\",\"write\"]}" 2>/dev/null); then
+  PEER1_API_KEY=$(echo "$resp" | jq -r '.token // empty') || true
+fi
+export BASE_URL="$ORIG_BASE_URL"
+export ADMIN_TOKEN="$ORIG_TOKEN"
+if [ -z "$PEER1_API_KEY" ] || [ "$PEER1_API_KEY" = "null" ]; then
+  PEER1_API_KEY="$PEER1_TOKEN"
+fi
+
+PEER1_PAYLOAD="{\"name\":\"retro-peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"${PEER1_API_KEY}\"}"
 api_post "/api/v1/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
 
 POLICY="{\"name\":\"retro-sync-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"push\",\"enabled\":true}"
