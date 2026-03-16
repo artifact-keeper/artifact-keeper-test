@@ -112,8 +112,12 @@ auth_admin
 
 sleep 3
 if [ -n "${PEER1_ID:-}" ] && [ "$PEER1_ID" != "null" ]; then
+  echo "  [debug] BASE_URL=${BASE_URL}"
+  echo "  [debug] PEER1_ID=${PEER1_ID}"
+  echo "  [debug] Token prefix: ${ADMIN_TOKEN:0:20}..."
   echo "  [debug] Peer status:"
-  curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}" 2>/dev/null | jq -c '{status, endpoint_url}' 2>/dev/null || echo "    (could not fetch peer)"
+  peer_http=$(curl -s -o /tmp/peer_debug.json -w '%{http_code}' --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}" 2>/dev/null) || peer_http="000"
+  echo "    HTTP ${peer_http}: $(cat /tmp/peer_debug.json 2>/dev/null | jq -c '{status, endpoint_url}' 2>/dev/null || cat /tmp/peer_debug.json 2>/dev/null || echo 'empty')"
   echo "  [debug] Peer repositories:"
   curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}/repositories" 2>/dev/null | jq -c '.' 2>/dev/null || echo "    (none or not available)"
   echo "  [debug] Sync tasks:"
