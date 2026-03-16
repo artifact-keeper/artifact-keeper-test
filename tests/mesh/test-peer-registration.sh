@@ -74,9 +74,9 @@ fi
 
 begin_test "Get peer1 details"
 # Extract peer1 ID from list
-PEER1_ID=$(echo "$resp" | jq -r '.[] | select(.name | contains("peer1")) | .id // empty' 2>/dev/null || true)
+PEER1_ID=$(echo "$resp" | jq -r --arg name "peer1-${RUN_ID}" '.[] | select(.name == $name) | .id // empty' 2>/dev/null || true)
 if [ -z "$PEER1_ID" ]; then
-  PEER1_ID=$(echo "$resp" | jq -r '.items[]? | select(.name | contains("peer1")) | .id // empty' 2>/dev/null || true)
+  PEER1_ID=$(echo "$resp" | jq -r --arg name "peer1-${RUN_ID}" '.items[]? | select(.name == $name) | .id // empty' 2>/dev/null || true)
 fi
 
 if [ -n "$PEER1_ID" ]; then

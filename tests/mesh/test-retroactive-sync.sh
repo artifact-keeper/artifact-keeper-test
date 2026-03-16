@@ -80,6 +80,8 @@ api_post "/api/v1/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
 
 POLICY="{\"name\":\"retro-sync-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"push\",\"enabled\":true}"
 if api_post "/api/v1/sync-policies" "$POLICY" > /dev/null 2>&1; then
+  # Trigger policy evaluation to create peer_repo_subscriptions
+  api_post "/api/v1/sync-policies/evaluate" "" > /dev/null 2>&1 || true
   pass
 else
   fail "could not create sync policy"
