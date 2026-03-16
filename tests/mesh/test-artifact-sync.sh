@@ -67,7 +67,14 @@ fi
 
 # Register peer1 with a real auth token
 PEER1_PAYLOAD="{\"name\":\"sync-peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"${PEER1_API_KEY}\"}"
-api_post "/api/v1/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
+PEER_RESP=$(api_post "/api/v1/peers" "$PEER1_PAYLOAD" 2>/dev/null) || true
+PEER1_ID=$(echo "$PEER_RESP" | jq -r '.id // empty' 2>/dev/null) || true
+
+# Send heartbeat to set peer status from 'offline' (default) to 'online'.
+# The sync worker only processes peers with status IN ('online', 'syncing').
+if [ -n "$PEER1_ID" ] && [ "$PEER1_ID" != "null" ]; then
+  api_post "/api/v1/peers/${PEER1_ID}/heartbeat" '{"cache_used_bytes":0}' > /dev/null 2>&1 || true
+fi
 
 # Create push sync policy
 POLICY="{\"name\":\"sync-artifacts-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"push\",\"enabled\":true}"

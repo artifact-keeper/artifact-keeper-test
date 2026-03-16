@@ -90,7 +90,13 @@ if [ -z "$PEER1_API_KEY" ] || [ "$PEER1_API_KEY" = "null" ]; then
 fi
 
 PEER1_PAYLOAD="{\"name\":\"retro-peer1-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"${PEER1_API_KEY}\"}"
-api_post "/api/v1/peers" "$PEER1_PAYLOAD" > /dev/null 2>&1 || true
+PEER_RESP=$(api_post "/api/v1/peers" "$PEER1_PAYLOAD" 2>/dev/null) || true
+PEER1_ID=$(echo "$PEER_RESP" | jq -r '.id // empty' 2>/dev/null) || true
+
+# Send heartbeat to set peer online (default is 'offline', worker skips offline peers)
+if [ -n "$PEER1_ID" ] && [ "$PEER1_ID" != "null" ]; then
+  api_post "/api/v1/peers/${PEER1_ID}/heartbeat" '{"cache_used_bytes":0}' > /dev/null 2>&1 || true
+fi
 
 POLICY="{\"name\":\"retro-sync-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"push\",\"enabled\":true}"
 if api_post "/api/v1/sync-policies" "$POLICY" > /dev/null 2>&1; then
@@ -106,13 +112,21 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Trigger retroactive sync"
-# Policy creation should auto-trigger sync for pre-existing artifacts.
-# If a peer ID is available, explicitly trigger sync as a fallback.
-PEER1_ID=$(api_get "/api/v1/peers" 2>/dev/null | jq -r '[.[] // .items[]?] | map(select(.name | contains("retro-peer1"))) | .[0].id // empty' 2>/dev/null || true)
-if [ -n "$PEER1_ID" ]; then
+# PEER1_ID was captured during registration above.
+# Trigger sync to queue tasks for pre-existing artifacts.
+if [ -n "${PEER1_ID:-}" ] && [ "$PEER1_ID" != "null" ]; then
   api_post "/api/v1/peers/${PEER1_ID}/sync" "" > /dev/null 2>&1 || true
+  pass
+else
+  # Fall back to looking it up
+  PEER1_ID=$(api_get "/api/v1/peers" 2>/dev/null | jq -r --arg name "retro-peer1-${RUN_ID}" '.[] | select(.name == $name) | .id // empty' 2>/dev/null || true)
+  if [ -n "$PEER1_ID" ] && [ "$PEER1_ID" != "null" ]; then
+    api_post "/api/v1/peers/${PEER1_ID}/sync" "" > /dev/null 2>&1 || true
+    pass
+  else
+    skip "could not find peer ID for retroactive sync trigger"
+  fi
 fi
-pass
 
 # ---------------------------------------------------------------------------
 # Wait for pre-existing artifacts to appear on peer1
