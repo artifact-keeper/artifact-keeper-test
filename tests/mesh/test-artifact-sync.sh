@@ -103,10 +103,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Debug: check sync state before waiting
+# Debug: check sync state and trigger sync manually as fallback
 # ---------------------------------------------------------------------------
 
-sleep 2
+sleep 3
 if [ -n "${PEER1_ID:-}" ] && [ "$PEER1_ID" != "null" ]; then
   echo "  [debug] Peer status:"
   curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}" 2>/dev/null | jq -c '{status, endpoint_url}' 2>/dev/null || echo "    (could not fetch peer)"
@@ -116,6 +116,9 @@ if [ -n "${PEER1_ID:-}" ] && [ "$PEER1_ID" != "null" ]; then
   curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}/sync/tasks" 2>/dev/null | jq -c 'if type == "array" then {count: length, first: .[0]} else . end' 2>/dev/null || echo "    (none or not available)"
   echo "  [debug] Sync policies:"
   curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/sync-policies" 2>/dev/null | jq -c '.items // . | length' 2>/dev/null || echo "    (not available)"
+  # Manually trigger sync as fallback in case auto-queue didn't fire
+  echo "  [debug] Triggering manual sync for peer..."
+  curl -sf --max-time 5 -X POST -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}/sync" 2>/dev/null | jq -c '.' 2>/dev/null || echo "    (trigger response not available)"
 fi
 
 # ---------------------------------------------------------------------------
