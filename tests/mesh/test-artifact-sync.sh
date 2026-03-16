@@ -106,6 +106,10 @@ fi
 # Debug: check sync state and trigger sync manually as fallback
 # ---------------------------------------------------------------------------
 
+# Re-authenticate on main to ensure token is valid
+export BASE_URL="$ORIG_BASE_URL"
+auth_admin
+
 sleep 3
 if [ -n "${PEER1_ID:-}" ] && [ "$PEER1_ID" != "null" ]; then
   echo "  [debug] Peer status:"
