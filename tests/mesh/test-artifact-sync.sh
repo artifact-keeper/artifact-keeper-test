@@ -80,7 +80,8 @@ fi
 POLICY="{\"name\":\"sync-artifacts-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"push\",\"enabled\":true}"
 if api_post "/api/v1/sync-policies" "$POLICY" > /dev/null 2>&1; then
   # Trigger policy evaluation to create peer_repo_subscriptions
-  api_post "/api/v1/sync-policies/evaluate" "" > /dev/null 2>&1 || true
+  eval_resp=$(api_post "/api/v1/sync-policies/evaluate" "" 2>/dev/null) || true
+  echo "  [debug] Evaluate result: $(echo "$eval_resp" | jq -c '.' 2>/dev/null || echo "$eval_resp")"
   pass
 else
   fail "could not create sync policy"
@@ -108,9 +109,13 @@ fi
 sleep 2
 if [ -n "${PEER1_ID:-}" ] && [ "$PEER1_ID" != "null" ]; then
   echo "  [debug] Peer status:"
-  api_get "/api/v1/peers/${PEER1_ID}" 2>/dev/null | jq '{status, endpoint_url, last_heartbeat_at}' 2>/dev/null || echo "    (could not fetch peer)"
-  echo "  [debug] Sync tasks for peer:"
-  api_get "/api/v1/peers/${PEER1_ID}/sync/tasks" 2>/dev/null | jq 'if type == "array" then length else . end' 2>/dev/null || echo "    (could not fetch tasks)"
+  curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}" 2>/dev/null | jq -c '{status, endpoint_url}' 2>/dev/null || echo "    (could not fetch peer)"
+  echo "  [debug] Peer repositories:"
+  curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}/repositories" 2>/dev/null | jq -c '.' 2>/dev/null || echo "    (none or not available)"
+  echo "  [debug] Sync tasks:"
+  curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/peers/${PEER1_ID}/sync/tasks" 2>/dev/null | jq -c 'if type == "array" then {count: length, first: .[0]} else . end' 2>/dev/null || echo "    (none or not available)"
+  echo "  [debug] Sync policies:"
+  curl -sf --max-time 5 -H "$(auth_header)" "${BASE_URL}/api/v1/sync-policies" 2>/dev/null | jq -c '.items // . | length' 2>/dev/null || echo "    (not available)"
 fi
 
 # ---------------------------------------------------------------------------
