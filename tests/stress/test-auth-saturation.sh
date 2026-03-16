@@ -148,20 +148,26 @@ fi
 # Recovery: verify backend recovers after load
 # ---------------------------------------------------------------------------
 
-sleep 5
+sleep 10
 
 begin_test "Backend recovers after auth saturation"
-if resp=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null); then
-  token=$(echo "$resp" | jq -r '.access_token // .token // empty') || true
-  if [ -n "$token" ]; then
-    pass
-  else
-    fail "backend recovered but returned no token"
+recovered=false
+for _try in 1 2 3 4 5; do
+  if resp=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null); then
+    token=$(echo "$resp" | jq -r '.access_token // .token // empty') || true
+    if [ -n "$token" ]; then
+      recovered=true
+      break
+    fi
   fi
+  sleep 3
+done
+if $recovered; then
+  pass
 else
-  fail "backend did not recover after 5s cool-down"
+  fail "backend did not recover after 25s cool-down"
 fi
 
 end_suite

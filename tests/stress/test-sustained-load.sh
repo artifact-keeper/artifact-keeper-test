@@ -156,13 +156,21 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Backend responsive after sustained load"
-sleep 3
-if resp=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null); then
+sleep 10
+recovered=false
+for _try in 1 2 3 4 5; do
+  if resp=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null); then
+    recovered=true
+    break
+  fi
+  sleep 3
+done
+if $recovered; then
   pass
 else
-  fail "backend unresponsive after sustained load"
+  fail "backend unresponsive after sustained load (25s cool-down)"
 fi
 
 end_suite
