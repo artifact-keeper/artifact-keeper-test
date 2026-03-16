@@ -102,6 +102,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Debug: check sync state before waiting
+# ---------------------------------------------------------------------------
+
+sleep 2
+if [ -n "${PEER1_ID:-}" ] && [ "$PEER1_ID" != "null" ]; then
+  echo "  [debug] Peer status:"
+  api_get "/api/v1/peers/${PEER1_ID}" 2>/dev/null | jq '{status, endpoint_url, last_heartbeat_at}' 2>/dev/null || echo "    (could not fetch peer)"
+  echo "  [debug] Sync tasks for peer:"
+  api_get "/api/v1/peers/${PEER1_ID}/sync/tasks" 2>/dev/null | jq 'if type == "array" then length else . end' 2>/dev/null || echo "    (could not fetch tasks)"
+fi
+
+# ---------------------------------------------------------------------------
 # Wait for replication to peer1
 # ---------------------------------------------------------------------------
 
