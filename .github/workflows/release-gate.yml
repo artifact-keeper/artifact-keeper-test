@@ -522,8 +522,10 @@ jobs:
   # Stress tests (after formats + security pass)
   # -------------------------------------------------------------------
   stress-tests:
-    needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'stress'
+    needs: [deploy, format-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, security-tests, compatibility-tests]
+    if: |
+      always() &&
+      (inputs.test_suite == 'all' || inputs.test_suite == 'stress')
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
