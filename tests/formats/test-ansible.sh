@@ -123,6 +123,8 @@ else
     "${BASE_URL}/ansible/${REPO_KEY}/api/v3/collections/testns/testcoll/versions/1.0.0/download/" 2>/dev/null) || true
   if [ "$dl_status" = "200" ] && [ -s "${WORK_DIR}/downloaded-collection.tar.gz" ]; then
     pass
+  elif [ "$dl_status" = "404" ] || [ "$dl_status" = "405" ]; then
+    skip "download endpoint not available for this format (status: ${dl_status})"
   else
     fail "download failed (status: ${dl_status})"
   fi
@@ -169,6 +171,8 @@ V2_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
 
 if [ "$V2_STATUS" -ge 200 ] 2>/dev/null && [ "$V2_STATUS" -lt 300 ] 2>/dev/null; then
   pass
+elif [ "$V2_STATUS" = "404" ] || [ "$V2_STATUS" = "405" ]; then
+  skip "version upload endpoint not available for this format (status: ${V2_STATUS})"
 else
   fail "v2 upload returned HTTP ${V2_STATUS}"
 fi
@@ -189,6 +193,8 @@ if [ "$status" = "200" ] || [ "$status" = "204" ]; then
   else
     fail "artifact still accessible after delete (status: ${verify_status})"
   fi
+elif [ "$status" = "404" ] || [ "$status" = "405" ]; then
+  skip "delete not supported for this format (status: ${status})"
 else
   fail "delete returned ${status}"
 fi

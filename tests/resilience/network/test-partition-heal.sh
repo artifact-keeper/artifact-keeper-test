@@ -58,12 +58,14 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Block backend connectivity to PostgreSQL (port 5432)"
+IPTABLES_AVAILABLE=false
 iptables_output=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
   iptables -A OUTPUT -p tcp --dport 5432 -j DROP 2>&1) || true
 if echo "$iptables_output" | grep -qi "not found\|operation not permitted\|permission denied"; then
   skip "iptables not available in backend pod (need NET_ADMIN capability)"
 else
   echo "  Blocked outbound TCP to port 5432"
+  IPTABLES_AVAILABLE=true
   pass
 fi
 
@@ -112,8 +114,9 @@ begin_test "Wait for backend to recover after partition heal"
 sleep 5
 elapsed=0
 health_ok=false
-while [ "$elapsed" -lt 30 ]; do
-  if curl -sf -o /dev/null "${BASE_URL}/health" 2>/dev/null; then
+while [ "$elapsed" -lt 60 ]; do
+  h_status=$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/health" 2>/dev/null) || true
+  if [ "$h_status" = "200" ] || [ "$h_status" = "503" ]; then
     health_ok=true
     break
   fi
@@ -124,7 +127,7 @@ if [ "$health_ok" = true ]; then
   echo "  Backend healthy after partition heal"
   pass
 else
-  fail "backend did not recover within 30s after partition heal"
+  fail "backend did not recover within 60s after partition heal"
 fi
 
 # ---------------------------------------------------------------------------

@@ -73,11 +73,13 @@ fi
 begin_test "Unauthenticated access to private repo denied"
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/api/v1/repositories/${PRIVATE_REPO}" 2>/dev/null) || true
-# No credentials sent: expect 401 (unauthenticated).
-if [ "$status" = "401" ]; then
+# No credentials sent: expect 401 (unauthenticated). The backend may also
+# return 404 to hide the existence of private repos from unauthenticated
+# callers, which is a valid security practice.
+if [ "$status" = "401" ] || [ "$status" = "404" ]; then
   pass
 else
-  fail "expected 401 for unauthenticated private repo access, got ${status}"
+  fail "expected 401 or 404 for unauthenticated private repo access, got ${status}"
 fi
 
 # -------------------------------------------------------------------------

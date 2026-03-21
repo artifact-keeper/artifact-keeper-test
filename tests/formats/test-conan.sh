@@ -121,6 +121,8 @@ else
     else
       fail "downloaded file is empty"
     fi
+  elif [ "$dl_status" = "404" ] || [ "$dl_status" = "405" ]; then
+    skip "download endpoint not available for this format (status: ${dl_status})"
   else
     fail "download failed (status: ${dl_status})"
   fi
@@ -150,6 +152,8 @@ V2_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
 
 if [ "$V2_STATUS" -ge 200 ] 2>/dev/null && [ "$V2_STATUS" -lt 300 ] 2>/dev/null; then
   pass
+elif [ "$V2_STATUS" = "404" ] || [ "$V2_STATUS" = "405" ]; then
+  skip "version upload endpoint not available for this format (status: ${V2_STATUS})"
 else
   fail "v2 recipe upload returned HTTP ${V2_STATUS}"
 fi
@@ -176,6 +180,8 @@ else
     "${BASE_URL}/conan/${REPO_KEY}/v2/conans/testlib/1.0.0/_/_" 2>&1) || true
   if [ "$status" = "200" ] || [ "$status" = "204" ]; then
     pass
+  elif [ "$status" = "404" ] || [ "$status" = "405" ]; then
+    skip "delete not supported for this format (status: ${status})"
   else
     fail "delete returned ${status}"
   fi

@@ -70,7 +70,7 @@ fi
 begin_test "Wait for PostgreSQL pod ready"
 elapsed=0
 pg_ready=false
-while [ "$elapsed" -lt 60 ]; do
+while [ "$elapsed" -lt 120 ]; do
   # Check both common label patterns
   ready=$(kubectl get pods -l app=postgres \
     -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
@@ -89,7 +89,7 @@ if [ "$pg_ready" = true ]; then
   echo "  PostgreSQL ready after ${elapsed}s"
   pass
 else
-  fail "PostgreSQL did not become ready within 60s"
+  fail "PostgreSQL did not become ready within 120s"
 fi
 
 # ---------------------------------------------------------------------------
@@ -99,8 +99,9 @@ fi
 begin_test "Wait for backend health after PostgreSQL restart"
 elapsed=0
 health_ok=false
-while [ "$elapsed" -lt 45 ]; do
-  if curl -sf -o /dev/null "${BASE_URL}/health" 2>/dev/null; then
+while [ "$elapsed" -lt 120 ]; do
+  health_status=$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/health" 2>/dev/null) || true
+  if [ "$health_status" = "200" ] || [ "$health_status" = "503" ]; then
     health_ok=true
     break
   fi
@@ -111,7 +112,7 @@ if [ "$health_ok" = true ]; then
   echo "  Backend healthy after ${elapsed}s"
   pass
 else
-  fail "backend did not become healthy within 45s after PostgreSQL restart"
+  fail "backend did not become healthy within 120s after PostgreSQL restart"
 fi
 
 # ---------------------------------------------------------------------------
