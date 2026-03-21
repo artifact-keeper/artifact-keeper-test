@@ -310,6 +310,15 @@ EOF
 #
 # Each assertion calls fail() on mismatch and returns 1 so callers can use
 # them in conditionals. On success they return 0 silently.
+#
+# HTTP Status Code Guide (use exact codes, never OR them together):
+#   401 = Unauthenticated - no valid credentials provided (missing/expired/invalid token)
+#   403 = Forbidden - authenticated but insufficient permissions (wrong role/scope)
+#   404 = Not Found - resource does not exist (or hidden from this user)
+#   409 = Conflict - resource already exists or state conflict
+#   422 = Unprocessable - request valid but semantically wrong
+# When writing assertions, pick the EXACT code for the scenario.
+# Checking "401 or 403" masks whether auth or authz is broken.
 # ---------------------------------------------------------------------------
 
 assert_eq() {

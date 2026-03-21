@@ -105,6 +105,48 @@ else
 fi
 
 # -------------------------------------------------------------------------
+# Upload versioned artifacts and execute the lifecycle policy
+# -------------------------------------------------------------------------
+
+begin_test "Upload 5 versions"
+if [ -z "${POLICY_ID:-}" ] || [ "$POLICY_ID" = "null" ]; then
+  skip "no policy was created, skipping version upload"
+else
+  for i in 1 2 3 4 5; do
+    echo "version-${i}-${RUN_ID}" > "${WORK_DIR}/v${i}.txt"
+    api_upload "/api/v1/repositories/${REPO_KEY}/artifacts/pkg/v${i}/file.txt" \
+      "${WORK_DIR}/v${i}.txt" "text/plain" > /dev/null 2>&1 || true
+  done
+  pass
+fi
+
+begin_test "Execute lifecycle policy"
+if [ -z "${POLICY_ID:-}" ] || [ "$POLICY_ID" = "null" ]; then
+  skip "no policy was created"
+else
+  resp=$(api_post "/api/v1/admin/lifecycle/${POLICY_ID}/execute" '{}' 2>/dev/null) || resp=""
+  if [ $? -eq 0 ] && [ -n "$resp" ]; then pass; else skip "lifecycle execution not available"; fi
+fi
+
+begin_test "Verify old versions removed"
+if [ -z "${POLICY_ID:-}" ] || [ "$POLICY_ID" = "null" ]; then
+  skip "no policy was created"
+else
+  sleep 5
+  remaining=0
+  for i in 1 2 3 4 5; do
+    status=$(curl -s -o /dev/null -w "%{http_code}" -H "$(auth_header)" $CURL_TIMEOUT \
+      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/pkg/v${i}/file.txt" 2>&1) || true
+    if [ "$status" = "200" ]; then remaining=$((remaining + 1)); fi
+  done
+  if [ "$remaining" -le 2 ]; then
+    pass
+  else
+    fail "expected <= 2 versions remaining, found ${remaining}"
+  fi
+fi
+
+# -------------------------------------------------------------------------
 # Delete policy
 # -------------------------------------------------------------------------
 

@@ -104,4 +104,101 @@ else
   fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
 fi
 
+# -----------------------------------------------------------------------
+# Download and verify module
+# -----------------------------------------------------------------------
+begin_test "Download and verify module"
+dl_file="$WORK_DIR/downloaded-module.tar.gz"
+dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/puppet/${REPO_KEY}/v3/files/${FULL_MODULE_NAME}-${MODULE_VERSION}.tar.gz" 2>/dev/null) || true
+
+if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
+  pass
+else
+  # Try management API
+  if curl -sf -H "$(auth_header)" \
+      -o "$dl_file" \
+      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${FULL_MODULE_NAME}/${MODULE_VERSION}/${FULL_MODULE_NAME}-${MODULE_VERSION}.tar.gz"; then
+    if [ -s "$dl_file" ]; then
+      pass
+    else
+      fail "downloaded file is empty"
+    fi
+  else
+    fail "download failed (status: ${dl_status})"
+  fi
+fi
+
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+MODULE_VERSION_V2="2.0.$(date +%s)"
+MOD_DIR_V2="$WORK_DIR/${FULL_MODULE_NAME}-${MODULE_VERSION_V2}"
+mkdir -p "$MOD_DIR_V2/manifests"
+
+cat > "$MOD_DIR_V2/metadata.json" <<EOF
+{
+  "name": "${MODULE_AUTHOR}-${MODULE_NAME}",
+  "version": "${MODULE_VERSION_V2}",
+  "author": "${MODULE_AUTHOR}",
+  "summary": "E2E test module v2",
+  "license": "MIT",
+  "source": "https://example.com/${FULL_MODULE_NAME}",
+  "dependencies": [],
+  "operatingsystem_support": [
+    {
+      "operatingsystem": "Ubuntu",
+      "operatingsystemrelease": ["22.04"]
+    }
+  ]
+}
+EOF
+
+cat > "$MOD_DIR_V2/manifests/init.pp" <<EOF
+class ${MODULE_NAME} {
+  notify { 'Hello from Puppet E2E test v2!': }
+}
+EOF
+
+MOD_TARBALL_V2="$WORK_DIR/${FULL_MODULE_NAME}-${MODULE_VERSION_V2}.tar.gz"
+tar czf "$MOD_TARBALL_V2" -C "$WORK_DIR" "${FULL_MODULE_NAME}-${MODULE_VERSION_V2}"
+
+MODULE_JSON_V2=$(printf '{"owner":"%s","name":"%s","version":"%s"}' \
+  "$MODULE_AUTHOR" "$MODULE_NAME" "$MODULE_VERSION_V2")
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST \
+  -H "$(format_auth_header)" \
+  -F "file=@${MOD_TARBALL_V2}" \
+  -F "module=${MODULE_JSON_V2}" \
+  "${BASE_URL}/puppet/${REPO_KEY}/v3/releases") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  fail "v2 upload returned ${v2_status}"
+fi
+
+# -----------------------------------------------------------------------
+# Delete module and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete module and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${FULL_MODULE_NAME}/${MODULE_VERSION}/${FULL_MODULE_NAME}-${MODULE_VERSION}.tar.gz" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${FULL_MODULE_NAME}/${MODULE_VERSION}/${FULL_MODULE_NAME}-${MODULE_VERSION}.tar.gz" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "artifact still accessible after delete (status: ${verify_status})"
+  fi
+else
+  fail "delete returned ${status}"
+fi
+
 end_suite

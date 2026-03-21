@@ -58,9 +58,12 @@ fi
 
 sleep 5
 
+DELIVERY_RESP=""
+
 begin_test "Verify webhook delivery logged"
 if [ -n "${WEBHOOK_ID:-}" ] && [ "$WEBHOOK_ID" != "null" ]; then
   if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries" 2>/dev/null); then
+    DELIVERY_RESP="$resp"
     count=$(echo "$resp" | jq '
       if type == "array" then length
       elif .items then (.items | length)
@@ -70,13 +73,22 @@ if [ -n "${WEBHOOK_ID:-}" ] && [ "$WEBHOOK_ID" != "null" ]; then
     if [ "$count" -gt 0 ]; then
       pass
     else
-      skip "no deliveries logged yet (async delivery may be delayed)"
+      fail "no deliveries logged (expected at least 1 after artifact upload)"
     fi
   else
     skip "delivery listing not available"
   fi
 else
   skip "no webhook ID"
+fi
+
+begin_test "Delivery payload contains event type"
+if [ -n "$DELIVERY_RESP" ]; then
+  if assert_contains "$DELIVERY_RESP" "event"; then
+    pass
+  fi
+else
+  skip "no deliveries to check"
 fi
 
 # Cleanup

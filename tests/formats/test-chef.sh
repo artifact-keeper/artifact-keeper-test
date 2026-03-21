@@ -102,4 +102,94 @@ else
   fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
 fi
 
+# -----------------------------------------------------------------------
+# Download and verify cookbook
+# -----------------------------------------------------------------------
+begin_test "Download and verify cookbook"
+dl_file="$WORK_DIR/downloaded-cookbook.tar.gz"
+dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/chef/${REPO_KEY}/api/v1/cookbooks/${COOKBOOK_NAME}/versions/${COOKBOOK_VERSION}" 2>/dev/null) || true
+
+if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
+  pass
+else
+  # Try management API
+  if curl -sf -H "$(auth_header)" \
+      -o "$dl_file" \
+      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${COOKBOOK_NAME}/${COOKBOOK_VERSION}/${COOKBOOK_NAME}-${COOKBOOK_VERSION}.tar.gz"; then
+    if [ -s "$dl_file" ]; then
+      pass
+    else
+      fail "downloaded file is empty"
+    fi
+  else
+    fail "download failed (status: ${dl_status})"
+  fi
+fi
+
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+COOKBOOK_VERSION_V2="2.0.$(date +%s)"
+
+cat > "$CB_DIR/metadata.json" <<EOF
+{
+  "name": "${COOKBOOK_NAME}",
+  "version": "${COOKBOOK_VERSION_V2}",
+  "description": "E2E test cookbook v2",
+  "maintainer": "E2E Test",
+  "maintainer_email": "test@example.com",
+  "license": "MIT",
+  "platforms": {},
+  "dependencies": {}
+}
+EOF
+
+cat > "$CB_DIR/metadata.rb" <<EOF
+name '${COOKBOOK_NAME}'
+version '${COOKBOOK_VERSION_V2}'
+description 'E2E test cookbook v2'
+maintainer 'E2E Test'
+maintainer_email 'test@example.com'
+license 'MIT'
+EOF
+
+CB_TARBALL_V2="$WORK_DIR/${COOKBOOK_NAME}-${COOKBOOK_VERSION_V2}.tar.gz"
+tar czf "$CB_TARBALL_V2" -C "$WORK_DIR" "$COOKBOOK_NAME"
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST \
+  -H "$(format_auth_header)" \
+  -F "tarball=@${CB_TARBALL_V2};type=application/gzip" \
+  -F "cookbook={\"cookbook_name\":\"${COOKBOOK_NAME}\",\"version\":\"${COOKBOOK_VERSION_V2}\"};type=application/json" \
+  "${BASE_URL}/chef/${REPO_KEY}/api/v1/cookbooks") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  fail "v2 upload returned ${v2_status}"
+fi
+
+# -----------------------------------------------------------------------
+# Delete cookbook and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete cookbook and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${COOKBOOK_NAME}/${COOKBOOK_VERSION}/${COOKBOOK_NAME}-${COOKBOOK_VERSION}.tar.gz" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${COOKBOOK_NAME}/${COOKBOOK_VERSION}/${COOKBOOK_NAME}-${COOKBOOK_VERSION}.tar.gz" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "artifact still accessible after delete (status: ${verify_status})"
+  fi
+else
+  fail "delete returned ${status}"
+fi
+
 end_suite

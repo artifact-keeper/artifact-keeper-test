@@ -580,11 +580,19 @@ jobs:
       - name: Run ${{ matrix.category }} resilience tests
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
+          FAILED=0
           for script in tests/resilience/${{ matrix.category }}/test-*.sh; do
             [ -f "$script" ] || continue
             echo "=== Running ${script} ==="
-            bash "$script" || true
+            if ! bash "$script"; then
+              echo "FAILED: ${script}"
+              FAILED=$((FAILED + 1))
+            fi
           done
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::${FAILED} resilience test(s) failed in ${{ matrix.category }}"
+            exit 1
+          fi
 
       - name: Upload test results
         if: always()
@@ -599,7 +607,6 @@ jobs:
   # -------------------------------------------------------------------
   mesh-tests:
     needs: [deploy, resilience-tests]
-    continue-on-error: true
     if: |
       always() &&
       (inputs.test_suite == 'all' || inputs.test_suite == 'mesh') &&
@@ -736,6 +743,15 @@ jobs:
           name: release-gate-results
           path: /tmp/all-results/
           if-no-files-found: ignore
+
+      - name: Gate check - fail if any suite failed
+        if: >-
+          contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::Release gate FAILED - one or more test suites did not pass"
+          echo "Review the workflow summary above for details"
+          exit 1
 
   # -------------------------------------------------------------------
   # Teardown

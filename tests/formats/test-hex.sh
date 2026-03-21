@@ -114,4 +114,104 @@ else
   fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
 fi
 
+# -----------------------------------------------------------------------
+# Download and verify package
+# -----------------------------------------------------------------------
+begin_test "Download and verify package"
+dl_file="$WORK_DIR/downloaded-hex.tar"
+dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/hex/${REPO_KEY}/tarballs/${PACKAGE_NAME}-${PACKAGE_VERSION}.tar" 2>/dev/null) || true
+
+if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
+  pass
+else
+  # Try the management API
+  if curl -sf -H "$(auth_header)" \
+      -o "$dl_file" \
+      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${PACKAGE_NAME}/${PACKAGE_VERSION}/${PACKAGE_NAME}-${PACKAGE_VERSION}.tar"; then
+    if [ -s "$dl_file" ]; then
+      pass
+    else
+      fail "downloaded file is empty"
+    fi
+  else
+    fail "download failed (status: ${dl_status})"
+  fi
+fi
+
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+PACKAGE_VERSION_V2="2.0.$(date +%s)"
+
+cat > "$WORK_DIR/metadata.config" <<EOF
+{<<"name">>, <<"${PACKAGE_NAME}">>}.
+{<<"version">>, <<"${PACKAGE_VERSION_V2}">>}.
+{<<"description">>, <<"E2E test package v2">>}.
+{<<"app">>, <<"${PACKAGE_NAME}">>}.
+{<<"build_tools">>, [<<"mix">>]}.
+{<<"requirements">>, []}.
+EOF
+
+echo "3" > "$WORK_DIR/VERSION"
+
+tar czf "$WORK_DIR/contents.tar.gz" -C "$PKG_DIR" lib
+
+HEX_TARBALL_V2="$WORK_DIR/${PACKAGE_NAME}-${PACKAGE_VERSION_V2}.tar"
+tar cf "$HEX_TARBALL_V2" -C "$WORK_DIR" VERSION metadata.config contents.tar.gz
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X PUT \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary "@${HEX_TARBALL_V2}" \
+  "${BASE_URL}/hex/${REPO_KEY}/packages/${PACKAGE_NAME}/releases/${PACKAGE_VERSION_V2}") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  # Try alternate publish endpoint
+  v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+    -X POST \
+    -H "$(format_auth_header)" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "@${HEX_TARBALL_V2}" \
+    "${BASE_URL}/hex/${REPO_KEY}/publish" 2>/dev/null) || true
+  if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+    pass
+  else
+    fail "v2 upload returned ${v2_status}"
+  fi
+fi
+
+# -----------------------------------------------------------------------
+# Delete package and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete package and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${PACKAGE_NAME}/${PACKAGE_VERSION}/${PACKAGE_NAME}-${PACKAGE_VERSION}.tar" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${PACKAGE_NAME}/${PACKAGE_VERSION}/${PACKAGE_NAME}-${PACKAGE_VERSION}.tar" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "artifact still accessible after delete (status: ${verify_status})"
+  fi
+else
+  # Try deleting via format-native endpoint
+  status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X DELETE -H "$(format_auth_header)" \
+    "${BASE_URL}/hex/${REPO_KEY}/packages/${PACKAGE_NAME}/releases/${PACKAGE_VERSION}" 2>&1) || true
+  if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+    pass
+  else
+    fail "delete returned ${status}"
+  fi
+fi
+
 end_suite

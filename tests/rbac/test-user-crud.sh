@@ -113,10 +113,11 @@ begin_test "Deleted user cannot login"
 status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"username\":\"${TEST_USER}\",\"password\":\"${TEST_PASS}\"}" 2>/dev/null) || true
-if [ "$status" = "401" ] || [ "$status" = "404" ] || [ "$status" = "403" ]; then
+# Deleted user's credentials are invalid: expect 401 (unauthenticated).
+if [ "$status" = "401" ]; then
   pass
 else
-  fail "deleted user got HTTP ${status}, expected 401/403/404"
+  fail "deleted user got HTTP ${status}, expected 401"
 fi
 
 end_suite

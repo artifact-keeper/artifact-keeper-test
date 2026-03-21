@@ -128,4 +128,64 @@ else
   fail "package download returned ${dl_status}, expected 200"
 fi
 
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+PACKAGE_VERSION_V2="2.0.$(date +%s)"
+
+cat > "$PKG_DIR/DESCRIPTION" <<EOF
+Package: ${PACKAGE_NAME}
+Title: E2E Test Package v2
+Version: ${PACKAGE_VERSION_V2}
+Authors@R: person("E2E", "Test", email = "test@example.com", role = c("aut", "cre"))
+Description: A minimal R package v2 for E2E testing.
+License: MIT
+Encoding: UTF-8
+EOF
+
+PKG_TARBALL_V2="$WORK_DIR/${PACKAGE_NAME}_${PACKAGE_VERSION_V2}.tar.gz"
+tar czf "$PKG_TARBALL_V2" -C "$WORK_DIR" "$PACKAGE_NAME"
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X PUT \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/gzip" \
+  --data-binary "@${PKG_TARBALL_V2}" \
+  "${BASE_URL}/cran/${REPO_KEY}/src/contrib/${PACKAGE_NAME}_${PACKAGE_VERSION_V2}.tar.gz") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  fail "v2 upload returned ${v2_status}"
+fi
+
+# -----------------------------------------------------------------------
+# Delete package and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete package and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/src/contrib/${PACKAGE_NAME}_${PACKAGE_VERSION}.tar.gz" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/src/contrib/${PACKAGE_NAME}_${PACKAGE_VERSION}.tar.gz" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "artifact still accessible after delete (status: ${verify_status})"
+  fi
+else
+  # Try with format-native DELETE
+  status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X DELETE -H "$(format_auth_header)" \
+    "${BASE_URL}/cran/${REPO_KEY}/src/contrib/${PACKAGE_NAME}_${PACKAGE_VERSION}.tar.gz" 2>&1) || true
+  if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+    pass
+  else
+    fail "delete returned ${status}"
+  fi
+fi
+
 end_suite
