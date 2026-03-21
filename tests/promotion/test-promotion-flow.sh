@@ -113,4 +113,67 @@ else
   skip "promotion history endpoint not available"
 fi
 
+# -------------------------------------------------------------------------
+# Reject promotion request
+# -------------------------------------------------------------------------
+
+begin_test "Reject promotion request"
+if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
+  skip "no artifact ID available for rejection test"
+else
+  # Upload a second artifact to staging for rejection
+  echo "reject-candidate-${RUN_ID}" > "${WORK_DIR}/reject.jar"
+  api_upload "/api/v1/repositories/${STAGING_KEY}/artifacts/com/app/reject.jar" \
+    "${WORK_DIR}/reject.jar" > /dev/null 2>&1 || true
+  sleep 2
+
+  # Get the new artifact ID
+  reject_list=$(api_get "/api/v1/repositories/${STAGING_KEY}/artifacts" 2>/dev/null) || true
+  REJECT_ARTIFACT_ID=$(echo "$reject_list" | jq -r '
+    if type == "array" then [.[] | select(.path // .name | test("reject"))] | .[0].id // .[0].artifact_id // empty
+    elif .items then [.items[] | select(.path // .name | test("reject"))] | .[0].id // .[0].artifact_id // empty
+    else empty
+    end' 2>/dev/null) || true
+
+  # Fall back to last artifact if filtering did not work
+  if [ -z "$REJECT_ARTIFACT_ID" ] || [ "$REJECT_ARTIFACT_ID" = "null" ]; then
+    REJECT_ARTIFACT_ID=$(echo "$reject_list" | jq -r '
+      if type == "array" then .[-1].id // .[-1].artifact_id // empty
+      elif .items then .items[-1].id // .items[-1].artifact_id // empty
+      else empty
+      end' 2>/dev/null) || true
+  fi
+
+  if [ -n "$REJECT_ARTIFACT_ID" ] && [ "$REJECT_ARTIFACT_ID" != "null" ]; then
+    reject_resp=$(api_post "/api/v1/promotion/repositories/${STAGING_KEY}/artifacts/${REJECT_ARTIFACT_ID}/reject" \
+      '{"reason":"test rejection"}' 2>/dev/null) || true
+    if [ -n "$reject_resp" ] && echo "$reject_resp" | jq -e '.rejected // .rejection_id // .id' > /dev/null 2>&1; then
+      pass
+    else
+      skip "reject endpoint not available or returned unexpected response"
+    fi
+  else
+    skip "could not get artifact ID for rejection"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Promote to non-existent repo should fail
+# -------------------------------------------------------------------------
+
+begin_test "Promote to non-existent repo fails"
+if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
+  skip "no artifact ID available"
+else
+  status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
+    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d '{"target_repository":"nonexistent-repo-'"${RUN_ID}"'"}' \
+    "${BASE_URL}/api/v1/promotion/repositories/${STAGING_KEY}/artifacts/${ARTIFACT_ID}/promote" 2>&1) || true
+  if [ "$status" = "404" ] || [ "$status" = "400" ]; then
+    pass
+  else
+    fail "expected 404 or 400, got ${status}"
+  fi
+fi
+
 end_suite

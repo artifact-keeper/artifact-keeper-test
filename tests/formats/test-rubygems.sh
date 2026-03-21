@@ -175,4 +175,121 @@ else
   fail "gem download returned ${dl_status}, expected 200"
 fi
 
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+GEM_VERSION_V2="2.0.$(date +%s)"
+
+cat > "$GEM_DIR/lib/${GEM_NAME}.rb" <<EOF
+module E2eHello
+  VERSION = "${GEM_VERSION_V2}"
+  def self.hello
+    "Hello from RubyGems E2E test v2!"
+  end
+end
+EOF
+
+# Rebuild data.tar.gz
+DATA_TAR_V2="$WORK_DIR/data-v2.tar.gz"
+tar czf "$DATA_TAR_V2" -C "$GEM_DIR" lib
+
+# Rebuild metadata.gz
+cat > "$WORK_DIR/metadata-v2" <<EOF
+--- !ruby/object:Gem::Specification
+name: ${GEM_NAME}
+version: !ruby/object:Gem::Version
+  version: '${GEM_VERSION_V2}'
+platform: ruby
+authors:
+- E2E Test
+autorequire:
+bindir: bin
+cert_chain: []
+date: '$(date +%Y-%m-%d)'
+dependencies: []
+description: E2E test gem v2
+email: test@example.com
+executables: []
+extensions: []
+extra_rdoc_files: []
+files:
+- lib/${GEM_NAME}.rb
+homepage: https://example.com
+licenses:
+- MIT
+metadata: {}
+post_install_message:
+rdoc_options: []
+require_paths:
+- lib
+required_ruby_version: !ruby/object:Gem::Requirement
+  requirements:
+  - - ">="
+    - !ruby/object:Gem::Version
+      version: '0'
+required_rubygems_version: !ruby/object:Gem::Requirement
+  requirements:
+  - - ">="
+    - !ruby/object:Gem::Version
+      version: '0'
+requirements: []
+rubygems_version: 3.0.0
+signing_key:
+specification_version: 4
+summary: E2E test gem v2 for artifact-keeper
+test_files: []
+EOF
+
+gzip -c "$WORK_DIR/metadata-v2" > "$WORK_DIR/metadata-v2.gz"
+
+# Assemble .gem using v2 metadata but same tar structure
+GEM_FILE_V2="$WORK_DIR/${GEM_NAME}-${GEM_VERSION_V2}.gem"
+cp "$WORK_DIR/metadata-v2.gz" "$WORK_DIR/metadata.gz"
+cp "$DATA_TAR_V2" "$WORK_DIR/data.tar.gz"
+tar cf "$GEM_FILE_V2" -C "$WORK_DIR" metadata.gz data.tar.gz
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary "@${GEM_FILE_V2}" \
+  "${BASE_URL}/gems/${REPO_KEY}/api/v1/gems") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  fail "v2 upload returned ${v2_status}"
+fi
+
+# -----------------------------------------------------------------------
+# Delete gem and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete gem and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(format_auth_header)" \
+  "${BASE_URL}/gems/${REPO_KEY}/api/v1/gems/yank" \
+  -d "gem_name=${GEM_NAME}&version=${GEM_VERSION}" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  # Verify the yanked gem is no longer downloadable
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(format_auth_header)" \
+    "${BASE_URL}/gems/${REPO_KEY}/gems/${GEM_NAME}-${GEM_VERSION}.gem" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "gem still accessible after yank (status: ${verify_status})"
+  fi
+else
+  # Try management API delete
+  status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${GEM_NAME}/${GEM_VERSION}/${GEM_NAME}-${GEM_VERSION}.gem" 2>&1) || true
+  if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+    pass
+  else
+    fail "delete returned ${status}"
+  fi
+fi
+
 end_suite

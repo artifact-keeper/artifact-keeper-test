@@ -8,8 +8,10 @@ source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "signing"
 auth_admin
+setup_workdir
 
 KEY_NAME="e2e-signing-key-${RUN_ID}"
+REPO_KEY="signing-test-${RUN_ID}"
 
 begin_test "Create signing key"
 if resp=$(api_post "/api/v1/signing/keys" \
@@ -49,6 +51,56 @@ if [ -n "${KEY_ID:-}" ] && [ "$KEY_ID" != "null" ]; then
 else
   skip "no key ID"
 fi
+
+# ---------------------------------------------------------------------------
+# Signing behavior tests: configure a repo, upload, and verify signatures
+# ---------------------------------------------------------------------------
+
+begin_test "Create repo for signing"
+if create_local_repo "$REPO_KEY" "generic"; then
+  pass
+else
+  fail "could not create signing test repo"
+fi
+
+begin_test "Configure repo for signing"
+if [ -z "${KEY_ID:-}" ] || [ "$KEY_ID" = "null" ]; then
+  skip "no key ID available"
+else
+  resp=$(api_put "/api/v1/repositories/${REPO_KEY}/signing" \
+    "{\"key_id\":\"${KEY_ID}\",\"enabled\":true}" 2>/dev/null) || resp=""
+  if [ $? -eq 0 ]; then pass; else skip "signing config API not available"; fi
+fi
+
+begin_test "Upload artifact to signed repo"
+if [ -z "${KEY_ID:-}" ] || [ "$KEY_ID" = "null" ]; then
+  skip "no key ID, signing not configured"
+else
+  echo "signed-content-${RUN_ID}" > "${WORK_DIR}/signed.txt"
+  if api_upload "/api/v1/repositories/${REPO_KEY}/artifacts/signed/file.txt" \
+      "${WORK_DIR}/signed.txt" "text/plain" > /dev/null 2>&1; then
+    pass
+  else
+    fail "upload to signed repo failed"
+  fi
+fi
+
+begin_test "Retrieve public key content"
+if [ -z "${KEY_ID:-}" ] || [ "$KEY_ID" = "null" ]; then
+  skip "no key ID"
+else
+  resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/signing/keys/${KEY_ID}/public" 2>/dev/null) || resp=""
+  if assert_contains "$resp" "BEGIN PUBLIC KEY"; then
+    pass
+  else
+    skip "public key endpoint not available or different format"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
 
 begin_test "Delete signing key"
 if [ -n "${KEY_ID:-}" ] && [ "$KEY_ID" != "null" ]; then

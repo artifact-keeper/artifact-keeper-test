@@ -143,4 +143,79 @@ else
   fi
 fi
 
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+MODULE_VERSION_V2="2.0.$(date +%s)"
+
+cat > "$MODULE_DIR/main.tf" <<'EOF'
+variable "cidr_block" {
+  type    = string
+  default = "10.0.0.0/16"
+}
+
+variable "enable_dns" {
+  type    = bool
+  default = true
+}
+
+resource "aws_vpc" "main" {
+  cidr_block           = var.cidr_block
+  enable_dns_support   = var.enable_dns
+  enable_dns_hostnames = var.enable_dns
+  tags = {
+    Name = "e2e-test-vpc-v2"
+  }
+}
+
+output "vpc_id" {
+  value = aws_vpc.main.id
+}
+EOF
+
+MODULE_ARCHIVE_V2="$WORK_DIR/module-v2.tar.gz"
+tar czf "$MODULE_ARCHIVE_V2" -C "$MODULE_DIR" .
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X PUT \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/gzip" \
+  --data-binary "@${MODULE_ARCHIVE_V2}" \
+  "${BASE_URL}/terraform/${REPO_KEY}/v1/modules/${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/${MODULE_VERSION_V2}") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  fail "v2 upload returned ${v2_status}"
+fi
+
+# -----------------------------------------------------------------------
+# Delete module and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete module and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(format_auth_header)" \
+  "${BASE_URL}/terraform/${REPO_KEY}/v1/modules/${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/${MODULE_VERSION}" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  # Verify the version no longer appears in versions listing
+  versions_check=$(curl -sf -H "$(format_auth_header)" \
+    "${BASE_URL}/terraform/${REPO_KEY}/v1/modules/${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/versions" 2>/dev/null) || true
+  if [ -n "$versions_check" ] && echo "$versions_check" | grep -q "$MODULE_VERSION"; then
+    fail "module version still listed after delete"
+  else
+    pass
+  fi
+else
+  # Try management API delete
+  status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/${MODULE_VERSION}" 2>&1) || true
+  if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+    pass
+  else
+    fail "delete returned ${status}"
+  fi
+fi
+
 end_suite

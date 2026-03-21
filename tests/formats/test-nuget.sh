@@ -152,4 +152,78 @@ else
   fail "package download returned ${dl_status}, expected 200"
 fi
 
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+PACKAGE_VERSION_V2="2.0.$(date +%s)"
+
+cat > "$PKG_DIR/${PACKAGE_ID}.nuspec" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>${PACKAGE_ID}</id>
+    <version>${PACKAGE_VERSION_V2}</version>
+    <authors>E2E Test</authors>
+    <description>E2E test package v2 for NuGet registry</description>
+    <license type="expression">MIT</license>
+  </metadata>
+</package>
+EOF
+
+echo "placeholder assembly v2" > "$PKG_DIR/lib/net8.0/${PACKAGE_ID}.dll"
+
+NUPKG_FILE_V2="$WORK_DIR/${PACKAGE_ID}.${PACKAGE_VERSION_V2}.nupkg"
+(cd "$PKG_DIR" && zip -qr "$NUPKG_FILE_V2" .)
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X PUT \
+  -H "$(format_auth_header)" \
+  -F "package=@${NUPKG_FILE_V2};type=application/octet-stream" \
+  "${BASE_URL}/nuget/${REPO_KEY}/api/v2/package") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+    -X PUT \
+    -H "$(format_auth_header)" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "@${NUPKG_FILE_V2}" \
+    "${BASE_URL}/nuget/${REPO_KEY}/api/v2/package") || true
+  if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+    pass
+  else
+    fail "v2 upload returned ${v2_status}"
+  fi
+fi
+
+# -----------------------------------------------------------------------
+# Delete package and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete package and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(format_auth_header)" \
+  "${BASE_URL}/nuget/${REPO_KEY}/api/v2/package/${PACKAGE_ID}/${PACKAGE_VERSION}" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(format_auth_header)" \
+    "${BASE_URL}/nuget/${REPO_KEY}/v3/flatcontainer/${PACKAGE_ID_LOWER}/${PACKAGE_VERSION}/${PACKAGE_ID_LOWER}.${PACKAGE_VERSION}.nupkg" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "artifact still accessible after delete (status: ${verify_status})"
+  fi
+else
+  # Try management API delete
+  status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${PACKAGE_ID}/${PACKAGE_VERSION}/${PACKAGE_ID}.${PACKAGE_VERSION}.nupkg" 2>&1) || true
+  if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+    pass
+  else
+    fail "delete returned ${status}"
+  fi
+fi
+
 end_suite

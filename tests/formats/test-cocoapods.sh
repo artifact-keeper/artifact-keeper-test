@@ -117,4 +117,80 @@ else
   fail "podspec download returned ${dl_status}, expected 200"
 fi
 
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+POD_VERSION_V2="2.0.$(date +%s)"
+
+cat > "$WORK_DIR/${POD_NAME}.podspec.json" <<EOF
+{
+  "name": "${POD_NAME}",
+  "version": "${POD_VERSION_V2}",
+  "summary": "E2E test pod v2",
+  "description": "A minimal pod v2 used for end-to-end testing.",
+  "homepage": "https://example.com/${POD_NAME}",
+  "license": {
+    "type": "MIT",
+    "file": "LICENSE"
+  },
+  "authors": {
+    "E2E Test": "test@example.com"
+  },
+  "source": {
+    "git": "https://example.com/${POD_NAME}.git",
+    "tag": "${POD_VERSION_V2}"
+  },
+  "platforms": {
+    "ios": "15.0"
+  },
+  "source_files": "Sources/**/*.swift",
+  "swift_versions": ["5.9"]
+}
+EOF
+
+POD_TARBALL_V2="$WORK_DIR/${POD_NAME}-${POD_VERSION_V2}.tar.gz"
+tar czf "$POD_TARBALL_V2" -C "$WORK_DIR" "${POD_NAME}.podspec.json"
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/gzip" \
+  --data-binary "@${POD_TARBALL_V2}" \
+  "${BASE_URL}/cocoapods/${REPO_KEY}/pods") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  fail "v2 upload returned ${v2_status}"
+fi
+
+# -----------------------------------------------------------------------
+# Delete podspec and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete podspec and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${POD_NAME}/${POD_VERSION}/${POD_NAME}.podspec.json" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${POD_NAME}/${POD_VERSION}/${POD_NAME}.podspec.json" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "artifact still accessible after delete (status: ${verify_status})"
+  fi
+else
+  # Try deleting via format-native endpoint
+  status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X DELETE -H "$(format_auth_header)" \
+    "${BASE_URL}/cocoapods/${REPO_KEY}/Specs/${POD_NAME}/${POD_VERSION}/${POD_NAME}.podspec.json" 2>&1) || true
+  if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+    pass
+  else
+    fail "delete returned ${status}"
+  fi
+fi
+
 end_suite

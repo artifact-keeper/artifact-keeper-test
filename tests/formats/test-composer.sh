@@ -103,4 +103,89 @@ else
   fail "package ${VENDOR}/${PACKAGE} not found in packages.json"
 fi
 
+# -----------------------------------------------------------------------
+# Download and verify package
+# -----------------------------------------------------------------------
+begin_test "Download and verify package"
+dl_file="$WORK_DIR/downloaded-pkg.zip"
+if curl -sf -H "$(auth_header)" \
+    -o "$dl_file" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${VENDOR}/${PACKAGE}/${PACKAGE_VERSION}/${VENDOR}-${PACKAGE}-${PACKAGE_VERSION}.zip"; then
+  if [ -s "$dl_file" ]; then
+    pass
+  else
+    fail "downloaded file is empty"
+  fi
+else
+  # Try the Composer dist endpoint
+  dl_status=$(curl -s -o "$dl_file" -w '%{http_code}' \
+    -H "$(format_auth_header)" \
+    "${BASE_URL}/composer/${REPO_KEY}/dist/${VENDOR}/${PACKAGE}/${PACKAGE_VERSION}.zip" 2>/dev/null) || true
+  if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
+    pass
+  else
+    fail "download failed (status: ${dl_status})"
+  fi
+fi
+
+# -----------------------------------------------------------------------
+# Upload second version
+# -----------------------------------------------------------------------
+begin_test "Upload second version"
+PACKAGE_VERSION_V2="2.0.$(date +%s)"
+
+cat > "$PKG_DIR/composer.json" <<EOF
+{
+  "name": "${VENDOR}/${PACKAGE}",
+  "description": "E2E test package v2",
+  "version": "${PACKAGE_VERSION_V2}",
+  "type": "library",
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "E2ETest\\\\": "src/"
+    }
+  },
+  "require": {
+    "php": ">=8.0"
+  }
+}
+EOF
+
+PKG_ARCHIVE_V2="$WORK_DIR/${VENDOR}-${PACKAGE}-${PACKAGE_VERSION_V2}.zip"
+(cd "$PKG_DIR" && zip -qr "$PKG_ARCHIVE_V2" .)
+
+v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X PUT \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/zip" \
+  --data-binary "@${PKG_ARCHIVE_V2}" \
+  "${BASE_URL}/composer/${REPO_KEY}/api/packages") || true
+
+if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
+  pass
+else
+  fail "v2 upload returned ${v2_status}"
+fi
+
+# -----------------------------------------------------------------------
+# Delete package and verify removal
+# -----------------------------------------------------------------------
+begin_test "Delete package and verify removal"
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${VENDOR}/${PACKAGE}/${PACKAGE_VERSION}/${VENDOR}-${PACKAGE}-${PACKAGE_VERSION}.zip" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${VENDOR}/${PACKAGE}/${PACKAGE_VERSION}/${VENDOR}-${PACKAGE}-${PACKAGE_VERSION}.zip" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "artifact still accessible after delete (status: ${verify_status})"
+  fi
+else
+  fail "delete returned ${status}"
+fi
+
 end_suite

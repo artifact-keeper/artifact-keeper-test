@@ -101,4 +101,84 @@ else
   fail "latest revision returned empty response"
 fi
 
+# -----------------------------------------------------------------------
+begin_test "Download and verify recipe file"
+# -----------------------------------------------------------------------
+dl_file="${WORK_DIR}/downloaded-conanfile.py"
+dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/conan/${REPO_KEY}/v2/conans/testlib/1.0.0/_/_/revisions/${REVISION}/files/conanfile.py" 2>/dev/null) || true
+
+if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
+  pass
+else
+  # Try management API
+  if curl -sf -H "$(auth_header)" \
+      -o "$dl_file" \
+      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/testlib/1.0.0/conanfile.py"; then
+    if [ -s "$dl_file" ]; then
+      pass
+    else
+      fail "downloaded file is empty"
+    fi
+  else
+    fail "download failed (status: ${dl_status})"
+  fi
+fi
+
+# -----------------------------------------------------------------------
+begin_test "Upload second version recipe"
+# -----------------------------------------------------------------------
+cat > "${WORK_DIR}/conanfile-v2.py" <<'PYEOF'
+from conan import ConanFile
+
+class TestLibConan(ConanFile):
+    name = "testlib"
+    version = "2.0.0"
+    license = "MIT"
+    description = "A test library v2 for E2E"
+    settings = "os", "compiler", "build_type", "arch"
+PYEOF
+
+REVISION_V2="b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5"
+
+V2_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary "@${WORK_DIR}/conanfile-v2.py" \
+  "${BASE_URL}/conan/${REPO_KEY}/v2/conans/testlib/2.0.0/_/_/revisions/${REVISION_V2}/files/conanfile.py") || true
+
+if [ "$V2_STATUS" -ge 200 ] 2>/dev/null && [ "$V2_STATUS" -lt 300 ] 2>/dev/null; then
+  pass
+else
+  fail "v2 recipe upload returned HTTP ${V2_STATUS}"
+fi
+
+# -----------------------------------------------------------------------
+begin_test "Delete recipe and verify removal"
+# -----------------------------------------------------------------------
+status=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X DELETE -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/testlib/1.0.0/conanfile.py" 2>&1) || true
+if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+  verify_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/testlib/1.0.0/conanfile.py" 2>&1) || true
+  if [ "$verify_status" = "404" ]; then
+    pass
+  else
+    fail "artifact still accessible after delete (status: ${verify_status})"
+  fi
+else
+  # Try deleting via Conan v2 API
+  status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X DELETE -H "$(format_auth_header)" \
+    "${BASE_URL}/conan/${REPO_KEY}/v2/conans/testlib/1.0.0/_/_" 2>&1) || true
+  if [ "$status" = "200" ] || [ "$status" = "204" ]; then
+    pass
+  else
+    fail "delete returned ${status}"
+  fi
+fi
+
 end_suite
