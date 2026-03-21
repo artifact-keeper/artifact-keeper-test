@@ -82,7 +82,8 @@ if [ -n "${API_TOKEN:-}" ] && [ "$API_TOKEN" != "null" ]; then
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${API_TOKEN}" \
     "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
-  if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+  # Revoked token is no longer a valid credential: expect 401 (unauthenticated).
+  if [ "$status" = "401" ]; then
     pass
   else
     skip "revoked token returned ${status} (may take time to propagate)"

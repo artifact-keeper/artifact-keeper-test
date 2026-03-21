@@ -83,7 +83,7 @@ if [ -n "${ACCESS_TOKEN:-}" ]; then
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" \
     "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
-  if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+  if [ "$status" = "401" ]; then
     pass
   else
     skip "logout may not invalidate JWT immediately (stateless), got ${status}"
