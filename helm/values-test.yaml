@@ -22,7 +22,7 @@ backend:
   env:
     ENVIRONMENT: test
     RUST_LOG: info
-    ADMIN_PASSWORD: admin123
+    ADMIN_PASSWORD: TestRunner!2026secure
   persistence:
     size: 2Gi
 

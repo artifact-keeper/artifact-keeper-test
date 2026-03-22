@@ -525,6 +525,7 @@ jobs:
     needs: [deploy, format-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, security-tests, compatibility-tests]
     if: |
       always() &&
+      needs.deploy.result == 'success' &&
       (inputs.test_suite == 'all' || inputs.test_suite == 'stress')
     runs-on: ak-e2e-runners
     env:
