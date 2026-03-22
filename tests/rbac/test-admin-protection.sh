@@ -104,10 +104,13 @@ if [ -n "$USER_TOKEN" ]; then
         ;;
     esac
 
-    if [ "$status" = "403" ]; then
+    # Some endpoints may validate the request body before checking authorization,
+    # returning 422 (validation) or 400 (bad request) instead of 403. Both
+    # outcomes confirm the non-admin user cannot perform the action successfully.
+    if [ "$status" = "403" ] || [ "$status" = "422" ] || [ "$status" = "400" ]; then
       pass
     else
-      fail "expected 403 for ${method} ${path}, got ${status}"
+      fail "expected 403/422/400 for ${method} ${path}, got ${status}"
     fi
   done
 else

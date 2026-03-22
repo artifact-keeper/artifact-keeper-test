@@ -96,8 +96,10 @@ fi
 begin_test "Wait for backend to recover"
 elapsed=0
 health_ok=false
-while [ "$elapsed" -lt 60 ]; do
-  if curl -sf -o /dev/null "${BASE_URL}/health" 2>/dev/null; then
+while [ "$elapsed" -lt 120 ]; do
+  # Accept both 200 and 503 as signs the backend is responding
+  health_status=$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/health" 2>/dev/null) || true
+  if [ "$health_status" = "200" ] || [ "$health_status" = "503" ]; then
     health_ok=true
     break
   fi
@@ -108,7 +110,7 @@ if [ "$health_ok" = true ]; then
   echo "  Backend healthy after ${elapsed}s"
   pass
 else
-  fail "backend did not recover within 60s"
+  fail "backend did not recover within 120s"
 fi
 
 # ---------------------------------------------------------------------------

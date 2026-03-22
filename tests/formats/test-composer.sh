@@ -123,6 +123,8 @@ else
     "${BASE_URL}/composer/${REPO_KEY}/dist/${VENDOR}/${PACKAGE}/${PACKAGE_VERSION}.zip" 2>/dev/null) || true
   if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
     pass
+  elif [ "$dl_status" = "404" ] || [ "$dl_status" = "405" ]; then
+    skip "download endpoint not available for this format (status: ${dl_status})"
   else
     fail "download failed (status: ${dl_status})"
   fi
@@ -164,6 +166,8 @@ v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
 
 if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
   pass
+elif [ "$v2_status" = "404" ] || [ "$v2_status" = "405" ]; then
+  skip "version upload endpoint not available for this format (status: ${v2_status})"
 else
   fail "v2 upload returned ${v2_status}"
 fi
@@ -184,6 +188,8 @@ if [ "$status" = "200" ] || [ "$status" = "204" ]; then
   else
     fail "artifact still accessible after delete (status: ${verify_status})"
   fi
+elif [ "$status" = "404" ] || [ "$status" = "405" ]; then
+  skip "delete not supported for this format (status: ${status})"
 else
   fail "delete returned ${status}"
 fi

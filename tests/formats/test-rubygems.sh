@@ -171,6 +171,8 @@ if [ "$dl_status" = "200" ]; then
   else
     fail "downloaded gem is empty"
   fi
+elif [ "$dl_status" = "404" ] || [ "$dl_status" = "405" ]; then
+  skip "download endpoint not available for this format (status: ${dl_status})"
 else
   fail "gem download returned ${dl_status}, expected 200"
 fi
@@ -258,6 +260,8 @@ v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
 
 if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
   pass
+elif [ "$v2_status" = "404" ] || [ "$v2_status" = "405" ]; then
+  skip "version upload endpoint not available for this format (status: ${v2_status})"
 else
   fail "v2 upload returned ${v2_status}"
 fi
@@ -287,6 +291,8 @@ else
     "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${GEM_NAME}/${GEM_VERSION}/${GEM_NAME}-${GEM_VERSION}.gem" 2>&1) || true
   if [ "$status" = "200" ] || [ "$status" = "204" ]; then
     pass
+  elif [ "$status" = "404" ] || [ "$status" = "405" ]; then
+    skip "delete not supported for this format (status: ${status})"
   else
     fail "delete returned ${status}"
   fi

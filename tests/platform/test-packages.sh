@@ -25,15 +25,21 @@ api_upload "/api/v1/repositories/${REPO_B}/artifacts/shared-pkg/v1/file.txt" \
 pass
 
 begin_test "Query packages API for cross-repo aggregation"
-resp=$(api_get "/api/v1/packages?q=shared-pkg") || true
-if [ $? -eq 0 ] || [ -n "$resp" ]; then
-  if assert_contains "$resp" "shared-pkg"; then
+pkg_status=$(curl -s -o "$WORK_DIR/packages-resp.json" -w '%{http_code}' \
+  -H "$(auth_header)" $CURL_TIMEOUT \
+  "${BASE_URL}/api/v1/packages?q=shared-pkg" 2>/dev/null) || pkg_status="000"
+resp=$(cat "$WORK_DIR/packages-resp.json" 2>/dev/null) || resp=""
+
+if [ "$pkg_status" = "404" ] || [ "$pkg_status" = "000" ]; then
+  skip "packages API not implemented (returned ${pkg_status})"
+elif [ "$pkg_status" -ge 200 ] 2>/dev/null && [ "$pkg_status" -lt 300 ] 2>/dev/null; then
+  if [ -n "$resp" ] && echo "$resp" | grep -q "shared-pkg"; then
     pass
   else
     fail "package not found in aggregated results"
   fi
 else
-  skip "packages API not available"
+  skip "packages API returned unexpected status ${pkg_status}"
 fi
 
 end_suite

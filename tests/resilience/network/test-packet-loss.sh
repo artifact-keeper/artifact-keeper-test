@@ -58,12 +58,14 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Inject 10% packet loss via tc netem"
+TC_AVAILABLE=false
 tc_output=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
   tc qdisc add dev eth0 root netem loss 10% 2>&1) || true
-if echo "$tc_output" | grep -qi "not found\|no such file\|operation not permitted"; then
+if echo "$tc_output" | grep -qi "not found\|no such file\|operation not permitted\|permission denied"; then
   skip "tc/netem not available in backend pod (need iproute2 and NET_ADMIN capability)"
 else
   echo "  Packet loss injection applied (10%)"
+  TC_AVAILABLE=true
   pass
 fi
 

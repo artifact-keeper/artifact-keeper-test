@@ -22,8 +22,11 @@ USER_PASS="IdorTest123!"
 
 begin_test "Create User A"
 USER_A_ID=""
+# Include both "username" and "name" fields plus "display_name" to match
+# whichever field the backend requires (the user-crud test showed display_name
+# is accepted; some backend versions require "name" instead of "username").
 if resp=$(api_post "/api/v1/users" \
-    "{\"username\":\"${USER_A}\",\"password\":\"${USER_PASS}\",\"email\":\"${USER_A}@test.local\"}" 2>/dev/null); then
+    "{\"username\":\"${USER_A}\",\"name\":\"${USER_A}\",\"password\":\"${USER_PASS}\",\"email\":\"${USER_A}@test.local\",\"display_name\":\"IDOR User A\"}" 2>/dev/null); then
   USER_A_ID=$(echo "$resp" | jq -r '.user.id // .id // .user_id // empty') || true
   if [ -n "$USER_A_ID" ] && [ "$USER_A_ID" != "null" ]; then
     pass
@@ -37,7 +40,7 @@ fi
 begin_test "Create User B"
 USER_B_ID=""
 if resp=$(api_post "/api/v1/users" \
-    "{\"username\":\"${USER_B}\",\"password\":\"${USER_PASS}\",\"email\":\"${USER_B}@test.local\"}" 2>/dev/null); then
+    "{\"username\":\"${USER_B}\",\"name\":\"${USER_B}\",\"password\":\"${USER_PASS}\",\"email\":\"${USER_B}@test.local\",\"display_name\":\"IDOR User B\"}" 2>/dev/null); then
   USER_B_ID=$(echo "$resp" | jq -r '.user.id // .id // .user_id // empty') || true
   if [ -n "$USER_B_ID" ] && [ "$USER_B_ID" != "null" ]; then
     pass
