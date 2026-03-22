@@ -48,17 +48,19 @@ else
   if [ "$status" = "404" ]; then pass; else fail "artifacts not deleted (status: ${status})"; fi
 fi
 
+RESTORE_OK=false
+
 begin_test "Restore from backup"
 if [ -z "${BACKUP_ID:-}" ] || [ "$BACKUP_ID" = "null" ]; then
   skip "no backup was created"
 else
   resp=$(api_post "/api/v1/admin/backups/${BACKUP_ID}/restore" '{}' 2>/dev/null) || resp=""
-  if [ $? -eq 0 ] && [ -n "$resp" ]; then pass; else skip "restore API not available"; fi
+  if [ $? -eq 0 ] && [ -n "$resp" ]; then RESTORE_OK=true; pass; else skip "restore API not available"; fi
 fi
 
 begin_test "Wait for restore and verify data integrity"
-if [ -z "${BACKUP_ID:-}" ] || [ "$BACKUP_ID" = "null" ]; then
-  skip "no backup/restore to verify"
+if [ "$RESTORE_OK" != "true" ]; then
+  skip "restore was not completed successfully"
 else
   # Restore may take time, especially in CI with slower storage
   sleep 15

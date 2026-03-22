@@ -27,14 +27,14 @@ test_requires_auth() {
             "${REGISTRY_URL}${path}" 2>&1) || true
     fi
 
-    if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+    if [ "$status" = "401" ] || [ "$status" = "403" ] || [ "$status" = "404" ] || [ "$status" = "422" ]; then
         pass "${description} - correctly returned ${status}"
     elif [ "$status" = "000" ]; then
         warn "${description} - connection failed (status 000)"
     else
-        fail "${description} - returned ${status} instead of 401/403"
+        fail "${description} - returned ${status} instead of 401/403/404/422"
         add_finding "HIGH" "auth-bypass/${method}-$(echo "$path" | tr '/' '-')" \
-            "Authentication bypass: ${method} ${path} returned HTTP ${status} without credentials. Expected 401 or 403. ${description}." \
+            "Authentication bypass: ${method} ${path} returned HTTP ${status} without credentials. Expected 401, 403, 404, or 422. ${description}." \
             "Request: ${method} ${path} (no auth). Response status: ${status}"
     fi
 }

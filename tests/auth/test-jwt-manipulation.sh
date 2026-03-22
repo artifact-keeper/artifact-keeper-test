@@ -25,7 +25,7 @@ FAKE_JWT="${HEADER_NONE}.${PAYLOAD}."
 
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer ${FAKE_JWT}" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" = "401" ]; then
   pass
 else
@@ -42,7 +42,7 @@ FAKE_JWT2="${HEADER_HS256}.${PAYLOAD}."
 
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer ${FAKE_JWT2}" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" = "401" ]; then
   pass
 else
@@ -59,7 +59,7 @@ FAKE_JWT3="${HEADER_HS256}.${PAYLOAD}.${FAKE_SIG}"
 
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer ${FAKE_JWT3}" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" = "401" ]; then
   pass
 else
@@ -73,7 +73,7 @@ fi
 begin_test "Completely invalid JWT string is rejected"
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer not.a.jwt.at.all" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" = "401" ]; then
   pass
 else
@@ -87,7 +87,7 @@ fi
 begin_test "Single-segment bearer token is rejected"
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer totallynotavalidtoken" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" = "401" ]; then
   pass
 else
@@ -101,7 +101,7 @@ fi
 begin_test "Empty bearer value is rejected"
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer " \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" = "401" ]; then
   pass
 else
@@ -117,7 +117,7 @@ FAKE_JWT4="${HEADER_NONE}.${PAYLOAD}.dummysig"
 
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer ${FAKE_JWT4}" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" = "401" ]; then
   pass
 else

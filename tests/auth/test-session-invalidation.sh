@@ -80,35 +80,28 @@ fi
 #   3. PUT /api/v1/users/{id}/password
 # -------------------------------------------------------------------------
 
-begin_test "Change user password via admin API"
+begin_test "Change user password"
 PASSWORD_CHANGED=false
-if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
-  # Attempt 1: PATCH user with new password
-  if curl -sf $CURL_TIMEOUT -X PATCH \
+if [ -n "${TOKEN_T1:-}" ]; then
+  # Attempt 1: POST /api/v1/users/me/password with user's own token
+  if curl -sf $CURL_TIMEOUT -X POST \
+      -H "Authorization: Bearer ${TOKEN_T1}" -H "Content-Type: application/json" \
+      -d "{\"current_password\":\"${ORIGINAL_PASS}\",\"new_password\":\"${NEW_PASS}\"}" \
+      "${BASE_URL}/api/v1/users/me/password" > /dev/null 2>&1; then
+    PASSWORD_CHANGED=true
+    pass
+  # Attempt 2: PATCH user via admin API
+  elif curl -sf $CURL_TIMEOUT -X PATCH \
       -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "{\"password\":\"${NEW_PASS}\"}" \
       "${BASE_URL}/api/v1/users/${USER_ID}" > /dev/null 2>&1; then
-    PASSWORD_CHANGED=true
-    pass
-  # Attempt 2: POST to password sub-resource
-  elif curl -sf $CURL_TIMEOUT -X POST \
-      -H "$(auth_header)" -H "Content-Type: application/json" \
-      -d "{\"password\":\"${NEW_PASS}\"}" \
-      "${BASE_URL}/api/v1/users/${USER_ID}/password" > /dev/null 2>&1; then
-    PASSWORD_CHANGED=true
-    pass
-  # Attempt 3: PUT to password sub-resource
-  elif curl -sf $CURL_TIMEOUT -X PUT \
-      -H "$(auth_header)" -H "Content-Type: application/json" \
-      -d "{\"new_password\":\"${NEW_PASS}\",\"password\":\"${NEW_PASS}\"}" \
-      "${BASE_URL}/api/v1/users/${USER_ID}/password" > /dev/null 2>&1; then
     PASSWORD_CHANGED=true
     pass
   else
     fail "could not change password via any known endpoint"
   fi
 else
-  skip "no user ID"
+  skip "no user token"
 fi
 
 # -------------------------------------------------------------------------

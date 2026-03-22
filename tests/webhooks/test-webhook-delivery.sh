@@ -57,12 +57,10 @@ fi
 # -------------------------------------------------------------------------
 
 DELIVERY_RESP=""
+delivery_found=false
 
 begin_test "Verify webhook delivery logged"
 if [ -n "${WEBHOOK_ID:-}" ] && [ "$WEBHOOK_ID" != "null" ]; then
-  # Webhook delivery may be async. Retry up to 3 times with 5s intervals
-  # to give the backend time to process and log the delivery.
-  delivery_found=false
   for attempt in 1 2 3; do
     sleep 5
     if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries" 2>/dev/null); then
@@ -92,7 +90,7 @@ else
 fi
 
 begin_test "Delivery payload contains event type"
-if [ -n "$DELIVERY_RESP" ]; then
+if [ "$delivery_found" = true ]; then
   if assert_contains "$DELIVERY_RESP" "event"; then
     pass
   fi
