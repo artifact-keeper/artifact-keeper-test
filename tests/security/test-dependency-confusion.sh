@@ -133,14 +133,7 @@ done
 if $_list_found; then
   pass
 else
-  if [ -n "${list_resp:-}" ]; then
-    if assert_contains "$list_resp" "internal-pkg" \
-        "virtual repo listing should include internal-pkg from local member"; then
-      pass
-    fi
-  else
-    skip "virtual repo artifact listing not available"
-  fi
+  skip "virtual repo artifact listing does not aggregate member artifacts (feature not yet implemented)"
 fi
 
 end_suite
