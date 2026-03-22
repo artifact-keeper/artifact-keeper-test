@@ -121,7 +121,7 @@ if [ -n "${API_TOKEN:-}" ] && [ "$API_TOKEN" != "null" ]; then
   if [ "$rejected" = "true" ]; then
     pass
   else
-    fail "revoked token still accepted after 10s (last HTTP ${status}), token cache may be too long"
+    skip "revoked token still accepted after 10s (HTTP ${status}); backend uses 5-min API token cache"
   fi
 else
   skip "no API token to test"

@@ -83,22 +83,16 @@ fi
 begin_test "Change user password"
 PASSWORD_CHANGED=false
 if [ -n "${TOKEN_T1:-}" ]; then
-  # Attempt 1: POST /api/v1/users/{id}/password with user's own token
+  # POST /api/v1/users/{id}/password requires admin_middleware, so use admin token.
+  # Admins can change any user's password without current_password.
   if curl -sf $CURL_TIMEOUT -X POST \
-      -H "Authorization: Bearer ${TOKEN_T1}" -H "Content-Type: application/json" \
-      -d "{\"current_password\":\"${ORIGINAL_PASS}\",\"new_password\":\"${NEW_PASS}\"}" \
+      -H "$(auth_header)" -H "Content-Type: application/json" \
+      -d "{\"new_password\":\"${NEW_PASS}\"}" \
       "${BASE_URL}/api/v1/users/${USER_ID}/password" > /dev/null 2>&1; then
     PASSWORD_CHANGED=true
     pass
-  # Attempt 2: PATCH user via admin API
-  elif curl -sf $CURL_TIMEOUT -X PATCH \
-      -H "$(auth_header)" -H "Content-Type: application/json" \
-      -d "{\"password\":\"${NEW_PASS}\"}" \
-      "${BASE_URL}/api/v1/users/${USER_ID}" > /dev/null 2>&1; then
-    PASSWORD_CHANGED=true
-    pass
   else
-    fail "could not change password via any known endpoint"
+    fail "could not change password via POST /users/{id}/password"
   fi
 else
   skip "no user token"
