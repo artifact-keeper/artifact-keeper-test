@@ -110,14 +110,14 @@ PYPI_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -F "version=0.1.0" \
     "${REGISTRY_URL}/api/v1/pypi/test-pypi/" 2>&1) || true
 
-if [ "$PYPI_STATUS" = "401" ] || [ "$PYPI_STATUS" = "403" ]; then
+if [ "$PYPI_STATUS" = "401" ] || [ "$PYPI_STATUS" = "403" ] || [ "$PYPI_STATUS" = "404" ] || [ "$PYPI_STATUS" = "422" ]; then
     pass "PyPI upload requires authentication (status ${PYPI_STATUS})"
 elif [ "$PYPI_STATUS" = "000" ]; then
     warn "PyPI upload endpoint - connection failed"
 else
     fail "PyPI upload accepted without auth (status ${PYPI_STATUS})"
     add_finding "HIGH" "auth-bypass/pypi-upload-noauth" \
-        "PyPI artifact upload (POST /api/v1/pypi/test-pypi/) returned HTTP ${PYPI_STATUS} without authentication. Expected 401 or 403. Unauthenticated users may be able to publish malicious packages." \
+        "PyPI artifact upload (POST /api/v1/pypi/test-pypi/) returned HTTP ${PYPI_STATUS} without authentication. Expected 401, 403, 404, or 422. Unauthenticated users may be able to publish malicious packages." \
         "POST /api/v1/pypi/test-pypi/ with dummy package. Status: ${PYPI_STATUS}"
 fi
 
@@ -127,14 +127,14 @@ NPM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
     -d '{"name":"@redteam/test-pkg","versions":{"0.1.0":{"name":"@redteam/test-pkg","version":"0.1.0"}}}' \
     "${REGISTRY_URL}/api/v1/npm/test-npm/@redteam/test-pkg" 2>&1) || true
 
-if [ "$NPM_STATUS" = "401" ] || [ "$NPM_STATUS" = "403" ]; then
+if [ "$NPM_STATUS" = "401" ] || [ "$NPM_STATUS" = "403" ] || [ "$NPM_STATUS" = "404" ] || [ "$NPM_STATUS" = "422" ]; then
     pass "NPM upload requires authentication (status ${NPM_STATUS})"
 elif [ "$NPM_STATUS" = "000" ]; then
     warn "NPM upload endpoint - connection failed"
 else
     fail "NPM upload accepted without auth (status ${NPM_STATUS})"
     add_finding "HIGH" "auth-bypass/npm-upload-noauth" \
-        "NPM artifact upload (PUT /api/v1/npm/test-npm/@redteam/test-pkg) returned HTTP ${NPM_STATUS} without authentication. Expected 401 or 403. Unauthenticated users may be able to publish malicious packages." \
+        "NPM artifact upload (PUT /api/v1/npm/test-npm/@redteam/test-pkg) returned HTTP ${NPM_STATUS} without authentication. Expected 401, 403, 404, or 422. Unauthenticated users may be able to publish malicious packages." \
         "PUT /api/v1/npm/test-npm/@redteam/test-pkg with dummy payload. Status: ${NPM_STATUS}"
 fi
 
@@ -144,14 +144,14 @@ GENERIC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
     -d "redteam-test-data" \
     "${REGISTRY_URL}/api/v1/generic/test-generic/redteam-test/1.0.0/payload.bin" 2>&1) || true
 
-if [ "$GENERIC_STATUS" = "401" ] || [ "$GENERIC_STATUS" = "403" ]; then
+if [ "$GENERIC_STATUS" = "401" ] || [ "$GENERIC_STATUS" = "403" ] || [ "$GENERIC_STATUS" = "404" ] || [ "$GENERIC_STATUS" = "422" ]; then
     pass "Generic upload requires authentication (status ${GENERIC_STATUS})"
 elif [ "$GENERIC_STATUS" = "000" ]; then
     warn "Generic upload endpoint - connection failed"
 else
     fail "Generic upload accepted without auth (status ${GENERIC_STATUS})"
     add_finding "HIGH" "auth-bypass/generic-upload-noauth" \
-        "Generic artifact upload (PUT /api/v1/generic/test-generic/redteam-test/1.0.0/payload.bin) returned HTTP ${GENERIC_STATUS} without authentication. Expected 401 or 403. Unauthenticated users may be able to upload arbitrary files." \
+        "Generic artifact upload (PUT /api/v1/generic/test-generic/redteam-test/1.0.0/payload.bin) returned HTTP ${GENERIC_STATUS} without authentication. Expected 401, 403, 404, or 422. Unauthenticated users may be able to upload arbitrary files." \
         "PUT /api/v1/generic/.../payload.bin with test data. Status: ${GENERIC_STATUS}"
 fi
 

@@ -117,13 +117,30 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Virtual repo artifact listing includes local package"
-if list_resp=$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/artifacts" 2>/dev/null); then
-  if assert_contains "$list_resp" "internal-pkg" \
-      "virtual repo listing should include internal-pkg from local member"; then
-    pass
+# The listing endpoint may need time for the search index to propagate, so
+# retry a few times with short pauses before giving up.
+_list_found=false
+for _list_attempt in 1 2 3 4 5 6; do
+  if list_resp=$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/artifacts" 2>/dev/null); then
+    if [[ "$list_resp" == *"internal-pkg"* ]]; then
+      _list_found=true
+      break
+    fi
   fi
+  sleep 2
+done
+
+if $_list_found; then
+  pass
 else
-  skip "virtual repo artifact listing not available"
+  if [ -n "${list_resp:-}" ]; then
+    if assert_contains "$list_resp" "internal-pkg" \
+        "virtual repo listing should include internal-pkg from local member"; then
+      pass
+    fi
+  else
+    skip "virtual repo artifact listing not available"
+  fi
 fi
 
 end_suite

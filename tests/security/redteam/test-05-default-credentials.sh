@@ -9,29 +9,38 @@ set -uo pipefail
 
 header "Default Credentials Testing"
 
-# --- Test 1: Admin login with default credentials ---
-# Credentials sourced from env vars ADMIN_USER / ADMIN_PASS (see lib.sh)
-info "Attempting admin login with default credentials (${ADMIN_USER}:***)"
+# --- Test 1: Admin login with well-known insecure defaults ---
+# The test environment uses a strong password (ADMIN_PASS). This test verifies
+# that common insecure defaults like "admin:admin123" or "admin:password" are
+# NOT accepted. We intentionally do NOT test the real admin password here; if
+# the real password works that is expected, not a finding.
+INSECURE_DEFAULTS="admin:admin123 admin:password123 admin:changeme123"
 
-LOGIN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" \
-    "${REGISTRY_URL}/api/v1/auth/login" 2>&1) || true
+for pair in $INSECURE_DEFAULTS; do
+    username="${pair%%:*}"
+    password="${pair#*:}"
+    info "Attempting admin login with insecure default (${username}:${password})"
 
-LOGIN_BODY=$(echo "$LOGIN_RESPONSE" | head -n -1)
-LOGIN_STATUS=$(echo "$LOGIN_RESPONSE" | tail -n 1)
+    LOGIN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"username\":\"${username}\",\"password\":\"${password}\"}" \
+        "${REGISTRY_URL}/api/v1/auth/login" 2>&1) || true
 
-if [ "$LOGIN_STATUS" = "200" ]; then
-    fail "Default admin credentials accepted (${ADMIN_USER}:***) - HTTP 200"
-    add_finding "CRITICAL" "default-creds/admin-login" \
-        "Default admin credentials are active. An attacker can gain full administrative access to the registry. Change the admin password immediately." \
-        "POST /api/v1/auth/login with default credentials returned HTTP 200. Response body (truncated): $(echo "$LOGIN_BODY" | head -c 500)"
-elif [ "$LOGIN_STATUS" = "401" ] || [ "$LOGIN_STATUS" = "403" ]; then
-    pass "Default admin credentials rejected (HTTP ${LOGIN_STATUS})"
-else
-    warn "Unexpected response for admin login: HTTP ${LOGIN_STATUS}"
-    info "Response: $(echo "$LOGIN_BODY" | head -c 300)"
-fi
+    LOGIN_BODY=$(echo "$LOGIN_RESPONSE" | head -n -1)
+    LOGIN_STATUS=$(echo "$LOGIN_RESPONSE" | tail -n 1)
+
+    if [ "$LOGIN_STATUS" = "200" ]; then
+        fail "Insecure default credentials accepted (${username}:${password}) - HTTP 200"
+        add_finding "CRITICAL" "default-creds/admin-login-${username}" \
+            "Insecure default admin credentials (${username}:${password}) are active. An attacker can gain full administrative access to the registry. Change the admin password immediately." \
+            "POST /api/v1/auth/login with ${username}:${password} returned HTTP 200. Response body (truncated): $(echo "$LOGIN_BODY" | head -c 500)"
+    elif [ "$LOGIN_STATUS" = "401" ] || [ "$LOGIN_STATUS" = "403" ]; then
+        pass "Insecure default credentials rejected: ${username}:${password} (HTTP ${LOGIN_STATUS})"
+    else
+        warn "Unexpected response for admin login (${username}:${password}): HTTP ${LOGIN_STATUS}"
+        info "Response: $(echo "$LOGIN_BODY" | head -c 300)"
+    fi
+done
 
 # --- Test 2: Try other common default credential pairs ---
 info "Trying additional common credential pairs..."
