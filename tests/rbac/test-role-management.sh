@@ -20,7 +20,7 @@ PASSWORD="TestPass123!"
 
 begin_test "Create user"
 resp=$(api_post "/api/v1/users" "{\"username\":\"${USER}\",\"password\":\"${PASSWORD}\",\"email\":\"role-${RUN_ID}@test.com\"}")
-USER_ID=$(echo "$resp" | jq -r '.id // empty')
+USER_ID=$(echo "$resp" | jq -r '.user.id // .id // .user_id // empty')
 if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
   pass
 else

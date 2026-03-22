@@ -31,7 +31,7 @@ EXPIRED_JWT="${HEADER}.${PAYLOAD}.${FAKE_SIG}"
 
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer ${EXPIRED_JWT}" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" = "401" ]; then
   pass
 else
@@ -45,7 +45,7 @@ fi
 begin_test "Valid admin token works (baseline)"
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
   pass
 else
@@ -137,7 +137,7 @@ if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
   if [ -n "$EXPIRED_API_TOKEN" ] && [ "$EXPIRED_API_TOKEN" != "null" ]; then
     status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
       -H "Authorization: Bearer ${EXPIRED_API_TOKEN}" \
-      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+      "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
     if [ "$status" = "401" ]; then
       pass
     else
@@ -177,7 +177,7 @@ if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
     sleep 3
     status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
       -H "Authorization: Bearer ${SHORT_API_TOKEN}" \
-      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+      "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
     if [ "$status" = "401" ]; then
       pass
     else

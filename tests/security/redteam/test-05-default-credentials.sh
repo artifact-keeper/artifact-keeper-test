@@ -36,7 +36,7 @@ fi
 # --- Test 2: Try other common default credential pairs ---
 info "Trying additional common credential pairs..."
 
-CRED_PAIRS="admin:admin admin:password admin:changeme root:root root:admin"
+CRED_PAIRS="admin:admin admin:password admin:changeme admin:admin123 root:root root:admin root:password"
 
 for pair in $CRED_PAIRS; do
     username="${pair%%:*}"
