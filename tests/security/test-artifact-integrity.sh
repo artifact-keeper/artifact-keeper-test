@@ -90,7 +90,7 @@ fi
 begin_test "Downloaded artifact matches original content"
 if curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
     -o "${WORK_DIR}/downloaded.bin" \
-    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/pkg/v1/correct-artifact.bin" 2>/dev/null; then
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/pkg/v1/correct-artifact.bin" 2>/dev/null; then
   dl_sha256=$(shasum -a 256 "${WORK_DIR}/downloaded.bin" | awk '{print $1}')
   if assert_eq "$dl_sha256" "$CORRECT_SHA256" "downloaded checksum should match original"; then
     pass
