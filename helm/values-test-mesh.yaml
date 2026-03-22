@@ -27,6 +27,7 @@ backend:
   env:
     ENVIRONMENT: mesh-test
     RUST_LOG: info
+    ADMIN_PASSWORD: TestRunner!2026secure
   persistence:
     size: 2Gi
 

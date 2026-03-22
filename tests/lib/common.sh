@@ -16,7 +16,7 @@ set -euo pipefail
 
 export BASE_URL="${BASE_URL:-http://localhost:8080}"
 export ADMIN_USER="${ADMIN_USER:-admin}"
-export ADMIN_PASS="${ADMIN_PASS:-admin123}"
+export ADMIN_PASS="${ADMIN_PASS:-TestRunner!2026secure}"
 export RUN_ID="${RUN_ID:-local-$(date +%s)}"
 export TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 export JUNIT_OUTPUT_DIR="${JUNIT_OUTPUT_DIR:-/tmp/test-results}"
