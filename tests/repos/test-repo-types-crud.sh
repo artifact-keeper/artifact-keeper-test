@@ -76,7 +76,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "List all repositories"
-if resp=$(api_get "/api/v1/repositories"); then
+if resp=$(api_get "/api/v1/repositories?per_page=100&q=${LOCAL_KEY}"); then
   # The response may be a plain array, or an object with .data[], .items[],
   # or .repositories[]. Check if the key appears anywhere in the response.
   if assert_contains "$resp" "$LOCAL_KEY"; then

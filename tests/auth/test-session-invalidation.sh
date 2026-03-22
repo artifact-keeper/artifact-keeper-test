@@ -83,11 +83,11 @@ fi
 begin_test "Change user password"
 PASSWORD_CHANGED=false
 if [ -n "${TOKEN_T1:-}" ]; then
-  # Attempt 1: POST /api/v1/users/me/password with user's own token
+  # Attempt 1: POST /api/v1/users/{id}/password with user's own token
   if curl -sf $CURL_TIMEOUT -X POST \
       -H "Authorization: Bearer ${TOKEN_T1}" -H "Content-Type: application/json" \
       -d "{\"current_password\":\"${ORIGINAL_PASS}\",\"new_password\":\"${NEW_PASS}\"}" \
-      "${BASE_URL}/api/v1/users/me/password" > /dev/null 2>&1; then
+      "${BASE_URL}/api/v1/users/${USER_ID}/password" > /dev/null 2>&1; then
     PASSWORD_CHANGED=true
     pass
   # Attempt 2: PATCH user via admin API

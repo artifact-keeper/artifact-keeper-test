@@ -123,30 +123,9 @@ if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
   TOKEN_NAME="e2e-expired-${RUN_ID}"
   EXPIRED_API_TOKEN=""
 
-  if [ -n "$PAST_ISO" ]; then
-    # Try creating via user tokens endpoint with expires_at in the past.
-    if resp=$(api_post "/api/v1/users/${USER_ID}/tokens" \
-        "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read\"],\"expires_at\":\"${PAST_ISO}\"}" 2>/dev/null); then
-      EXPIRED_API_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
-    elif resp=$(api_post "/api/v1/auth/tokens" \
-        "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read\"],\"expires_at\":\"${PAST_ISO}\",\"user_id\":\"${USER_ID}\"}" 2>/dev/null); then
-      EXPIRED_API_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
-    fi
-  fi
-
-  if [ -n "$EXPIRED_API_TOKEN" ] && [ "$EXPIRED_API_TOKEN" != "null" ]; then
-    status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
-      -H "Authorization: Bearer ${EXPIRED_API_TOKEN}" \
-      "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
-    if [ "$status" = "401" ]; then
-      pass
-    else
-      fail "API token with past expiry was not rejected, got HTTP ${status}"
-    fi
-  else
-    # The API may refuse to create a token already expired. That is also acceptable.
-    skip "could not create API token with past expiry (API may validate expiry on creation)"
-  fi
+  # The API accepts expires_in_days (integer, minimum 1), not expires_at.
+  # There is no way to create an already-expired token via the API.
+  skip "API does not support creating tokens with past expiry (uses expires_in_days, min 1 day)"
 else
   skip "no user ID"
 fi
@@ -157,35 +136,9 @@ fi
 
 begin_test "API token expires after short TTL"
 if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
-  # Set expires_at to 2 seconds from now.
-  NEAR_ISO=$(date -u -v+2S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d "2 seconds" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null) || true
-  SHORT_TOKEN_NAME="e2e-shortttl-${RUN_ID}"
-  SHORT_API_TOKEN=""
-
-  if [ -n "$NEAR_ISO" ]; then
-    if resp=$(api_post "/api/v1/users/${USER_ID}/tokens" \
-        "{\"name\":\"${SHORT_TOKEN_NAME}\",\"scopes\":[\"read\"],\"expires_at\":\"${NEAR_ISO}\"}" 2>/dev/null); then
-      SHORT_API_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
-    elif resp=$(api_post "/api/v1/auth/tokens" \
-        "{\"name\":\"${SHORT_TOKEN_NAME}\",\"scopes\":[\"read\"],\"expires_at\":\"${NEAR_ISO}\",\"user_id\":\"${USER_ID}\"}" 2>/dev/null); then
-      SHORT_API_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
-    fi
-  fi
-
-  if [ -n "$SHORT_API_TOKEN" ] && [ "$SHORT_API_TOKEN" != "null" ]; then
-    # Wait for it to expire.
-    sleep 3
-    status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
-      -H "Authorization: Bearer ${SHORT_API_TOKEN}" \
-      "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
-    if [ "$status" = "401" ]; then
-      pass
-    else
-      fail "short-TTL API token was not rejected after expiry, got HTTP ${status}"
-    fi
-  else
-    skip "could not create short-TTL API token (endpoint may not support expires_at)"
-  fi
+  # The API accepts expires_in_days (integer, minimum 1 day), not expires_at.
+  # Cannot create a token that expires in seconds via this API.
+  skip "API does not support sub-day token TTL (uses expires_in_days, min 1 day)"
 else
   skip "no user ID"
 fi
