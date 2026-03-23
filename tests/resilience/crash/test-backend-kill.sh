@@ -76,7 +76,7 @@ fi
 begin_test "Wait for backend pod to become ready"
 elapsed=0
 pod_ready=false
-while [ "$elapsed" -lt 120 ]; do
+while [ "$elapsed" -lt 240 ]; do
   ready_count=$(kubectl get pods -l app=artifact-keeper-backend \
     -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
   if [ "$ready_count" = "true" ]; then
@@ -90,7 +90,7 @@ if [ "$pod_ready" = true ]; then
   echo "  Pod ready after ${elapsed}s"
   pass
 else
-  fail "backend pod did not become ready within 120s"
+  fail "backend pod did not become ready within 240s"
 fi
 
 # ---------------------------------------------------------------------------

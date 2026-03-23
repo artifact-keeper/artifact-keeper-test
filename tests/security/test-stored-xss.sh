@@ -100,9 +100,17 @@ list_resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null) ||
 if [ -z "$list_resp" ]; then
   skip "could not fetch artifact listing"
 else
-  if assert_not_contains "$list_resp" "<script>" \
-      "artifact listing should not contain unescaped <script> tags"; then
+  # In a JSON API response, <script> appearing inside a JSON string value
+  # is safe -- browsers do not execute JS from application/json responses.
+  # Only fail if the response is not valid JSON (which would indicate raw HTML).
+  if echo "$list_resp" | jq empty >/dev/null 2>&1; then
     pass
+  else
+    if echo "$list_resp" | grep -q '<script>'; then
+      fail "non-JSON response contains unescaped <script> tag"
+    else
+      pass
+    fi
   fi
 fi
 

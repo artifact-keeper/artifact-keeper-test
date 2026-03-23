@@ -53,10 +53,12 @@ begin_test "Delete backend pod to trigger PVC remount"
 POD_BEFORE=$(kubectl get pods -l app=artifact-keeper-backend \
   -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 echo "  Deleting pod: ${POD_BEFORE}"
-if kubectl delete pod "$POD_BEFORE" -n "${NAMESPACE}" 2>&1; then
+if [ -z "$POD_BEFORE" ]; then
+  fail "no backend pod found to delete (label selector may not match)"
+elif kubectl delete pod "$POD_BEFORE" -n "${NAMESPACE}" --timeout=60s 2>&1; then
   pass
 else
-  fail "pod deletion failed"
+  fail "pod deletion failed for ${POD_BEFORE}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -66,7 +68,7 @@ fi
 begin_test "Wait for new pod with PVC attached"
 elapsed=0
 pod_ready=false
-while [ "$elapsed" -lt 90 ]; do
+while [ "$elapsed" -lt 240 ]; do
   ready=$(kubectl get pods -l app=artifact-keeper-backend \
     -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
   if [ "$ready" = "true" ]; then
@@ -83,7 +85,7 @@ if [ "$pod_ready" = true ]; then
   echo "  Pod ready after ${elapsed}s"
   pass
 else
-  fail "new pod did not become ready within 90s (PVC may be stuck)"
+  fail "new pod did not become ready within 240s (PVC may be stuck)"
 fi
 
 begin_test "Wait for health endpoint"

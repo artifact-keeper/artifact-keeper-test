@@ -101,9 +101,10 @@ fi
 sleep 1
 
 begin_test "Downloaded artifact matches one of the uploaded files"
+DOWNLOAD_PATH="/api/v1/repositories/${REPO_KEY}/download/race-pkg/v1/payload.bin"
 if curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
     -o "${WORK_DIR}/downloaded.bin" \
-    "${BASE_URL}${ARTIFACT_PATH}" 2>/dev/null; then
+    "${BASE_URL}${DOWNLOAD_PATH}" 2>/dev/null; then
   DL_SHA=$(shasum -a 256 "${WORK_DIR}/downloaded.bin" | awk '{print $1}')
 
   if [ "$DL_SHA" = "$SHA_A" ]; then
