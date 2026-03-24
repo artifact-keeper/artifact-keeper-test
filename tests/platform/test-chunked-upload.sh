@@ -160,7 +160,7 @@ if [ -z "$SESSION_ID" ]; then
 else
   PROGRESS_RESP=""
   if PROGRESS_RESP=$(api_get "/api/v1/uploads/${SESSION_ID}" 2>/dev/null); then
-    BYTES_RECEIVED=$(echo "$PROGRESS_RESP" | jq -r '.bytes_received // .bytes_uploaded // 0')
+    BYTES_RECEIVED=$(echo "$PROGRESS_RESP" | jq -r '.bytes_received // 0')
     echo "  bytes_received: ${BYTES_RECEIVED}"
     echo "  expected: ${TEST_FILE_SIZE}"
 
@@ -276,7 +276,7 @@ if [ -n "$RESUME_SESSION_ID" ]; then
 
   # Check progress
   PROGRESS=$(api_get "/api/v1/uploads/${RESUME_SESSION_ID}" 2>/dev/null) || true
-  RECEIVED_BEFORE=$(echo "$PROGRESS" | jq -r '.bytes_received // .bytes_uploaded // 0' 2>/dev/null) || RECEIVED_BEFORE=0
+  RECEIVED_BEFORE=$(echo "$PROGRESS" | jq -r '.bytes_received // 0' 2>/dev/null) || RECEIVED_BEFORE=0
   echo "  bytes after first half: ${RECEIVED_BEFORE}"
 
   # Upload remaining chunks

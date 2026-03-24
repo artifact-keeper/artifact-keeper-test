@@ -344,7 +344,7 @@ fi
 # Test 6: Upload after session cancelled (expect 410)
 # =========================================================================
 
-begin_test "Upload to cancelled session returns 410"
+begin_test "Upload to cancelled session returns 404"
 GONE_RESP=$(curl -s $CURL_TIMEOUT -X POST \
   -H "$(auth_header)" \
   -H "Content-Type: application/json" \
@@ -383,11 +383,11 @@ if [ -n "$GONE_SESSION" ]; then
     "${BASE_URL}/api/v1/uploads/${GONE_SESSION}") || GONE_UP_HTTP="000"
 
   echo "  HTTP response: ${GONE_UP_HTTP}"
-  # Accept 410 (Gone) or 404 (Not Found) since implementations may differ
-  if [ "$GONE_UP_HTTP" = "410" ] || [ "$GONE_UP_HTTP" = "404" ]; then
+  # Cancelled sessions return 404 (not 410; 410 is reserved for expired sessions)
+  if [ "$GONE_UP_HTTP" = "404" ]; then
     pass
   else
-    fail "expected HTTP 410 or 404 for cancelled session, got ${GONE_UP_HTTP}"
+    fail "expected HTTP 404 for cancelled session, got ${GONE_UP_HTTP}"
   fi
 else
   skip "could not create session for cancelled-upload test"
