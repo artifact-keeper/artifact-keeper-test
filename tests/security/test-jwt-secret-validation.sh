@@ -85,7 +85,7 @@ if [ -n "$ADMIN_TOKEN" ]; then
   header_payload=$(echo "$ADMIN_TOKEN" | rev | cut -d. -f2- | rev)
   signature=$(echo "$ADMIN_TOKEN" | rev | cut -d. -f1 | rev)
   # Flip characters in signature to create an invalid one
-  corrupted_sig=$(echo "$signature" | tr 'A-Za-z' 'Z-Az-a')
+  corrupted_sig=$(echo "$signature" | sed 's/./X/g; s/^/TAMPERED/')
   tampered_token="${header_payload}.${corrupted_sig}"
 
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
