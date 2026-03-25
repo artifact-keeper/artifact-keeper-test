@@ -66,7 +66,7 @@ fi
 begin_test "Valid token accepted on authenticated endpoint"
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(auth_header)" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 
 if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
   pass
@@ -90,7 +90,7 @@ if [ -n "$ADMIN_TOKEN" ]; then
 
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${tampered_token}" \
-    "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+    "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 
   if [ "$status" = "401" ]; then
     pass
@@ -119,7 +119,7 @@ fake_token="${fake_header}.${fake_payload}.${fake_sig}"
 
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "Authorization: Bearer ${fake_token}" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 
 if [ "$status" = "401" ]; then
   pass
@@ -138,7 +138,7 @@ fi
 begin_test "Empty Bearer token is rejected"
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "Authorization: Bearer " \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 
 if [ "$status" = "401" ]; then
   pass
@@ -151,7 +151,7 @@ fi
 begin_test "Garbage Authorization header is rejected"
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "Authorization: NotAScheme totally-invalid-value" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 
 if [ "$status" = "401" ] || [ "$status" = "400" ]; then
   pass
@@ -210,7 +210,7 @@ else
     # Verify old token is rejected
     status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
       -H "Authorization: Bearer ${old_token}" \
-      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+      "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
 
     if [ "$status" = "401" ]; then
       pass
