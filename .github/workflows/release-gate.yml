@@ -144,6 +144,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -228,6 +229,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -258,6 +260,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -288,6 +291,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -318,6 +322,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -348,6 +353,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -378,6 +384,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -408,6 +415,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -438,6 +446,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -468,6 +477,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -498,6 +508,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -531,6 +542,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
@@ -568,6 +580,7 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       NAMESPACE: ${{ needs.deploy.outputs.namespace }}
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
@@ -616,6 +629,7 @@ jobs:
     runs-on: ak-e2e-runners
     env:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
       - uses: actions/checkout@v4
