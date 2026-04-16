@@ -23,6 +23,7 @@ backend:
     ENVIRONMENT: test
     RUST_LOG: info
     ADMIN_PASSWORD: TestRunner!2026secure
+    ACCOUNT_LOCKOUT_THRESHOLD: "0"
   persistence:
     size: 2Gi
 
