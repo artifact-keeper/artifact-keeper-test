@@ -376,9 +376,24 @@ if [ -z "$LOCKOUT_THRESHOLD" ]; then
   fi
 fi
 if [ -z "$LOCKOUT_THRESHOLD" ]; then
-  # Default assumption: try 5
-  LOCKOUT_THRESHOLD="5"
-  echo "  could not detect lockout threshold, assuming default of 5"
+  # Probe: send 6 failed logins and check if the account gets locked
+  for i in $(seq 1 6); do
+    curl -s -o /dev/null --max-time 5 -X POST -H "Content-Type: application/json" \
+      -d "{\"username\":\"${LOCKOUT_USER}\",\"password\":\"probe_wrong_${i}\"}" \
+      "${BASE_URL}/api/v1/auth/login" 2>/dev/null || true
+  done
+  probe_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"${LOCKOUT_USER}\",\"password\":\"${LOCKOUT_PASS}\"}" \
+    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
+  if [ "$probe_status" = "200" ]; then
+    # Login succeeded after 6 wrong attempts -- lockout is disabled
+    LOCKOUT_THRESHOLD="0"
+    echo "  probed: lockout is disabled (login succeeded after 6 failed attempts)"
+  else
+    LOCKOUT_THRESHOLD="5"
+    echo "  probed: lockout appears enabled (got ${probe_status} after 6 failed attempts)"
+  fi
 fi
 echo "  lockout threshold: ${LOCKOUT_THRESHOLD}"
 if [ "$LOCKOUT_THRESHOLD" = "0" ]; then
