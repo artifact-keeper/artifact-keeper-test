@@ -83,11 +83,16 @@ else
   if [ -z "$TARBALL_HREF" ]; then
     fail "no downloadable file link found in simple index"
   else
-    # The href may be absolute or relative; handle both
-    if [[ "$TARBALL_HREF" == http* ]]; then
-      DOWNLOAD_URL="$TARBALL_HREF"
+    # The href may be absolute URL, absolute path, or relative; handle all
+    # Strip fragment (#sha256=...) for the download URL
+    CLEAN_HREF=$(echo "$TARBALL_HREF" | sed 's/#.*//')
+    if [[ "$CLEAN_HREF" == http* ]]; then
+      DOWNLOAD_URL="$CLEAN_HREF"
+    elif [[ "$CLEAN_HREF" == /* ]]; then
+      # Absolute path from URL rewriting (e.g. /pypi/{key}/simple/{pkg}/file.tar.gz)
+      DOWNLOAD_URL="${BASE_URL}${CLEAN_HREF}"
     else
-      DOWNLOAD_URL="${PYPI_REMOTE_URL}/simple/${PROXY_PKG}/${TARBALL_HREF}"
+      DOWNLOAD_URL="${PYPI_REMOTE_URL}/simple/${PROXY_PKG}/${CLEAN_HREF}"
     fi
     if curl -sf $CURL_TIMEOUT \
         -u "${ADMIN_USER}:${ADMIN_PASS}" \
