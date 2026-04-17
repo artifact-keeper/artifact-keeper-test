@@ -1,0 +1,120 @@
+# values-test-full.yaml - Full-stack test deployment overlay
+#
+# Extends values-test.yaml with security scanning services (Trivy, scan
+# workspace). Used by create-test-namespace.sh --full-stack for test suites
+# that exercise vulnerability scanning, SBOM generation, and proxy caching.
+#
+# Does NOT enable DependencyTrack (requires complex bootstrapping, handled
+# separately).
+
+# Use a stable name so service URLs are predictable regardless of release name
+fullnameOverride: artifact-keeper
+
+backend:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-backend
+    tag: dev
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  env:
+    ENVIRONMENT: test
+    RUST_LOG: info
+    ADMIN_PASSWORD: TestRunner!2026secure
+    ACCOUNT_LOCKOUT_THRESHOLD: "0"
+    TRIVY_URL: "http://artifact-keeper-trivy:8090"
+    SCAN_WORKSPACE_PATH: "/data/scan-workspace"
+  persistence:
+    size: 2Gi
+  scanWorkspace:
+    enabled: true
+    size: 2Gi
+
+web:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-web
+    tag: dev
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+postgres:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    size: 2Gi
+  password: "test-db-password"
+
+meilisearch:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  persistence:
+    size: 1Gi
+  masterKey: "artifact-keeper-test-key"
+
+trivy:
+  enabled: true
+  image:
+    repository: aquasec/trivy
+    tag: "0.62.1"
+  persistence:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+secrets:
+  jwtSecret: "test-jwt-secret-not-for-production"
+
+# Disabled services: not needed for scanning test runs
+dependencyTrack:
+  enabled: false
+
+edge:
+  enabled: false
+
+ingress:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+cosign:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+pdb:
+  enabled: false
