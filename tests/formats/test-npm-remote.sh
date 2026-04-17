@@ -89,7 +89,7 @@ else
       "${BASE_URL}${TARBALL_PATH}" 2>/dev/null; then
     if [ -s "${WORK_DIR}/${PROXY_PKG}.tgz" ]; then
       # Verify the tarball is a valid gzip file
-      if file "${WORK_DIR}/${PROXY_PKG}.tgz" | grep -qi "gzip\|tar"; then
+      if gzip -t "${WORK_DIR}/${PROXY_PKG}.tgz" 2>/dev/null; then
         pass
       else
         fail "downloaded file is not a valid gzip tarball"
@@ -335,24 +335,19 @@ else
 fi
 
 begin_test "Add local and remote repos as virtual members"
-MEMBERS_PAYLOAD="{\"members\":[{\"member_key\":\"${LOCAL_KEY}\",\"priority\":1},{\"member_key\":\"${REMOTE_KEY}\",\"priority\":2}]}"
-if api_put "/api/v1/repositories/${VIRTUAL_KEY}/members" "$MEMBERS_PAYLOAD" > /dev/null 2>&1; then
+added=0
+if api_post "/api/v1/repositories/${VIRTUAL_KEY}/members" \
+    "{\"member_key\":\"${LOCAL_KEY}\",\"priority\":1}" > /dev/null 2>&1; then
+  added=$((added + 1))
+fi
+if api_post "/api/v1/repositories/${VIRTUAL_KEY}/members" \
+    "{\"member_key\":\"${REMOTE_KEY}\",\"priority\":2}" > /dev/null 2>&1; then
+  added=$((added + 1))
+fi
+if [ "$added" -ge 2 ]; then
   pass
-else
-  # Try POST one at a time as a fallback
-  added=0
-  if api_post "/api/v1/repositories/${VIRTUAL_KEY}/members" \
-      "{\"member_key\":\"${LOCAL_KEY}\",\"priority\":1}" > /dev/null 2>&1; then
-    added=$((added + 1))
-  fi
-  if api_post "/api/v1/repositories/${VIRTUAL_KEY}/members" \
-      "{\"member_key\":\"${REMOTE_KEY}\",\"priority\":2}" > /dev/null 2>&1; then
-    added=$((added + 1))
-  fi
-  if [ "$added" -ge 2 ]; then
-    pass
-  elif [ "$added" -ge 1 ]; then
-    pass  # at least one member added
+elif [ "$added" -ge 1 ]; then
+  pass  # at least one member added
   else
     fail "could not add members to virtual repo"
   fi

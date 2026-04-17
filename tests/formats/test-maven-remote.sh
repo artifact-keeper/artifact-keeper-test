@@ -153,16 +153,11 @@ else
 fi
 
 begin_test "Add local repo as virtual member"
-MEMBERS_PAYLOAD="{\"members\":[{\"member_key\":\"${LOCAL_KEY}\",\"priority\":1}]}"
-if api_put "/api/v1/repositories/${VIRTUAL_KEY}/members" "$MEMBERS_PAYLOAD" > /dev/null 2>&1; then
+if api_post "/api/v1/repositories/${VIRTUAL_KEY}/members" \
+    "{\"member_key\":\"${LOCAL_KEY}\",\"priority\":1}" > /dev/null 2>&1; then
   pass
 else
-  if api_post "/api/v1/repositories/${VIRTUAL_KEY}/members" \
-      "{\"member_key\":\"${LOCAL_KEY}\",\"priority\":1}" > /dev/null 2>&1; then
-    pass
-  else
-    fail "could not add local repo as virtual member"
-  fi
+  fail "could not add local repo as virtual member"
 fi
 
 sleep 1
