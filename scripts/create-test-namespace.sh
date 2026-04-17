@@ -2,7 +2,7 @@
 # create-test-namespace.sh - Create an isolated Kubernetes namespace for testing
 #
 # Usage:
-#   ./create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>] [--values <file>]
+#   ./create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>] [--values <file>] [--full-stack]
 #
 # Creates namespace test-<run-id>, deploys the Helm chart with test overlays,
 # and waits for the backend to become healthy.
@@ -24,6 +24,7 @@ BACKEND_TAG="dev"
 WEB_TAG="dev"
 IAC_REPO=""
 EXTRA_VALUES=""
+FULL_STACK=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,9 +33,10 @@ while [[ $# -gt 0 ]]; do
     --web-tag)     WEB_TAG="$2"; shift 2 ;;
     --iac-repo)    IAC_REPO="$2"; shift 2 ;;
     --values)      EXTRA_VALUES="$2"; shift 2 ;;
+    --full-stack)  FULL_STACK=true; shift ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>] [--values <file>]"
+      echo "Usage: create-test-namespace.sh --run-id <id> [--backend-tag <tag>] [--web-tag <tag>] [--iac-repo <path>] [--values <file>] [--full-stack]"
       exit 1
       ;;
   esac
@@ -96,9 +98,17 @@ fi
 
 echo "Installing Helm release: ${RELEASE_NAME}"
 
+# Select base values file: --full-stack enables Trivy + scan workspace
+if [ "$FULL_STACK" = true ]; then
+  VALUES_FILE="${REPO_ROOT}/helm/values-test-full.yaml"
+  echo "  Mode: full-stack (Trivy + scan workspace enabled)"
+else
+  VALUES_FILE="${REPO_ROOT}/helm/values-test.yaml"
+fi
+
 HELM_CMD=(helm upgrade --install "$RELEASE_NAME" "$CHART_DIR"
   --namespace "$NAMESPACE"
-  --values "${REPO_ROOT}/helm/values-test.yaml"
+  --values "$VALUES_FILE"
   --set backend.image.tag="$BACKEND_TAG"
   --set web.image.tag="$WEB_TAG"
   --wait

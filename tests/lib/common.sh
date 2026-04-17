@@ -183,19 +183,6 @@ create_local_repo() {
   create_repo "$1" "$2" "local"
 }
 
-create_remote_repo() {
-  local key="$1"
-  local format="$2"
-  local upstream_url="$3"
-  create_repo "$key" "$format" "remote" "$upstream_url"
-}
-
-create_virtual_repo() {
-  local key="$1"
-  local format="$2"
-  create_repo "$key" "$format" "virtual"
-}
-
 # ---------------------------------------------------------------------------
 # Test framework
 #
@@ -439,4 +426,258 @@ _xml_escape() {
   s="${s//\"/&quot;}"
   s="${s//\'/&apos;}"
   echo "$s"
+}
+
+# ---------------------------------------------------------------------------
+# Remote / Virtual repository helpers
+# ---------------------------------------------------------------------------
+
+# create_remote_repo KEY FORMAT UPSTREAM_URL [DESCRIPTION]
+# Creates a remote (proxy) repository that caches artifacts from an upstream.
+create_remote_repo() {
+  local key="$1"
+  local format="$2"
+  local upstream_url="$3"
+  local description="${4:-Remote proxy for ${format}}"
+
+  local payload
+  payload=$(jq -n \
+    --arg key "$key" \
+    --arg name "$key" \
+    --arg format "$format" \
+    --arg upstream_url "$upstream_url" \
+    --arg description "$description" \
+    '{key: $key, name: $name, format: $format, repo_type: "remote", upstream_url: $upstream_url, description: $description, is_public: true}')
+
+  api_post "/api/v1/repositories" "$payload" > /dev/null
+}
+
+# create_virtual_repo KEY FORMAT [MEMBER_KEYS] [DESCRIPTION]
+# Creates a virtual repository that aggregates multiple backing repos.
+# MEMBER_KEYS is a comma-separated list of repository keys (e.g. "local-npm,remote-npm").
+# If omitted, the virtual repo is created with no members (add them later via the API).
+create_virtual_repo() {
+  local key="$1"
+  local format="$2"
+  local member_keys="${3:-}"
+  local description="${4:-Virtual repo for ${format}}"
+
+  local payload
+  payload=$(jq -n \
+    --arg key "$key" \
+    --arg name "$key" \
+    --arg format "$format" \
+    --arg description "$description" \
+    '{key: $key, name: $name, format: $format, repo_type: "virtual", description: $description, is_public: true}')
+
+  api_post "/api/v1/repositories" "$payload" > /dev/null
+
+  # Add each member repository (if any specified)
+  if [ -n "$member_keys" ]; then
+    local IFS=','
+    for member in $member_keys; do
+      local member_payload
+      member_payload=$(jq -n --arg key "$member" '{repository_key: $key}')
+      api_post "/api/v1/repositories/${key}/members" "$member_payload" > /dev/null || true
+    done
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Scan helpers
+# ---------------------------------------------------------------------------
+
+# wait_for_scan REPO_KEY ARTIFACT_PATH [TIMEOUT_SECS]
+# Polls the scan endpoint until the status is no longer "pending" or "scanning".
+# Returns the final scan status on stdout.
+wait_for_scan() {
+  local repo_key="$1"
+  local artifact_path="$2"
+  local timeout="${3:-60}"
+
+  local elapsed=0
+  local status=""
+  while [ "$elapsed" -lt "$timeout" ]; do
+    local resp
+    resp=$(api_get "/api/v1/repositories/${repo_key}/artifacts/${artifact_path}/security/scan" 2>/dev/null) || true
+    if [ -n "$resp" ]; then
+      status=$(echo "$resp" | jq -r '.scan_status // .status // "unknown"')
+      if [ "$status" != "pending" ] && [ "$status" != "scanning" ]; then
+        echo "$status"
+        return 0
+      fi
+    fi
+    sleep 3
+    elapsed=$(( elapsed + 3 ))
+  done
+
+  echo "${status:-timeout}"
+  return 1
+}
+
+# assert_scan_completed REPO_KEY ARTIFACT_PATH
+# Waits for the scan to finish and asserts the status is "completed" or "clean".
+assert_scan_completed() {
+  local repo_key="$1"
+  local artifact_path="$2"
+
+  local status
+  if ! status=$(wait_for_scan "$repo_key" "$artifact_path" 60); then
+    fail "scan did not complete within 60s for ${repo_key}/${artifact_path} (status: ${status})"
+    return 1
+  fi
+
+  if [ "$status" != "completed" ] && [ "$status" != "clean" ]; then
+    fail "expected scan status 'completed' or 'clean', got '${status}' for ${repo_key}/${artifact_path}"
+    return 1
+  fi
+  return 0
+}
+
+# assert_scan_has_findings REPO_KEY ARTIFACT_PATH
+# Waits for the scan and verifies the findings array is non-empty.
+assert_scan_has_findings() {
+  local repo_key="$1"
+  local artifact_path="$2"
+
+  wait_for_scan "$repo_key" "$artifact_path" 60 > /dev/null || true
+
+  local resp
+  resp=$(api_get "/api/v1/repositories/${repo_key}/artifacts/${artifact_path}/security/scan") || {
+    fail "failed to fetch scan results for ${repo_key}/${artifact_path}"
+    return 1
+  }
+
+  local count
+  count=$(echo "$resp" | jq '.findings | length // 0')
+  if [ "$count" -eq 0 ]; then
+    fail "expected scan findings for ${repo_key}/${artifact_path}, got none"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# SBOM helpers
+# ---------------------------------------------------------------------------
+
+# get_sbom REPO_KEY ARTIFACT_NAME ARTIFACT_VERSION
+# Fetches the SBOM for a specific artifact version. Outputs the JSON response.
+get_sbom() {
+  local repo_key="$1"
+  local artifact_name="$2"
+  local artifact_version="$3"
+
+  api_get "/api/v1/repositories/${repo_key}/artifacts/${artifact_name}/${artifact_version}/sbom"
+}
+
+# assert_sbom_has_components REPO_KEY ARTIFACT_NAME ARTIFACT_VERSION [MIN_COUNT]
+# Fetches the SBOM and asserts the components array has at least MIN_COUNT entries.
+assert_sbom_has_components() {
+  local repo_key="$1"
+  local artifact_name="$2"
+  local artifact_version="$3"
+  local min_count="${4:-1}"
+
+  local resp
+  resp=$(get_sbom "$repo_key" "$artifact_name" "$artifact_version") || {
+    fail "failed to fetch SBOM for ${repo_key}/${artifact_name}@${artifact_version}"
+    return 1
+  }
+
+  local count
+  count=$(echo "$resp" | jq '.components | length // 0')
+  if [ "$count" -lt "$min_count" ]; then
+    fail "expected >= ${min_count} SBOM components for ${repo_key}/${artifact_name}@${artifact_version}, got ${count}"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Cache helpers
+# ---------------------------------------------------------------------------
+
+# assert_artifact_cached REPO_KEY ARTIFACT_PATH
+# Verifies that an artifact exists in the repository's artifact list.
+assert_artifact_cached() {
+  local repo_key="$1"
+  local artifact_path="$2"
+
+  local resp
+  resp=$(api_get "/api/v1/repositories/${repo_key}/artifacts") || {
+    fail "failed to list artifacts for ${repo_key}"
+    return 1
+  }
+
+  local found
+  found=$(echo "$resp" | jq --arg path "$artifact_path" '
+    if type == "array" then map(select(.path == $path or .name == $path)) | length
+    elif .items then [.items[] | select(.path == $path or .name == $path)] | length
+    else 0
+    end
+  ')
+  if [ "$found" -eq 0 ]; then
+    fail "artifact '${artifact_path}' not found in cached artifacts for ${repo_key}"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Proxy helpers
+# ---------------------------------------------------------------------------
+
+# proxy_and_verify REPO_KEY FORMAT PACKAGE_NAME PACKAGE_VERSION
+# Pulls an artifact through the remote proxy using the format-native endpoint,
+# then verifies it was cached locally.
+proxy_and_verify() {
+  local repo_key="$1"
+  local format="$2"
+  local package_name="$3"
+  local package_version="$4"
+
+  local pull_path=""
+  case "$format" in
+    npm)
+      pull_path="/${repo_key}/${package_name}/-/${package_name}-${package_version}.tgz"
+      ;;
+    pypi)
+      pull_path="/api/v1/pypi/${repo_key}/packages/${package_name}/${package_version}/${package_name}-${package_version}.tar.gz"
+      ;;
+    maven)
+      # Expects package_name as "group/artifact" (e.g. "org/example/mylib")
+      pull_path="/${repo_key}/${package_name}/${package_version}/${package_name##*/}-${package_version}.jar"
+      ;;
+    cargo)
+      pull_path="/api/v1/crates/${repo_key}/${package_name}/${package_version}/download"
+      ;;
+    nuget)
+      pull_path="/api/v1/nuget/${repo_key}/package/${package_name}/${package_version}/${package_name}.${package_version}.nupkg"
+      ;;
+    go)
+      pull_path="/${repo_key}/${package_name}/@v/${package_version}.zip"
+      ;;
+    docker|oci)
+      # For OCI/Docker, pull the manifest to trigger caching
+      pull_path="/v2/${repo_key}/${package_name}/manifests/${package_version}"
+      ;;
+    *)
+      pull_path="/api/v1/repositories/${repo_key}/artifacts/${package_name}/${package_version}"
+      ;;
+  esac
+
+  local http_status
+  http_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+    -H "$(format_auth_header)" \
+    "${BASE_URL}${pull_path}") || true
+
+  if [ "$http_status" -lt 200 ] 2>/dev/null || [ "$http_status" -ge 300 ] 2>/dev/null; then
+    fail "proxy pull failed for ${format}/${package_name}@${package_version}: HTTP ${http_status}"
+    return 1
+  fi
+
+  # Verify the artifact was cached
+  assert_artifact_cached "$repo_key" "${package_name}" || return 1
+  return 0
 }
