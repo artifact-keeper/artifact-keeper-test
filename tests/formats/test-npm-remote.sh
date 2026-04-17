@@ -283,7 +283,7 @@ echo "module.exports = {};" > index.js
 TARBALL_FILE="${WORK_DIR}/${LOCAL_PKG_NAME}-${LOCAL_PKG_VERSION}.tgz"
 tar czf "$TARBALL_FILE" -C "${WORK_DIR}/local-pkg" .
 
-TARBALL_B64=$(base64 < "$TARBALL_FILE")
+TARBALL_B64=$(base64 < "$TARBALL_FILE" | tr -d '\n')
 TARBALL_SIZE=$(wc -c < "$TARBALL_FILE" | tr -d ' ')
 
 PUBLISH_PAYLOAD=$(cat <<EOJSON
@@ -348,9 +348,8 @@ if [ "$added" -ge 2 ]; then
   pass
 elif [ "$added" -ge 1 ]; then
   pass  # at least one member added
-  else
-    fail "could not add members to virtual repo"
-  fi
+else
+  fail "could not add members to virtual repo"
 fi
 
 sleep 2
