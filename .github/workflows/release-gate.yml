@@ -126,17 +126,17 @@ jobs:
       matrix:
         batch:
           - name: node
-            scripts: "test-npm.sh test-vscode.sh"
+            scripts: "test-npm.sh test-npm-remote.sh test-vscode.sh"
           - name: python
-            scripts: "test-pypi.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
+            scripts: "test-pypi.sh test-pypi-remote.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
           - name: jvm
-            scripts: "test-maven.sh test-sbt.sh"
+            scripts: "test-maven.sh test-maven-remote.sh test-sbt.sh"
           - name: rust-go-swift
-            scripts: "test-cargo.sh test-go.sh test-swift.sh test-pub.sh"
+            scripts: "test-cargo.sh test-cargo-remote.sh test-go.sh test-swift.sh test-pub.sh"
           - name: system-packages
             scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-opkg.sh"
           - name: containers
-            scripts: "test-oci.sh test-helm.sh test-incus.sh"
+            scripts: "test-oci.sh test-oci-remote.sh test-helm.sh test-incus.sh"
           - name: misc-native
             scripts: "test-terraform.sh test-composer.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
