@@ -36,7 +36,7 @@ jobs:
           - name: misc-native
             scripts: "test-terraform.sh test-composer.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
-            scripts: "test-generic.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
+            scripts: "test-generic.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
     env:
       BASE_URL: ${{ inputs.backend_url }}
       RUN_ID: ${{ inputs.run_id }}
