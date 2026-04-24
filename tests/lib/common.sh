@@ -477,8 +477,8 @@ create_virtual_repo() {
     local IFS=','
     for member in $member_keys; do
       local member_payload
-      member_payload=$(jq -n --arg key "$member" '{repository_key: $key}')
-      api_post "/api/v1/repositories/${key}/members" "$member_payload" > /dev/null || true
+      member_payload=$(jq -n --arg key "$member" '{member_key: $key}')
+      api_post "/api/v1/repositories/${key}/members" "$member_payload" > /dev/null
     done
   fi
 }
