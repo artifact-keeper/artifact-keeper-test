@@ -52,20 +52,18 @@ postgres:
       memory: 512Mi
   persistence:
     size: 2Gi
-  password: "test-db-password"
+  auth:
+    username: registry
+    password: "test-db-password"
+    database: artifact_registry
 
-meilisearch:
-  enabled: true
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: "1"
-      memory: 2Gi
-  persistence:
-    size: 1Gi
-  masterKey: "artifact-keeper-test-key"
+# Search backend: in v1.2.x the chart deploys OpenSearch (replaces Meilisearch).
+# For most release-gate tests we don't actually exercise search end-to-end, so
+# disable it to keep the test namespace lean. The dedicated `search-tests`
+# suite that does need it can be expanded later to deploy with opensearch
+# enabled and disableSecurityPlugin: true.
+opensearch:
+  enabled: false
 
 secrets:
   jwtSecret: "test-jwt-secret-not-for-production"
