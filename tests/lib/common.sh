@@ -53,6 +53,103 @@ ADMIN_TOKEN=""
 AUTH_ADMIN_MAX_ATTEMPTS="${AUTH_ADMIN_MAX_ATTEMPTS:-12}"
 AUTH_ADMIN_RETRY_DELAY="${AUTH_ADMIN_RETRY_DELAY:-5}"
 
+# ---------------------------------------------------------------------------
+# Backend feature detection
+# ---------------------------------------------------------------------------
+#
+# Tests should never assume the backend supports every feature in the suite.
+# When a test exercises a feature that only ships in a specific minor (or
+# later), call `require_feature "<name>"` at the start. If the backend is
+# older than the version that introduced the feature, the helper records the
+# current test as `skip` with a precise reason and returns 1; the caller
+# should `return` immediately. If supported, the helper returns 0 and the
+# test runs as normal.
+#
+# The feature -> minimum-version map below is the single source of truth for
+# the gate suite. When a feature ships in a release, add an entry here in
+# the SAME PR that ships the feature.
+#
+# This pattern lets one main branch of the test repo run cleanly against
+# any backend version. v1.2.0 backend auto-skips v1.3.0 features; v1.3.0
+# backend runs them automatically.
+
+# Cached result of `GET /health` so we only hit the backend once per suite.
+BACKEND_VERSION=""
+
+# Strip a leading 'v' if present and return the cleaned version string.
+_strip_v_prefix() {
+  local v="$1"
+  echo "${v#v}"
+}
+
+# Compare two semver strings. Returns 0 if $1 >= $2, 1 otherwise.
+# Pre-release suffixes (-rc.N) are stripped before comparison so a release
+# candidate validates the same feature set as its target release. We only ship
+# -rc.N suffixes, never -alpha/-beta, so dropping the suffix is safe.
+version_ge() {
+  local a_core b_core
+  a_core=$(_strip_v_prefix "$1")
+  b_core=$(_strip_v_prefix "$2")
+  a_core="${a_core%%-*}"
+  b_core="${b_core%%-*}"
+  if [ "$a_core" = "$b_core" ]; then
+    return 0
+  fi
+  local lower
+  lower=$(printf '%s\n%s\n' "$a_core" "$b_core" | sort -V | head -n1)
+  [ "$lower" = "$b_core" ]
+}
+
+# Read the backend version from /health, cache it, return it on stdout.
+get_backend_version() {
+  if [ -z "$BACKEND_VERSION" ]; then
+    BACKEND_VERSION=$(curl -sf --max-time 5 "${BASE_URL}/health" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+    if [ -z "$BACKEND_VERSION" ]; then
+      BACKEND_VERSION="unknown"
+    fi
+  fi
+  echo "$BACKEND_VERSION"
+}
+
+# Map of feature flag -> minimum backend version that ships it.
+# Add entries here in the same PR that ships the feature.
+_feature_min_version() {
+  case "$1" in
+    "conan_remote_search_forward")  echo "1.3.0" ;;
+    "conan_virtual_search_aggregate") echo "1.3.0" ;;
+    "maven_virtual_snapshot")       echo "1.2.0" ;;
+    "guest_access_toggle")          echo "1.2.0" ;;
+    "opensearch_indexing")          echo "1.2.0" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Skip the current test if the backend doesn't support the named feature.
+# Usage:
+#   begin_test "Search through remote proxy"
+#   require_feature "conan_remote_search_forward" || return
+#   ... rest of the test ...
+require_feature() {
+  local feature="$1"
+  local min_ver
+  min_ver=$(_feature_min_version "$feature") || {
+    fail "require_feature: unknown feature '$feature' (add to _feature_min_version map in tests/lib/common.sh)"
+    return 1
+  }
+  local backend_ver
+  backend_ver=$(get_backend_version)
+  if [ "$backend_ver" = "unknown" ]; then
+    skip "could not determine backend version, skipping ${feature}"
+    return 1
+  fi
+  if version_ge "$backend_ver" "$min_ver"; then
+    return 0
+  else
+    skip "feature '${feature}' requires backend >= ${min_ver}, running ${backend_ver}"
+    return 1
+  fi
+}
+
 auth_admin() {
   # Wait for backend readiness (handles parallel suite load bursts)
   local _ready=false
