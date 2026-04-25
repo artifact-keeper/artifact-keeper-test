@@ -114,36 +114,55 @@ begin_test "Create virtual maven repo with hosted as member"
 if create_virtual_repo "$VIRTUAL_KEY" "maven" "$HOSTED_KEY"; then pass; else fail "could not create virtual repo"; fi
 
 # -------------------------------------------------------------------------
-# Populate hosted repo with a SNAPSHOT
+# Populate hosted repo with a SNAPSHOT.
+#
+# Uploads MUST go through the Maven format endpoint (PUT /maven/<key>/<path>),
+# not the generic /api/v1/repositories/<key>/artifacts/<path> endpoint. The
+# generic endpoint stores artifacts under a content-addressed storage key and
+# does NOT write the artifact_metadata rows that maven-metadata.xml generation
+# (group-level aggregation) and version-level metadata serving rely on. Real
+# Maven clients (mvn deploy) always hit /maven/<key>/<path>.
 # -------------------------------------------------------------------------
 
 begin_test "Upload SNAPSHOT JAR under timestamped filename"
-if api_upload "/api/v1/repositories/${HOSTED_KEY}/artifacts/${SNAP_PATH}/${ARTIFACT_ID}-${SNAP_VERSION}.jar" \
-    "$JAR_FILE" "application/java-archive"; then
+if curl -sf $CURL_TIMEOUT -X PUT \
+    -u "${ADMIN_USER}:${ADMIN_PASS}" \
+    -H "Content-Type: application/java-archive" \
+    --data-binary "@${JAR_FILE}" \
+    "${BASE_URL}/maven/${HOSTED_KEY}/${SNAP_PATH}/${ARTIFACT_ID}-${SNAP_VERSION}.jar" > /dev/null; then
   pass
 else
   fail "jar upload failed"
 fi
 
 begin_test "Upload SNAPSHOT POM under timestamped filename"
-if api_upload "/api/v1/repositories/${HOSTED_KEY}/artifacts/${SNAP_PATH}/${ARTIFACT_ID}-${SNAP_VERSION}.pom" \
-    "$POM_FILE" "application/xml"; then
+if curl -sf $CURL_TIMEOUT -X PUT \
+    -u "${ADMIN_USER}:${ADMIN_PASS}" \
+    -H "Content-Type: application/xml" \
+    --data-binary "@${POM_FILE}" \
+    "${BASE_URL}/maven/${HOSTED_KEY}/${SNAP_PATH}/${ARTIFACT_ID}-${SNAP_VERSION}.pom" > /dev/null; then
   pass
 else
   fail "pom upload failed"
 fi
 
 begin_test "Upload version-level maven-metadata.xml"
-if api_upload "/api/v1/repositories/${HOSTED_KEY}/artifacts/${SNAP_PATH}/maven-metadata.xml" \
-    "$VERSION_META_FILE" "application/xml"; then
+if curl -sf $CURL_TIMEOUT -X PUT \
+    -u "${ADMIN_USER}:${ADMIN_PASS}" \
+    -H "Content-Type: application/xml" \
+    --data-binary "@${VERSION_META_FILE}" \
+    "${BASE_URL}/maven/${HOSTED_KEY}/${SNAP_PATH}/maven-metadata.xml" > /dev/null; then
   pass
 else
   fail "version metadata upload failed"
 fi
 
 begin_test "Upload group-level maven-metadata.xml"
-if api_upload "/api/v1/repositories/${HOSTED_KEY}/artifacts/${ARTIFACT_BASE_PATH}/maven-metadata.xml" \
-    "$GROUP_META_FILE" "application/xml"; then
+if curl -sf $CURL_TIMEOUT -X PUT \
+    -u "${ADMIN_USER}:${ADMIN_PASS}" \
+    -H "Content-Type: application/xml" \
+    --data-binary "@${GROUP_META_FILE}" \
+    "${BASE_URL}/maven/${HOSTED_KEY}/${ARTIFACT_BASE_PATH}/maven-metadata.xml" > /dev/null; then
   pass
 else
   fail "group metadata upload failed"
