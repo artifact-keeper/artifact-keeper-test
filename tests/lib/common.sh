@@ -472,10 +472,14 @@ create_virtual_repo() {
 
   api_post "/api/v1/repositories" "$payload" > /dev/null
 
-  # Add each member repository (if any specified)
+  # Add each member repository (if any specified). Use a subshell tr to split
+  # on commas so we don't leak `IFS=','` into downstream `api_post` calls — the
+  # earlier in-place `local IFS=','` form caused `$CURL_TIMEOUT` to splat as a
+  # single arg rather than multiple flags, producing
+  # `curl: option --max-time 60 --connect-timeout 10: is unknown`.
   if [ -n "$member_keys" ]; then
-    local IFS=','
-    for member in $member_keys; do
+    local member
+    for member in $(printf '%s\n' "$member_keys" | tr ',' '\n'); do
       local member_payload
       member_payload=$(jq -n --arg key "$member" '{member_key: $key}')
       api_post "/api/v1/repositories/${key}/members" "$member_payload" > /dev/null
