@@ -138,8 +138,10 @@ begin_test "Admin can change password"
 if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ]; then
   skip "could not resolve admin user ID"
 else
-  change_resp=$(api_post "/api/v1/users/${ADMIN_ID}/password" \
-    "{\"current_password\":\"${ORIGINAL_PASS}\",\"new_password\":\"${TEST_PASS}\"}" 2>/dev/null) || true
+  # Send exactly one request. The change_password handler invalidates the
+  # caller's existing JWT after a successful change (backend
+  # auth_service::invalidate_user_tokens), so a second call with the same
+  # ADMIN_TOKEN would get 401 and look like a backend failure.
   change_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X POST \
     -H "$(auth_header)" \
     -H "Content-Type: application/json" \
@@ -147,10 +149,6 @@ else
     "${BASE_URL}/api/v1/users/${ADMIN_ID}/password") || true
 
   if [ "$change_status" -ge 200 ] 2>/dev/null && [ "$change_status" -lt 300 ] 2>/dev/null; then
-    PASSWORD_MUTATED=true
-    pass
-  elif [ -n "$change_resp" ] && echo "$change_resp" | jq -e '.' >/dev/null 2>&1; then
-    # api_post succeeded (set -e did not abort), treat as success
     PASSWORD_MUTATED=true
     pass
   else
