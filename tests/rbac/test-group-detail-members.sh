@@ -30,9 +30,7 @@ if resp=$(api_post "/api/v1/groups" \
   if [ -n "$GROUP_ID" ]; then
     pass
   else
-    # Some API shapes use the name as identifier
-    GROUP_ID="$GROUP_NAME"
-    pass
+    fail "create group response did not include an id"
   fi
 else
   fail "could not create group"
@@ -61,16 +59,9 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Add 3 users to the group"
-members_endpoint="/api/v1/groups/${GROUP_ID}/members"
-added=false
-if api_post "$members_endpoint" \
-    "{\"usernames\":[\"${USER_A}\",\"${USER_B}\",\"${USER_C}\"]}" > /dev/null 2>&1; then
-  added=true
-elif api_post "$members_endpoint" \
-    "{\"members\":[\"${USER_A}\",\"${USER_B}\",\"${USER_C}\"]}" > /dev/null 2>&1; then
-  added=true
-fi
-if $added; then
+# The backend expects { "user_ids": [<uuid>, ...] } at POST /api/v1/groups/{id}/members
+# (see backend MembersRequest). add_group_members resolves usernames to UUIDs first.
+if add_group_members "$GROUP_ID" "$USER_A" "$USER_B" "$USER_C" > /dev/null 2>&1; then
   pass
 else
   fail "could not add members to group"
