@@ -42,6 +42,17 @@ _JUNIT_CASES=""
 
 ADMIN_TOKEN=""
 
+# AUTH_ADMIN_MAX_ATTEMPTS / AUTH_ADMIN_RETRY_DELAY can be overridden by callers
+# that need a different retry budget. Defaults give ~60s of total wait time,
+# which is enough to absorb short backend hiccups (rate-limiter window resets,
+# OpenSearch JVM warmup, GC pauses, brief pod readiness flaps) that happen
+# when many test suites run concurrently against a single namespace. The
+# previous 5x3s = 15s budget was too tight: it would tip over during parallel
+# release-gate runs and leave the very next suite to recover, which manifested
+# as "first script in suite fails, rest pass" (release-gate run 24934467423).
+AUTH_ADMIN_MAX_ATTEMPTS="${AUTH_ADMIN_MAX_ATTEMPTS:-12}"
+AUTH_ADMIN_RETRY_DELAY="${AUTH_ADMIN_RETRY_DELAY:-5}"
+
 auth_admin() {
   # Wait for backend readiness (handles parallel suite load bursts)
   local _ready=false
@@ -60,18 +71,41 @@ auth_admin() {
 
   local resp=""
   local _attempt
-  for _attempt in 1 2 3 4 5; do
-    if resp=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
+  local _http_status=""
+  local _body=""
+  local _max="$AUTH_ADMIN_MAX_ATTEMPTS"
+  local _delay="$AUTH_ADMIN_RETRY_DELAY"
+  for _attempt in $(seq 1 "$_max"); do
+    # Capture status + body separately so a 429 / 503 / 401 surfaces in logs.
+    # We deliberately drop -f here (it suppresses the body on >=400) so we can
+    # report what actually came back instead of an opaque "auth failed".
+    local _tmp
+    _tmp=$(mktemp)
+    _http_status=$(curl -s --max-time 10 -o "$_tmp" -w '%{http_code}' \
+      -X POST "${BASE_URL}/api/v1/auth/login" \
       -H "Content-Type: application/json" \
-      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) && [ -n "$resp" ]; then
+      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) || _http_status="000"
+    _body=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_http_status" = "200" ] && [ -n "$_body" ]; then
+      resp="$_body"
       break
     fi
-    resp=""
-    echo "  auth attempt ${_attempt}/5 failed, retrying in 3s..."
-    sleep 3
+
+    # Truncate body for log output to avoid spamming on large error pages.
+    local _body_snip="${_body:0:200}"
+    echo "  auth attempt ${_attempt}/${_max} failed (HTTP ${_http_status}, body: ${_body_snip:-<empty>}), retrying in ${_delay}s..."
+
+    # If we got a 429, honor Retry-After when present by waiting a bit longer.
+    if [ "$_http_status" = "429" ]; then
+      sleep "$(( _delay * 2 ))"
+    else
+      sleep "$_delay"
+    fi
   done
   if [ -z "$resp" ]; then
-    echo "FATAL: failed to authenticate as ${ADMIN_USER} at ${BASE_URL} after 5 attempts"
+    echo "FATAL: failed to authenticate as ${ADMIN_USER} at ${BASE_URL} after ${_max} attempts (last HTTP ${_http_status})"
     exit 1
   fi
 
