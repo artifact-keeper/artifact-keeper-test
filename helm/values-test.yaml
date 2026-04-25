@@ -12,12 +12,18 @@ backend:
     tag: dev
     pullPolicy: Always
   replicaCount: 1
+  # CPU bumped from 2 to 2500m for v1.2.x: uploads now write to OpenSearch
+  # in the same critical path, so the backend competes with the JVM for
+  # CPU under sustained load. Total namespace CPU requests stay under
+  # the 4 CPU quota: 750m (backend) + 50m (web) + 50m (postgres) +
+  # 100m (opensearch) = 950m requested, with limits totaling 4250m
+  # (oversubscribed at the limit, fine for CI smoke).
   resources:
     requests:
-      cpu: 500m
-      memory: 256Mi
+      cpu: 750m
+      memory: 384Mi
     limits:
-      cpu: "2"
+      cpu: 2500m
       memory: 2Gi
   env:
     ENVIRONMENT: test
