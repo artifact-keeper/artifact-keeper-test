@@ -18,6 +18,45 @@ auth_admin
 
 ORIGINAL_PASS="$ADMIN_PASS"
 TEST_PASS="N3wP@ssw0rd!Zxq"
+PASSWORD_MUTATED=false
+
+# Best-effort restore of the admin password if the suite is interrupted or
+# any test fails between the password change and the explicit reset step.
+# Without this, a partial run leaves the admin user locked to TEST_PASS,
+# which breaks every subsequent suite's auth_admin call in the namespace.
+restore_admin_password() {
+  if [ "$PASSWORD_MUTATED" != "true" ]; then
+    return 0
+  fi
+  if [ -z "${ADMIN_ID:-}" ] || [ "$ADMIN_ID" = "null" ]; then
+    return 0
+  fi
+  # Re-login with whatever password is currently active (TEST_PASS first).
+  local _tok=""
+  for _candidate in "$TEST_PASS" "$ORIGINAL_PASS"; do
+    local _login
+    _login=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${_candidate}\"}" 2>/dev/null) || true
+    if [ -n "$_login" ]; then
+      _tok=$(echo "$_login" | jq -r '.token // .access_token // empty' 2>/dev/null) || true
+      if [ -n "$_tok" ] && [ "$_tok" != "null" ]; then
+        # If we got in with the original, nothing to restore.
+        if [ "$_candidate" = "$ORIGINAL_PASS" ]; then
+          return 0
+        fi
+        # Got in with TEST_PASS, push original back.
+        curl -sf --max-time 10 -X POST \
+          -H "Authorization: Bearer ${_tok}" \
+          -H "Content-Type: application/json" \
+          -d "{\"current_password\":\"${TEST_PASS}\",\"new_password\":\"${ORIGINAL_PASS}\"}" \
+          "${BASE_URL}/api/v1/users/${ADMIN_ID}/password" >/dev/null 2>&1 || true
+        return 0
+      fi
+    fi
+  done
+}
+trap restore_admin_password EXIT
 
 # -------------------------------------------------------------------------
 # Resolve admin user ID (needed for password change endpoint)
@@ -108,9 +147,11 @@ else
     "${BASE_URL}/api/v1/users/${ADMIN_ID}/password") || true
 
   if [ "$change_status" -ge 200 ] 2>/dev/null && [ "$change_status" -lt 300 ] 2>/dev/null; then
+    PASSWORD_MUTATED=true
     pass
   elif [ -n "$change_resp" ] && echo "$change_resp" | jq -e '.' >/dev/null 2>&1; then
     # api_post succeeded (set -e did not abort), treat as success
+    PASSWORD_MUTATED=true
     pass
   else
     fail "password change returned HTTP ${change_status}"
@@ -186,6 +227,7 @@ else
       if [ -n "$restored_token" ] && [ "$restored_token" != "null" ]; then
         ADMIN_TOKEN="$restored_token"
         export ADMIN_TOKEN
+        PASSWORD_MUTATED=false
         pass
       else
         fail "login with restored password did not return a token"
