@@ -52,20 +52,30 @@ postgres:
       memory: 512Mi
   persistence:
     size: 2Gi
-  password: "test-db-password"
+  auth:
+    username: registry
+    password: "test-db-password"
+    database: artifact_registry
 
-meilisearch:
+# Search backend: in v1.2.x the chart deploys OpenSearch (replaces Meilisearch).
+# Enable it so the search-tests suite can run end-to-end. disableSecurityPlugin
+# keeps us off the cert/auth dance that production uses (the chart's default
+# for non-prod). Reduced JVM heap and resources to fit the test namespace's
+# 4 CPU / 8 Gi quota alongside backend, web, and postgres.
+opensearch:
   enabled: true
+  disableSecurityPlugin: true
+  javaOpts: "-Xms256m -Xmx256m"
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 512Mi
     limits:
       cpu: "1"
-      memory: 2Gi
+      memory: 1Gi
   persistence:
+    enabled: true
     size: 1Gi
-  masterKey: "artifact-keeper-test-key"
 
 secrets:
   jwtSecret: "test-jwt-secret-not-for-production"
