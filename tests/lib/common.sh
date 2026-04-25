@@ -184,6 +184,81 @@ create_local_repo() {
 }
 
 # ---------------------------------------------------------------------------
+# User / group helpers
+#
+# The backend's group membership endpoints expect user UUIDs, not usernames:
+#   POST   /api/v1/groups/{id}/members   { "user_ids": ["<uuid>", ...] }
+#   DELETE /api/v1/groups/{id}/members   { "user_ids": ["<uuid>", ...] }
+# Tests typically know the username (because they just created the user),
+# so these helpers resolve the username to a UUID and send the correct shape.
+# ---------------------------------------------------------------------------
+
+# resolve_user_id_by_username USERNAME
+# Looks up a user by exact username via /api/v1/users?search=<name> and prints
+# the matching user's UUID on stdout. Returns 1 if no exact match is found.
+resolve_user_id_by_username() {
+  local username="$1"
+  local resp
+  if ! resp=$(api_get "/api/v1/users?search=${username}&per_page=100" 2>/dev/null); then
+    return 1
+  fi
+  local id
+  id=$(echo "$resp" | jq -r --arg u "$username" '.items[]? | select(.username == $u) | .id' | head -n1)
+  if [ -z "$id" ] || [ "$id" = "null" ]; then
+    return 1
+  fi
+  echo "$id"
+}
+
+# add_group_members GROUP_ID USERNAME [USERNAME ...]
+# Resolves each username to a UUID and POSTs the user_ids array to the
+# group's members endpoint. Returns non-zero if any username cannot be
+# resolved or the API call fails.
+add_group_members() {
+  local group_id="$1"
+  shift
+  local ids=()
+  local username
+  for username in "$@"; do
+    local uid
+    if ! uid=$(resolve_user_id_by_username "$username"); then
+      echo "  resolve_user_id_by_username: no user found for '${username}'"
+      return 1
+    fi
+    ids+=("$uid")
+  done
+  local payload
+  payload=$(printf '%s\n' "${ids[@]}" | jq -R . | jq -s '{user_ids: .}')
+  api_post "/api/v1/groups/${group_id}/members" "$payload"
+}
+
+# remove_group_members GROUP_ID USERNAME [USERNAME ...]
+# Resolves usernames to UUIDs and DELETEs the user_ids array from the
+# group's members endpoint. The backend expects a JSON body on DELETE,
+# which is why we cannot simply use api_delete with a path suffix.
+remove_group_members() {
+  local group_id="$1"
+  shift
+  local ids=()
+  local username
+  for username in "$@"; do
+    local uid
+    if ! uid=$(resolve_user_id_by_username "$username"); then
+      echo "  resolve_user_id_by_username: no user found for '${username}'"
+      return 1
+    fi
+    ids+=("$uid")
+  done
+  local payload
+  payload=$(printf '%s\n' "${ids[@]}" | jq -R . | jq -s '{user_ids: .}')
+  curl -sf $CURL_TIMEOUT -X DELETE \
+    -H "$(auth_header)" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "${BASE_URL}/api/v1/groups/${group_id}/members"
+}
+
+# ---------------------------------------------------------------------------
 # Test framework
 #
 # Usage pattern:
