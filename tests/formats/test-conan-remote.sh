@@ -94,18 +94,22 @@ fi
 # =========================================================================
 
 begin_test "Search for zlib through remote proxy"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
-else
-  if resp=$(curl -sf $CURL_TIMEOUT \
-      -H "$(format_auth_header)" \
-      "${BASE_URL}/conan/${REMOTE_KEY}/v2/conans/search?q=zlib" 2>/dev/null); then
-    if assert_contains "$resp" "zlib" "search results should contain zlib"; then
-      pass
-    fi
+# Feature-gated: this test requires conan remote-search-forwarding, which is
+# planned for v1.3.0 (tracked in artifact-keeper#868). On older backends
+# require_feature emits a skip with the version reason.
+if require_feature "conan_remote_search_forward"; then
+  if [ "$UPSTREAM_REACHABLE" != "true" ]; then
+    skip "upstream unreachable"
   else
-    # Remote search may not be supported for all upstreams; skip gracefully
-    skip "search through remote proxy returned error (upstream may not support search)"
+    if resp=$(curl -sf $CURL_TIMEOUT \
+        -H "$(format_auth_header)" \
+        "${BASE_URL}/conan/${REMOTE_KEY}/v2/conans/search?q=zlib" 2>/dev/null); then
+      if assert_contains "$resp" "zlib" "search results should contain zlib"; then
+        pass
+      fi
+    else
+      skip "search through remote proxy returned error (upstream may not support search)"
+    fi
   fi
 fi
 
@@ -179,14 +183,18 @@ sleep 1
 # =========================================================================
 
 begin_test "Search virtual repo for locallib (from local member)"
-if resp=$(curl -sf $CURL_TIMEOUT \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}/conan/${VIRTUAL_KEY}/v2/conans/search?q=locallib" 2>/dev/null); then
-  if assert_contains "$resp" "locallib" "virtual search should find locallib from local member"; then
-    pass
+# Feature-gated: requires conan virtual-search-aggregation (artifact-keeper#868),
+# planned for v1.3.0.
+if require_feature "conan_virtual_search_aggregate"; then
+  if resp=$(curl -sf $CURL_TIMEOUT \
+      -H "$(format_auth_header)" \
+      "${BASE_URL}/conan/${VIRTUAL_KEY}/v2/conans/search?q=locallib" 2>/dev/null); then
+    if assert_contains "$resp" "locallib" "virtual search should find locallib from local member"; then
+      pass
+    fi
+  else
+    fail "virtual repo search for locallib returned error"
   fi
-else
-  fail "virtual repo search for locallib returned error"
 fi
 
 # =========================================================================
@@ -194,17 +202,22 @@ fi
 # =========================================================================
 
 begin_test "Search virtual repo for zlib (from remote member)"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
-else
-  if resp=$(curl -sf $CURL_TIMEOUT \
-      -H "$(format_auth_header)" \
-      "${BASE_URL}/conan/${VIRTUAL_KEY}/v2/conans/search?q=zlib" 2>/dev/null); then
-    if assert_contains "$resp" "zlib" "virtual search should find zlib from remote member"; then
-      pass
-    fi
+# Feature-gated: this needs BOTH virtual-aggregation AND remote-forwarding
+# (artifact-keeper#868). require_feature on either is sufficient since they
+# ship together; pick the broader virtual-aggregate flag.
+if require_feature "conan_virtual_search_aggregate"; then
+  if [ "$UPSTREAM_REACHABLE" != "true" ]; then
+    skip "upstream unreachable"
   else
-    skip "virtual repo search for zlib returned error (upstream search may not be supported)"
+    if resp=$(curl -sf $CURL_TIMEOUT \
+        -H "$(format_auth_header)" \
+        "${BASE_URL}/conan/${VIRTUAL_KEY}/v2/conans/search?q=zlib" 2>/dev/null); then
+      if assert_contains "$resp" "zlib" "virtual search should find zlib from remote member"; then
+        pass
+      fi
+    else
+      skip "virtual repo search for zlib returned error (upstream search may not be supported)"
+    fi
   fi
 fi
 
