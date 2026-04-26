@@ -569,6 +569,32 @@ FPC_EMAIL="e2e-fpc-${RUN_ID}@test.local"
 FPC_USER_ID=""
 
 begin_test "Force password change: Create test user"
+# DIAG: capture status + body before the regular flow so we can see exactly
+# why this fails in CI. This block is diagnostic-only, do NOT merge.
+echo "  DIAG: probing admin auth before FPC create"
+who_status=$(curl -s -o "/tmp/diag-whoami.json" -w '%{http_code}' --max-time 10 \
+  -H "$(auth_header)" "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || who_status="000"
+who_body=$(cat /tmp/diag-whoami.json 2>/dev/null | head -c 500)
+echo "  DIAG: /auth/me status=${who_status} body=${who_body}"
+
+echo "  DIAG: capturing FPC create status + body"
+fpc_create_body_file=/tmp/diag-fpc-create.json
+fpc_create_status=$(curl -s -o "$fpc_create_body_file" -w '%{http_code}' --max-time 30 \
+  -X POST \
+  -H "$(auth_header)" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"${FPC_USER}\",\"password\":\"${FPC_PASS}\",\"email\":\"${FPC_EMAIL}\",\"display_name\":\"Force PC Test\"}" \
+  "${BASE_URL}/api/v1/users" 2>/dev/null) || fpc_create_status="000"
+fpc_create_body=$(cat "$fpc_create_body_file" 2>/dev/null | head -c 1000)
+echo "  DIAG: POST /api/v1/users status=${fpc_create_status}"
+echo "  DIAG: POST /api/v1/users body=${fpc_create_body}"
+
+# Check rate-limit headers from a fresh probe
+rl_headers=$(curl -s -D - -o /dev/null --max-time 10 \
+  -H "$(auth_header)" "${BASE_URL}/api/v1/repositories" 2>/dev/null | grep -iE 'x-rate|x-ratelimit|retry-after' | head -10)
+echo "  DIAG: rate-limit headers from /repositories: ${rl_headers:-<none>}"
+
+# Original flow continues
 if resp=$(api_post "/api/v1/users" \
     "{\"username\":\"${FPC_USER}\",\"password\":\"${FPC_PASS}\",\"email\":\"${FPC_EMAIL}\",\"display_name\":\"Force PC Test\"}" 2>/dev/null); then
   FPC_USER_ID=$(echo "$resp" | jq -r '.user.id // .id // .user_id // empty') || true
@@ -578,7 +604,7 @@ if resp=$(api_post "/api/v1/users" \
     fail "user created but no ID returned"
   fi
 else
-  fail "could not create force-password-change test user"
+  fail "could not create force-password-change test user (DIAG status=${fpc_create_status})"
 fi
 
 begin_test "Force password change: Call force-password-change endpoint"
