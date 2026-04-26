@@ -62,6 +62,54 @@ env:
 
 jobs:
   # -------------------------------------------------------------------
+  # Clean-install smoke test
+  #
+  # Boots a fresh namespace, runs `helm install` against the documented
+  # values-production.yaml, and polls kubectl rollout status plus /readyz
+  # for up to 120s. This catches startup panics (e.g. the v1.1.8 Debian
+  # route panic) that crash the backend before it can ever serve traffic.
+  #
+  # Runs independently of the `deploy` job so a startup crash fails the
+  # gate fast, before the long-running matrix burns runner time on a
+  # broken build.
+  # -------------------------------------------------------------------
+  clean-install-smoke:
+    runs-on: ak-e2e-runners
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Run clean-install smoke test
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          chmod +x scripts/clean-install-smoke.sh
+          RUN_ID="smoke-$(date +%s)-${GITHUB_RUN_NUMBER}"
+          ./scripts/clean-install-smoke.sh \
+            --run-id "${RUN_ID}" \
+            --backend-tag "${BACKEND_TAG}" \
+            --web-tag "${WEB_TAG}" \
+            --timeout 120
+
+      - name: Upload smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-install-smoke-logs
+          path: /tmp/test-logs/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
   # Deploy test environment
   # -------------------------------------------------------------------
   deploy:
@@ -707,7 +755,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [deploy, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [clean-install-smoke, deploy, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
     runs-on: ak-e2e-runners
     steps:
@@ -726,9 +774,10 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in clean-install-smoke format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
             status="skipped"
             case "$job" in
+              clean-install-smoke) status="${{ needs.clean-install-smoke.result }}" ;;
               format-tests) status="${{ needs.format-tests.result }}" ;;
               repo-tests) status="${{ needs.repo-tests.result }}" ;;
               promotion-tests) status="${{ needs.promotion-tests.result }}" ;;
