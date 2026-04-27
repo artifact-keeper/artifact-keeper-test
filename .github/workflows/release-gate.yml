@@ -610,6 +610,10 @@ jobs:
       # A silently-skipped test in release-gate context is exactly the
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
+      # Per-script timeout for run-suite.sh. Webhook resilience tests
+      # poll for retry/dead-letter behavior on schedules up to 180s
+      # (WEBHOOK_RETRY_TIMEOUT) so the wrapping timeout must exceed that.
+      TEST_TIMEOUT: '300'
     steps:
       - uses: actions/checkout@v4
         with:
