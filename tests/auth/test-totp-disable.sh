@@ -12,14 +12,10 @@
 #   - both bcrypt::verify(password) AND totp.check_current(code) must pass;
 #     either failure returns AppError::Authentication -> 401
 #
-# Requires: curl, jq, oathtool
+# Requires: curl, jq, python3 (for TOTP code generation via totp_code helper)
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "auth-totp-disable"
-
-if ! command -v oathtool > /dev/null 2>&1; then
-  skip_suite "oathtool not installed; required to compute live TOTP codes"
-fi
 
 auth_admin
 setup_workdir
@@ -36,25 +32,19 @@ TOTP_SECRET=""
 # -------------------------------------------------------------------------
 
 begin_test "Create test user"
-resp=$(api_post "/api/v1/users" \
-  "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\",\"email\":\"${TOTP_EMAIL}\"}" 2>/dev/null) || true
-USER_ID=$(echo "$resp" | jq -r '.user.id // .id // empty')
-if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
+USER_ID=$(create_test_user "${TOTP_USER}" "${TOTP_PASS}" "${TOTP_EMAIL}") || true
+if [ -n "$USER_ID" ]; then
   pass
 else
-  fail "could not create user: ${resp:0:200}"
+  fail "could not create user"
 fi
 
 begin_test "Login as test user"
-if [ -z "${USER_ID:-}" ] || [ "$USER_ID" = "null" ]; then
+if [ -z "${USER_ID:-}" ]; then
   skip "no user"
 else
-  login_resp=$(curl -sf $CURL_TIMEOUT -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\"}" \
-    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
-  USER_TOKEN=$(echo "$login_resp" | jq -r '.access_token // .token // empty')
-  if [ -n "$USER_TOKEN" ] && [ "$USER_TOKEN" != "null" ]; then
+  USER_TOKEN=$(login_as "${TOTP_USER}" "${TOTP_PASS}") || true
+  if [ -n "$USER_TOKEN" ]; then
     pass
   else
     fail "login failed"
@@ -72,7 +62,7 @@ else
   if [ -z "$TOTP_SECRET" ] || [ "$TOTP_SECRET" = "null" ]; then
     fail "TOTP setup did not return a secret: ${setup_resp:0:200}"
   else
-    CODE=$(oathtool --totp -b "$TOTP_SECRET" 2>/dev/null) || true
+    CODE=$(totp_code "$TOTP_SECRET") || true
     enable_resp=$(curl -sf $CURL_TIMEOUT -X POST \
       -H "Authorization: Bearer ${USER_TOKEN}" \
       -H "Content-Type: application/json" \
@@ -95,13 +85,16 @@ begin_test "Disable rejects wrong password"
 if [ -z "${USER_TOKEN:-}" ] || [ -z "${TOTP_SECRET:-}" ]; then
   skip "TOTP not enabled"
 else
-  CODE=$(oathtool --totp -b "$TOTP_SECRET" 2>/dev/null) || true
+  # Use 'wait' mode so we don't reuse the same code as the prior /enable call,
+  # which the backend would reject as a replay within the 30s window.
+  CODE=$(totp_code "$TOTP_SECRET" wait) || true
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -X POST \
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"password\":\"WrongPassword!1\",\"code\":\"${CODE}\"}" \
     "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" = "401" ]; then
     pass
   else
@@ -123,6 +116,7 @@ else
     -H "Content-Type: application/json" \
     -d "{\"password\":\"${TOTP_PASS}\",\"code\":\"000000\"}" \
     "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" = "401" ]; then
     pass
   else
@@ -138,13 +132,16 @@ begin_test "Disable succeeds with correct password and TOTP code"
 if [ -z "${USER_TOKEN:-}" ] || [ -z "${TOTP_SECRET:-}" ]; then
   skip "TOTP not enabled"
 else
-  CODE=$(oathtool --totp -b "$TOTP_SECRET" 2>/dev/null) || true
+  # 'wait' again — the prior wrong-password attempt may have used this code,
+  # and the wrong-totp-code branch consumed window time.
+  CODE=$(totp_code "$TOTP_SECRET" wait) || true
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -X POST \
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"password\":\"${TOTP_PASS}\",\"code\":\"${CODE}\"}" \
     "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
@@ -181,8 +178,6 @@ fi
 
 # EXPECT_FAILURE=1 inverts the suite's exit code so this script can be used
 # as a fixture to validate the gate (a "broken" gate is a passing self-test).
-if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  trap 'rc=$?; if [ "$rc" -eq 0 ]; then exit 1; else exit 0; fi' EXIT
-fi
+enable_expect_failure_trap
 
 end_suite

@@ -125,6 +125,12 @@ _feature_min_version() {
     # emitting 503 when proxy_queue_timeout_secs fires. Tracked by backend
     # work to land in v1.2.0 (companion to discussion #872 customer pain).
     "proxy_stampede_protection")      echo "1.2.0" ;;
+    # Auth/Epic-11 features (refresh-token rotation, download ticket
+    # consumer endpoint, and is_active flush on user deactivation are
+    # tracked under Epic 11 follow-ups; targeted for 1.2.0).
+    "refresh_token_rotation")         echo "1.2.0" ;;
+    "download_ticket_consumer")       echo "1.2.0" ;;
+    "user_deactivation_token_flush")  echo "1.2.0" ;;
     *) return 1 ;;
   esac
 }
@@ -246,6 +252,51 @@ CURL_TIMEOUT="--max-time 60 --connect-timeout 10"
 api_get() {
   local path="$1"; shift
   curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"
+}
+
+# Create a test user (admin auth) and echo the new user's UUID on stdout.
+# On failure, echoes empty string and the response body to stderr.
+#
+# Usage:
+#   USER_ID=$(create_test_user "$USERNAME" "$PASSWORD" "$EMAIL")
+create_test_user() {
+  local username="$1"
+  local password="$2"
+  local email="$3"
+  local resp
+  resp=$(api_post "/api/v1/users" \
+    "{\"username\":\"${username}\",\"password\":\"${password}\",\"email\":\"${email}\"}" 2>/dev/null) || true
+  local uid
+  uid=$(echo "$resp" | jq -r '.user.id // .id // empty')
+  if [ -z "$uid" ] || [ "$uid" = "null" ]; then
+    echo "create_test_user failed: ${resp:0:200}" >&2
+    echo ""
+    return 1
+  fi
+  echo "$uid"
+}
+
+# Log in as the named user and echo the access_token on stdout.
+# On failure, echoes empty string and the response body to stderr.
+#
+# Usage:
+#   USER_TOKEN=$(login_as "$USERNAME" "$PASSWORD")
+login_as() {
+  local username="$1"
+  local password="$2"
+  local resp
+  resp=$(curl -sf $CURL_TIMEOUT -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"${username}\",\"password\":\"${password}\"}" \
+    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
+  local tok
+  tok=$(echo "$resp" | jq -r '.access_token // .token // empty')
+  if [ -z "$tok" ] || [ "$tok" = "null" ]; then
+    echo "login_as failed for ${username}: ${resp:0:200}" >&2
+    echo ""
+    return 1
+  fi
+  echo "$tok"
 }
 
 api_post() {
@@ -758,14 +809,103 @@ add_exit_handler() {
 }
 
 # ---------------------------------------------------------------------------
+# TOTP helper
+#
+# Compute the current 6-digit TOTP code for a base32 secret using Python's
+# stdlib (hmac/base64). Replaces oathtool so we do not have to extend the
+# ARC runner image.
+#
+# Usage:
+#   CODE=$(totp_code "$TOTP_SECRET")        # current window
+#   CODE=$(totp_code "$TOTP_SECRET" wait)   # wait to next window if the
+#                                           # last call returned the same
+#                                           # code (avoids replay rejection
+#                                           # when calling /enable then
+#                                           # /disable back-to-back)
+# ---------------------------------------------------------------------------
+
+_totp_state_file() {
+  # Shared state across $() subshells so 'wait' mode can detect a repeat
+  # call. WORK_DIR is per-suite (set by setup_workdir), so this file is
+  # naturally scoped to a single test script.
+  echo "${WORK_DIR:-/tmp}/.totp_last_window_${PPID:-$$}"
+}
+
+_totp_compute() {
+  python3 - "$1" <<'PY'
+import base64, hmac, hashlib, struct, sys, time
+secret = sys.argv[1].strip().upper().replace(" ", "")
+pad = (-len(secret)) % 8
+key = base64.b32decode(secret + ("=" * pad))
+counter = int(time.time() // 30)
+msg = struct.pack(">Q", counter)
+digest = hmac.new(key, msg, hashlib.sha1).digest()
+offset = digest[-1] & 0x0F
+code = (struct.unpack(">I", digest[offset:offset+4])[0] & 0x7FFFFFFF) % 1000000
+print(f"{code:06d} {counter}")
+PY
+}
+
+totp_code() {
+  local secret="$1"
+  local mode="${2:-now}"
+  if [ -z "$secret" ]; then
+    echo "totp_code: empty secret" >&2
+    return 1
+  fi
+  local out code window
+  if [ "$mode" = "wait" ]; then
+    local state_file last_window
+    state_file=$(_totp_state_file)
+    last_window=$(cat "$state_file" 2>/dev/null || echo 0)
+    out=$(_totp_compute "$secret") || return 1
+    code="${out%% *}"; window="${out##* }"
+    if [ "$window" -le "$last_window" ]; then
+      local now_sec sleep_for
+      now_sec=$(date +%s)
+      sleep_for=$(( 30 - (now_sec % 30) + 1 ))
+      sleep "$sleep_for"
+      out=$(_totp_compute "$secret") || return 1
+      code="${out%% *}"; window="${out##* }"
+    fi
+    echo "$window" > "$state_file" 2>/dev/null || true
+  else
+    out=$(_totp_compute "$secret") || return 1
+    code="${out%% *}"; window="${out##* }"
+    local state_file
+    state_file=$(_totp_state_file)
+    echo "$window" > "$state_file" 2>/dev/null || true
+  fi
+  echo "$code"
+}
+
+# ---------------------------------------------------------------------------
 # Temp directory with automatic cleanup
 # ---------------------------------------------------------------------------
 
 WORK_DIR=""
 
+_workdir_cleanup() {
+  if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
+    rm -rf "$WORK_DIR"
+  fi
+}
+
 setup_workdir() {
   WORK_DIR="$(mktemp -d)"
   add_exit_handler "rm -rf \"$WORK_DIR\""
+}
+
+# enable_expect_failure_trap: deprecated no-op shim.
+#
+# Earlier auth tests (PR #98) called this helper expecting it to install an
+# EXIT trap that inverts the exit code under EXPECT_FAILURE=1. That logic now
+# lives centrally in end_suite() (see "EXPECT_FAILURE self-test mode" above).
+# Calling both would double-invert and break the self-test signal, so this
+# shim is intentionally empty -- it preserves the test interface during
+# rebase without altering behavior.
+enable_expect_failure_trap() {
+  : # no-op; end_suite handles EXPECT_FAILURE inversion centrally
 }
 
 # ---------------------------------------------------------------------------

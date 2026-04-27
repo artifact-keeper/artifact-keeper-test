@@ -91,6 +91,7 @@ status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "Content-Type: application/json" \
   -d '{"purpose":"download"}' \
   "${BASE_URL}/api/v1/auth/ticket" 2>/dev/null) || true
+status="${status:-000}"
 if [ "$status" = "401" ]; then
   pass
 else
@@ -127,16 +128,21 @@ fi
 # expected-skip, not a silent pass.
 # -------------------------------------------------------------------------
 
-begin_test "Single-use ticket consumption (consumer endpoint not in 1.1.x)"
-skip "no public endpoint accepts ?ticket= in 1.1.x; single-use is enforced at the service layer (DELETE ... RETURNING)"
+begin_test "Single-use ticket consumption"
+require_feature "download_ticket_consumer" || true
+# When the consumer endpoint lands (Epic 11.x, target 1.2.0), this test
+# should issue a ticket, consume it once successfully, then assert the
+# second consumption returns 401/403/404. Until then, require_feature
+# auto-skips on 1.1.x and auto-fails on >=1.2.0 if not implemented.
 
-begin_test "Expired ticket rejection (consumer endpoint not in 1.1.x)"
-skip "no public endpoint accepts ?ticket= in 1.1.x; expiry is enforced via expires_at > NOW() in validate_download_ticket"
+begin_test "Expired ticket rejection"
+require_feature "download_ticket_consumer" || true
+# Same auto-skip-then-fail behaviour. When consumer endpoint exists, this
+# test should set ticket TTL to 1s, sleep 2s, then assert consumption
+# returns 401 (expires_at <= NOW() in validate_download_ticket).
 
 # EXPECT_FAILURE=1 inverts the suite's exit code so this script can be used
 # as a fixture to validate the gate (a "broken" gate is a passing self-test).
-if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  trap 'rc=$?; if [ "$rc" -eq 0 ]; then exit 1; else exit 0; fi' EXIT
-fi
+enable_expect_failure_trap
 
 end_suite

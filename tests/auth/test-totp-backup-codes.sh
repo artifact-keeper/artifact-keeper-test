@@ -14,14 +14,10 @@
 #     replaced with empty string in the stored array, and an empty hash is
 #     skipped (`if !hash.is_empty()`), so each code is single-use
 #
-# Requires: curl, jq, oathtool
+# Requires: curl, jq, python3 (for TOTP code generation via totp_code helper)
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "auth-totp-backup-codes"
-
-if ! command -v oathtool > /dev/null 2>&1; then
-  skip_suite "oathtool not installed; required to compute live TOTP code for /enable"
-fi
 
 auth_admin
 setup_workdir
@@ -39,25 +35,19 @@ BACKUP_CODES_JSON=""
 # -------------------------------------------------------------------------
 
 begin_test "Create test user"
-resp=$(api_post "/api/v1/users" \
-  "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\",\"email\":\"${TOTP_EMAIL}\"}" 2>/dev/null) || true
-USER_ID=$(echo "$resp" | jq -r '.user.id // .id // empty')
-if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
+USER_ID=$(create_test_user "${TOTP_USER}" "${TOTP_PASS}" "${TOTP_EMAIL}") || true
+if [ -n "$USER_ID" ]; then
   pass
 else
-  fail "could not create user: ${resp:0:200}"
+  fail "could not create user"
 fi
 
 begin_test "Login as test user"
-if [ -z "${USER_ID:-}" ] || [ "$USER_ID" = "null" ]; then
+if [ -z "${USER_ID:-}" ]; then
   skip "no user"
 else
-  login_resp=$(curl -sf $CURL_TIMEOUT -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\"}" \
-    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
-  USER_TOKEN=$(echo "$login_resp" | jq -r '.access_token // .token // empty')
-  if [ -n "$USER_TOKEN" ] && [ "$USER_TOKEN" != "null" ]; then
+  USER_TOKEN=$(login_as "${TOTP_USER}" "${TOTP_PASS}") || true
+  if [ -n "$USER_TOKEN" ]; then
     pass
   else
     fail "login failed"
@@ -91,9 +81,9 @@ begin_test "Enable TOTP returns 10 backup codes"
 if [ -z "${TOTP_SECRET:-}" ]; then
   skip "no TOTP secret"
 else
-  CODE=$(oathtool --totp -b "$TOTP_SECRET" 2>/dev/null) || true
+  CODE=$(totp_code "$TOTP_SECRET") || true
   if [ -z "$CODE" ]; then
-    fail "oathtool failed to generate TOTP code"
+    fail "totp_code helper failed to generate TOTP code"
   else
     resp=$(curl -sf $CURL_TIMEOUT -X POST \
       -H "Authorization: Bearer ${USER_TOKEN}" \
@@ -134,6 +124,7 @@ login_and_verify_with_code() {
     -H "Content-Type: application/json" \
     -d "{\"totp_token\":\"${totp_token}\",\"code\":\"${backup_code}\"}" \
     "${BASE_URL}/api/v1/auth/totp/verify" 2>/dev/null) || true
+  status="${status:-000}"
   echo "$status"
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     return 0
@@ -247,8 +238,6 @@ fi
 
 # EXPECT_FAILURE=1 inverts the suite's exit code so this script can be used
 # as a fixture to validate the gate (a "broken" gate is a passing self-test).
-if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  trap 'rc=$?; if [ "$rc" -eq 0 ]; then exit 1; else exit 0; fi' EXIT
-fi
+enable_expect_failure_trap
 
 end_suite
