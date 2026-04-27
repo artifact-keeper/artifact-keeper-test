@@ -52,7 +52,7 @@ put_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   --data-binary "@${WORK_DIR}/blob.bin" \
   "${GENERIC_URL}/releases/v1/blob.bin") || put_status="000"
 
-if [ "$put_status" -ge 200 ] 2>/dev/null && [ "$put_status" -lt 300 ] 2>/dev/null; then
+if assert_http_2xx "$put_status" "PUT returned HTTP ${put_status}, expected 2xx"; then
   pass
 else
   fail "PUT returned HTTP ${put_status}, expected 2xx"
@@ -94,7 +94,7 @@ put_nested=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   --data-binary "@${WORK_DIR}/nested.txt" \
   "${GENERIC_URL}/tools/2026/04/25/linux/amd64/cli.txt") || put_nested="000"
 
-if [ "$put_nested" -ge 200 ] 2>/dev/null && [ "$put_nested" -lt 300 ] 2>/dev/null; then
+if assert_http_2xx "$put_nested" "nested PUT returned HTTP ${put_nested}, expected 2xx"; then
   if curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       -o "${WORK_DIR}/nested-dl.txt" \

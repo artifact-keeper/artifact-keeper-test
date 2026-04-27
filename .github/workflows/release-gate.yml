@@ -146,6 +146,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -245,6 +249,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -276,6 +284,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -307,6 +319,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -338,6 +354,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -369,6 +389,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -400,6 +424,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -431,6 +459,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -462,6 +494,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -493,6 +529,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -524,6 +564,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -558,6 +602,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -645,6 +693,10 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
         with:

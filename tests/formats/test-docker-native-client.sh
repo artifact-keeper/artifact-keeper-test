@@ -22,8 +22,12 @@
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "docker-native-client"
-auth_admin
-setup_workdir
+
+# Pre-flight skips MUST run BEFORE auth_admin so a missing-tool skip emits
+# a clean JUnit testcase via skip_suite. Round 2 review: if auth_admin
+# (which calls into the backend) errors out before pre-flight runs, the
+# suite errors with no JUnit and the gate's silent-success protection
+# never fires.
 
 REPO_KEY="test-docker-nc-${RUN_ID}"
 UNIQUE_TAG="1.0.$(date +%s)"
@@ -90,6 +94,16 @@ if [[ "$BASE_URL" =~ ^http:// ]] && [[ "$REGISTRY_HOSTNAME" != "localhost" ]] &&
 fi
 
 # -------------------------------------------------------------------------
+# Pre-flight passed -- now bring up the suite state that needs the
+# backend to be reachable. Doing auth_admin/setup_workdir AFTER pre-flight
+# means a docker-not-installed runner skips cleanly via skip_suite without
+# having tried (and failed) to reach the backend first.
+# -------------------------------------------------------------------------
+
+auth_admin
+setup_workdir
+
+# -------------------------------------------------------------------------
 # Create repository
 # -------------------------------------------------------------------------
 
@@ -151,7 +165,14 @@ if docker tag "$IMAGE_LOCAL" "$IMAGE_REMOTE" 2>>"$push_log" && \
   # We will compare this with the post-pull digest below to catch
   # regressions where the registry re-tags layers under different
   # digests (a real OCI silent-corruption class).
-  PUSH_DIGEST=$(docker inspect --format '{{.Id}}' "$IMAGE_LOCAL" 2>/dev/null || echo "")
+  # Use RepoDigests (manifest digest) over .Id (local config-blob hash).
+  # .Id catches layer mutation in transit but misses manifest-only
+  # mutation (mediaType drift, annotation injection) where layers are
+  # byte-identical but the manifest JSON changed. RepoDigests is the
+  # registry's view, comparable across push and pull.
+  # The format `{{index .RepoDigests 0}}` returns "host:port/repo@sha256:..."
+  # The sha is the manifest digest the registry computed.
+  PUSH_DIGEST=$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$IMAGE_REMOTE" 2>/dev/null || echo "")
   pass
 else
   fail "docker push failed; tail: $(tail -n 20 "$push_log" | tr '\n' ' ')"
@@ -197,7 +218,7 @@ fi
 
 begin_test "Pulled image digest matches pushed digest"
 if [ -n "$PUSH_DIGEST" ]; then
-  PULL_DIGEST=$(docker inspect --format '{{.Id}}' "$IMAGE_REMOTE" 2>/dev/null || echo "")
+  PULL_DIGEST=$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$IMAGE_REMOTE" 2>/dev/null || echo "")
   if [ -n "$PULL_DIGEST" ] && [ "$PUSH_DIGEST" = "$PULL_DIGEST" ]; then
     pass
   else

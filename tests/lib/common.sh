@@ -753,7 +753,7 @@ create_virtual_repo() {
   api_post "/api/v1/repositories" "$payload" > /dev/null
 
   # Add each member repository (if any specified). Use a subshell tr to split
-  # on commas so we don't leak `IFS=','` into downstream `api_post` calls — the
+  # on commas so we don't leak `IFS=','` into downstream `api_post` calls -- the
   # earlier in-place `local IFS=','` form caused `$CURL_TIMEOUT` to splat as a
   # single arg rather than multiple flags, producing
   # `curl: option --max-time 60 --connect-timeout 10: is unknown`.
