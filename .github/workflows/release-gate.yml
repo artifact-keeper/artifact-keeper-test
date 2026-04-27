@@ -38,6 +38,11 @@ on:
         required: false
         type: boolean
         default: false
+      iac_ref:
+        description: artifact-keeper-iac git ref for the Helm chart (default main)
+        required: false
+        type: string
+        default: 'main'
   workflow_call:
     inputs:
       backend_tag:
@@ -55,6 +60,10 @@ on:
         required: false
         type: boolean
         default: false
+      iac_ref:
+        required: false
+        type: string
+        default: 'main'
 
 env:
   NAMESPACE_CPU: ${{ vars.TEST_NAMESPACE_CPU || '4000m' }}
@@ -65,17 +74,19 @@ jobs:
   # Clean-install smoke test
   #
   # Boots a fresh namespace, runs `helm install` against the documented
-  # values-production.yaml, and polls kubectl rollout status plus /readyz
-  # for up to 120s. This catches startup panics (e.g. the v1.1.8 Debian
-  # route panic) that crash the backend before it can ever serve traffic.
+  # values-production.yaml (with overrides for deps the smoke can't
+  # satisfy), waits for backend AND web Deployments to reach Ready, then
+  # probes /readyz from inside the cluster. Catches startup panics (e.g.
+  # the v1.1.8 Debian route panic) that crash the backend before it can
+  # serve traffic.
   #
-  # Runs independently of the `deploy` job so a startup crash fails the
-  # gate fast, before the long-running matrix burns runner time on a
-  # broken build.
+  # The `deploy` job (and therefore the entire test matrix downstream)
+  # `needs:` this gate. A startup-broken release fails fast here without
+  # burning runner time on the matrix.
   # -------------------------------------------------------------------
   clean-install-smoke:
     runs-on: ak-e2e-runners
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,15 +102,27 @@ jobs:
         env:
           BACKEND_TAG: ${{ inputs.backend_tag }}
           WEB_TAG: ${{ inputs.web_tag }}
-          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          # Pin iac chart ref so the gate validates against the chart
+          # version that ships with the release. Defaults to `main` when
+          # the workflow input is unset; release pipelines should pass
+          # the corresponding iac tag.
+          IAC_REF: ${{ inputs.iac_ref || 'main' }}
+          # Pull-secret for ghcr.io. Without this, private image tags
+          # fail with ImagePullBackOff and the gate fails for the wrong
+          # reason. Workflows that test public-only tags can omit it.
+          GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
         run: |
           chmod +x scripts/clean-install-smoke.sh
-          RUN_ID="smoke-$(date +%s)-${GITHUB_RUN_NUMBER}"
+          # github.run_id + github.run_attempt is unique per workflow
+          # attempt (re-runs increment run_attempt). Avoids RUN_ID
+          # collisions when a job is retried.
+          RUN_ID="${{ github.run_id }}-${{ github.run_attempt }}"
           ./scripts/clean-install-smoke.sh \
             --run-id "${RUN_ID}" \
             --backend-tag "${BACKEND_TAG}" \
             --web-tag "${WEB_TAG}" \
-            --timeout 120
+            --iac-ref "${IAC_REF}" \
+            --timeout 300
 
       - name: Upload smoke diagnostics
         if: failure()
@@ -111,8 +134,14 @@ jobs:
 
   # -------------------------------------------------------------------
   # Deploy test environment
+  #
+  # Gated on `clean-install-smoke` so that the matrix below cannot run
+  # against a backend that fails to even start. A startup-broken release
+  # fails fast in `clean-install-smoke` and the entire matrix is skipped,
+  # preserving runner-time for releases that can actually be tested.
   # -------------------------------------------------------------------
   deploy:
+    needs: clean-install-smoke
     runs-on: ak-e2e-runners
     outputs:
       run_id: ${{ steps.setup.outputs.run_id }}

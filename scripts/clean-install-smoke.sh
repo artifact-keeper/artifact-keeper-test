@@ -3,30 +3,40 @@
 #
 # Usage:
 #   ./clean-install-smoke.sh --run-id <id> --backend-tag <tag> [--web-tag <tag>] \
-#       [--iac-repo <path>] [--timeout <seconds>] [--keep-namespace]
+#       [--iac-repo <path>] [--iac-ref <git-ref>] [--timeout <seconds>] \
+#       [--keep-namespace] [--expect-failure]
 #
 # Boots a fresh namespace, performs `helm install` against the documented
-# values-production.yaml (with test-only secret overrides), and polls
-# `kubectl rollout status` plus `/readyz` until the backend reports ready
-# or the timeout expires.
+# values-production.yaml (with test-only secret overrides), waits for the
+# backend AND web Deployments to reach Ready, then probes `/readyz` from
+# inside the cluster until 200.
 #
 # This gate exists to catch startup panics (e.g. the v1.1.8 Debian route
-# panic) that crash the backend before it can ever serve traffic. If the
-# pod never reaches Ready in the window, the script exits non-zero and the
-# release-gate fails.
+# panic) that crash the backend before it can serve traffic. If any
+# Deployment never reaches Ready in the window, the script exits non-zero
+# and the release-gate fails.
+#
+# What this gate is NOT:
+#   - It is NOT a search/scan/format/auth E2E (those live in matrix jobs).
+#   - It does NOT exercise ingress, externalDatabase, externalSecrets,
+#     openSCAP, edge, dependencyTrack, or trivy. Those are disabled via
+#     overrides so the smoke focuses on backend+web startup. Coverage of
+#     those subsystems is the role of `clean-install-smoke-with-deps`
+#     (filed as a follow-up).
+#   - It does NOT exercise OpenSearch in production-shape (3-replica
+#     StatefulSet with 3x 50Gi PVCs). Production OpenSearch is exercised
+#     by the search-tests matrix job.
 #
 # Exit codes:
-#   0  Pod ready, /readyz returns 200, smoke test passed
-#   1  Helm install failed
-#   2  Rollout did not complete within timeout
+#   0  All Deployments Ready, /readyz returns 200, smoke passed
+#   1  Usage error, missing arg, or helm install failed
+#   2  Rollout did not complete within timeout (CrashLoopBackOff,
+#      ImagePullBackOff, etc.)
 #   3  /readyz did not return 200 within timeout
+#   4  Self-test mode: gate did NOT fail when --expect-failure was set
+#      (used by the smoke meta-test that pins the gate's semantics)
 
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# SCRIPT_DIR retained for future use; this script does not currently
-# reference files in the repo root.
-: "${SCRIPT_DIR}"
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -36,24 +46,40 @@ RUN_ID=""
 BACKEND_TAG=""
 WEB_TAG="dev"
 IAC_REPO=""
-TIMEOUT_SECONDS=120
+IAC_REF="main"
+TIMEOUT_SECONDS=300
 KEEP_NAMESPACE=false
+EXPECT_FAILURE=false
+
+# Track resources to clean up. Set after first use.
+CHART_TMPDIR=""
 
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
 
+require_value() {
+  local flag="$1"
+  local value="${2:-}"
+  if [ -z "$value" ]; then
+    echo "ERROR: $flag requires a value" >&2
+    exit 1
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --run-id)         RUN_ID="$2"; shift 2 ;;
-    --backend-tag)    BACKEND_TAG="$2"; shift 2 ;;
-    --web-tag)        WEB_TAG="$2"; shift 2 ;;
-    --iac-repo)       IAC_REPO="$2"; shift 2 ;;
-    --timeout)        TIMEOUT_SECONDS="$2"; shift 2 ;;
+    --run-id)         require_value "$1" "${2:-}"; RUN_ID="$2"; shift 2 ;;
+    --backend-tag)    require_value "$1" "${2:-}"; BACKEND_TAG="$2"; shift 2 ;;
+    --web-tag)        require_value "$1" "${2:-}"; WEB_TAG="$2"; shift 2 ;;
+    --iac-repo)       require_value "$1" "${2:-}"; IAC_REPO="$2"; shift 2 ;;
+    --iac-ref)        require_value "$1" "${2:-}"; IAC_REF="$2"; shift 2 ;;
+    --timeout)        require_value "$1" "${2:-}"; TIMEOUT_SECONDS="$2"; shift 2 ;;
     --keep-namespace) KEEP_NAMESPACE=true; shift ;;
+    --expect-failure) EXPECT_FAILURE=true; shift ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: clean-install-smoke.sh --run-id <id> --backend-tag <tag> [--web-tag <tag>] [--iac-repo <path>] [--timeout <seconds>] [--keep-namespace]" >&2
+      echo "Usage: clean-install-smoke.sh --run-id <id> --backend-tag <tag> [--web-tag <tag>] [--iac-repo <path>] [--iac-ref <git-ref>] [--timeout <seconds>] [--keep-namespace] [--expect-failure]" >&2
       exit 1
       ;;
   esac
@@ -69,22 +95,65 @@ RELEASE_NAME="ak-smoke-${RUN_ID}"
 
 echo "=================================================================="
 echo "Clean-install smoke test"
-echo "  Namespace:   ${NAMESPACE}"
-echo "  Release:     ${RELEASE_NAME}"
-echo "  Backend tag: ${BACKEND_TAG}"
-echo "  Web tag:     ${WEB_TAG}"
-echo "  Timeout:     ${TIMEOUT_SECONDS}s"
+echo "  Namespace:        ${NAMESPACE}"
+echo "  Release:          ${RELEASE_NAME}"
+echo "  Backend tag:      ${BACKEND_TAG}"
+echo "  Web tag:          ${WEB_TAG}"
+echo "  Timeout:          ${TIMEOUT_SECONDS}s"
+echo "  iac ref:          ${IAC_REF}"
+echo "  Expect failure:   ${EXPECT_FAILURE}"
 echo "=================================================================="
+
+# ---------------------------------------------------------------------------
+# Diagnostic helpers
+# ---------------------------------------------------------------------------
+
+# Classify pod failure reason so the gate's diagnostic line tells operators
+# whether to suspect the build (CrashLoopBackOff), the registry/secret path
+# (ImagePullBackOff/ErrImagePull), or PVC binding (Pending).
+classify_pod_failure() {
+  local ns="$1"
+  local label="$2"
+  local reasons
+  reasons=$(kubectl get pods -n "$ns" -l "$label" \
+    -o jsonpath='{range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}{range .items[*].status.initContainerStatuses[*]}{.state.waiting.reason}{"\n"}{end}' \
+    2>/dev/null | sort -u | grep -v '^$' || true)
+  if [ -z "$reasons" ]; then
+    local phase
+    phase=$(kubectl get pods -n "$ns" -l "$label" -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
+    echo "no-waiting-reason (phase=${phase:-unknown})"
+    return
+  fi
+  echo "$reasons" | tr '\n' ',' | sed 's/,$//'
+}
 
 # ---------------------------------------------------------------------------
 # Teardown handler (always cleans up unless --keep-namespace)
 # ---------------------------------------------------------------------------
 
+# shellcheck disable=SC2329  # invoked via `trap cleanup EXIT`
 cleanup() {
   local exit_code=$?
+
+  # Self-test mode: invert the meaning of exit code so a *real* failure
+  # is reported as success and a missing-failure is reported as code 4.
+  if [ "$EXPECT_FAILURE" = "true" ]; then
+    if [ "$exit_code" -eq 0 ]; then
+      echo "" >&2
+      echo "ERROR: --expect-failure was set but the gate passed. The gate is broken or the test fixture is wrong." >&2
+      exit_code=4
+    else
+      echo ""
+      echo "Self-test PASSED: gate exited with code ${exit_code} as expected."
+      exit_code=0
+    fi
+  fi
+
   if [ "$KEEP_NAMESPACE" = "true" ]; then
     echo ""
     echo "Skipping teardown (--keep-namespace set). Namespace ${NAMESPACE} retained for debugging."
+    [ -n "$CHART_TMPDIR" ] && [ -d "$CHART_TMPDIR" ] && \
+      echo "Helm chart workdir at ${CHART_TMPDIR} also retained."
     exit "$exit_code"
   fi
 
@@ -93,46 +162,71 @@ cleanup() {
   echo "Teardown: collecting diagnostics and removing ${NAMESPACE}"
   echo "------------------------------------------------------------------"
 
-  # Capture pod state and logs on failure for debugging the release-gate
+  # Capture pod state and logs on failure for debugging the release-gate.
+  # Tolerate every kubectl call here so cleanup never fails on a missing
+  # resource. mkdir is best-effort: a read-only /tmp should not abort
+  # cleanup, just skip log capture.
   if [ "$exit_code" -ne 0 ]; then
     echo ""
     echo "Pods in ${NAMESPACE}:"
     kubectl get pods -n "$NAMESPACE" -o wide 2>/dev/null || true
     echo ""
+    echo "Backend pod failure classification:"
+    classify_pod_failure "$NAMESPACE" "app.kubernetes.io/component=backend" || true
+    echo ""
+    echo "Web pod failure classification:"
+    classify_pod_failure "$NAMESPACE" "app.kubernetes.io/component=web" || true
+    echo ""
     echo "Recent events in ${NAMESPACE}:"
-    kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>/dev/null | tail -30 || true
+    kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>/dev/null | tail -50 || true
 
-    # Save backend logs for the workflow artifact step
     LOGS_DIR="${LOGS_DIR:-/tmp/test-logs}/smoke-${RUN_ID}"
-    mkdir -p "$LOGS_DIR"
-    pods=$(kubectl get pods -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
-    for pod in $pods; do
-      kubectl logs "$pod" -n "$NAMESPACE" --all-containers --tail=500 \
-        > "${LOGS_DIR}/${pod}.log" 2>/dev/null || true
-      kubectl logs "$pod" -n "$NAMESPACE" --all-containers --previous --tail=500 \
-        > "${LOGS_DIR}/${pod}.previous.log" 2>/dev/null || true
-    done
-    echo "Logs saved to ${LOGS_DIR}/"
+    if mkdir -p "$LOGS_DIR" 2>/dev/null; then
+      pods=$(kubectl get pods -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+      for pod in $pods; do
+        kubectl logs "$pod" -n "$NAMESPACE" --all-containers --tail=500 \
+          > "${LOGS_DIR}/${pod}.log" 2>/dev/null || true
+        kubectl logs "$pod" -n "$NAMESPACE" --all-containers --previous --tail=500 \
+          > "${LOGS_DIR}/${pod}.previous.log" 2>/dev/null || true
+        # describe is where ImagePullBackOff messages and init container
+        # status surface most readably.
+        kubectl describe pod "$pod" -n "$NAMESPACE" \
+          > "${LOGS_DIR}/${pod}.describe.txt" 2>/dev/null || true
+      done
+      kubectl get pvc -n "$NAMESPACE" -o yaml > "${LOGS_DIR}/pvcs.yaml" 2>/dev/null || true
+      echo "Logs and describe saved to ${LOGS_DIR}/"
+    else
+      echo "Could not create ${LOGS_DIR}; skipping log capture."
+    fi
   fi
 
   helm uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" --wait=false 2>/dev/null || true
   kubectl delete namespace "$NAMESPACE" --wait=false 2>/dev/null || true
+
+  if [ -n "$CHART_TMPDIR" ] && [ -d "$CHART_TMPDIR" ]; then
+    rm -rf "$CHART_TMPDIR" 2>/dev/null || true
+  fi
 
   exit "$exit_code"
 }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Resolve Helm chart source
+# Resolve Helm chart source. The iac repo is cloned at $IAC_REF (default
+# `main`) so the gate can be pinned to a chart ref that matches the
+# release being validated. Pinning matters because chart drift on iac
+# main can break the gate retroactively or, worse, silently change the
+# semantics of what `values-production.yaml` enables.
 # ---------------------------------------------------------------------------
 
-CHART_TMPDIR=""
 if [ -n "$IAC_REPO" ]; then
   CHART_DIR="${IAC_REPO}/charts/artifact-keeper"
 else
   CHART_TMPDIR="$(mktemp -d)"
-  echo "Cloning artifact-keeper-iac for Helm chart..."
-  git clone --depth 1 https://github.com/artifact-keeper/artifact-keeper-iac.git "$CHART_TMPDIR/iac"
+  echo "Cloning artifact-keeper-iac@${IAC_REF} for Helm chart..."
+  git clone --depth 1 --branch "$IAC_REF" \
+    https://github.com/artifact-keeper/artifact-keeper-iac.git \
+    "$CHART_TMPDIR/iac"
   CHART_DIR="${CHART_TMPDIR}/iac/charts/artifact-keeper"
 fi
 
@@ -155,37 +249,135 @@ echo ""
 echo "Creating fresh namespace ${NAMESPACE}"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
+# Wire the GHCR pull secret if the workflow provided it. The workflow's
+# step env MUST set GHCR_DOCKER_CONFIG (base64-encoded ~/.docker/config.json)
+# for private image tags to pull. If unset, we explicitly warn so a silent
+# auth failure is visible in workflow logs.
 if [ -n "${GHCR_DOCKER_CONFIG:-}" ]; then
+  CONFIG_FILE="$(mktemp)"
+  trap 'rm -f "$CONFIG_FILE"' RETURN
+  echo "$GHCR_DOCKER_CONFIG" | base64 -d > "$CONFIG_FILE"
   kubectl create secret docker-registry ghcr-creds \
     --namespace "$NAMESPACE" \
     --docker-server=ghcr.io \
-    --from-file=.dockerconfigjson=<(echo "$GHCR_DOCKER_CONFIG" | base64 -d) \
+    --from-file=".dockerconfigjson=${CONFIG_FILE}" \
     --dry-run=client -o yaml | kubectl apply -f -
+  rm -f "$CONFIG_FILE"
+  echo "Created ghcr-creds pull secret in ${NAMESPACE}"
+else
+  echo "WARN: GHCR_DOCKER_CONFIG is not set. Private images will fail to pull."
+  echo "      Public images will work fine. To wire creds, add:"
+  echo "        env:"
+  echo "          GHCR_DOCKER_CONFIG: \${{ secrets.GHCR_DOCKER_CONFIG }}"
+  echo "      to the workflow step that runs this script."
 fi
 
 # ---------------------------------------------------------------------------
-# Helm install with documented production values + test-only overrides
-# ---------------------------------------------------------------------------
+# Compose Helm overrides.
 #
-# values-production.yaml is an example template that ships with empty
-# strings for ADMIN_PASSWORD, jwtSecret, RDS host, ingress host, etc. The
-# point of this gate is to verify the chart's documented install path,
-# not to exercise external infrastructure, so we override:
+# values-production.yaml is the chart's example template. It assumes a
+# real production environment: RDS, AWS Secrets Manager, ingress, full
+# 3-replica OpenSearch StatefulSet with 50Gi PVCs each, and a Prometheus
+# operator. Our smoke namespace has none of those. We override carefully
+# so the chart still goes through values-production.yaml's code path,
+# minus the deps we cannot satisfy.
 #
-#   - fullnameOverride       stable service DNS for /readyz polling
-#   - backend image tag      under-test build
-#   - ADMIN_PASSWORD         test-only credential
-#   - secrets.jwtSecret      test-only credential
-#   - postgres.enabled=true  in-cluster DB instead of RDS
-#   - externalDatabase       cleared so chart uses in-cluster postgres
-#   - externalSecrets        disabled (no AWS Secrets Manager in CI)
-#   - ingress                disabled (no public domain)
-#   - serviceMonitor         disabled (no Prometheus operator in test cluster)
-#   - autoscaling/PDB        single replica is enough for a startup smoke
+# Overrides and their justification:
 #
-# These overrides keep the chart on its documented values-production.yaml
-# code path while cutting external dependencies the smoke test can't
-# satisfy.
+#   fullnameOverride=ak-smoke
+#     Stable service DNS for /readyz polling (avoids release-name
+#     suffixing). Matches the v1.1.0-rc.6 lesson.
+#
+#   backend.image.tag, web.image.tag
+#     Pin to the build under test.
+#
+#   backend.replicaCount=1, web.replicaCount=1
+#     Single-replica is enough for a startup smoke. Production uses 3.
+#
+#   ADMIN_PASSWORD=Smoke!2026secure
+#     Required by the chart to clear the setup_required flag so /readyz
+#     returns 200. Without this the gate would hang on /readyz forever.
+#
+#   secrets.jwtSecret=...
+#     Test-only credential. Never reuse outside CI.
+#
+#   postgres.enabled=true, externalDatabase.host=""
+#     RDS is unavailable in CI, so use the in-cluster postgres subchart.
+#     This means we exercise a different code path than RDS-backed prod
+#     installs — that gap is documented in the PR body and tracked as a
+#     separate `clean-install-smoke-with-deps` follow-up.
+#
+#   externalSecrets.enabled=false
+#     No External Secrets Operator in CI; secrets come from inline values.
+#
+#   ingress.enabled=false
+#     No public domain in CI; backend is reached via in-cluster Service.
+#
+#   serviceMonitor.enabled=false
+#     No Prometheus operator in the test cluster.
+#
+#   backend.autoscaling.enabled=false, podDisruptionBudget.enabled=false
+#     Single-replica install. HPA + PDB are exercised by the resilience
+#     suite, not here.
+#
+#   edge.enabled=false
+#     The edge image isn't published yet (tracked in iac); leaving on
+#     would ImagePullBackOff every run.
+#
+#   trivy.enabled=false, dependencyTrack.enabled=false
+#     Heavy subsystems with 4-8 GB memory needs. Out of scope for a
+#     startup smoke. Covered by the security-tests matrix.
+#
+#   networkPolicy.enabled=false
+#     Default-deny would block the in-cluster /readyz probe pod.
+#
+#   opensearch.replicaCount=1, persistence.enabled=false, javaOpts heap reduced
+#     OpenSearch can NOT be wholly disabled — the backend has a hard
+#     dependency on the OpenSearch service for indexing. We squash it to
+#     single-node, no PVC, 512m heap so the StatefulSet -> Deployment
+#     switch and the in-memory mode boot in <60s on `local-path`.
+#     Production OpenSearch shape is exercised by search-tests.
+#
+#   cosign.enabled=false (default already)
+#     No signature verification in CI; would block on cosign tooling.
+
+echo ""
+echo "Validating Helm template (catches override drift early)"
+helm template "$RELEASE_NAME" "$CHART_DIR" \
+  --namespace "$NAMESPACE" \
+  --values "$PROD_VALUES" \
+  --set fullnameOverride=ak-smoke \
+  --set backend.image.tag="$BACKEND_TAG" \
+  --set backend.image.pullPolicy=Always \
+  --set backend.replicaCount=1 \
+  --set "backend.env.ADMIN_PASSWORD=Smoke!2026secure" \
+  --set web.image.tag="$WEB_TAG" \
+  --set web.replicaCount=1 \
+  --set secrets.jwtSecret="smoke-jwt-secret-not-for-production" \
+  --set postgres.enabled=true \
+  --set "postgres.auth.username=registry" \
+  --set "postgres.auth.password=smoke-db-password" \
+  --set "postgres.auth.database=artifact_registry" \
+  --set externalDatabase.host="" \
+  --set externalDatabase.existingSecret="" \
+  --set externalSecrets.enabled=false \
+  --set ingress.enabled=false \
+  --set serviceMonitor.enabled=false \
+  --set "backend.autoscaling.enabled=false" \
+  --set "backend.podDisruptionBudget.enabled=false" \
+  --set "web.podDisruptionBudget.enabled=false" \
+  --set edge.enabled=false \
+  --set trivy.enabled=false \
+  --set dependencyTrack.enabled=false \
+  --set networkPolicy.enabled=false \
+  --set opensearch.replicaCount=1 \
+  --set opensearch.persistence.enabled=false \
+  --set 'opensearch.javaOpts=-Xms512m -Xmx512m' \
+  --set 'opensearch.resources.requests.memory=1Gi' \
+  --set 'opensearch.resources.limits.memory=1Gi' \
+  --validate \
+  --debug \
+  >/dev/null
 
 echo ""
 echo "Installing Helm release ${RELEASE_NAME}"
@@ -216,78 +408,151 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
   --set trivy.enabled=false \
   --set dependencyTrack.enabled=false \
   --set networkPolicy.enabled=false \
+  --set opensearch.replicaCount=1 \
+  --set opensearch.persistence.enabled=false \
+  --set 'opensearch.javaOpts=-Xms512m -Xmx512m' \
+  --set 'opensearch.resources.requests.memory=1Gi' \
+  --set 'opensearch.resources.limits.memory=1Gi' \
   --wait=false || {
     echo "ERROR: helm install failed" >&2
     exit 1
   }
 
 # ---------------------------------------------------------------------------
-# Poll rollout status AND /readyz in parallel-ish
-# ---------------------------------------------------------------------------
+# Wait for Deployments to exist before polling rollout.
 #
-# The v1.1.8 panic was a startup crash: the pod went CrashLoopBackOff, the
-# rollout never progressed, and the chart never reported ready. We watch
-# both the deployment rollout (catches CrashLoopBackOff) and the actual
-# /readyz endpoint (catches "running but not serving") so either failure
-# mode trips the gate.
+# `helm install --wait=false` returns before the API server has finished
+# creating the Deployment objects. `kubectl rollout status` against a
+# not-yet-existent Deployment fails immediately ("not found") which
+# bypasses the timeout budget entirely. So we poll for existence first.
+# ---------------------------------------------------------------------------
 
-DEPLOYMENT="ak-smoke-backend"
-SERVICE_URL="http://ak-smoke-backend.${NAMESPACE}.svc.cluster.local:8080"
+wait_for_deployment_exists() {
+  local name="$1"
+  local timeout=30
+  local elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if kubectl get deployment "$name" -n "$NAMESPACE" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  echo "ERROR: deployment/${name} did not appear in ${NAMESPACE} within ${timeout}s" >&2
+  return 1
+}
 
 echo ""
-echo "Polling rollout status for deployment/${DEPLOYMENT} (timeout: ${TIMEOUT_SECONDS}s)"
+echo "Waiting for backend and web Deployments to exist"
+wait_for_deployment_exists "ak-smoke-backend"
+wait_for_deployment_exists "ak-smoke-web"
 
-# kubectl rollout status itself respects --timeout. If the deployment is
-# stuck (image pull, CrashLoopBackOff, etc.), this exits non-zero.
-if ! kubectl rollout status "deployment/${DEPLOYMENT}" \
-      --namespace "$NAMESPACE" \
-      --timeout="${TIMEOUT_SECONDS}s"; then
-  echo "ERROR: deployment/${DEPLOYMENT} did not reach Ready within ${TIMEOUT_SECONDS}s" >&2
+# ---------------------------------------------------------------------------
+# Poll rollout status for backend AND web.
+#
+# The v1.1.8 panic was a backend startup crash, but a web crash is also
+# a broken release. We check both. `kubectl rollout status` returns
+# non-zero on CrashLoopBackOff because the new ReplicaSet never reaches
+# `availableReplicas == replicas`.
+# ---------------------------------------------------------------------------
+
+watch_rollout() {
+  local deployment="$1"
+  local component="$2"
   echo ""
-  echo "Pod state:"
-  kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/component=backend" -o wide || true
-  exit 2
-fi
-
-echo ""
-echo "Polling ${SERVICE_URL}/readyz (timeout: ${TIMEOUT_SECONDS}s)"
-
-# /readyz is checked from inside the cluster via a short-lived curl pod so
-# we don't need ingress or port-forwarding from the runner. This matches
-# how application traffic actually reaches the backend in production.
-
-start=$(date +%s)
-deadline=$(( start + TIMEOUT_SECONDS ))
-
-while true; do
-  now=$(date +%s)
-  if [ "$now" -ge "$deadline" ]; then
-    echo "ERROR: /readyz did not return 200 within ${TIMEOUT_SECONDS}s" >&2
-    exit 3
-  fi
-
-  # Run curl from a throwaway pod inside the namespace. -fsS makes curl
-  # exit non-zero on HTTP >= 400 and stay quiet on success.
-  if kubectl run "smoke-probe-$$" \
+  echo "Polling rollout status for deployment/${deployment} (timeout: ${TIMEOUT_SECONDS}s)"
+  if ! kubectl rollout status "deployment/${deployment}" \
         --namespace "$NAMESPACE" \
-        --image=curlimages/curl:8.10.1 \
-        --restart=Never \
-        --rm -i --quiet --timeout=20s \
-        --command -- curl -fsS -o /dev/null -w "%{http_code}\n" \
-          --max-time 5 "${SERVICE_URL}/readyz" 2>/dev/null | grep -q '^200$'; then
-    elapsed=$(( now - start ))
-    echo "Backend /readyz returned 200 (took ${elapsed}s after rollout completed)"
-    break
+        --timeout="${TIMEOUT_SECONDS}s"; then
+    echo "ERROR: deployment/${deployment} did not reach Ready within ${TIMEOUT_SECONDS}s" >&2
+    echo ""
+    echo "Pod state:"
+    kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/component=${component}" -o wide || true
+    echo ""
+    echo "Failure classification: $(classify_pod_failure "$NAMESPACE" "app.kubernetes.io/component=${component}")"
+    return 2
+  fi
+}
+
+watch_rollout "ak-smoke-backend" "backend" || exit $?
+watch_rollout "ak-smoke-web"     "web"     || exit $?
+
+# ---------------------------------------------------------------------------
+# Poll /readyz from inside the cluster.
+#
+# `/readyz` is a deeper probe than `kubectl rollout status`: it verifies
+# the backend can reach Postgres, has applied migrations, and has cleared
+# the setup_required flag (which is why we set ADMIN_PASSWORD via --set
+# above). A backend that booted but cannot serve will trip this even when
+# rollout status reports Ready.
+#
+# We exec into the backend pod itself rather than spinning up a curl pod
+# per iteration. This avoids depending on `curlimages/curl` being pullable
+# (Docker Hub rate limit risk), avoids per-iteration pod-create races,
+# and is faster.
+# ---------------------------------------------------------------------------
+
+readyz_probe_loop() {
+  local service_url="http://ak-smoke-backend.${NAMESPACE}.svc.cluster.local:8080"
+  echo ""
+  echo "Polling ${service_url}/readyz from inside backend pod (timeout: ${TIMEOUT_SECONDS}s)"
+
+  local backend_pod
+  backend_pod=$(kubectl get pods -n "$NAMESPACE" \
+    -l "app.kubernetes.io/component=backend" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [ -z "$backend_pod" ]; then
+    echo "ERROR: no backend pod found for /readyz probe" >&2
+    return 3
   fi
 
-  printf "."
-  sleep 5
-done
+  # The backend image typically has wget or curl; try wget first since
+  # alpine-based images include it. Fall back to /dev/tcp shell builtin
+  # if neither is available.
+  local probe_cmd
+  if kubectl exec -n "$NAMESPACE" "$backend_pod" -- which wget >/dev/null 2>&1; then
+    probe_cmd="wget -q --timeout=5 -O - --server-response ${service_url}/readyz 2>&1 | grep -E '^  HTTP/'"
+  elif kubectl exec -n "$NAMESPACE" "$backend_pod" -- which curl >/dev/null 2>&1; then
+    probe_cmd="curl -fsS -o /dev/null -w '%{http_code}\n' --max-time 5 ${service_url}/readyz"
+  else
+    # Bash builtin /dev/tcp is portable on most distros without curl/wget.
+    probe_cmd="(exec 3<>/dev/tcp/ak-smoke-backend/8080 && echo -e 'GET /readyz HTTP/1.0\r\nHost: ak-smoke-backend\r\n\r\n' >&3 && head -1 <&3)"
+  fi
+
+  local start now elapsed deadline output
+  start=$(date +%s)
+  deadline=$(( start + TIMEOUT_SECONDS ))
+
+  while true; do
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      echo "ERROR: /readyz did not return 200 within ${TIMEOUT_SECONDS}s" >&2
+      echo ""
+      echo "Last probe output:"
+      kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c "$probe_cmd" 2>&1 | tail -5 || true
+      return 3
+    fi
+
+    if output=$(kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c "$probe_cmd" 2>&1); then
+      if echo "$output" | grep -qE '\b200\b'; then
+        elapsed=$(( now - start ))
+        echo "Backend /readyz returned 200 (took ${elapsed}s after rollout completed)"
+        return 0
+      fi
+    fi
+
+    printf "."
+    sleep 5
+  done
+}
+
+readyz_probe_loop || exit $?
 
 echo ""
 echo "=================================================================="
 echo "Clean-install smoke test PASSED"
 echo "  Backend tag ${BACKEND_TAG} reached Ready and served /readyz 200."
+echo "  Web tag ${WEB_TAG} reached Ready."
 echo "=================================================================="
 
 # Cleanup happens via trap on EXIT
