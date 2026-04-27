@@ -64,8 +64,10 @@ begin_test "Probe gradle repo via /maven/{key} alias"
 PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
   -u "${ADMIN_USER}:${ADMIN_PASS}" \
   "${GRADLE_URL}/${GROUP_PATH}/${ARTIFACT_ID}/maven-metadata.xml") || true
-# auth_admin already ran, so 401/403 here would mean auth blew up after the
-# fact, NOT that the resolver rejected gradle. Treat those as failures.
+# auth_admin validated ${ADMIN_USER}:${ADMIN_PASS} via /auth/login, and the
+# probe re-presents the same Basic credentials. A 401/403 here means the
+# Maven router rejected the request after the fact (e.g. middleware order
+# bug or visibility check), NOT that the resolver rejected gradle. Fail.
 # An empty gradle repo should return 404 (resolver accepted gradle, but no
 # artifact exists yet). 200 is allowed only if the backend ever auto-generates
 # an empty maven-metadata.xml for new repos. 400/500 indicate the resolver
@@ -90,6 +92,11 @@ esac
 # ---------------------------------------------------------------------------
 
 begin_test "Create test JAR, POM, and Gradle Module Metadata"
+
+if ! command -v jar >/dev/null 2>&1 && ! command -v zip >/dev/null 2>&1; then
+  fail "neither 'jar' nor 'zip' is installed; cannot build a test JAR"
+  end_suite
+fi
 
 cd "$WORK_DIR"
 
@@ -245,14 +252,26 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "List artifacts via management API for gradle repo"
-sleep 1
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
-  if assert_contains "$resp" "$ARTIFACT_ID" \
-       "artifact list for gradle repo should contain artifact"; then
-    pass
+# Indexing is async; poll up to 10s at 500ms cadence rather than a fixed
+# sleep. Under release-gate parallel load, indexing routinely exceeds 1s.
+LIST_FOUND=""
+for _ in $(seq 1 20); do
+  if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
+    if echo "$resp" | grep -q "$ARTIFACT_ID"; then
+      LIST_FOUND=1
+      break
+    fi
   fi
+  sleep 0.5
+done
+if [ -n "$LIST_FOUND" ]; then
+  pass
 else
-  fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  if [ -z "${resp:-}" ]; then
+    fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
+  else
+    fail "artifact ${ARTIFACT_ID} not listed for gradle repo within 10s (indexing race?)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -265,7 +284,10 @@ begin_test "Resolve maven-metadata.xml against gradle-aliased repo"
 METADATA_PATH="${GROUP_PATH}/${ARTIFACT_ID}/maven-metadata.xml"
 if resp=$(curl -sf $CURL_TIMEOUT "${GRADLE_URL}/${METADATA_PATH}" \
   -u "${ADMIN_USER}:${ADMIN_PASS}"); then
-  if assert_contains "$resp" "$VERSION" "metadata should list the uploaded version"; then
+  # Match the structured element, not a bare "1.0.0" substring (xsi:schemaLocation,
+  # namespaces, or comments could otherwise false-positive).
+  if assert_contains "$resp" "<version>${VERSION}</version>" \
+       "metadata should list <version>${VERSION}</version> as a published version"; then
     pass
   fi
 else
