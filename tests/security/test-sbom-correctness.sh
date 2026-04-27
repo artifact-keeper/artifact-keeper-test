@@ -17,9 +17,12 @@
 #
 #   1. HTTP 200 on the SBOM read.
 #   2. components.length > 5  (catches the empty-SBOM case from #870).
-#   3. Specific known component names appear in the SBOM (catches the
+#   3. Specific known TRANSITIVE component names appear (catches the
 #      "fake placeholder data" case from #870, where the response shape was
-#      valid but the data did not correspond to the uploaded artifact).
+#      valid but the data did not correspond to the uploaded artifact). The
+#      uploaded package itself (express) is excluded from this assertion --
+#      it appears in any SBOM as the root component, so requiring it would
+#      not prove the scanner actually walked the dep tree.
 #
 # Fixture: express@4.18.2 (pinned, no `latest`). Chosen because it has a
 # deep, stable dependency tree (~30 direct deps, ~50 transitive) and is
@@ -41,33 +44,48 @@ FIXTURE_NAME="express"
 FIXTURE_VERSION="4.18.2"
 FIXTURE_TARBALL_URL="https://registry.npmjs.org/${FIXTURE_NAME}/-/${FIXTURE_NAME}-${FIXTURE_VERSION}.tgz"
 
-# Components we expect to see in the SBOM. The package itself, plus a few
-# stable transitive dependencies that have been pinned in express@4.18.2 for
-# years. If the SBOM is empty or fabricated, none of these will be present.
-EXPECTED_COMPONENTS=("express" "body-parser" "qs")
+# Components we expect to see in the SBOM. ONLY transitive deps -- the
+# uploaded package itself (express) appears in any SBOM as the root
+# component, so requiring it would not prove the scanner walked the
+# dependency tree. Pinned transitives have been stable in
+# express@4.18.2's dependency tree for years.
+EXPECTED_TRANSITIVE_COMPONENTS=("body-parser" "qs" "cookie")
 
 # Minimum component count. express@4.18.2 has 30+ direct deps in its
 # package.json; a healthy SBOM should easily clear 5. The "> 5" threshold
-# from issue #47 is intentionally conservative -- it catches the
+# from issue #47 is intentionally conservative: it catches the
 # "components: []" silent-failure case without being flaky against minor
 # scanner changes that drop or rename a few entries.
 MIN_COMPONENT_COUNT=5
 
 REPO_KEY="sec-sbom-correctness-${RUN_ID}"
 NPM_REGISTRY="${BASE_URL}/npm/${REPO_KEY}/"
-SBOM_POLL_TIMEOUT=60   # seconds
-SBOM_POLL_INTERVAL=3   # seconds
+SBOM_POLL_TIMEOUT="${SBOM_POLL_TIMEOUT:-180}"   # bumped from 60s for cold-start scanner
+SBOM_POLL_INTERVAL=5
+SCAN_WAIT_TIMEOUT="${SCAN_WAIT_TIMEOUT:-120}"   # bumped from 60s
 
 # Track resources we created so we can clean up at the end even on failure.
 CREATED_REPO=false
 ARTIFACT_ID=""
 
+# Combine our cleanup with setup_workdir's WORK_DIR cleanup. The previous
+# version's `trap cleanup EXIT` silently overwrote setup_workdir's trap
+# and leaked WORK_DIR on every run.
 cleanup() {
   if [ "$CREATED_REPO" = "true" ]; then
     api_delete "/api/v1/repositories/${REPO_KEY}" > /dev/null 2>&1 || true
   fi
+  [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Helper: validate that a value is a non-negative integer before passing
+# to numeric comparisons. Round-1 review flagged that
+# `[ "$count" -gt N ] 2>/dev/null` masks `set -e` arithmetic failures and
+# bugs. This makes the precondition explicit.
+is_nonneg_int() {
+  [[ "${1:-}" =~ ^[0-9]+$ ]]
+}
 
 # ---------------------------------------------------------------------------
 # Create npm local repository
@@ -145,6 +163,7 @@ jq -n \
     }
   }' > "$PUBLISH_PAYLOAD_FILE"
 
+# shellcheck disable=SC2086  # CURL_TIMEOUT must word-split, per common.sh
 publish_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X PUT \
   -H "$(format_auth_header)" \
@@ -161,11 +180,14 @@ fi
 
 # ---------------------------------------------------------------------------
 # Resolve the artifact ID we just created
+#
+# The list response shape is `{items: [...]}`. Parenthesize the jq filter
+# explicitly: round-1 review flagged that `A or B and C` could parse as
+# `A or (B and C)` and silently match wrong rows.
 # ---------------------------------------------------------------------------
 
 begin_test "Resolve artifact ID for uploaded fixture"
-# Allow the backend a moment to register the artifact in its catalog.
-sleep 2
+sleep 2  # backend catalog registration takes a moment
 
 artifact_resp=""
 for _i in 1 2 3 4 5; do
@@ -173,8 +195,8 @@ for _i in 1 2 3 4 5; do
     ARTIFACT_ID=$(echo "$artifact_resp" | jq -r --arg name "$FIXTURE_NAME" --arg ver "$FIXTURE_VERSION" '
       (if type == "array" then . else (.items // []) end)
       | map(select(
-          (.name == $name or (.path // "") | test($name)) and
-          ((.version // "") == $ver or (.path // "") | test($ver))
+          (.name == $name or ((.path // "") | test($name)))
+          and ((.version // "") == $ver or ((.path // "") | test($ver)))
         ))
       | .[0].id // empty
     ' 2>/dev/null) || ARTIFACT_ID=""
@@ -207,34 +229,33 @@ fi
 # If we request the SBOM before the scan finishes, we get an empty
 # components list -- which is precisely the silent-empty case from #870.
 # So we explicitly wait for the scan and only then request the SBOM.
+#
+# Round-2 fix: validate scan_resp is JSON before treating it as success.
+# Round-1 review noted that a 200 returning HTML (e.g. a proxy error page)
+# would otherwise pass the `[ -n "$scan_resp" ]` check.
 # ---------------------------------------------------------------------------
 
 begin_test "Wait for fixture security scan to complete"
 scan_status=""
 elapsed=0
-while [ "$elapsed" -lt 60 ]; do
+while [ "$elapsed" -lt "$SCAN_WAIT_TIMEOUT" ]; do
+  # shellcheck disable=SC2086  # CURL_TIMEOUT must word-split, per common.sh
   scan_resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
     "${BASE_URL}/api/v1/sbom/cve/history/${ARTIFACT_ID}" 2>/dev/null) || scan_resp=""
-  if [ -n "$scan_resp" ]; then
+  if [ -n "$scan_resp" ] && echo "$scan_resp" | jq empty >/dev/null 2>&1; then
     scan_status="found"
     break
   fi
-  # Also accept any 2xx on a generic scan endpoint as evidence the
-  # scanner has at least touched the artifact. Some deployments run the
-  # scanner asynchronously and the cve-history record only appears once
-  # the scan completes.
   sleep "$SBOM_POLL_INTERVAL"
   elapsed=$(( elapsed + SBOM_POLL_INTERVAL ))
 done
 
-# Whether or not we saw a definitive scan-complete signal, we proceed to
-# request the SBOM. The next test will catch the empty-result case.
 if [ "$scan_status" = "found" ]; then
   pass
 else
   # Don't fail the suite here: some deployments report scan status only
   # via internal queues. The real assertions are on the SBOM body below.
-  skip "scan status endpoint did not confirm completion within 60s; proceeding to SBOM check (which is the actual regression assertion)"
+  skip "scan status endpoint did not confirm completion within ${SCAN_WAIT_TIMEOUT}s; proceeding to SBOM check (which is the actual regression assertion)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -246,10 +267,10 @@ gen_resp=$(api_post "/api/v1/sbom" \
   "{\"artifact_id\":\"${ARTIFACT_ID}\",\"format\":\"cyclonedx\",\"force_regenerate\":true}" \
   2>/dev/null) || gen_resp=""
 
-if [ -n "$gen_resp" ]; then
+if [ -n "$gen_resp" ] && echo "$gen_resp" | jq empty >/dev/null 2>&1; then
   pass
 else
-  fail "POST /api/v1/sbom did not return a body"
+  fail "POST /api/v1/sbom did not return a valid JSON body"
   end_suite
 fi
 
@@ -260,6 +281,18 @@ fi
 # the first response comes back with components.length == 0. This mirrors
 # what the web UI does and gives the scanner time to surface its findings
 # even on a slow runner.
+#
+# Round-2 fixes:
+#   - Component count uses max($meta, $embedded), not preferential. The
+#     previous `if $meta > 0 then $meta else $embedded` would accept a
+#     stale/non-zero metadata count even when the embedded array was
+#     empty -- a way the #870 silent-empty bug could slip through.
+#   - The polling step now FAILS on timeout instead of pass-through. The
+#     round-1 review flagged that a body-from-last-iteration silently
+#     passed the polling test even when the components count never crossed
+#     the threshold.
+#   - component_count is numeric-validated before -gt to surface jq
+#     parse errors loudly instead of via a masked arithmetic failure.
 # ---------------------------------------------------------------------------
 
 begin_test "Poll SBOM until components are populated (timeout ${SBOM_POLL_TIMEOUT}s)"
@@ -267,25 +300,26 @@ sbom_body=""
 sbom_status=""
 component_count=0
 elapsed=0
+populated=0
 while [ "$elapsed" -lt "$SBOM_POLL_TIMEOUT" ]; do
   tmp_body=$(mktemp)
+  # shellcheck disable=SC2086  # CURL_TIMEOUT must word-split, per common.sh
   sbom_status=$(curl -s -o "$tmp_body" -w '%{http_code}' $CURL_TIMEOUT \
     -H "$(auth_header)" \
     "${BASE_URL}/api/v1/sbom/by-artifact/${ARTIFACT_ID}" 2>/dev/null) || sbom_status="000"
   sbom_body=$(cat "$tmp_body" 2>/dev/null || true)
   rm -f "$tmp_body"
 
-  if [ "$sbom_status" = "200" ] && [ -n "$sbom_body" ]; then
-    # The CycloneDX content lives under .content.components; the metadata
-    # row also exposes .component_count. We check the component_count
-    # first because that is what the API contract asserts, and fall back
-    # to counting the embedded CycloneDX array.
+  if [ "$sbom_status" = "200" ] && [ -n "$sbom_body" ] && \
+     echo "$sbom_body" | jq empty >/dev/null 2>&1; then
+    # Take the larger of the metadata count and the embedded array length.
+    # Either source going non-zero is enough; preferring metadata over
+    # embedded would let a stale metadata count mask an empty array.
     component_count=$(echo "$sbom_body" | jq -r '
-      (.component_count // 0) as $meta
-      | (.content.components | length? // 0) as $embedded
-      | if $meta > 0 then $meta else $embedded end
+      [(.component_count // 0), ((.content.components // []) | length)] | max
     ' 2>/dev/null) || component_count=0
-    if [ "$component_count" -gt "$MIN_COMPONENT_COUNT" ] 2>/dev/null; then
+    if is_nonneg_int "$component_count" && [ "$component_count" -gt "$MIN_COMPONENT_COUNT" ]; then
+      populated=1
       break
     fi
   fi
@@ -301,13 +335,11 @@ while [ "$elapsed" -lt "$SBOM_POLL_TIMEOUT" ]; do
   elapsed=$(( elapsed + SBOM_POLL_INTERVAL ))
 done
 
-# We pass this test on any non-zero response so the next two assertions
-# can run their explicit checks. They are the real regression gates.
-if [ -n "$sbom_body" ]; then
+if [ "$populated" = "1" ]; then
   pass
 else
-  fail "SBOM polling never received a body within ${SBOM_POLL_TIMEOUT}s"
-  end_suite
+  body_snip=$(echo "$sbom_body" | head -c 500)
+  fail "SBOM polling did not reach component_count > ${MIN_COMPONENT_COUNT} within ${SBOM_POLL_TIMEOUT}s (last status=${sbom_status}, last count=${component_count}). body: ${body_snip}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -332,27 +364,26 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "SBOM contains more than ${MIN_COMPONENT_COUNT} components"
-if [ "$component_count" -gt "$MIN_COMPONENT_COUNT" ] 2>/dev/null; then
+if is_nonneg_int "$component_count" && [ "$component_count" -gt "$MIN_COMPONENT_COUNT" ]; then
   pass
 else
-  # Print the body so CI logs show what the empty/fake response looked
-  # like. Truncate to keep logs sane.
   body_snip=$(echo "$sbom_body" | head -c 500)
-  fail "expected components.length > ${MIN_COMPONENT_COUNT} for ${FIXTURE_NAME}@${FIXTURE_VERSION}, got ${component_count}. body: ${body_snip}"
+  fail "expected components.length > ${MIN_COMPONENT_COUNT} for ${FIXTURE_NAME}@${FIXTURE_VERSION}, got '${component_count}'. body: ${body_snip}"
 fi
 
 # ---------------------------------------------------------------------------
-# Assertion 3: known component names appear
+# Assertion 3: known TRANSITIVE component names appear
 #
 # A non-empty components array is necessary but not sufficient: a
 # scanner could emit fabricated/placeholder names and still hit the count
-# threshold. We pin specific names that any healthy scan of express@4.18.2
-# must surface (the package itself + at least one well-known transitive
-# dep). If none of these appear, the SBOM is not actually describing our
-# uploaded artifact.
+# threshold. We pin specific TRANSITIVE deps that any healthy scan of
+# express@4.18.2 must surface. The uploaded package itself (express) is
+# excluded because it would always appear as the root component
+# regardless of whether the scanner walked the dep tree -- requiring it
+# would be a free pass for a scanner stub that just echoes the upload.
 # ---------------------------------------------------------------------------
 
-begin_test "SBOM names the fixture and at least one known transitive dep"
+begin_test "SBOM names at least 2 known transitive deps of ${FIXTURE_NAME}"
 component_names=$(echo "$sbom_body" | jq -r '
   ((.content.components // []) + [])
   | map(.name // empty)
@@ -373,7 +404,7 @@ fi
 
 matched=0
 missing=()
-for expected in "${EXPECTED_COMPONENTS[@]}"; do
+for expected in "${EXPECTED_TRANSITIVE_COMPONENTS[@]}"; do
   if [[ ",${component_names}," == *",${expected},"* ]]; then
     matched=$(( matched + 1 ))
   else
@@ -381,16 +412,28 @@ for expected in "${EXPECTED_COMPONENTS[@]}"; do
   fi
 done
 
-# We require the package itself + at least one transitive dep, i.e. at
-# least 2 of the 3 expected names. Allowing one miss keeps the assertion
-# resilient to scanner-level renames (e.g. the qs version pinned by
-# express occasionally appears as "qs@6.x" rather than "qs"); we can
-# tighten this once scanner output is stable across versions.
+# Require at least 2 of 3 transitive deps. Allowing one miss keeps the
+# assertion resilient to scanner-level renames; we can tighten this once
+# scanner output is stable across versions.
 if [ "$matched" -ge 2 ]; then
   pass
 else
   names_snip=$(echo "$component_names" | head -c 500)
-  fail "expected at least 2 of [${EXPECTED_COMPONENTS[*]}] in SBOM components, matched ${matched}. missing: ${missing[*]}. names: ${names_snip}"
+  fail "expected at least 2 of [${EXPECTED_TRANSITIVE_COMPONENTS[*]}] in SBOM components, matched ${matched}. missing: ${missing[*]}. names: ${names_snip}"
+fi
+
+# ---------------------------------------------------------------------------
+# Diagnostics dump on failure.
+#
+# When something fails above, save the most recent SBOM response so the
+# release-gate workflow's failure-hook step has artifacts to upload.
+# ---------------------------------------------------------------------------
+
+if [ -d "${JUNIT_OUTPUT_DIR:-/tmp/junit}" ]; then
+  echo "$sbom_body" > "${JUNIT_OUTPUT_DIR}/sbom-correctness-final-resp.json" 2>/dev/null || true
+  if [ -n "$ARTIFACT_ID" ]; then
+    echo "$ARTIFACT_ID" > "${JUNIT_OUTPUT_DIR}/sbom-correctness-artifact-id.txt" 2>/dev/null || true
+  fi
 fi
 
 end_suite
