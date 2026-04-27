@@ -39,13 +39,11 @@ API_TOKEN_ID=""
 # -------------------------------------------------------------------------
 
 begin_test "Create test user"
-resp=$(api_post "/api/v1/users" \
-  "{\"username\":\"${DEACT_USER}\",\"password\":\"${DEACT_PASS}\",\"email\":\"${DEACT_EMAIL}\"}" 2>/dev/null) || true
-USER_ID=$(echo "$resp" | jq -r '.user.id // .id // empty')
-if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
+USER_ID=$(create_test_user "${DEACT_USER}" "${DEACT_PASS}" "${DEACT_EMAIL}") || true
+if [ -n "$USER_ID" ]; then
   pass
 else
-  fail "could not create user: ${resp:0:200}"
+  fail "could not create user"
 fi
 
 # -------------------------------------------------------------------------
@@ -53,15 +51,11 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Login + create API token for user"
-if [ -z "${USER_ID:-}" ] || [ "$USER_ID" = "null" ]; then
+if [ -z "${USER_ID:-}" ]; then
   skip "no user"
 else
-  login_resp=$(curl -sf $CURL_TIMEOUT -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${DEACT_USER}\",\"password\":\"${DEACT_PASS}\"}" \
-    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
-  USER_TOKEN=$(echo "$login_resp" | jq -r '.access_token // .token // empty')
-  if [ -z "$USER_TOKEN" ] || [ "$USER_TOKEN" = "null" ]; then
+  USER_TOKEN=$(login_as "${DEACT_USER}" "${DEACT_PASS}") || true
+  if [ -z "$USER_TOKEN" ]; then
     fail "login failed"
   else
     tok_resp=$(curl -sf $CURL_TIMEOUT -X POST \
@@ -89,7 +83,7 @@ if [ -z "${API_TOKEN:-}" ] || [ "$API_TOKEN" = "null" ]; then
 else
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${API_TOKEN}" \
-    "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+    "${BASE_URL}/api/v1/repositories" 2>/dev/null || echo 000)
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
@@ -105,24 +99,16 @@ begin_test "Admin deactivates user"
 if [ -z "${USER_ID:-}" ] || [ "$USER_ID" = "null" ]; then
   skip "no user ID"
 else
-  # Backend route is PATCH /api/v1/users/{id} per users.rs (uses
-  # axum::routing::patch). Try PATCH first, fall back to PUT for older
-  # routers if needed.
+  # users.rs registers this route as axum::routing::patch — PATCH only.
+  # If a route regression silently changes the verb, we want the test to
+  # fail (not silently succeed via fallback).
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -X PATCH \
     -H "$(auth_header)" \
     -H "Content-Type: application/json" \
     -d '{"is_active":false}' \
-    "${BASE_URL}/api/v1/users/${USER_ID}" 2>/dev/null) || true
-  if ! { [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; }; then
-    status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-      -X PUT \
-      -H "$(auth_header)" \
-      -H "Content-Type: application/json" \
-      -d '{"is_active":false}' \
-      "${BASE_URL}/api/v1/users/${USER_ID}" 2>/dev/null) || true
-  fi
-  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+    "${BASE_URL}/api/v1/users/${USER_ID}" 2>/dev/null || echo 000)
+  if [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
     pass
   else
     fail "deactivate user returned HTTP ${status}"
@@ -140,13 +126,13 @@ fi
 begin_test "Deactivated user's API token is rejected"
 if [ -z "${API_TOKEN:-}" ] || [ "$API_TOKEN" = "null" ]; then
   skip "no API token to test"
-else
+elif require_feature "user_deactivation_token_flush"; then
   rejected=false
   last_status=""
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     last_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
       -H "Authorization: Bearer ${API_TOKEN}" \
-      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+      "${BASE_URL}/api/v1/repositories" 2>/dev/null || echo 000)
     if [ "$last_status" = "401" ]; then
       rejected=true
       break
@@ -156,7 +142,7 @@ else
   if [ "$rejected" = "true" ]; then
     pass
   else
-    skip "token still accepted (HTTP ${last_status}) after 30s; v1.1.x has a 300s API token cache (auth_service.rs:90)"
+    fail "token still accepted (HTTP ${last_status}) after 30s — cache should have been flushed on is_active=false"
   fi
 fi
 
@@ -170,7 +156,7 @@ status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X POST \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"${DEACT_USER}\",\"password\":\"${DEACT_PASS}\"}" \
-  "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/login" 2>/dev/null || echo 000)
 if [ "$status" = "401" ]; then
   pass
 else
@@ -192,8 +178,6 @@ fi
 
 # EXPECT_FAILURE=1 inverts the suite's exit code so this script can be used
 # as a fixture to validate the gate (a "broken" gate is a passing self-test).
-if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  trap 'rc=$?; if [ "$rc" -eq 0 ]; then exit 1; else exit 0; fi' EXIT
-fi
+enable_expect_failure_trap
 
 end_suite

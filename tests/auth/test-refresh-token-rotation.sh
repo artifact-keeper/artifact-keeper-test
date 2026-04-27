@@ -61,13 +61,11 @@ jwt_exp() {
 # -------------------------------------------------------------------------
 
 begin_test "Create test user"
-resp=$(api_post "/api/v1/users" \
-  "{\"username\":\"${REFRESH_USER}\",\"password\":\"${REFRESH_PASS}\",\"email\":\"${REFRESH_EMAIL}\"}" 2>/dev/null) || true
-USER_ID=$(echo "$resp" | jq -r '.user.id // .id // empty')
-if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
+USER_ID=$(create_test_user "${REFRESH_USER}" "${REFRESH_PASS}" "${REFRESH_EMAIL}") || true
+if [ -n "$USER_ID" ]; then
   pass
 else
-  fail "could not create user: ${resp:0:200}"
+  fail "could not create user"
 fi
 
 # -------------------------------------------------------------------------
@@ -152,7 +150,7 @@ if [ -z "${NEW_ACCESS:-}" ] || [ "$NEW_ACCESS" = "null" ]; then
 else
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${NEW_ACCESS}" \
-    "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
+    "${BASE_URL}/api/v1/auth/me" 2>/dev/null || echo 000)
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
@@ -171,16 +169,16 @@ fi
 begin_test "Re-using the old refresh token after rotation is rejected"
 if [ -z "${REFRESH_TOKEN:-}" ] || [ "$REFRESH_TOKEN" = "null" ]; then
   skip "no original refresh token"
-else
+elif require_feature "refresh_token_rotation"; then
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -X POST \
     -H "Content-Type: application/json" \
     -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" \
-    "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null) || true
+    "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null || echo 000)
   if [ "$status" = "401" ]; then
     pass
   else
-    skip "v1.1.x does not yet enforce refresh-token rotation; re-use returned HTTP ${status} (Epic 11.13 follow-up)"
+    fail "expected 401 for old refresh token reuse, got HTTP ${status}"
   fi
 fi
 
@@ -193,7 +191,7 @@ status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X POST \
   -H "Content-Type: application/json" \
   -d '{"refresh_token":"not-a-real-jwt"}' \
-  "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null) || true
+  "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null || echo 000)
 if [ "$status" = "401" ]; then
   pass
 else
@@ -212,7 +210,7 @@ else
     -X POST \
     -H "Content-Type: application/json" \
     -d "{\"refresh_token\":\"${ACCESS_TOKEN}\"}" \
-    "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null) || true
+    "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null || echo 000)
   if [ "$status" = "401" ]; then
     pass
   else
@@ -230,8 +228,6 @@ fi
 
 # EXPECT_FAILURE=1 inverts the suite's exit code so this script can be used
 # as a fixture to validate the gate (a "broken" gate is a passing self-test).
-if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  trap 'rc=$?; if [ "$rc" -eq 0 ]; then exit 1; else exit 0; fi' EXIT
-fi
+enable_expect_failure_trap
 
 end_suite

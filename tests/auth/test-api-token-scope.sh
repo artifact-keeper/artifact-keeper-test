@@ -55,12 +55,8 @@ begin_test "Login as non-admin user"
 if [ -z "${USER_ID:-}" ] || [ "$USER_ID" = "null" ]; then
   skip "no user ID from creation"
 else
-  login_resp=$(curl -sf $CURL_TIMEOUT -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${NONADMIN_USER}\",\"password\":\"${NONADMIN_PASS}\"}" \
-    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
-  USER_TOKEN=$(echo "$login_resp" | jq -r '.access_token // .token // empty')
-  if [ -n "$USER_TOKEN" ] && [ "$USER_TOKEN" != "null" ]; then
+  USER_TOKEN=$(login_as "${NONADMIN_USER}" "${NONADMIN_PASS}") || true
+  if [ -n "$USER_TOKEN" ]; then
     pass
   else
     fail "non-admin login returned no token"
@@ -99,7 +95,7 @@ if [ -z "${READ_TOKEN:-}" ] || [ "$READ_TOKEN" = "null" ]; then
 else
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${READ_TOKEN}" \
-    "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+    "${BASE_URL}/api/v1/repositories" 2>/dev/null || echo 000)
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
@@ -121,7 +117,7 @@ else
     -H "Authorization: Bearer ${READ_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$payload" \
-    "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+    "${BASE_URL}/api/v1/repositories" 2>/dev/null || echo 000)
   # 403 is the contract: authenticated but missing scope. 401 would mean
   # the token wasn't recognized at all. Accept 403 strictly.
   if [ "$status" = "403" ]; then
@@ -146,7 +142,7 @@ else
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d '{"name":"e2e-tries-admin","scopes":["admin"]}' \
-    "${BASE_URL}/api/v1/auth/tokens" 2>/dev/null) || true
+    "${BASE_URL}/api/v1/auth/tokens" 2>/dev/null || echo 000)
   if [ "$status" = "403" ]; then
     pass
   else
@@ -190,8 +186,6 @@ fi
 
 # EXPECT_FAILURE=1 inverts the suite's exit code so this script can be used
 # as a fixture to validate the gate (a "broken" gate is a passing self-test).
-if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  trap 'rc=$?; if [ "$rc" -eq 0 ]; then exit 1; else exit 0; fi' EXIT
-fi
+enable_expect_failure_trap
 
 end_suite
