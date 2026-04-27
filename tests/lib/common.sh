@@ -440,7 +440,16 @@ pass() {
 }
 
 fail() {
+  # Usage: fail <msg> [body]
+  #
+  # The optional <body> emits as a CDATA section inside the JUnit
+  # <failure> element so dashboards (Jenkins, ReportPortal, GitHub
+  # test reporter) render multi-line diagnostic context instead of
+  # truncating the message attribute at ~120 chars. Use it for
+  # response snippets, scan ids, kubectl commands, anything an
+  # operator needs to triage without re-running the gate.
   local msg="${1:-assertion failed}"
+  local body="${2:-}"
   local duration=$(( $(date +%s) - _TEST_START ))
   _FAIL_COUNT=$(( _FAIL_COUNT + 1 ))
   local xml_name
@@ -449,11 +458,24 @@ fail() {
   xml_suite=$(_xml_escape "$_SUITE_NAME")
   local xml_msg
   xml_msg=$(_xml_escape "$msg")
-  _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
+  if [ -n "$body" ]; then
+    # Defuse any embedded "]]>" so the CDATA terminator cannot be
+    # injected via a response snippet that happens to contain it.
+    local safe_body="${body//]]>/]]]]><![CDATA[>}"
+    _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
+    <failure message=\"${xml_msg}\"><![CDATA[${safe_body}]]></failure>
+  </testcase>
+"
+  else
+    _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
     <failure message=\"${xml_msg}\"/>
   </testcase>
 "
+  fi
   echo "  FAIL: ${msg} (${duration}s)"
+  if [ -n "$body" ]; then
+    echo "$body" | sed 's/^/    /'
+  fi
   # NOTE: does NOT exit. end_suite handles the final exit code.
 }
 

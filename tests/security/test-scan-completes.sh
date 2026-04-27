@@ -52,13 +52,24 @@ auth_admin
 setup_workdir
 
 REPO_KEY="scan-complete-${RUN_ID}"
-PACKAGE_NAME="scan-completes-fixture"
+PACKAGE_NAME="lodash-vuln-fixture"
 PACKAGE_VERSION="1.0.0"
 TARBALL_NAME="${PACKAGE_NAME}-${PACKAGE_VERSION}.tgz"
 ARTIFACT_PATH="${PACKAGE_NAME}/${PACKAGE_VERSION}/${TARBALL_NAME}"
 SCAN_TIMEOUT="${SCAN_TIMEOUT:-180}"
 ALLOW_SCANNER_SKIP="${ALLOW_SCANNER_SKIP:-0}"
 EXPECT_FAILURE="${EXPECT_FAILURE:-0}"
+
+# Known-vulnerable fixture target. lodash 4.17.4 ships CVE-2019-10744
+# (Prototype Pollution, CVSS 9.1). Trivy's fs scanner detects this via
+# the package-lock.json parser. The findings_count assertion below
+# (regression for the silent-success class) requires this fixture to
+# actually produce findings -- if findings_count == 0 on a healthy
+# backend, the scanner never inspected the bytes (Reality Checker /
+# Security Engineer reviews of PR #60).
+EXPECTED_VULN_PACKAGE="lodash"
+EXPECTED_VULN_VERSION="4.17.4"
+EXPECTED_VULN_CVE_HINT="CVE-2019-10744"
 
 # ---------------------------------------------------------------------------
 # Combined cleanup trap. setup_workdir installs an EXIT trap that rm's
@@ -68,6 +79,20 @@ EXPECT_FAILURE="${EXPECT_FAILURE:-0}"
 
 cleanup() {
   local exit_code=$?
+
+  # Mutual exclusion: EXPECT_FAILURE=1 inverts exit codes for self-test;
+  # ALLOW_SCANNER_SKIP=1 makes scanner_unavailable() return success. If
+  # both are set, the self-test would falsely report "gate caught a bad
+  # backend" when in fact it just gracefully skipped. This bug class
+  # would silently turn the self-test into a no-op -- the exact failure
+  # mode #883 is meant to prevent.
+  if [ "$EXPECT_FAILURE" = "1" ] && [ "$ALLOW_SCANNER_SKIP" = "1" ]; then
+    echo "" >&2
+    echo "ERROR: EXPECT_FAILURE=1 and ALLOW_SCANNER_SKIP=1 are mutually exclusive." >&2
+    echo "  EXPECT_FAILURE inverts exit codes; ALLOW_SCANNER_SKIP coerces failure to success." >&2
+    echo "  Together they corrupt the self-test signal. Pick one." >&2
+    exit 5
+  fi
 
   # Self-test mode: invert the meaning of exit code so a *real* failure
   # is reported as success (the gate is correctly catching a bad
@@ -121,18 +146,70 @@ is_nonneg_int() {
 }
 
 # ---------------------------------------------------------------------------
-# Build a deterministic tarball fixture. We do NOT depend on the fixture
-# producing real findings -- the lite gate's #888 catch is on
-# completed_at + error_message + recency, not on findings count.
+# Build a known-vulnerable fixture. The tarball contains a
+# package-lock.json that pins lodash 4.17.4 (CVE-2019-10744, CVSS 9.1).
+# Trivy's filesystem scanner walks the tarball and the package-lock
+# parser flags the lodash entry. This is what powers the findings_count
+# assertion below: if the scanner actually ran, we get >= 1 finding;
+# if the scanner was bypassed (silent-success class), the gate fails.
+#
+# Per Reality Checker / Security Engineer reviews of PR #60: the
+# previous payload.txt fixture was not applicable to any scanner, so
+# `Ok(vec![])` was a valid "scan" result and the gate falsely passed.
+#
+# package.json is included for completeness (some Trivy versions
+# require it to anchor the lockfile parse); it does not need to match
+# the lockfile exactly.
 # ---------------------------------------------------------------------------
 
-begin_test "Build deterministic tarball fixture"
+begin_test "Build known-vulnerable fixture (lodash 4.17.4 / CVE-2019-10744)"
 mkdir -p "${WORK_DIR}/package"
-echo "scan-completion fixture for ${RUN_ID}" > "${WORK_DIR}/package/payload.txt"
+
+cat > "${WORK_DIR}/package/package.json" <<EOF
+{
+  "name": "scan-completes-fixture",
+  "version": "1.0.0",
+  "description": "Release-gate fixture pinned to a known-vulnerable lodash for CVE-2019-10744 detection",
+  "dependencies": {
+    "lodash": "4.17.4"
+  }
+}
+EOF
+
+cat > "${WORK_DIR}/package/package-lock.json" <<EOF
+{
+  "name": "scan-completes-fixture",
+  "version": "1.0.0",
+  "lockfileVersion": 2,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "scan-completes-fixture",
+      "version": "1.0.0",
+      "dependencies": {
+        "lodash": "4.17.4"
+      }
+    },
+    "node_modules/lodash": {
+      "version": "4.17.4",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.4.tgz",
+      "integrity": "sha1-eCA6TRwyLuHBHJgwGu1myF0sR4U="
+    }
+  },
+  "dependencies": {
+    "lodash": {
+      "version": "4.17.4",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.4.tgz",
+      "integrity": "sha1-eCA6TRwyLuHBHJgwGu1myF0sR4U="
+    }
+  }
+}
+EOF
+
 if tar -czf "${WORK_DIR}/${TARBALL_NAME}" -C "${WORK_DIR}" package 2>/dev/null; then
   pass
 else
-  fail "could not build tarball fixture"
+  fail "could not build vulnerable fixture tarball"
 fi
 
 # ---------------------------------------------------------------------------
@@ -290,6 +367,7 @@ final_status=""
 final_body=""
 final_scan_id=""
 network_fail_count=0
+unknown_state_count=0
 last_observed_state=""
 
 while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
@@ -300,18 +378,48 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
     "${BASE_URL}${SCAN_LIST_PATH}") || http_status="000"
 
   if [ "$http_status" = "200" ]; then
-    # Pick the most recent scan (items[0] -- backend orders ORDER BY
-    # created_at DESC).
-    scan_obj=$(jq -c '.items[0] // empty' < "${WORK_DIR}/scans-resp.json" 2>/dev/null || echo "")
+    # Reset the network fail counter on every successful poll. Without
+    # this, a flap pattern (5 transient + intermittent 200) eventually
+    # trips scanner_unavailable on the 6th transient even though the
+    # scan is actually progressing.
+    network_fail_count=0
+
+    # Hard-fail on malformed JSON. A 200 with a non-JSON body (e.g.,
+    # an HTML 200 from a misrouted ingress) would otherwise let the
+    # gate spin silently for the full SCAN_TIMEOUT and then report a
+    # generic timeout. That is the exact #872 silent-no-op pattern.
+    if ! scan_obj=$(jq -c '.items[0] // empty' < "${WORK_DIR}/scans-resp.json" 2>&1); then
+      snippet=$(head -c 500 "${WORK_DIR}/scans-resp.json" 2>/dev/null || echo "<empty>")
+      fail "scan-list returned 200 but body was not JSON; release-gate must not silently spin on malformed responses" \
+"jq error: ${scan_obj}
+response (first 500 bytes):
+${snippet}
+endpoint: GET ${BASE_URL}${SCAN_LIST_PATH}"
+      end_suite
+      exit 1
+    fi
+
     if [ -n "$scan_obj" ]; then
       state=$(echo "$scan_obj" | jq -er '.status | ascii_downcase' 2>/dev/null || echo "unknown")
       last_observed_state="$state"
       case "$state" in
         queued|pending|in_progress|scanning|running)
-          : # not terminal yet, keep polling
+          unknown_state_count=0
           ;;
         unknown)
-          : # unparseable; surface in failure message if we time out
+          # Cap consecutive unparseable responses. If .status is
+          # missing or null for 3 polls in a row, that is a backend
+          # contract regression -- fail loud rather than spin to
+          # SCAN_TIMEOUT and report a generic message.
+          unknown_state_count=$(( unknown_state_count + 1 ))
+          if [ "$unknown_state_count" -ge 3 ]; then
+            snippet=$(echo "$scan_obj" | jq -c '.' 2>/dev/null | cut -c 1-500)
+            fail "scan response has malformed/missing .status for 3 consecutive polls; suspect backend ScanResponse contract regression" \
+"observed scan body: ${snippet}
+endpoint: GET ${BASE_URL}${SCAN_LIST_PATH}"
+            end_suite
+            exit 1
+          fi
           ;;
         *)
           final_status="$state"
@@ -421,8 +529,65 @@ else
     pass
   else
     snippet=$(echo "$final_body" | jq -c '{id, status, started_at, completed_at, created_at, error_message, findings_count}' 2>/dev/null | cut -c 1-500)
-    fail "scan ${final_scan_id} fails lite provenance: completed_at=${completed_at_present}, error_message_clean=${error_message_clean}, scan_is_recent=${scan_is_recent} (TEST_START_EPOCH=${TEST_START_EPOCH}); response: ${snippet:-<unparseable>}"
+    fail "scan ${final_scan_id} fails lite provenance: completed_at=${completed_at_present}, error_message_clean=${error_message_clean}, scan_is_recent=${scan_is_recent} (TEST_START_EPOCH=${TEST_START_EPOCH})" \
+"scan response (projected): ${snippet:-<unparseable>}
+endpoint: GET ${BASE_URL}${SCAN_LIST_PATH}
+scan_id: ${final_scan_id}
+artifact_id: ${ARTIFACT_ID}
+diagnose: kubectl -n test-\${RUN_ID} logs deploy/artifact-keeper-trivy --since=10m"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Findings-count regression check.
+#
+# This is the load-bearing assertion against the silent-success class.
+# The fixture pins lodash 4.17.4 in package-lock.json; that is
+# CVE-2019-10744 (CVSS 9.1). Trivy's filesystem scanner detects it via
+# the npm lockfile parser. If the scanner actually inspected the
+# bytes, findings_count >= 1.
+#
+# Without this check, a backend that calls complete_scan with
+# findings_count=0 (the Ok(vec![]) "not applicable" path in
+# scanner_service.rs) satisfies every other gate predicate and ships
+# a green "scanned, no findings" badge on a vulnerable artifact. That
+# is the exact failure mode the customer flagged in
+# https://github.com/orgs/artifact-keeper/discussions/872.
+#
+# A pinned-CVE assertion would tighten this further (assert the
+# specific CVE id appears in the findings list), but ScanResponse does
+# not expose findings inline; that would require GET
+# /api/v1/security/scans/{id}/findings, which is deferred to the full
+# epic (#56) so this LITE gate stays minimal.
+# ---------------------------------------------------------------------------
+
+begin_test "Scan emitted findings on known-vulnerable fixture (regression for #888 silent-success class)"
+findings_count=$(echo "$final_body" | jq -r '.findings_count // "null"' 2>/dev/null || echo "null")
+if [ "$findings_count" = "null" ]; then
+  fail "scan ${final_scan_id} has no findings_count field" \
+"This is a backend contract regression -- ScanResponse must include findings_count.
+scan body: $(echo "$final_body" | jq -c '.' 2>/dev/null | cut -c 1-500)"
+elif ! is_nonneg_int "$findings_count"; then
+  fail "scan ${final_scan_id} reports non-integer findings_count='${findings_count}'" \
+"scan body: $(echo "$final_body" | jq -c '.' 2>/dev/null | cut -c 1-500)"
+elif [ "$findings_count" -lt 1 ]; then
+  fail "scan ${final_scan_id} on known-vulnerable fixture (lodash ${EXPECTED_VULN_VERSION} / ${EXPECTED_VULN_CVE_HINT}) reports findings_count=0; scanner did not inspect the bytes" \
+"This is the #888 silent-success failure mode reproducing.
+
+Possible causes:
+  1. Trivy is not enabled in the test deploy (chart values: trivy.enabled).
+  2. Trivy fs scanner's is_applicable check rejected the fixture format.
+  3. Backend's scanner_service Ok(vec![]) path treated empty as success.
+  4. find_reusable_scan returned a stale empty scan from a prior run.
+
+Diagnostic commands:
+  kubectl -n test-\${RUN_ID} logs deploy/artifact-keeper-trivy --since=10m
+  kubectl -n test-\${RUN_ID} logs deploy/artifact-keeper-backend --since=10m | grep -i scan
+  curl -H \"Authorization: Bearer \$TOKEN\" \"${BASE_URL}/api/v1/security/scans/${final_scan_id}/findings\"
+
+scan body: $(echo "$final_body" | jq -c '.' 2>/dev/null | cut -c 1-500)"
+else
+  pass
 fi
 
 # ---------------------------------------------------------------------------
