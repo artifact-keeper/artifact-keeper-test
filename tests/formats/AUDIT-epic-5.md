@@ -30,6 +30,23 @@ There is no separate `/gradle/...` route; Gradle repos are addressed via
 `/maven/{gradle-repo-key}/...`. There is no Gradle-specific E2E test in the
 repo today.
 
+## CI status
+
+A separate gap surfaced while writing this audit: the 40 `*-conformance.sh`
+scripts in `tests/formats/` are not invoked by any GitHub Actions workflow.
+Before this PR, neither `.github/workflows/format-tests.yml` nor
+`.github/workflows/release-gate.yml` referenced any of them. They run only
+when invoked locally.
+
+This PR wires `test-gradle-conformance.sh` into the `jvm` batch in both
+workflows (added by the DevOps agent in parallel to this audit). That covers
+the gradle-specific gap called out below.
+
+The remaining 39 conformance scripts are still orphaned from CI. They are
+not exercised by PR checks or by the release gate. That is a separate gap,
+tracked as a follow-up issue (see Remediation options below). It is out of
+scope for this PR.
+
 ## Method
 
 ### Backend evidence (`/tmp/ak-1.1.x-analysis/backend`)
@@ -94,7 +111,7 @@ repo today.
 | opkg | yes (`formats/opkg.rs`) | no | no native route; `/ext/opkg/...` only when WASM plugin loaded | yes (`test-opkg.sh`, `test-opkg-conformance.sh`) | basic test targets `/ext/opkg/...` and skips on 404; conformance targets generic API | same as mlmodel: conditional native, generic-API conformance is exercised |
 | p2 | yes (`formats/p2.rs`) | no | no native route; `/ext/p2/...` only when WASM plugin loaded | yes (`test-p2.sh`, `test-p2-conformance.sh`) | basic test targets `/ext/p2/...` and skips on 404; conformance targets generic API | same pattern: conditional native, generic-API conformance is exercised |
 | vagrant | yes (`formats/vagrant.rs`) | no | no native route; `/ext/vagrant/...` only when WASM plugin loaded | yes (`test-vagrant.sh`, `test-vagrant-conformance.sh`) | basic test targets `/ext/vagrant/...` and skips on 404; conformance targets generic API | same pattern: conditional native, generic-API conformance is exercised |
-| gradle | aliased onto Maven trait handler (`formats/maven.rs` via `mod.rs`) | aliased onto `api/handlers/maven.rs` (accepts `gradle` as a repo format at the resolver) | yes, addressable through `/maven/{repo_key}/...` for repos with `format=gradle` | no | n/a (no test) | test-but-no-coverage: the alias is real and works, but no test exercises the gradle-specific resolution path |
+| gradle | aliased onto Maven trait handler (`formats/maven.rs` via `mod.rs`) | aliased onto `api/handlers/maven.rs` (accepts `gradle` as a repo format at the resolver) | yes, addressable through `/maven/{repo_key}/...` for repos with `format=gradle` | partial: `test-gradle-conformance.sh` added in this PR, curl-based only | partial: targets `/maven/{repo_key}/...` against a `format=gradle` repo via curl + Basic auth. Does not invoke the `gradle` CLI, so it cannot catch failures that only manifest with Gradle's real HTTP client (User-Agent gating, `.module` discovery semantics, variant selection). | partial coverage: alias resolution path is exercised; native-client behaviour is not. A native-client follow-up test is recommended (parallel to `test-maven-native-client.sh`). |
 
 Legend for the Verdict column:
 
@@ -108,6 +125,9 @@ Legend for the Verdict column:
   format.
 - **test-but-no-coverage**: the format works in the backend but no test
   exercises it from this repo.
+- **partial coverage**: a wire-protocol test exists but does not exercise
+  the format's native client (e.g. curl in place of the real CLI). The
+  alias or routing path is covered; client-specific behaviour is not.
 
 ## Specific claim-by-claim grading
 
@@ -118,7 +138,7 @@ Legend for the Verdict column:
 | `opkg`: no handler file, tests exist | Misleading. There is a trait handler at `src/formats/opkg.rs`. There is no API handler module, which is what the analysis probably meant. Same dual-test pattern as mlmodel. |
 | `p2`: no handler file, tests exist | Same as opkg. Trait handler at `src/formats/p2.rs`; no API handler module. |
 | `vagrant`: no handler file, tests exist | Same as opkg. Trait handler at `src/formats/vagrant.rs`; no API handler module. |
-| `gradle`: zero E2E coverage despite Maven aliasing | Confirmed. The alias is real (resolver and trait both accept gradle). No test exercises a gradle-tagged repository. A starter `test-gradle-conformance.sh` is provided in this branch alongside this audit. |
+| `gradle`: zero E2E coverage despite Maven aliasing | Confirmed. The alias is real (resolver and trait both accept gradle). No test exercised a gradle-tagged repository before this PR. A starter `test-gradle-conformance.sh` is provided in this branch and wired into the `jvm` batch in `.github/workflows/format-tests.yml` and `.github/workflows/release-gate.yml`. The script is curl-based; a native-client test is still missing (see Remediation). |
 
 ## Remediation options (for triage, not done in this PR)
 
@@ -129,8 +149,33 @@ Legend for the Verdict column:
   the generic API and are not WASM-dependent).
 - For jetbrains: working as intended; no action.
 - For gradle: keep the new `test-gradle-conformance.sh` (added in this
-  branch) so the alias is exercised. If a future change adds a `/gradle`
-  router, expand the test to hit it directly.
+  branch) so the alias is exercised. The script is curl-based and does not
+  cover Gradle's real HTTP client. A native-client test (parallel to
+  `test-maven-native-client.sh`, shelling out to the `gradle` CLI) is
+  recommended as a follow-up. If a future change adds a `/gradle` router,
+  expand the test to hit it directly.
+- For the orphaned `*-conformance.sh` scripts: wire the remaining 39 into
+  `.github/workflows/format-tests.yml` so they run on PRs and on the
+  release gate.
+
+### Follow-up issues
+
+Filed in beads on 2026-04-27:
+
+- `ak-un1n` (P3, task): Wire `*-conformance.sh` suite into
+  `format-tests.yml` workflow matrix. Inventories the orphaned scripts and
+  adds them to the matrix so regressions are caught automatically.
+- `ak-2ze2` (P3, task): Add native gradle CLI conformance test (parallel
+  to `test-maven-native-client.sh`). Shells out to a real `gradle` CLI to
+  cover User-Agent gating, `.module` resolution priority over `.pom`, and
+  variant selection.
+- `ak-u3x1` (P3, task): Add gradle remote-repo conformance test. Parallel
+  to `test-maven-remote.sh`. Verifies a `format=gradle` remote repo can
+  proxy and resolve `.module` files (Gradle Module Metadata, JSON) from
+  upstream, including the `.module`-404 / `.pom`-200 fallback.
+- `ak-q8xh` (P3, task): Triage native HTTP handler modules vs WASM-only
+  for mlmodel, opkg, p2, vagrant. Decide whether to add `api/handlers/<format>.rs`
+  modules or retire the basic tests in favour of generic-API conformance.
 
 ## Files referenced
 

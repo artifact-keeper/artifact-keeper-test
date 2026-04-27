@@ -32,7 +32,7 @@ jobs:
           - name: python
             scripts: "test-pypi.sh test-pypi-native-client.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
           - name: jvm
-            scripts: "test-maven.sh test-maven-native-client.sh test-maven-virtual-snapshot.sh test-sbt.sh"
+            scripts: "test-maven.sh test-maven-native-client.sh test-maven-virtual-snapshot.sh test-sbt.sh test-gradle-conformance.sh"
           - name: rust-go-swift
             scripts: "test-cargo.sh test-go.sh test-swift.sh test-pub.sh"
           - name: system-packages

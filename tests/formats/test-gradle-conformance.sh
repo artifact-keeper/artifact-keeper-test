@@ -14,8 +14,18 @@
 #   - Gradle Module Metadata file (.module JSON, Gradle-specific)
 #   - POM upload (Gradle publishes alongside POM in maven-publish plugin)
 #   - JAR upload and SHA-256 round trip
+#   - .module upload and SHA-256 round trip
 #   - maven-metadata.xml resolution
 #   - Listing through the generic management API
+#
+# CI wiring: this script is invoked by the `jvm` batch in
+# .github/workflows/format-tests.yml and .github/workflows/release-gate.yml.
+#
+# Limitation: this exercises the Maven wire protocol via curl + Basic auth.
+# It does not invoke the `gradle` CLI, so it cannot catch failures that only
+# manifest with Gradle's actual HTTP client (User-Agent gating, .module
+# discovery semantics, variant attribute matching). A native-client follow-up
+# (parallel to test-maven-native-client.sh) is tracked as a follow-up issue.
 #
 # Endpoints: ${BASE_URL}/maven/{repo_key}/... and /api/v1/repositories/{key}/...
 #
@@ -54,15 +64,24 @@ begin_test "Probe gradle repo via /maven/{key} alias"
 PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
   -u "${ADMIN_USER}:${ADMIN_PASS}" \
   "${GRADLE_URL}/${GROUP_PATH}/${ARTIFACT_ID}/maven-metadata.xml") || true
-# Empty repo: expect 404 from a working router, NOT a 400 (format mismatch)
-# or 500 (no route). Anything in {200, 401, 403, 404} confirms the route is
-# wired and the resolver accepts gradle.
+# auth_admin already ran, so 401/403 here would mean auth blew up after the
+# fact, NOT that the resolver rejected gradle. Treat those as failures.
+# An empty gradle repo should return 404 (resolver accepted gradle, but no
+# artifact exists yet). 200 is allowed only if the backend ever auto-generates
+# an empty maven-metadata.xml for new repos. 400/500 indicate the resolver
+# does not accept gradle as a Maven-compatible format.
 case "$PROBE_CODE" in
-  200|401|403|404)
+  404)
     pass
     ;;
+  200)
+    pass
+    ;;
+  401|403)
+    fail "auth failure ($PROBE_CODE) from /maven/{gradle-repo} probe; auth_admin should have authenticated already"
+    ;;
   *)
-    fail "unexpected status $PROBE_CODE from /maven/{gradle-repo} probe"
+    fail "unexpected status $PROBE_CODE from /maven/{gradle-repo} probe (expected 404 for empty repo)"
     ;;
 esac
 
@@ -151,6 +170,7 @@ fi
 # ---------------------------------------------------------------------------
 
 ORIG_SHA256=$(shasum -a 256 "$JAR_FILE" | awk '{print $1}')
+ORIG_MODULE_SHA256=$(shasum -a 256 "$MODULE_FILE" | awk '{print $1}')
 
 begin_test "Upload JAR via PUT /maven/{gradle-repo-key}/..."
 JAR_PATH="${ARTIFACT_BASE}/${ARTIFACT_ID}-${VERSION}.jar"
@@ -207,12 +227,13 @@ fi
 # Round-trip the .module file (Gradle-specific, this is the real test)
 # ---------------------------------------------------------------------------
 
-begin_test "Download Gradle Module Metadata and verify content"
+begin_test "Download Gradle Module Metadata and verify SHA-256 round trip"
 DL_MODULE="${WORK_DIR}/downloaded.module"
 if curl -sf $CURL_TIMEOUT -u "${ADMIN_USER}:${ADMIN_PASS}" -o "$DL_MODULE" \
   "${GRADLE_URL}/${MODULE_PATH}"; then
-  if assert_contains "$(cat "$DL_MODULE")" "\"formatVersion\": \"1.1\"" \
-       "downloaded .module should preserve Gradle Module Metadata"; then
+  DL_MODULE_SHA256=$(shasum -a 256 "$DL_MODULE" | awk '{print $1}')
+  if assert_eq "$DL_MODULE_SHA256" "$ORIG_MODULE_SHA256" \
+       "SHA256 mismatch on .module after gradle-aliased round-trip (storage layer normalized JSON?)"; then
     pass
   fi
 else
@@ -251,5 +272,10 @@ else
   # Some builds only auto-generate metadata after a deploy. Skip is acceptable.
   skip "maven-metadata.xml not generated for gradle-aliased repo (may require explicit deploy)"
 fi
+
+# TODO: cleanup the test repository when a teardown helper exists in
+# tests/lib/common.sh. Today there is no cleanup_repo helper; the namespace
+# teardown in scripts/teardown-test-namespace.sh removes the entire stack
+# at the end of a CI run.
 
 end_suite
