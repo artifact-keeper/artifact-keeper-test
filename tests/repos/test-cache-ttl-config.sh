@@ -16,24 +16,19 @@
 # -------------------------------------------------------------------------
 # COVERAGE GAP (documented per Epic 6 acceptance):
 #
-# As of v1.1.x, the cache_ttl_secs config row written by PUT /cache-ttl is
-# NOT consumed anywhere else in the backend. A grep over backend/src/ for
-# `cache_ttl_secs` returns only the two handler functions (set_cache_ttl
-# and get_cache_ttl). The proxy cache layer does not currently honor this
-# value to invalidate or re-fetch artifacts.
+# The TTL value IS consumed by the proxy:
+# backend/src/services/proxy_service.rs:get_cache_ttl_for_repo() reads it
+# during cache-validity checks (called at line 162 in the proxy fetch path).
+# A real upload->wait->re-fetch test is therefore writable and tracked
+# separately (beads ak-qity).
 #
-# As a result this test cannot externally observe the TTL's effect on
-# proxy behavior (e.g. "wait > ttl, expect re-fetch") without faking
-# observability. We assert only the contract that IS observable:
+# This script asserts only the get-after-set CRUD contract; the
+# eviction-path test lives elsewhere. What we cover here:
 #
 #   1. PUT a valid TTL -> 200 with the value echoed back.
 #   2. GET right after -> same value persisted.
 #   3. Default value when nothing was set (3600).
 #   4. Boundary validation (lower/upper limits and out-of-range -> 400).
-#
-# When the proxy actually wires cache_ttl_secs into the eviction path,
-# extend this script with an end-to-end "stale cache" assertion. For now
-# the get-after-set roundtrip is the contract.
 # -------------------------------------------------------------------------
 #
 # EXPECT_FAILURE=1 inverts the suite exit code.
@@ -43,7 +38,6 @@ source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "cache-ttl-config"
 auth_admin
-setup_workdir
 
 REMOTE_KEY="test-ttl-remote-${RUN_ID}"
 LOCAL_KEY="test-ttl-local-${RUN_ID}"
@@ -165,9 +159,7 @@ LB_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "Content-Type: application/json" \
   -d '{"cache_ttl_seconds": 1}' \
   "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/cache-ttl") || LB_STATUS="000"
-if assert_http_2xx "$LB_STATUS" "expected 2xx for ttl=1"; then
-  pass
-fi
+assert_http_2xx "$LB_STATUS" "expected 2xx for ttl=1" && pass
 
 begin_test "PUT cache-ttl=2592000 (upper bound, valid)"
 UB_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
@@ -175,9 +167,7 @@ UB_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "Content-Type: application/json" \
   -d '{"cache_ttl_seconds": 2592000}' \
   "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/cache-ttl") || UB_STATUS="000"
-if assert_http_2xx "$UB_STATUS" "expected 2xx for ttl=2592000"; then
-  pass
-fi
+assert_http_2xx "$UB_STATUS" "expected 2xx for ttl=2592000" && pass
 
 begin_test "PUT cache-ttl=0 returns 400 (below lower bound)"
 ZERO_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \

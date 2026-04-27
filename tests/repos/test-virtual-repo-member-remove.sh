@@ -26,7 +26,6 @@ source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "virtual-repo-member-remove"
 auth_admin
-setup_workdir
 
 LOCAL_A="test-vmr-a-${RUN_ID}"
 LOCAL_B="test-vmr-b-${RUN_ID}"
@@ -58,9 +57,12 @@ else
   fail "could not create virtual repo with members"
 fi
 
-# Settle briefly: create_virtual_repo POSTs members in sequence; allow the
-# database transaction to commit before the next read.
-sleep 1
+# Settle: create_virtual_repo POSTs members in sequence; poll until both
+# rows are visible (10s budget) instead of a fixed sleep.
+deadline=$(( $(date +%s) + 10 ))
+until [ "$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/members" 2>/dev/null | jq '.members | length // 0')" = "2" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+  sleep 0.2
+done
 
 begin_test "Confirm V has 2 members before removal"
 INIT_RESP=""
@@ -83,12 +85,14 @@ begin_test "DELETE /V/members/A succeeds"
 DEL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X DELETE -H "$(auth_header)" \
   "${BASE_URL}/api/v1/repositories/${VIRTUAL_KEY}/members/${LOCAL_A}") || DEL_STATUS="000"
-if assert_http_2xx "$DEL_STATUS" "DELETE member A returned non-2xx"; then
-  pass
-fi
+assert_http_2xx "$DEL_STATUS" "DELETE member A returned non-2xx" && pass
 
 begin_test "After delete, only B remains in V"
-sleep 1
+# Poll for the delete to be visible to subsequent reads.
+deadline=$(( $(date +%s) + 10 ))
+until [ "$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/members" 2>/dev/null | jq '.members | length // 0')" = "1" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+  sleep 0.2
+done
 if AFTER_RESP=$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/members" 2>/dev/null); then
   after_count=$(echo "$AFTER_RESP" | jq '.members | length // 0' 2>/dev/null) || after_count=0
   remaining_key=$(echo "$AFTER_RESP" | jq -r '.members[0].member_repo_key // empty' 2>/dev/null)
@@ -125,13 +129,10 @@ begin_test "DELETE member on non-virtual parent returns 400"
 NV_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X DELETE -H "$(auth_header)" \
   "${BASE_URL}/api/v1/repositories/${LOCAL_B}/members/${LOCAL_A}") || NV_STATUS="000"
-# Backend uses AppError::Validation -> 400. Some older builds returned 422
-# from the same code path; accept either deterministic 4xx but flag the
-# exact code so a regression to 500 fails loudly.
-case "$NV_STATUS" in
-  400|422) pass ;;
-  *) fail "expected 400/422 on non-virtual parent, got ${NV_STATUS}" ;;
-esac
+# Backend uses AppError::Validation -> 400 deterministically (see
+# backend/src/error.rs:91). The HTTP Status Code Guide in tests/lib/common.sh
+# explicitly forbids OR-ing codes; assert exact 400.
+assert_eq "$NV_STATUS" "400" "expected 400 (Validation) on non-virtual parent, got $NV_STATUS" && pass
 
 # -------------------------------------------------------------------------
 # Cleanup

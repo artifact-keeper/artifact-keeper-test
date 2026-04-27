@@ -37,7 +37,6 @@ source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "virtual-repo-member-bulk-update"
 auth_admin
-setup_workdir
 
 LOCAL_A="test-vmb-a-${RUN_ID}"
 LOCAL_B="test-vmb-b-${RUN_ID}"
@@ -74,7 +73,11 @@ else
   fail "could not create virtual repo with members"
 fi
 
-sleep 1
+# Poll until both members are visible (10s budget).
+deadline=$(( $(date +%s) + 10 ))
+until [ "$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/members" 2>/dev/null | jq '.members | length // 0')" = "2" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+  sleep 0.2
+done
 
 # -------------------------------------------------------------------------
 # 6.2.a: Confirm initial state (A before B by priority).
@@ -114,7 +117,11 @@ else
 fi
 
 begin_test "After swap, ordering is B then A"
-sleep 1
+# Poll until the swap is reflected: B (lower priority) becomes first row.
+deadline=$(( $(date +%s) + 10 ))
+until [ "$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/members" 2>/dev/null | jq -r '.members[0].member_repo_key // empty')" = "$LOCAL_B" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+  sleep 0.2
+done
 if AFTER_RESP=$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/members" 2>/dev/null); then
   count=$(echo "$AFTER_RESP" | jq '.members | length // 0') || count=0
   first_key=$(echo "$AFTER_RESP" | jq -r '.members[0].member_repo_key // empty')
@@ -146,11 +153,16 @@ NORMALIZE_PAYLOAD=$(jq -n \
    ]}')
 if RESP=$(api_put "/api/v1/repositories/${VIRTUAL_KEY}/members" "$NORMALIZE_PAYLOAD" 2>/dev/null); then
   count=$(echo "$RESP" | jq '.members | length // 0') || count=0
+  first_key=$(echo "$RESP" | jq -r '.members[0].member_repo_key // empty')
   first_pri=$(echo "$RESP" | jq -r '.members[0].priority // empty')
-  if [ "$count" -eq 2 ] && [ "$first_pri" = "1" ]; then
+  second_key=$(echo "$RESP" | jq -r '.members[1].member_repo_key // empty')
+  second_pri=$(echo "$RESP" | jq -r '.members[1].priority // empty')
+  if [ "$count" -eq 2 ] \
+      && [ "$first_key" = "$LOCAL_A" ] && [ "$first_pri" = "1" ] \
+      && [ "$second_key" = "$LOCAL_B" ] && [ "$second_pri" = "2" ]; then
     pass
   else
-    fail "PUT response missing refreshed list (count=${count} first_pri='${first_pri}')"
+    fail "PUT response missing refreshed list (count=${count} first=${first_key}(${first_pri}) second=${second_key}(${second_pri}))"
   fi
 else
   fail "PUT did not return a body"
@@ -187,10 +199,10 @@ NV_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "Content-Type: application/json" \
   -d "$NV_PAYLOAD" \
   "${BASE_URL}/api/v1/repositories/${LOCAL_B}/members") || NV_STATUS="000"
-case "$NV_STATUS" in
-  400|422) pass ;;
-  *) fail "expected 400/422 on non-virtual parent, got ${NV_STATUS}" ;;
-esac
+# Backend uses AppError::Validation -> 400 deterministically (see
+# backend/src/error.rs:91). The HTTP Status Code Guide in tests/lib/common.sh
+# explicitly forbids OR-ing codes; assert exact 400.
+assert_eq "$NV_STATUS" "400" "expected 400 (Validation) on non-virtual parent, got $NV_STATUS" && pass
 
 # -------------------------------------------------------------------------
 # Cleanup
