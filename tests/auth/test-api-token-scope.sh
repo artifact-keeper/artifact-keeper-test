@@ -95,7 +95,8 @@ if [ -z "${READ_TOKEN:-}" ] || [ "$READ_TOKEN" = "null" ]; then
 else
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${READ_TOKEN}" \
-    "${BASE_URL}/api/v1/repositories" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
@@ -117,7 +118,8 @@ else
     -H "Authorization: Bearer ${READ_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$payload" \
-    "${BASE_URL}/api/v1/repositories" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  status="${status:-000}"
   # 403 is the contract: authenticated but missing scope. 401 would mean
   # the token wasn't recognized at all. Accept 403 strictly.
   if [ "$status" = "403" ]; then
@@ -142,7 +144,8 @@ else
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d '{"name":"e2e-tries-admin","scopes":["admin"]}' \
-    "${BASE_URL}/api/v1/auth/tokens" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/auth/tokens" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" = "403" ]; then
     pass
   else

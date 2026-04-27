@@ -90,7 +90,8 @@ status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X POST \
   -H "Content-Type: application/json" \
   -d '{"purpose":"download"}' \
-  "${BASE_URL}/api/v1/auth/ticket" 2>/dev/null || echo 000)
+  "${BASE_URL}/api/v1/auth/ticket" 2>/dev/null) || true
+status="${status:-000}"
 if [ "$status" = "401" ]; then
   pass
 else

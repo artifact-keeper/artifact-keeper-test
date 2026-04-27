@@ -93,7 +93,8 @@ else
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"password\":\"WrongPassword!1\",\"code\":\"${CODE}\"}" \
-    "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" = "401" ]; then
     pass
   else
@@ -114,7 +115,8 @@ else
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"password\":\"${TOTP_PASS}\",\"code\":\"000000\"}" \
-    "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" = "401" ]; then
     pass
   else
@@ -138,7 +140,8 @@ else
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"password\":\"${TOTP_PASS}\",\"code\":\"${CODE}\"}" \
-    "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/auth/totp/disable" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else

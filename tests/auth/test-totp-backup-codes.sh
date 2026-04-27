@@ -123,7 +123,8 @@ login_and_verify_with_code() {
     -X POST \
     -H "Content-Type: application/json" \
     -d "{\"totp_token\":\"${totp_token}\",\"code\":\"${backup_code}\"}" \
-    "${BASE_URL}/api/v1/auth/totp/verify" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/auth/totp/verify" 2>/dev/null) || true
+  status="${status:-000}"
   echo "$status"
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     return 0

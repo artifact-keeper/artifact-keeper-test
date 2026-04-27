@@ -83,7 +83,8 @@ if [ -z "${API_TOKEN:-}" ] || [ "$API_TOKEN" = "null" ]; then
 else
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${API_TOKEN}" \
-    "${BASE_URL}/api/v1/repositories" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
@@ -107,7 +108,8 @@ else
     -H "$(auth_header)" \
     -H "Content-Type: application/json" \
     -d '{"is_active":false}' \
-    "${BASE_URL}/api/v1/users/${USER_ID}" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/users/${USER_ID}" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
     pass
   else
@@ -132,7 +134,8 @@ elif require_feature "user_deactivation_token_flush"; then
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     last_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
       -H "Authorization: Bearer ${API_TOKEN}" \
-      "${BASE_URL}/api/v1/repositories" 2>/dev/null || echo 000)
+      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || true
+    last_status="${last_status:-000}"
     if [ "$last_status" = "401" ]; then
       rejected=true
       break
@@ -156,7 +159,8 @@ status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X POST \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"${DEACT_USER}\",\"password\":\"${DEACT_PASS}\"}" \
-  "${BASE_URL}/api/v1/auth/login" 2>/dev/null || echo 000)
+  "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
+status="${status:-000}"
 if [ "$status" = "401" ]; then
   pass
 else

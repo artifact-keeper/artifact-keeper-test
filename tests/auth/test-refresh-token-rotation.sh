@@ -150,7 +150,8 @@ if [ -z "${NEW_ACCESS:-}" ] || [ "$NEW_ACCESS" = "null" ]; then
 else
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${NEW_ACCESS}" \
-    "${BASE_URL}/api/v1/auth/me" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
     pass
   else
@@ -174,7 +175,8 @@ elif require_feature "refresh_token_rotation"; then
     -X POST \
     -H "Content-Type: application/json" \
     -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" \
-    "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" = "401" ]; then
     pass
   else
@@ -191,7 +193,8 @@ status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X POST \
   -H "Content-Type: application/json" \
   -d '{"refresh_token":"not-a-real-jwt"}' \
-  "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null || echo 000)
+  "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null) || true
+status="${status:-000}"
 if [ "$status" = "401" ]; then
   pass
 else
@@ -210,7 +213,8 @@ else
     -X POST \
     -H "Content-Type: application/json" \
     -d "{\"refresh_token\":\"${ACCESS_TOKEN}\"}" \
-    "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null || echo 000)
+    "${BASE_URL}/api/v1/auth/refresh" 2>/dev/null) || true
+  status="${status:-000}"
   if [ "$status" = "401" ]; then
     pass
   else

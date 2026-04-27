@@ -824,7 +824,27 @@ add_exit_handler() {
 #                                           # /disable back-to-back)
 # ---------------------------------------------------------------------------
 
-_LAST_TOTP_CODE=""
+_totp_state_file() {
+  # Shared state across $() subshells so 'wait' mode can detect a repeat
+  # call. WORK_DIR is per-suite (set by setup_workdir), so this file is
+  # naturally scoped to a single test script.
+  echo "${WORK_DIR:-/tmp}/.totp_last_window_${PPID:-$$}"
+}
+
+_totp_compute() {
+  python3 - "$1" <<'PY'
+import base64, hmac, hashlib, struct, sys, time
+secret = sys.argv[1].strip().upper().replace(" ", "")
+pad = (-len(secret)) % 8
+key = base64.b32decode(secret + ("=" * pad))
+counter = int(time.time() // 30)
+msg = struct.pack(">Q", counter)
+digest = hmac.new(key, msg, hashlib.sha1).digest()
+offset = digest[-1] & 0x0F
+code = (struct.unpack(">I", digest[offset:offset+4])[0] & 0x7FFFFFFF) % 1000000
+print(f"{code:06d} {counter}")
+PY
+}
 
 totp_code() {
   local secret="$1"
@@ -833,40 +853,29 @@ totp_code() {
     echo "totp_code: empty secret" >&2
     return 1
   fi
-  local code
-  code=$(python3 - "$secret" <<'PY'
-import base64, hmac, hashlib, struct, sys, time
-secret = sys.argv[1].strip().upper().replace(" ", "")
-pad = (-len(secret)) % 8
-key = base64.b32decode(secret + ("=" * pad))
-counter = int(time.time() // 30)
-msg = struct.pack(">Q", counter)
-digest = hmac.new(key, msg, hashlib.sha1).digest()
-offset = digest[-1] & 0x0F
-code = (struct.unpack(">I", digest[offset:offset+4])[0] & 0x7FFFFFFF) % 1000000
-print(f"{code:06d}")
-PY
-  ) || return 1
-  if [ "$mode" = "wait" ] && [ "$code" = "$_LAST_TOTP_CODE" ]; then
-    local now_sec
-    now_sec=$(date +%s)
-    local sleep_for=$(( 30 - (now_sec % 30) + 1 ))
-    sleep "$sleep_for"
-    code=$(python3 - "$secret" <<'PY'
-import base64, hmac, hashlib, struct, sys, time
-secret = sys.argv[1].strip().upper().replace(" ", "")
-pad = (-len(secret)) % 8
-key = base64.b32decode(secret + ("=" * pad))
-counter = int(time.time() // 30)
-msg = struct.pack(">Q", counter)
-digest = hmac.new(key, msg, hashlib.sha1).digest()
-offset = digest[-1] & 0x0F
-code = (struct.unpack(">I", digest[offset:offset+4])[0] & 0x7FFFFFFF) % 1000000
-print(f"{code:06d}")
-PY
-    ) || return 1
+  local out code window
+  if [ "$mode" = "wait" ]; then
+    local state_file last_window
+    state_file=$(_totp_state_file)
+    last_window=$(cat "$state_file" 2>/dev/null || echo 0)
+    out=$(_totp_compute "$secret") || return 1
+    code="${out%% *}"; window="${out##* }"
+    if [ "$window" -le "$last_window" ]; then
+      local now_sec sleep_for
+      now_sec=$(date +%s)
+      sleep_for=$(( 30 - (now_sec % 30) + 1 ))
+      sleep "$sleep_for"
+      out=$(_totp_compute "$secret") || return 1
+      code="${out%% *}"; window="${out##* }"
+    fi
+    echo "$window" > "$state_file" 2>/dev/null || true
+  else
+    out=$(_totp_compute "$secret") || return 1
+    code="${out%% *}"; window="${out##* }"
+    local state_file
+    state_file=$(_totp_state_file)
+    echo "$window" > "$state_file" 2>/dev/null || true
   fi
-  _LAST_TOTP_CODE="$code"
   echo "$code"
 }
 
