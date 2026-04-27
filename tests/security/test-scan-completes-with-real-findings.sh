@@ -21,13 +21,13 @@
 #      pattern; the per-artifact scan endpoint is keyed by UUID).
 #   4. Triggers a vulnerability scan via POST /api/v1/security/scan with
 #      {artifact_id: uuid}. (The previous version of this test used a
-#      non-existent path-keyed endpoint and SKIPped on 404 — green forever.)
+#      non-existent path-keyed endpoint and SKIPped on 404 -- green forever.)
 #   5. Polls GET /api/v1/security/artifacts/{artifact_id}/scans for up to
 #      SCAN_TIMEOUT seconds.
 #   6. Asserts the latest scan's status is "completed" AND scanner_version
 #      is non-null AND completed_at is non-null AND error_message is empty.
 #      All four together prove that a scanner actually ran and emitted a
-#      report — catches the #888 silent-success class.
+#      report -- catches the #888 silent-success class.
 #   7. Cleans up.
 #
 # Skip semantics (load-bearing)
@@ -116,7 +116,7 @@ scanner_unavailable() {
 # reads installed `node_modules`, not just `package.json` declarations.
 # Without a lock file or installed deps, Trivy may emit zero findings for
 # this fixture. The #888 catch does NOT depend on findings being non-zero
-# — it asserts the scanner produced a report (scanner_version + completed_at
+# -- it asserts the scanner produced a report (scanner_version + completed_at
 # + clean error_message). A separate follow-up adds an OCI-image fixture
 # with a known-vulnerable base layer for findings-coverage assertions.
 # ---------------------------------------------------------------------------
@@ -182,17 +182,29 @@ fi
 # The per-artifact scan endpoint is /api/v1/security/artifacts/{artifact_id}/scans
 # and is keyed by UUID, NOT by repository path. The previous version of this
 # test polled a path-keyed endpoint that does not exist on the backend; the
-# response was always 404 and the test SKIPped on consecutive failures —
+# response was always 404 and the test SKIPped on consecutive failures --
 # silent-success on every release. Catch the bug class the test is meant to
 # catch instead.
 # ---------------------------------------------------------------------------
 
 begin_test "Resolve artifact_id for the uploaded fixture"
+# Capture epoch BEFORE the lookup so a later assertion can require that
+# the scan we observe was created after this point. This defeats the
+# auto-scan-on-upload false-pass: if a backend auto-scans on upload AND
+# completes BEFORE the explicit POST /security/scan, the test could
+# otherwise see that auto-scan's COMPLETED status without ever exercising
+# the manual trigger path.
+TEST_START_EPOCH=$(date -u +%s)
+
+# Real route: GET /api/v1/repositories/:key/artifacts/*path (no /metadata
+# suffix). Backend `repositories.rs` mounts the metadata handler on the
+# wildcard path. The previous `/metadata` suffix made the path itself
+# end in /metadata and 404'd.
 # shellcheck disable=SC2086  # CURL_TIMEOUT must word-split, per common.sh
 artifact_lookup_status=$(curl -s -o "${WORK_DIR}/artifact-resp.json" -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(auth_header)" \
   -H "Accept: application/json" \
-  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH}/metadata") \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH}") \
   || artifact_lookup_status="000"
 
 ARTIFACT_ID=""
@@ -200,7 +212,9 @@ if [ "$artifact_lookup_status" = "200" ]; then
   ARTIFACT_ID=$(jq -er '.id // .artifact_id // empty' < "${WORK_DIR}/artifact-resp.json" 2>/dev/null || true)
 fi
 
-# Fallback: list artifacts in the repo and find ours by path.
+# Fallback: list artifacts in the repo and find ours by path. Backend's
+# ArtifactListResponse shape is `{items: [...]}`. Removed the dead
+# `// .artifacts // .` jq fallbacks that masked shape drift.
 if [ -z "$ARTIFACT_ID" ]; then
   # shellcheck disable=SC2086  # CURL_TIMEOUT must word-split, per common.sh
   list_status=$(curl -s -o "${WORK_DIR}/list-resp.json" -w '%{http_code}' $CURL_TIMEOUT \
@@ -210,7 +224,7 @@ if [ -z "$ARTIFACT_ID" ]; then
     || list_status="000"
   if [ "$list_status" = "200" ]; then
     ARTIFACT_ID=$(jq -er --arg p "$ARTIFACT_PATH" \
-      '(.items // .artifacts // .) | map(select(.path == $p or .name == $p)) | first | .id // .artifact_id // empty' \
+      '.items | map(select(.path == $p or .name == $p)) | first | .id // .artifact_id // empty' \
       < "${WORK_DIR}/list-resp.json" 2>/dev/null || true)
   fi
 fi
@@ -218,7 +232,7 @@ fi
 if [ -n "$ARTIFACT_ID" ]; then
   pass
 else
-  fail "could not resolve artifact_id for ${ARTIFACT_PATH} (lookup HTTP ${artifact_lookup_status}); test cannot proceed"
+  fail "could not resolve artifact_id for ${ARTIFACT_PATH} (primary lookup HTTP ${artifact_lookup_status}); test cannot proceed"
 fi
 
 # ---------------------------------------------------------------------------
@@ -227,7 +241,7 @@ fi
 # POST /api/v1/security/scan accepts {artifact_id, repository_id} and
 # returns TriggerScanResponse {message, artifacts_queued}. Some deployments
 # also auto-scan on upload, in which case the explicit trigger may queue a
-# duplicate or be a no-op — both are fine.
+# duplicate or be a no-op -- both are fine.
 # ---------------------------------------------------------------------------
 
 begin_test "Trigger vulnerability scan via /api/v1/security/scan"
@@ -252,7 +266,7 @@ case "$scan_trigger_status" in
     scanner_unavailable "scan trigger HTTP 503 (scanner pod likely unreachable)"
     ;;
   404)
-    fail "scan trigger HTTP 404 — endpoint /api/v1/security/scan missing or backend version too old"
+    fail "scan trigger HTTP 404 -- endpoint /api/v1/security/scan missing or backend version too old"
     ;;
   *)
     # Auto-scan-on-upload may make trigger return non-2xx (e.g. 409 already
@@ -295,7 +309,7 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
     "${BASE_URL}${SCAN_LIST_PATH}") || http_status="000"
 
   if [ "$http_status" = "200" ]; then
-    # Pick the most recent scan (highest created_at, or first item — backend
+    # Pick the most recent scan (highest created_at, or first item -- backend
     # is documented to return descending). The list response shape is
     # `{items: [...], total: N}`.
     scan_obj=$(jq -c '.items[0] // empty' < "${WORK_DIR}/scans-resp.json" 2>/dev/null || echo "")
@@ -307,7 +321,7 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
           observed_transient=1
           ;;
         unknown)
-          # Unparseable state — distinguish from "stuck queued"
+          # Unparseable state -- distinguish from "stuck queued"
           ;;
         *)
           final_status="$state"
@@ -317,7 +331,10 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
           ;;
       esac
     fi
-  elif [ "$http_status" = "000" ] || [ "$http_status" = "503" ]; then
+  elif [ "$http_status" = "000" ] || [ "$http_status" = "502" ] || \
+       [ "$http_status" = "503" ] || [ "$http_status" = "504" ]; then
+    # 502/504 are upstream gateway timeouts -- same class as scanner
+    # unreachable, must count toward the unavailable threshold.
     network_fail_count=$(( network_fail_count + 1 ))
     if [ "$network_fail_count" -ge 6 ]; then
       scanner_unavailable "scan-list HTTP ${http_status} for 6 consecutive polls"
@@ -359,7 +376,7 @@ case "$final_status" in
 esac
 
 # ---------------------------------------------------------------------------
-# Assert the scan response carries scanner provenance — the load-bearing
+# Assert the scan response carries scanner provenance -- the load-bearing
 # regression assertion for #888.
 #
 # A scan can be marked COMPLETED even when the scanner pod was never
@@ -386,8 +403,18 @@ else
   completed_at_present=0
   error_message_clean=0
 
+  # scanner_version must be a non-empty string AND look like a real
+  # version string. A backend stub or partial-write race could emit
+  # `scanner_version: "stub"` (or "mock", "none", "unknown") and pass a
+  # bare length check, defeating the #888 catch (the whole point: prove
+  # a real scanner ran). Require at least one digit AND reject the
+  # known stub strings.
   if echo "$final_body" | jq -e '
-        .scanner_version != null and (.scanner_version | type) == "string" and (.scanner_version | length) > 0
+        .scanner_version != null
+        and (.scanner_version | type) == "string"
+        and (.scanner_version | length) > 0
+        and (.scanner_version | ascii_downcase | test("[0-9]"))
+        and (.scanner_version | ascii_downcase | IN("stub", "mock", "none", "unknown", "test", "fake") | not)
       ' >/dev/null 2>&1; then
     scanner_version_present=1
   fi
@@ -404,13 +431,29 @@ else
     error_message_clean=1
   fi
 
+  # Defeat the auto-scan-on-upload false-pass: the scan we asserted on
+  # MUST have been created after we started the test. Otherwise a fast
+  # auto-scan triggered by the upload could complete before our explicit
+  # POST /security/scan, and items[0] would be that auto-scan instead
+  # of the manually-triggered one. Without this assertion a regression
+  # in the manual trigger path would not be caught.
+  scan_is_recent=0
+  if echo "$final_body" | jq --arg start "$TEST_START_EPOCH" -e '
+        .created_at != null
+        and (.created_at | type) == "string"
+        and ((.created_at | fromdateiso8601) >= ($start | tonumber))
+      ' >/dev/null 2>&1; then
+    scan_is_recent=1
+  fi
+
   if [ "$scanner_version_present" = "1" ] && \
      [ "$completed_at_present" = "1" ] && \
-     [ "$error_message_clean" = "1" ]; then
+     [ "$error_message_clean" = "1" ] && \
+     [ "$scan_is_recent" = "1" ]; then
     pass
   else
-    snippet=$(echo "$final_body" | jq -c '{id, status, scanner_version, started_at, completed_at, error_message, findings_count}' 2>/dev/null | cut -c 1-500)
-    fail "COMPLETED scan ${final_scan_id} fails provenance: scanner_version=${scanner_version_present}, completed_at=${completed_at_present}, error_message_clean=${error_message_clean}; this is the #888 silent-success class. Response: ${snippet:-<unparseable>}"
+    snippet=$(echo "$final_body" | jq -c '{id, status, scanner_version, started_at, completed_at, created_at, error_message, findings_count}' 2>/dev/null | cut -c 1-500)
+    fail "COMPLETED scan ${final_scan_id} fails provenance: scanner_version=${scanner_version_present}, completed_at=${completed_at_present}, error_message_clean=${error_message_clean}, scan_is_recent=${scan_is_recent} (test_start_epoch=${TEST_START_EPOCH}); this is the #888 silent-success class. Response: ${snippet:-<unparseable>}"
   fi
 fi
 
@@ -420,7 +463,7 @@ fi
 # When something fails above, dump the most recent scan response to the
 # JUnit output dir so the release-gate workflow's diagnostics step has
 # something concrete to upload. Pod logs from the scanner are out of
-# scope here — those are captured by the release-gate's failure-hook
+# scope here -- those are captured by the release-gate's failure-hook
 # step in release-gate.yml (added in this PR).
 # ---------------------------------------------------------------------------
 
