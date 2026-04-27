@@ -219,6 +219,16 @@ else
   # api_post wrapper uses curl -sf, which collapses both to an empty body
   # and would silently skip every downstream lifecycle assertion -- the
   # exact #888 silent-success class this PR claims to guard against.
+  #
+  # Backend currently returns HTTP 500 with body "Scanner service not
+  # configured" when state.scanner_service is None (security.rs:482 +
+  # error.rs maps AppError::Internal -> 500; the OpenAPI doc at
+  # security.rs:470 self-documents 500 for this case). That's a backend
+  # bug -- 500 is wrong for "feature not enabled" and the right code is
+  # 503 -- but we have to match reality today. We body-match on
+  # "not configured" so a real 500 (panic, DB outage, anything else) is
+  # NOT silently skipped. 501/503 are accepted forward-compat for when
+  # the backend gets remapped (tracked: artifact-keeper backend ticket).
   trigger_status=$(curl -s -o "$WORK_DIR/trigger-resp.json" -w '%{http_code}' \
     -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
     -d "$trigger_payload" \
@@ -226,6 +236,9 @@ else
   if [ "$trigger_status" = "501" ] || [ "$trigger_status" = "503" ]; then
     SCANNER_AVAILABLE=false
     skip "scanner service not configured (HTTP ${trigger_status})"
+  elif [ "$trigger_status" = "500" ] && grep -qi "scanner.*not.*configured" "$WORK_DIR/trigger-resp.json"; then
+    SCANNER_AVAILABLE=false
+    skip "scanner service not configured (HTTP 500, body: $(head -c 120 "$WORK_DIR/trigger-resp.json"))"
   elif [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
     fail "POST /security/scan returned HTTP ${trigger_status} (body: $(head -c 200 "$WORK_DIR/trigger-resp.json"))"
   else

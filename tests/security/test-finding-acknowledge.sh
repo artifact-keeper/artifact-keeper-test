@@ -153,10 +153,10 @@ if [ -z "$ARTIFACT_ID" ]; then
   skip "no artifact_id"
 else
   # Status-aware trigger: distinguish "scanner not configured" (skip) from
-  # "scanner crashed / endpoint moved / 5xx" (fail). The api_post wrapper
-  # uses curl -sf and would silently collapse all failure modes into an
-  # empty body, then skip every downstream lifecycle assertion -- the
-  # exact #888 silent-success class this PR claims to guard against.
+  # "scanner crashed / endpoint moved / 5xx" (fail). See
+  # test-scan-findings-list.sh for full rationale on why we body-match on
+  # HTTP 500 -- backend returns 500 for "scanner not configured" today
+  # (security.rs:482); 501/503 are accepted forward-compat.
   trigger_status=$(curl -s -o "$WORK_DIR/trigger-resp.json" -w '%{http_code}' \
     -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
     -d "{\"artifact_id\":\"${ARTIFACT_ID}\"}" \
@@ -164,6 +164,9 @@ else
   if [ "$trigger_status" = "501" ] || [ "$trigger_status" = "503" ]; then
     SCANNER_AVAILABLE=false
     skip "scanner service not configured (HTTP ${trigger_status})"
+  elif [ "$trigger_status" = "500" ] && grep -qi "scanner.*not.*configured" "$WORK_DIR/trigger-resp.json"; then
+    SCANNER_AVAILABLE=false
+    skip "scanner service not configured (HTTP 500, body: $(head -c 120 "$WORK_DIR/trigger-resp.json"))"
   elif [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
     fail "POST /security/scan returned HTTP ${trigger_status} (body: $(head -c 200 "$WORK_DIR/trigger-resp.json"))"
   else
@@ -423,7 +426,9 @@ else
     -d "$ack_payload_2" \
     "${BASE_URL}/api/v1/security/findings/${FINDING_ID}/acknowledge") || reack_status=000
   if [ -z "$ack_resp_1" ]; then
-    fail "first re-ack returned empty body (was the finding deleted?)"
+    fail "first re-ack returned empty body (priming step failed)"
+  elif [ "$(echo "$ack_resp_1" | jq -r '.is_acknowledged // empty')" != "true" ]; then
+    fail "priming re-ack did not set is_acknowledged=true (got '$(echo "$ack_resp_1" | jq -r '.is_acknowledged // empty')')"
   elif [ "$reack_status" != "200" ]; then
     fail "second POST acknowledge returned HTTP ${reack_status} (expected 200; idempotent overwrite)"
   else
@@ -462,7 +467,17 @@ else
     "${BASE_URL}/api/v1/security/findings/${FINDING_ID}/acknowledge") || status=000
   if [[ "$status" =~ ^5[0-9][0-9]$ ]]; then
     fail "second DELETE returned HTTP ${status} (5xx); expected 200 (idempotent) or 404"
-  elif [ "$status" = "200" ] || [ "$status" = "404" ]; then
+  elif [ "$status" = "200" ]; then
+    # Verify the body still reflects revoked state -- catches a regression
+    # where the second DELETE returns 200 with stale is_acknowledged=true.
+    body=$(cat "$WORK_DIR/double-revoke-resp.json")
+    body_is_ack=$(echo "$body" | jq -r '.is_acknowledged // empty')
+    if [ "$body_is_ack" != "false" ]; then
+      fail "second DELETE returned 200 but is_acknowledged='${body_is_ack}' (expected false)"
+    else
+      pass
+    fi
+  elif [ "$status" = "404" ]; then
     pass
   else
     fail "second DELETE returned unexpected HTTP ${status}; expected 200 (idempotent) or 404"
