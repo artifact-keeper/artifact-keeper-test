@@ -13,10 +13,17 @@ name: Smoke Self-Test
 # on broken releases. That is the same silent-success failure class that
 # motivated the gate in the first place.
 #
-# This workflow runs the gate against a deliberately-broken backend tag
-# (`nonexistent-tag-pinning-self-test`) and asserts the gate exits
-# non-zero with a useful diagnostic. If a regression makes the gate
-# pass on a broken backend, this job fails and blocks the PR.
+# We pin TWO failure shapes because the gate's behavior on each is
+# distinct (different code paths in classify_pod_failure, different
+# `--previous` log availability, different rollout-status timing):
+#
+#   1. ImagePullBackOff — backend tag does not exist on the registry.
+#      Exercises the registry/secret diagnostic path.
+#   2. CrashLoopBackOff — backend image is real and pulls fine, but the
+#      command exits non-zero on every start. Exercises the
+#      crash-on-startup path that v1.1.8 actually hit. Without this
+#      fixture, a future PR could weaken only the CrashLoopBackOff
+#      handling and the ImagePullBackOff self-test would still pass.
 #
 # Triggers on every PR that touches the gate or this self-test, so the
 # protection cannot be sidestepped without an explicit decision.
@@ -34,9 +41,16 @@ on:
       - '.github/workflows/release-gate.yml'
       - '.github/workflows/smoke-self-test.yml'
 
+# Cancel stale runs of the same workflow on a branch when a new push
+# arrives. Keeps the PR feedback fast and avoids confusing red checks
+# from prior runs on top of a green re-run.
+concurrency:
+  group: smoke-self-test-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  pin-gate-fails-on-broken-backend:
-    name: Gate must reject a broken backend image
+  pin-gate-fails-on-image-pull-backoff:
+    name: Gate must reject ImagePullBackOff (fixture A)
     runs-on: ak-e2e-runners
     timeout-minutes: 10
     steps:
@@ -50,12 +64,12 @@ jobs:
 
       - name: Run gate against nonexistent image and expect failure
         env:
-          # Pull-secret intentionally omitted: the test fixture is a
+          # Pull-secret intentionally omitted: the fixture is a
           # nonexistent tag, ImagePullBackOff is exactly what we want.
           GHCR_DOCKER_CONFIG: ''
         run: |
           chmod +x scripts/clean-install-smoke.sh
-          RUN_ID="self-${{ github.run_id }}-${{ github.run_attempt }}"
+          RUN_ID="self-pull-${{ github.run_id }}-${{ github.run_attempt }}"
           # --expect-failure inverts the meaning of exit codes: a non-zero
           # exit (the gate working correctly) becomes 0, and exit 0 (the
           # gate silently passing on a broken backend) becomes exit 4.
@@ -70,6 +84,63 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-self-test-logs-${{ github.run_attempt }}
+          name: smoke-self-test-pull-logs-${{ github.run_attempt }}
+          path: /tmp/test-logs/
+          if-no-files-found: ignore
+
+  pin-gate-fails-on-crash-loop:
+    name: Gate must reject CrashLoopBackOff (fixture B)
+    runs-on: ak-e2e-runners
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      # Fixture: tag a public busybox image as the "backend" via a
+      # transient ImageStreamTag-style alias. busybox does not have
+      # /usr/local/bin/artifact-keeper, so the chart's command fails
+      # immediately on every restart -> CrashLoopBackOff. This pins the
+      # v1.1.8 panic path specifically (image pulls fine, crashes after
+      # start), distinct from ImagePullBackOff covered by fixture A.
+      #
+      # We achieve this by passing a public crash-on-start image
+      # directly to the gate via a backend-tag override that the chart
+      # accepts. Since the gate's helm-install also overrides the
+      # backend image repository, we can repurpose the override list
+      # via a small fixture-only --set. See the gate's HELM_OVERRIDES
+      # array for the wiring.
+      #
+      # The fixture image is `busybox:1.36.1` retagged via the chart's
+      # `backend.image.repository` override. busybox-as-backend means
+      # `/usr/local/bin/artifact-keeper` is missing -> exit code 127
+      # -> kubelet retries -> CrashLoopBackOff.
+      - name: Run gate against busybox-as-backend and expect CrashLoopBackOff
+        env:
+          GHCR_DOCKER_CONFIG: ''
+          # Override repository to a public crash-on-start image. The
+          # gate's existing --set list pins backend.image.tag from
+          # arguments; we override .repository here via env that the
+          # script reads for fixture-mode (added in this PR).
+          SMOKE_BACKEND_REPO_OVERRIDE: 'docker.io/library/busybox'
+        run: |
+          chmod +x scripts/clean-install-smoke.sh
+          RUN_ID="self-crash-${{ github.run_id }}-${{ github.run_attempt }}"
+          ./scripts/clean-install-smoke.sh \
+            --run-id "${RUN_ID}" \
+            --backend-tag "1.36.1" \
+            --web-tag "1.36.1" \
+            --timeout 90 \
+            --expect-failure
+
+      - name: Upload self-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-self-test-crash-logs-${{ github.run_attempt }}
           path: /tmp/test-logs/
           if-no-files-found: ignore

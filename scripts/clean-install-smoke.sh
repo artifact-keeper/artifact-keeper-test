@@ -53,6 +53,7 @@ EXPECT_FAILURE=false
 
 # Track resources to clean up. Set after first use.
 CHART_TMPDIR=""
+GHCR_CONFIG_FILE=""
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -207,6 +208,13 @@ cleanup() {
     rm -rf "$CHART_TMPDIR" 2>/dev/null || true
   fi
 
+  # Tempfile holding the dockerconfigjson for the GHCR pull secret. The
+  # secret is created from this file then cleaned up here on EXIT (rather
+  # than via a RETURN trap, which only fires from inside a function).
+  if [ -n "$GHCR_CONFIG_FILE" ] && [ -f "$GHCR_CONFIG_FILE" ]; then
+    rm -f "$GHCR_CONFIG_FILE" 2>/dev/null || true
+  fi
+
   exit "$exit_code"
 }
 trap cleanup EXIT
@@ -253,17 +261,29 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 # step env MUST set GHCR_DOCKER_CONFIG (base64-encoded ~/.docker/config.json)
 # for private image tags to pull. If unset, we explicitly warn so a silent
 # auth failure is visible in workflow logs.
+#
+# kubectl notes: `create secret docker-registry --docker-username/--docker-server`
+# is mutually exclusive with `--from-file`. The first form expects raw
+# credentials and builds the dockerconfigjson itself. Since we already
+# have the full dockerconfigjson, we use `create secret generic` with the
+# correct `--type=kubernetes.io/dockerconfigjson` so the resulting Secret
+# is valid for `imagePullSecrets`. (Cleanup of GHCR_CONFIG_FILE happens in
+# the EXIT trap above.)
 if [ -n "${GHCR_DOCKER_CONFIG:-}" ]; then
-  CONFIG_FILE="$(mktemp)"
-  trap 'rm -f "$CONFIG_FILE"' RETURN
-  echo "$GHCR_DOCKER_CONFIG" | base64 -d > "$CONFIG_FILE"
-  kubectl create secret docker-registry ghcr-creds \
+  GHCR_CONFIG_FILE="$(mktemp)"
+  echo "$GHCR_DOCKER_CONFIG" | base64 -d > "$GHCR_CONFIG_FILE"
+  kubectl create secret generic ghcr-creds \
     --namespace "$NAMESPACE" \
-    --docker-server=ghcr.io \
-    --from-file=".dockerconfigjson=${CONFIG_FILE}" \
+    --type=kubernetes.io/dockerconfigjson \
+    --from-file=".dockerconfigjson=${GHCR_CONFIG_FILE}" \
     --dry-run=client -o yaml | kubectl apply -f -
-  rm -f "$CONFIG_FILE"
   echo "Created ghcr-creds pull secret in ${NAMESPACE}"
+  echo ""
+  echo "NOTE: The chart at /Users/khan/ak/artifact-keeper-iac currently does"
+  echo "      not plumb global.imagePullSecrets onto pod specs, so this"
+  echo "      secret is created but unused until the chart adds the wiring."
+  echo "      Tracked as a chart follow-up. Public ghcr.io tags work without"
+  echo "      this secret."
 else
   echo "WARN: GHCR_DOCKER_CONFIG is not set. Private images will fail to pull."
   echo "      Public images will work fine. To wire creds, add:"
@@ -341,42 +361,61 @@ fi
 #   cosign.enabled=false (default already)
 #     No signature verification in CI; would block on cosign tooling.
 
+# Build the override flags once and reuse for both the dry-run and the
+# install. Drift between the two would defeat the lint pass.
+HELM_OVERRIDES=(
+  --set fullnameOverride=ak-smoke
+  --set backend.image.tag="$BACKEND_TAG"
+  --set backend.image.pullPolicy=Always
+  --set backend.replicaCount=1
+  --set "backend.env.ADMIN_PASSWORD=Smoke!2026secure"
+  --set web.image.tag="$WEB_TAG"
+  --set web.replicaCount=1
+  --set secrets.jwtSecret="smoke-jwt-secret-not-for-production"
+  --set postgres.enabled=true
+  --set "postgres.auth.username=registry"
+  --set "postgres.auth.password=smoke-db-password"
+  --set "postgres.auth.database=artifact_registry"
+  --set externalDatabase.host=""
+  --set externalDatabase.existingSecret=""
+  --set externalSecrets.enabled=false
+  --set ingress.enabled=false
+  --set serviceMonitor.enabled=false
+  --set "backend.autoscaling.enabled=false"
+  --set "backend.podDisruptionBudget.enabled=false"
+  --set "web.podDisruptionBudget.enabled=false"
+  --set edge.enabled=false
+  --set trivy.enabled=false
+  --set dependencyTrack.enabled=false
+  --set networkPolicy.enabled=false
+  --set opensearch.replicaCount=1
+  --set opensearch.persistence.enabled=false
+  --set 'opensearch.javaOpts=-Xms512m -Xmx512m'
+  --set 'opensearch.resources.requests.memory=1Gi'
+  --set 'opensearch.resources.limits.memory=1Gi'
+)
+
+# Fixture override: when SMOKE_BACKEND_REPO_OVERRIDE is set (used by the
+# self-test workflow's CrashLoopBackOff fixture), repurpose the backend
+# image repository to a public crash-on-startup image. This preserves
+# the array's quoting through word-splitting, which inline `:+` expansion
+# would not.
+if [ -n "${SMOKE_BACKEND_REPO_OVERRIDE:-}" ]; then
+  HELM_OVERRIDES+=(--set "backend.image.repository=${SMOKE_BACKEND_REPO_OVERRIDE}")
+fi
+
 echo ""
-echo "Validating Helm template (catches override drift early)"
-helm template "$RELEASE_NAME" "$CHART_DIR" \
+echo "Helm template dry-run (catches misnamed --set keys)"
+# `--debug` is intentionally omitted — it would print rendered manifests
+# (including the test-only Secret block with jwtSecret/postgres password)
+# to stderr, which is captured in workflow logs. `--dry-run=server` runs
+# server-side validation including CRD existence; replaces the deprecated
+# `--validate` flag (helm 3.13+).
+helm install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" \
   --values "$PROD_VALUES" \
-  --set fullnameOverride=ak-smoke \
-  --set backend.image.tag="$BACKEND_TAG" \
-  --set backend.image.pullPolicy=Always \
-  --set backend.replicaCount=1 \
-  --set "backend.env.ADMIN_PASSWORD=Smoke!2026secure" \
-  --set web.image.tag="$WEB_TAG" \
-  --set web.replicaCount=1 \
-  --set secrets.jwtSecret="smoke-jwt-secret-not-for-production" \
-  --set postgres.enabled=true \
-  --set "postgres.auth.username=registry" \
-  --set "postgres.auth.password=smoke-db-password" \
-  --set "postgres.auth.database=artifact_registry" \
-  --set externalDatabase.host="" \
-  --set externalDatabase.existingSecret="" \
-  --set externalSecrets.enabled=false \
-  --set ingress.enabled=false \
-  --set serviceMonitor.enabled=false \
-  --set "backend.autoscaling.enabled=false" \
-  --set "backend.podDisruptionBudget.enabled=false" \
-  --set "web.podDisruptionBudget.enabled=false" \
-  --set edge.enabled=false \
-  --set trivy.enabled=false \
-  --set dependencyTrack.enabled=false \
-  --set networkPolicy.enabled=false \
-  --set opensearch.replicaCount=1 \
-  --set opensearch.persistence.enabled=false \
-  --set 'opensearch.javaOpts=-Xms512m -Xmx512m' \
-  --set 'opensearch.resources.requests.memory=1Gi' \
-  --set 'opensearch.resources.limits.memory=1Gi' \
-  --validate \
-  --debug \
+  "${HELM_OVERRIDES[@]}" \
+  --dry-run=server \
   >/dev/null
 
 echo ""
@@ -384,35 +423,7 @@ echo "Installing Helm release ${RELEASE_NAME}"
 helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" \
   --values "$PROD_VALUES" \
-  --set fullnameOverride=ak-smoke \
-  --set backend.image.tag="$BACKEND_TAG" \
-  --set backend.image.pullPolicy=Always \
-  --set backend.replicaCount=1 \
-  --set "backend.env.ADMIN_PASSWORD=Smoke!2026secure" \
-  --set web.image.tag="$WEB_TAG" \
-  --set web.replicaCount=1 \
-  --set secrets.jwtSecret="smoke-jwt-secret-not-for-production" \
-  --set postgres.enabled=true \
-  --set "postgres.auth.username=registry" \
-  --set "postgres.auth.password=smoke-db-password" \
-  --set "postgres.auth.database=artifact_registry" \
-  --set externalDatabase.host="" \
-  --set externalDatabase.existingSecret="" \
-  --set externalSecrets.enabled=false \
-  --set ingress.enabled=false \
-  --set serviceMonitor.enabled=false \
-  --set "backend.autoscaling.enabled=false" \
-  --set "backend.podDisruptionBudget.enabled=false" \
-  --set "web.podDisruptionBudget.enabled=false" \
-  --set edge.enabled=false \
-  --set trivy.enabled=false \
-  --set dependencyTrack.enabled=false \
-  --set networkPolicy.enabled=false \
-  --set opensearch.replicaCount=1 \
-  --set opensearch.persistence.enabled=false \
-  --set 'opensearch.javaOpts=-Xms512m -Xmx512m' \
-  --set 'opensearch.resources.requests.memory=1Gi' \
-  --set 'opensearch.resources.limits.memory=1Gi' \
+  "${HELM_OVERRIDES[@]}" \
   --wait=false || {
     echo "ERROR: helm install failed" >&2
     exit 1
@@ -506,17 +517,27 @@ readyz_probe_loop() {
     return 3
   fi
 
-  # The backend image typically has wget or curl; try wget first since
-  # alpine-based images include it. Fall back to /dev/tcp shell builtin
-  # if neither is available.
+  # The backend image is RHEL ubi-micro + curl-minimal (per the backend
+  # Dockerfile). It does NOT ship `which`, so we use POSIX `command -v`
+  # for detection. wget is checked first because Alpine-style images that
+  # might be used in development tend to have it; curl is the production
+  # default and is also fine.
   local probe_cmd
-  if kubectl exec -n "$NAMESPACE" "$backend_pod" -- which wget >/dev/null 2>&1; then
-    probe_cmd="wget -q --timeout=5 -O - --server-response ${service_url}/readyz 2>&1 | grep -E '^  HTTP/'"
-  elif kubectl exec -n "$NAMESPACE" "$backend_pod" -- which curl >/dev/null 2>&1; then
+  if kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c 'command -v wget >/dev/null' 2>/dev/null; then
+    # GNU wget indents response headers with two spaces; busybox wget
+    # uses one. Match either with `-i 'HTTP/'`.
+    probe_cmd="wget -q --timeout=5 -O - --server-response ${service_url}/readyz 2>&1 | grep -i 'HTTP/'"
+  elif kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c 'command -v curl >/dev/null' 2>/dev/null; then
     probe_cmd="curl -fsS -o /dev/null -w '%{http_code}\n' --max-time 5 ${service_url}/readyz"
   else
-    # Bash builtin /dev/tcp is portable on most distros without curl/wget.
-    probe_cmd="(exec 3<>/dev/tcp/ak-smoke-backend/8080 && echo -e 'GET /readyz HTTP/1.0\r\nHost: ak-smoke-backend\r\n\r\n' >&3 && head -1 <&3)"
+    # No portable fallback — `/dev/tcp` is a bash builtin and busybox sh
+    # in Alpine-based images does not support it. If neither curl nor
+    # wget is present, fail with a clear classification rather than a
+    # silent timeout. Adding a probe tool to the backend image is the
+    # right fix.
+    echo "ERROR: backend pod has neither curl nor wget; cannot probe /readyz" >&2
+    echo "       fix: add curl or wget to the backend image" >&2
+    return 3
   fi
 
   local start now elapsed deadline output
