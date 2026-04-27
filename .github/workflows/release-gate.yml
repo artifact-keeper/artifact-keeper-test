@@ -173,10 +173,14 @@ jobs:
           WEB_TAG: ${{ inputs.web_tag }}
         run: |
           chmod +x scripts/create-test-namespace.sh
+          # --full-stack enables Trivy + scan workspace so the security
+          # tests actually exercise the scanner instead of false-passing
+          # against a no-scanner stack (#888 silent-success class).
           ./scripts/create-test-namespace.sh \
             --run-id "${RUN_ID}" \
             --backend-tag "${BACKEND_TAG}" \
-            --web-tag "${WEB_TAG}"
+            --web-tag "${WEB_TAG}" \
+            --full-stack
 
           NAMESPACE="test-${RUN_ID}"
           BACKEND_URL="http://artifact-keeper-backend.${NAMESPACE}.svc.cluster.local:8080"
@@ -190,6 +194,19 @@ jobs:
           BACKEND_URL="http://artifact-keeper-backend.${NAMESPACE}.svc.cluster.local:8080"
           chmod +x tests/lib/wait-for-ready.sh
           ./tests/lib/wait-for-ready.sh "${BACKEND_URL}" 180
+
+          # Trivy rollout must be Available before the security tests
+          # dispatch. The chart's fullnameOverride is "artifact-keeper"
+          # (see helm/values-test-full.yaml) so the deployment is
+          # named artifact-keeper-trivy regardless of the release name.
+          # Without this gate, security-tests can race scanner pod
+          # scale-up and the lite scan-completion gate sees an unreachable
+          # scanner as "real" failure (the #888 false-fail mirror).
+          echo "Waiting for Trivy rollout in ${NAMESPACE}..."
+          kubectl -n "${NAMESPACE}" rollout status \
+            deployment/artifact-keeper-trivy --timeout=180s
+          kubectl -n "${NAMESPACE}" wait --for=condition=Available \
+            deployment/artifact-keeper-trivy --timeout=60s
 
   # -------------------------------------------------------------------
   # Format tests (8 parallel batches)
@@ -346,7 +363,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: junit-security
-          path: /tmp/test-results/*.xml
+          # Directory upload (not *.xml glob) so per-test diagnostic
+          # JSON breadcrumbs (e.g. scan-completes-final-resp.json) reach
+          # the operator. With *.xml glob the dump dies silently and the
+          # gate's failure rendering is a one-line message attribute.
+          path: /tmp/test-results/
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
