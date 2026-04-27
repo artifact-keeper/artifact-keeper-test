@@ -32,21 +32,26 @@ setup_workdir
 
 REPO_KEY="test-ack-${RUN_ID}"
 IMAGE_NAME="ack-target"
-UNIQUE_TAG="1.0.$(date +%s)"
-SCAN_TIMEOUT="${SCAN_TIMEOUT:-90}"
+# RUN_ID gives stronger isolation than wall-clock seconds (see findings-list).
+UNIQUE_TAG="1.0.${RUN_ID}"
+# 60s leaves headroom under the 120s TEST_TIMEOUT in run-suite.sh.
+SCAN_TIMEOUT="${SCAN_TIMEOUT:-60}"
 ACK_REASON="risk accepted by E2E test ${RUN_ID}"
+ACK_REASON_2="re-acked with a different reason by ${RUN_ID}"
 ARTIFACT_ID=""
 SCAN_ID=""
 FINDING_ID=""
 SCANNER_AVAILABLE=true
 
-# Cleanup: combined trap deletes the repo and removes the workdir.
+# Cleanup: combined trap deletes the repo and removes the workdir. Replaces
+# setup_workdir's EXIT-only trap; INT/TERM are added so SIGTERM from the
+# run-suite `timeout` wrapper still triggers cleanup.
 cleanup_repo() {
   # shellcheck disable=SC2086  # CURL_TIMEOUT must word-split per common.sh
   curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" \
     "${BASE_URL}/api/v1/repositories/${REPO_KEY}" > /dev/null 2>&1 || true
 }
-trap 'cleanup_repo; [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR" 2>/dev/null || true' EXIT
+trap 'cleanup_repo; [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR" 2>/dev/null || true' EXIT INT TERM
 
 # ---------------------------------------------------------------------------
 # Build a scannable OCI image (same shape as test-scan-findings-list.sh).
@@ -147,11 +152,25 @@ begin_test "Trigger scan and wait for completion"
 if [ -z "$ARTIFACT_ID" ]; then
   skip "no artifact_id"
 else
-  trigger_resp=$(api_post "/api/v1/security/scan" "{\"artifact_id\":\"${ARTIFACT_ID}\"}" 2>/dev/null) || true
-  if [ -z "$trigger_resp" ]; then
+  # Status-aware trigger: distinguish "scanner not configured" (skip) from
+  # "scanner crashed / endpoint moved / 5xx" (fail). The api_post wrapper
+  # uses curl -sf and would silently collapse all failure modes into an
+  # empty body, then skip every downstream lifecycle assertion -- the
+  # exact #888 silent-success class this PR claims to guard against.
+  trigger_status=$(curl -s -o "$WORK_DIR/trigger-resp.json" -w '%{http_code}' \
+    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d "{\"artifact_id\":\"${ARTIFACT_ID}\"}" \
+    "${BASE_URL}/api/v1/security/scan") || trigger_status=000
+  if [ "$trigger_status" = "501" ] || [ "$trigger_status" = "503" ]; then
     SCANNER_AVAILABLE=false
-    skip "scanner service not configured"
+    skip "scanner service not configured (HTTP ${trigger_status})"
+  elif [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
+    fail "POST /security/scan returned HTTP ${trigger_status} (body: $(head -c 200 "$WORK_DIR/trigger-resp.json"))"
   else
+    # Allowlist terminal states. Backend writes 'running' as the in-flight
+    # value (scan_result_service.rs:99); the original denylist of {pending,
+    # queued, scanning, in_progress} treated 'running' as terminal and exited
+    # the loop on the very first poll.
     elapsed=0
     final_status=""
     while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
@@ -159,21 +178,28 @@ else
       if [ -n "$scans_resp" ]; then
         SCAN_ID=$(echo "$scans_resp" | jq -r '.items[0].id // empty')
         final_status=$(echo "$scans_resp" | jq -r '.items[0].status // empty')
-        if [ -n "$SCAN_ID" ] && [ -n "$final_status" ] \
-           && [ "$final_status" != "pending" ] && [ "$final_status" != "queued" ] \
-           && [ "$final_status" != "scanning" ] && [ "$final_status" != "in_progress" ]; then
-          break
-        fi
+        case "$final_status" in
+          completed|failed|error|cancelled)
+            break
+            ;;
+        esac
       fi
       sleep 5
       elapsed=$((elapsed + 5))
     done
-    if [ -z "$SCAN_ID" ] || [ "$final_status" = "pending" ] || [ "$final_status" = "queued" ] \
-       || [ "$final_status" = "scanning" ] || [ "$final_status" = "in_progress" ]; then
+    if [ -z "$SCAN_ID" ]; then
       SCANNER_AVAILABLE=false
-      skip "scan did not complete within ${SCAN_TIMEOUT}s (status=${final_status:-none})"
+      skip "no scan record produced for artifact within ${SCAN_TIMEOUT}s"
     else
-      pass
+      case "$final_status" in
+        completed|failed|error|cancelled)
+          pass
+          ;;
+        *)
+          SCANNER_AVAILABLE=false
+          skip "scan did not reach a terminal state within ${SCAN_TIMEOUT}s (status=${final_status:-unknown})"
+          ;;
+      esac
     fi
   fi
 fi
@@ -216,14 +242,26 @@ else
     got_reason=$(echo "$ack_resp" | jq -r '.acknowledged_reason // empty')
     ack_at=$(echo "$ack_resp" | jq -r '.acknowledged_at // empty')
     ack_by=$(echo "$ack_resp" | jq -r '.acknowledged_by // empty')
+    # acknowledged_by is set to auth.user_id server-side (UUID v4). We
+    # assert UUID shape to catch a regression that would put e.g. the
+    # username string here, without depending on a /me lookup.
+    uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    # acknowledged_at is server-side NOW(); must be a recent ISO 8601
+    # timestamp. We don't try to parse it portably (date -d on Linux vs
+    # date -j -f on macOS); we just bound the shape and require non-empty.
+    iso_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
     if [ "$is_ack" != "true" ]; then
       fail "expected is_acknowledged=true, got '${is_ack}'"
     elif [ "$got_reason" != "$ACK_REASON" ]; then
       fail "reason did not round-trip: sent='${ACK_REASON}', got='${got_reason}'"
     elif [ -z "$ack_at" ] || [ "$ack_at" = "null" ]; then
       fail "acknowledged_at not set after POST"
+    elif ! [[ "$ack_at" =~ $iso_re ]]; then
+      fail "acknowledged_at='${ack_at}' is not an ISO 8601 timestamp"
     elif [ -z "$ack_by" ] || [ "$ack_by" = "null" ]; then
       fail "acknowledged_by not set after POST"
+    elif ! [[ "$ack_by" =~ $uuid_re ]]; then
+      fail "acknowledged_by='${ack_by}' is not a UUID (expected user_id)"
     else
       pass
     fi
@@ -269,17 +307,20 @@ else
   else
     rev_body=$(cat "$WORK_DIR/revoke-resp.json")
     is_ack=$(echo "$rev_body" | jq -r '.is_acknowledged // empty')
-    got_reason=$(echo "$rev_body" | jq -r '.acknowledged_reason // "null"')
-    ack_at=$(echo "$rev_body" | jq -r '.acknowledged_at // "null"')
-    ack_by=$(echo "$rev_body" | jq -r '.acknowledged_by // "null"')
+    # For the four ack fields, use jq -e to bind both shape AND value:
+    # the field must be present in the response AND its value must be JSON
+    # null. The previous `// "null"` fallback could not distinguish a
+    # missing key from a literal-string "null" value or a real null, so a
+    # backend that just dropped the keys (or returned a real string "null")
+    # would silently pass.
     if [ "$is_ack" != "false" ]; then
       fail "expected is_acknowledged=false after revoke, got '${is_ack}'"
-    elif [ "$got_reason" != "null" ] && [ -n "$got_reason" ]; then
-      fail "expected acknowledged_reason=null after revoke, got '${got_reason}'"
-    elif [ "$ack_at" != "null" ] && [ -n "$ack_at" ]; then
-      fail "expected acknowledged_at=null after revoke, got '${ack_at}'"
-    elif [ "$ack_by" != "null" ] && [ -n "$ack_by" ]; then
-      fail "expected acknowledged_by=null after revoke, got '${ack_by}'"
+    elif ! echo "$rev_body" | jq -e 'has("acknowledged_reason") and .acknowledged_reason == null' > /dev/null 2>&1; then
+      fail "expected acknowledged_reason=null after revoke, got '$(echo "$rev_body" | jq -c .acknowledged_reason 2>/dev/null)'"
+    elif ! echo "$rev_body" | jq -e 'has("acknowledged_at") and .acknowledged_at == null' > /dev/null 2>&1; then
+      fail "expected acknowledged_at=null after revoke, got '$(echo "$rev_body" | jq -c .acknowledged_at 2>/dev/null)'"
+    elif ! echo "$rev_body" | jq -e 'has("acknowledged_by") and .acknowledged_by == null' > /dev/null 2>&1; then
+      fail "expected acknowledged_by=null after revoke, got '$(echo "$rev_body" | jq -c .acknowledged_by 2>/dev/null)'"
     else
       pass
     fi
@@ -362,19 +403,124 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Wrap up. EXPECT_FAILURE=1 inverts the suite exit code so CI smoke jobs can
-# point this test at a known-broken backend and verify the test catches it.
+# 2.2.h -- POST acknowledge is idempotent: re-acking with a different reason
+# overwrites the prior reason and keeps is_acknowledged=true. Pins the
+# contract so a future "already acked" 409 regression is caught loudly.
+# Note: this re-acks the SAME finding from the lifecycle test, so it must
+# run AFTER the DELETE-revoke step (and we re-POST first).
+# ---------------------------------------------------------------------------
+
+begin_test "POST acknowledge is idempotent (re-ack overwrites reason)"
+if [ -z "$FINDING_ID" ]; then
+  skip "no finding to re-acknowledge"
+else
+  # First ack again to set known state.
+  ack_payload_1=$(jq -n --arg r "$ACK_REASON" '{reason: $r}')
+  ack_resp_1=$(api_post "/api/v1/security/findings/${FINDING_ID}/acknowledge" "$ack_payload_1" 2>/dev/null) || true
+  ack_payload_2=$(jq -n --arg r "$ACK_REASON_2" '{reason: $r}')
+  reack_status=$(curl -s -o "$WORK_DIR/reack-resp.json" -w '%{http_code}' \
+    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d "$ack_payload_2" \
+    "${BASE_URL}/api/v1/security/findings/${FINDING_ID}/acknowledge") || reack_status=000
+  if [ -z "$ack_resp_1" ]; then
+    fail "first re-ack returned empty body (was the finding deleted?)"
+  elif [ "$reack_status" != "200" ]; then
+    fail "second POST acknowledge returned HTTP ${reack_status} (expected 200; idempotent overwrite)"
+  else
+    reack_body=$(cat "$WORK_DIR/reack-resp.json")
+    is_ack=$(echo "$reack_body" | jq -r '.is_acknowledged // empty')
+    new_reason=$(echo "$reack_body" | jq -r '.acknowledged_reason // empty')
+    if [ "$is_ack" != "true" ]; then
+      fail "expected is_acknowledged=true after re-ack, got '${is_ack}'"
+    elif [ "$new_reason" != "$ACK_REASON_2" ]; then
+      fail "re-ack did not overwrite reason: got '${new_reason}', expected '${ACK_REASON_2}'"
+    else
+      pass
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2.2.i -- DELETE acknowledge is idempotent: revoking an already-revoked
+# finding must not 5xx. Per the backend (scan_result_service.rs revoke
+# pattern), a second DELETE returns 200 with the same unchanged
+# is_acknowledged=false row; some implementations may return 404. Either
+# is acceptable; 5xx is not.
+# ---------------------------------------------------------------------------
+
+begin_test "DELETE acknowledge is idempotent (no 5xx on already-revoked)"
+if [ -z "$FINDING_ID" ]; then
+  skip "no finding to double-revoke"
+else
+  # First revoke (might be a no-op if 2.2.h re-acked then nothing revoked).
+  curl -s -o /dev/null -w '%{http_code}' \
+    -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/security/findings/${FINDING_ID}/acknowledge" > /dev/null || true
+  # Second revoke should not 5xx.
+  status=$(curl -s -o "$WORK_DIR/double-revoke-resp.json" -w '%{http_code}' \
+    -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/security/findings/${FINDING_ID}/acknowledge") || status=000
+  if [[ "$status" =~ ^5[0-9][0-9]$ ]]; then
+    fail "second DELETE returned HTTP ${status} (5xx); expected 200 (idempotent) or 404"
+  elif [ "$status" = "200" ] || [ "$status" = "404" ]; then
+    pass
+  else
+    fail "second DELETE returned unexpected HTTP ${status}; expected 200 (idempotent) or 404"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2.2.j -- Empty-string reason. The backend's AcknowledgeRequest type does
+# not enforce a min length on `reason`, so an empty string is currently
+# accepted at the wire level. We accept either 2xx (no validation) or 4xx
+# (future validation added) but reject 5xx, which is always wrong.
+# Tighten this once the contract is finalized one way or the other.
+# ---------------------------------------------------------------------------
+
+begin_test "POST acknowledge with empty-string reason"
+if [ -z "$FINDING_ID" ]; then
+  skip "no finding to test empty reason"
+else
+  empty_payload='{"reason":""}'
+  status=$(curl -s -o "$WORK_DIR/empty-reason-resp.json" -w '%{http_code}' \
+    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d "$empty_payload" \
+    "${BASE_URL}/api/v1/security/findings/${FINDING_ID}/acknowledge") || status=000
+  if [[ "$status" =~ ^5[0-9][0-9]$ ]]; then
+    fail "empty reason returned HTTP ${status} (5xx); contract requires 2xx (accepted) or 4xx (rejected)"
+  elif [[ "$status" =~ ^2[0-9][0-9]$ ]] || [[ "$status" =~ ^4[0-9][0-9]$ ]]; then
+    pass
+  else
+    fail "empty reason returned unexpected HTTP ${status}"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Wrap up. EXPECT_FAILURE=1 inverts the suite exit code. Inversion is only
+# meaningful when at least one real test ran -- an all-skipped run would
+# otherwise turn into a self-test FAIL on a healthy scanner-less backend.
+# See test-scan-findings-list.sh for the same wrapper.
 # ---------------------------------------------------------------------------
 
 if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  if ( end_suite ); then
+  end_suite_rc=0
+  ( end_suite ) || end_suite_rc=$?
+
+  if [ "$_PASS_COUNT" -eq 0 ] && [ "$_FAIL_COUNT" -eq 0 ]; then
     echo ""
-    echo "EXPECT_FAILURE=1 but suite passed -- inverting to FAIL"
+    echo "EXPECT_FAILURE=1 but suite produced no PASS or FAIL (only ${_SKIP_COUNT} skips)."
+    echo "Inversion has no signal; exiting 1 to flag the broken self-test invocation."
     exit 1
-  else
+  fi
+
+  if [ "$end_suite_rc" -ne 0 ]; then
     echo ""
     echo "EXPECT_FAILURE=1 and suite failed as expected -- inverting to PASS"
     exit 0
+  else
+    echo ""
+    echo "EXPECT_FAILURE=1 but suite passed -- inverting to FAIL"
+    exit 1
   fi
 fi
 

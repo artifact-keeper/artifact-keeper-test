@@ -37,8 +37,13 @@ setup_workdir
 
 REPO_KEY="test-findings-list-${RUN_ID}"
 IMAGE_NAME="findings-target"
-UNIQUE_TAG="1.0.$(date +%s)"
-SCAN_TIMEOUT="${SCAN_TIMEOUT:-90}"
+# RUN_ID gives stronger isolation than wall-clock seconds (two runs in the
+# same second on the same backend would otherwise collide on the manifest tag).
+UNIQUE_TAG="1.0.${RUN_ID}"
+# Default SCAN_TIMEOUT to 60s. run-suite.sh wraps each test in `timeout 120s`
+# (TEST_TIMEOUT), and the OCI push setup eats ~10-20s of that budget; leaving
+# 90s for polling alone risks SIGTERM mid-poll which loses JUnit emission.
+SCAN_TIMEOUT="${SCAN_TIMEOUT:-60}"
 ARTIFACT_ID=""
 SCAN_ID=""
 SCANNER_AVAILABLE=true
@@ -55,7 +60,12 @@ cleanup_repo() {
   curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" \
     "${BASE_URL}/api/v1/repositories/${REPO_KEY}" > /dev/null 2>&1 || true
 }
-trap 'cleanup_repo; [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR" 2>/dev/null || true' EXIT
+# This replaces setup_workdir's EXIT trap (it sets `rm -rf $WORK_DIR`); the
+# combined handler below preserves that. INT / TERM are added so a SIGTERM
+# from `timeout` in run-suite.sh still triggers cleanup. If setup_workdir
+# ever grows additional traps, this needs to become a chained handler in
+# common.sh (tracked: artifact-keeper-test trap-helper follow-up).
+trap 'cleanup_repo; [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR" 2>/dev/null || true' EXIT INT TERM
 
 # ---------------------------------------------------------------------------
 # Build a scannable artifact via the OCI registry path. We use Docker/OCI
@@ -204,12 +214,27 @@ if [ -z "$ARTIFACT_ID" ]; then
   skip "no artifact_id, cannot trigger scan"
 else
   trigger_payload="{\"artifact_id\":\"${ARTIFACT_ID}\"}"
-  trigger_resp=$(api_post "/api/v1/security/scan" "$trigger_payload" 2>/dev/null) || true
-  if [ -z "$trigger_resp" ]; then
+  # Capture HTTP status separately so we can distinguish "scanner not
+  # configured" (skip) from "scanner crashed / endpoint moved" (fail). The
+  # api_post wrapper uses curl -sf, which collapses both to an empty body
+  # and would silently skip every downstream lifecycle assertion -- the
+  # exact #888 silent-success class this PR claims to guard against.
+  trigger_status=$(curl -s -o "$WORK_DIR/trigger-resp.json" -w '%{http_code}' \
+    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d "$trigger_payload" \
+    "${BASE_URL}/api/v1/security/scan") || trigger_status=000
+  if [ "$trigger_status" = "501" ] || [ "$trigger_status" = "503" ]; then
     SCANNER_AVAILABLE=false
-    skip "scanner service not configured (POST /security/scan returned error)"
+    skip "scanner service not configured (HTTP ${trigger_status})"
+  elif [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
+    fail "POST /security/scan returned HTTP ${trigger_status} (body: $(head -c 200 "$WORK_DIR/trigger-resp.json"))"
   else
-    # Poll the scans list filtered by artifact_id until status != pending/queued/in_progress.
+    # Poll the scans list filtered by artifact_id. Backend writes status as
+    # 'running' (in-flight) -> 'completed' or 'failed' (terminal); see
+    # backend/src/services/scan_result_service.rs. We allowlist terminal
+    # states rather than denylisting in-flight ones so that a new in-flight
+    # variant (e.g. 'running' itself, which the original code missed) does
+    # not exit the loop early and silently skip downstream assertions.
     elapsed=0
     final_status=""
     while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
@@ -218,13 +243,11 @@ else
         # Pick the most recent scan (handler returns ordered by created_at DESC).
         SCAN_ID=$(echo "$scans_resp" | jq -r '.items[0].id // empty')
         final_status=$(echo "$scans_resp" | jq -r '.items[0].status // empty')
-        if [ -n "$SCAN_ID" ] && [ -n "$final_status" ] \
-           && [ "$final_status" != "pending" ] \
-           && [ "$final_status" != "queued" ] \
-           && [ "$final_status" != "scanning" ] \
-           && [ "$final_status" != "in_progress" ]; then
-          break
-        fi
+        case "$final_status" in
+          completed|failed|error|cancelled)
+            break
+            ;;
+        esac
       fi
       sleep 5
       elapsed=$((elapsed + 5))
@@ -232,12 +255,16 @@ else
     if [ -z "$SCAN_ID" ]; then
       SCANNER_AVAILABLE=false
       skip "no scan record produced for artifact within ${SCAN_TIMEOUT}s"
-    elif [ "$final_status" = "pending" ] || [ "$final_status" = "queued" ] \
-         || [ "$final_status" = "scanning" ] || [ "$final_status" = "in_progress" ]; then
-      SCANNER_AVAILABLE=false
-      skip "scan did not complete within ${SCAN_TIMEOUT}s (status=${final_status})"
     else
-      pass
+      case "$final_status" in
+        completed|failed|error|cancelled)
+          pass
+          ;;
+        *)
+          SCANNER_AVAILABLE=false
+          skip "scan did not reach a terminal state within ${SCAN_TIMEOUT}s (status=${final_status:-unknown})"
+          ;;
+      esac
     fi
   fi
 fi
@@ -430,18 +457,34 @@ fi
 # ---------------------------------------------------------------------------
 # Wrap up. EXPECT_FAILURE=1 inverts the suite exit code so CI smoke jobs can
 # point this test at a known-broken backend and verify the test catches it.
+#
+# Important: inversion is only meaningful when at least one real test ran.
+# An all-skipped run (e.g. backend has no scanner configured) yields
+# FAIL_COUNT=0 and end_suite exits 0; blindly inverting that to FAIL would
+# punish a healthy backend that legitimately skipped. We refuse to invert
+# in that case and exit 1 distinctly so the smoke job can tell the test
+# self-test was misconfigured.
 # ---------------------------------------------------------------------------
 
 if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  # Run end_suite in a subshell so it doesn't terminate us; capture its exit.
-  if ( end_suite ); then
+  end_suite_rc=0
+  ( end_suite ) || end_suite_rc=$?
+
+  if [ "$_PASS_COUNT" -eq 0 ] && [ "$_FAIL_COUNT" -eq 0 ]; then
     echo ""
-    echo "EXPECT_FAILURE=1 but suite passed -- inverting to FAIL"
+    echo "EXPECT_FAILURE=1 but suite produced no PASS or FAIL (only ${_SKIP_COUNT} skips)."
+    echo "Inversion has no signal; exiting 1 to flag the broken self-test invocation."
     exit 1
-  else
+  fi
+
+  if [ "$end_suite_rc" -ne 0 ]; then
     echo ""
     echo "EXPECT_FAILURE=1 and suite failed as expected -- inverting to PASS"
     exit 0
+  else
+    echo ""
+    echo "EXPECT_FAILURE=1 but suite passed -- inverting to FAIL"
+    exit 1
   fi
 fi
 
