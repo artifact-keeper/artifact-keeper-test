@@ -115,11 +115,16 @@ get_backend_version() {
 # Add entries here in the same PR that ships the feature.
 _feature_min_version() {
   case "$1" in
-    "conan_remote_search_forward")  echo "1.3.0" ;;
+    "conan_remote_search_forward")    echo "1.3.0" ;;
     "conan_virtual_search_aggregate") echo "1.3.0" ;;
-    "maven_virtual_snapshot")       echo "1.2.0" ;;
-    "guest_access_toggle")          echo "1.2.0" ;;
-    "opensearch_indexing")          echo "1.2.0" ;;
+    "maven_virtual_snapshot")         echo "1.2.0" ;;
+    "guest_access_toggle")            echo "1.2.0" ;;
+    "opensearch_indexing")            echo "1.2.0" ;;
+    # proxy_stampede_protection: ProxyService gains a per-(repo,path) semaphore
+    # capping concurrent upstream fetches at proxy_max_concurrent_fetches and
+    # emitting 503 when proxy_queue_timeout_secs fires. Tracked by backend
+    # work to land in v1.2.0 (companion to discussion #872 customer pain).
+    "proxy_stampede_protection")      echo "1.2.0" ;;
     *) return 1 ;;
   esac
 }
@@ -589,6 +594,19 @@ end_suite() {
 ${_JUNIT_CASES}</testsuite>
 EOF
 
+  # EXPECT_FAILURE self-test mode: inverts the exit code so an author can
+  # point the suite at a known-broken backend (e.g. semaphore disabled) and
+  # confirm the load-bearing assertion actually catches it. See the
+  # "EXPECT_FAILURE self-test mode" block above for full semantics.
+  if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
+    if [ "$_FAIL_COUNT" -gt 0 ]; then
+      echo "EXPECT_FAILURE=1: at least one test failed as expected; exiting 0"
+      exit 0
+    fi
+    echo "EXPECT_FAILURE=1: every test passed but a failure was expected; exiting 1"
+    exit 1
+  fi
+
   if [ "$_FAIL_COUNT" -gt 0 ]; then
     exit 1
   fi
@@ -704,6 +722,42 @@ require_cmd() {
 }
 
 # ---------------------------------------------------------------------------
+# Composable EXIT trap (LIFO)
+# ---------------------------------------------------------------------------
+#
+# Bash only supports one EXIT trap per shell, so multiple `trap '...' EXIT`
+# calls clobber each other. Tests that boot fixtures (mock upstreams, sidecar
+# processes) need to chain cleanups onto whatever setup_workdir already
+# registered.
+#
+# Usage:
+#   add_exit_handler 'stop_mock_upstream'
+#   add_exit_handler 'rm -rf "$STATE_DIR"'
+# Handlers run in LIFO order (last-added first), each in a subshell-safe form
+# so a failing handler does not block subsequent cleanups.
+
+_EXIT_HANDLERS=()
+_EXIT_HANDLERS_INSTALLED=0
+
+_run_exit_handlers() {
+  local rc=$?
+  local i
+  for (( i=${#_EXIT_HANDLERS[@]}-1; i>=0; i-- )); do
+    eval "${_EXIT_HANDLERS[$i]}" || true
+  done
+  return $rc
+}
+
+add_exit_handler() {
+  local cmd="$1"
+  _EXIT_HANDLERS+=("$cmd")
+  if [ "$_EXIT_HANDLERS_INSTALLED" -eq 0 ]; then
+    trap _run_exit_handlers EXIT
+    _EXIT_HANDLERS_INSTALLED=1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Temp directory with automatic cleanup
 # ---------------------------------------------------------------------------
 
@@ -711,9 +765,203 @@ WORK_DIR=""
 
 setup_workdir() {
   WORK_DIR="$(mktemp -d)"
-  # shellcheck disable=SC2064
-  trap "rm -rf \"$WORK_DIR\"" EXIT
+  add_exit_handler "rm -rf \"$WORK_DIR\""
 }
+
+# ---------------------------------------------------------------------------
+# Mock HTTP upstream fixture
+# ---------------------------------------------------------------------------
+#
+# Boots tests/lib/mock-upstream.py as a controllable HTTP upstream the backend
+# can dial. Used by proxy/cache tests (cache-poisoning, cache-stampede, ETag,
+# stale-on-error, etc.) to seed bytes, swap content mid-flight, and read
+# per-request counters.
+#
+# Globals set on success:
+#   MOCK_PID            background server PID
+#   MOCK_PORT           bound port (random by default; honors MOCK_PORT env)
+#   MOCK_STATE_DIR      state directory the mock reads from / writes to
+#   MOCK_BASE_URL       URL the *backend pod* should use (uses MOCK_UPSTREAM_HOSTNAME)
+#   MOCK_LOCAL_URL      URL the test runner should use (127.0.0.1)
+#
+# Auto-cleanup is registered via add_exit_handler so callers don't have to
+# manage trap stacks. Honors skip_teardown (env: SKIP_TEARDOWN=1) for debugging.
+#
+# Usage:
+#   setup_workdir
+#   start_mock_upstream "${WORK_DIR}/mock-state" || skip_suite "mock did not boot"
+#   echo "payload" > "${MOCK_STATE_DIR}/files/pkg/v1/payload.bin"
+
+# shellcheck disable=SC2034 # consumed by tests that source this file
+MOCK_PID=""
+# shellcheck disable=SC2034
+MOCK_PORT=""
+# shellcheck disable=SC2034
+MOCK_STATE_DIR=""
+# shellcheck disable=SC2034
+MOCK_BASE_URL=""
+# shellcheck disable=SC2034
+MOCK_LOCAL_URL=""
+
+# Pick an unused TCP port. Honors MOCK_PORT env (CI can pin); otherwise asks
+# the kernel for a free port via getsockname(). Avoids the 18080 collision
+# class when multiple suites run on the same runner pod.
+_pick_mock_port() {
+  if [ -n "${MOCK_PORT_OVERRIDE:-}" ]; then
+    echo "$MOCK_PORT_OVERRIDE"
+    return 0
+  fi
+  python3 -c '
+import socket
+s = socket.socket()
+s.bind(("0.0.0.0", 0))
+print(s.getsockname()[1])
+s.close()
+'
+}
+
+# start_mock_upstream STATE_DIR
+# Boots the mock, waits up to 10s for /__readyz, registers an EXIT handler.
+# Returns 0 on success; non-zero (and prints diagnostics) on failure.
+start_mock_upstream() {
+  local state_dir="$1"
+  MOCK_STATE_DIR="$state_dir"
+  mkdir -p "${MOCK_STATE_DIR}/files"
+  MOCK_PORT="$(_pick_mock_port)"
+
+  local mock_script
+  mock_script="$(dirname "${BASH_SOURCE[0]}")/mock-upstream.py"
+  if [ ! -f "$mock_script" ]; then
+    echo "start_mock_upstream: mock-upstream.py not found at $mock_script" >&2
+    return 1
+  fi
+
+  MOCK_STATE_DIR="$MOCK_STATE_DIR" MOCK_PORT="$MOCK_PORT" \
+    python3 "$mock_script" \
+    > "${WORK_DIR:-/tmp}/mock.out" 2> "${WORK_DIR:-/tmp}/mock.err" &
+  MOCK_PID=$!
+  # Disown so a bare `wait` in the caller (e.g. fan-out concurrency loops)
+  # does not block on the long-lived mock process. Cleanup is still handled
+  # via add_exit_handler -> stop_mock_upstream.
+  disown "$MOCK_PID" 2>/dev/null || true
+
+  MOCK_LOCAL_URL="http://127.0.0.1:${MOCK_PORT}"
+  if [ -n "${MOCK_UPSTREAM_HOSTNAME:-}" ]; then
+    MOCK_BASE_URL="http://${MOCK_UPSTREAM_HOSTNAME}:${MOCK_PORT}"
+  else
+    # shellcheck disable=SC2034 # consumed by sourcing test scripts
+    MOCK_BASE_URL="$MOCK_LOCAL_URL"
+  fi
+
+  add_exit_handler "stop_mock_upstream"
+
+  # Readiness probe: __readyz bypasses logging/counters/delay so the wait
+  # itself doesn't pollute mock state.
+  local code
+  for _ in $(seq 1 20); do
+    if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+      echo "start_mock_upstream: mock died during boot" >&2
+      [ -f "${WORK_DIR:-/tmp}/mock.err" ] && cat "${WORK_DIR:-/tmp}/mock.err" >&2 || true
+      return 1
+    fi
+    code=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "${MOCK_LOCAL_URL}/__readyz" 2>/dev/null) || code="000"
+    if [ "$code" = "200" ]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "start_mock_upstream: not ready on ${MOCK_LOCAL_URL} after 10s" >&2
+  return 1
+}
+
+stop_mock_upstream() {
+  if [ -n "${MOCK_PID:-}" ] && kill -0 "$MOCK_PID" 2>/dev/null; then
+    kill "$MOCK_PID" 2>/dev/null || true
+    # SIGTERM, then escalate after 2s if the handler is mid-sleep (stampede
+    # tests can have requests blocked in time.sleep at shutdown).
+    local i
+    for i in 1 2 3 4; do
+      kill -0 "$MOCK_PID" 2>/dev/null || break
+      sleep 0.5
+    done
+    if kill -0 "$MOCK_PID" 2>/dev/null; then
+      kill -9 "$MOCK_PID" 2>/dev/null || true
+    fi
+    wait "$MOCK_PID" 2>/dev/null || true
+  fi
+  MOCK_PID=""
+}
+
+# wait_for_file_value FILE EXPECTED_REGEX TIMEOUT_SECS
+# Polls FILE every 0.2s until its content matches EXPECTED_REGEX or the
+# timeout fires. Replaces ad-hoc `sleep N` waits for fixture state changes.
+# Returns 0 on match, 1 on timeout.
+wait_for_file_value() {
+  local file="$1"
+  local pattern="$2"
+  local timeout="${3:-5}"
+  local elapsed=0
+  local step=0.2
+  local steps
+  steps=$(awk -v t="$timeout" -v s="$step" 'BEGIN{print int(t/s)}')
+  for _ in $(seq 1 "$steps"); do
+    if [ -f "$file" ] && grep -qE "$pattern" "$file" 2>/dev/null; then
+      return 0
+    fi
+    sleep "$step"
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+# wait_for_counter_stable FILE TIMEOUT_SECS [STABLE_WINDOW_SECS]
+# Polls a numeric counter file (e.g. mock peak-inflight) until its value has
+# not changed for STABLE_WINDOW_SECS (default 0.6s) or TIMEOUT_SECS fires.
+# Use this in place of `sleep 1` when reading mock-upstream peak counters.
+# Echoes the final value on stdout. Returns 0 if stable; 1 on timeout.
+wait_for_counter_stable() {
+  local file="$1"
+  local timeout="${2:-5}"
+  local stable_window="${3:-0.6}"
+  local last="" cur=""
+  local stable_for=0
+  local elapsed=0
+  local steps
+  steps=$(awk -v t="$timeout" 'BEGIN{print int(t/0.2)}')
+  local stable_steps
+  stable_steps=$(awk -v t="$stable_window" 'BEGIN{print int(t/0.2)}')
+  for _ in $(seq 1 "$steps"); do
+    cur=$(cat "$file" 2>/dev/null || echo "")
+    if [ -n "$cur" ] && [ "$cur" = "$last" ]; then
+      stable_for=$((stable_for + 1))
+      if [ "$stable_for" -ge "$stable_steps" ]; then
+        echo "$cur"
+        return 0
+      fi
+    else
+      stable_for=0
+      last="$cur"
+    fi
+    sleep 0.2
+    elapsed=$((elapsed + 1))
+  done
+  echo "$last"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# EXPECT_FAILURE self-test mode
+# ---------------------------------------------------------------------------
+#
+# When EXPECT_FAILURE=1 is set, the *suite-level* exit code is inverted at
+# end_suite: a passing suite returns non-zero and a failing suite returns 0.
+# Use this to verify that a load-bearing assertion actually catches a known
+# breakage (e.g. point the test at a backend image with the semaphore
+# disabled and confirm EXIT=0 with the inversion). Without this, "the test
+# passed" is indistinguishable from "the test could never fail".
+#
+# This only inverts the exit code; it does NOT silence per-test failure
+# output, so logs still tell you which assertion fired.
 
 # ---------------------------------------------------------------------------
 # Internal helpers
