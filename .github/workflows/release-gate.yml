@@ -316,11 +316,23 @@ jobs:
 
   # -------------------------------------------------------------------
   # Security tests
+  #
+  # cache-poisoning + cache-stampede boot a Python mock upstream on the
+  # runner pod and need the backend to dial the runner pod by hostname.
+  # We compute the runner's pod IP at runtime and translate it to the
+  # cluster-DNS pod-DNS form (10-1-2-3.<ns>.pod.cluster.local) which the
+  # backend pod can resolve via ClusterFirst.
+  #
+  # PROXY_MAX_CONCURRENT_FETCHES / PROXY_QUEUE_TIMEOUT_SECS pin the
+  # values the test asserts against so chart-default drift doesn't
+  # silently make the assertion measure the wrong limit. They MUST match
+  # the values the deployed backend was configured with.
   # -------------------------------------------------------------------
   security-tests:
     needs: deploy
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security'
     runs-on: ak-e2e-runners
+    timeout-minutes: 15
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
@@ -330,10 +342,47 @@ jobs:
       # A silently-skipped test in release-gate context is exactly the
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
+      # Stampede / poisoning test knobs. Must match the values the chart
+      # rendered for the backend Deployment (see helm values-test.yaml).
+      PROXY_MAX_CONCURRENT_FETCHES: '20'
+      PROXY_QUEUE_TIMEOUT_SECS: '5'
+      STAMPEDE_UPSTREAM_DELAY_MS: '2000'
     steps:
       - uses: actions/checkout@v4
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Resolve runner pod address for backend dial-back
+        id: mock-host
+        run: |
+          # The runner is a Pod inside the cluster; its pod IP is reachable
+          # from the backend Pod over the cluster network. We pass the bare
+          # IP as MOCK_UPSTREAM_HOSTNAME so the backend's upstream-URL
+          # resolver does not need cluster DNS to be configured for the
+          # `<ip-dashed>.<ns>.pod.cluster.local` form (which depends on
+          # CoreDNS `pods` plugin mode).
+          #
+          # ARC runners with `spec.template.spec.containers[].env.POD_IP`
+          # via the downward API populate $POD_IP. We fall back to
+          # `hostname -i` if the env var is missing.
+          POD_IP="${POD_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
+          if [ -z "$POD_IP" ]; then
+            echo "ERROR: could not determine runner pod IP for mock dial-back" >&2
+            exit 1
+          fi
+          # Sanity: must look like an IPv4. Reject 127.* (loopback would
+          # only be reachable from inside the runner pod itself, not from
+          # the backend pod across the cluster network).
+          if ! echo "$POD_IP" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: POD_IP '${POD_IP}' is not an IPv4 address" >&2
+            exit 1
+          fi
+          if echo "$POD_IP" | grep -Eq '^127\.'; then
+            echo "ERROR: POD_IP '${POD_IP}' is loopback; backend pod cannot reach this" >&2
+            exit 1
+          fi
+          echo "Runner pod IP: ${POD_IP}"
+          echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
 
       - name: Run security tests
         run: |

@@ -8,23 +8,22 @@
 # Customer pain #1 (https://github.com/orgs/artifact-keeper/discussions/872):
 # the prior version of this suite skipped the load-bearing assertion with
 # "requires controllable mock HTTP upstream". This version stands up a real
-# mock upstream (tests/lib/mock-upstream.py), seeds known bytes, primes the
-# cache, swaps the upstream content for a different payload, and asserts that
-# the proxy serves the originally-cached bytes (or 502/503), never the
-# tampered payload.
+# mock upstream (tests/lib/mock-upstream.py via start_mock_upstream), seeds
+# known bytes, primes the cache, swaps the upstream content for a different
+# payload, and asserts that the proxy serves the originally-cached bytes
+# (or 502/503), never the tampered payload.
 #
 # Hard constraint (issue artifact-keeper-test#67): this test must FAIL when
 # the backend is broken. Run with EXPECT_FAILURE=1 against a known-broken
-# build to validate the assertion is load-bearing.
+# build to validate the assertion is load-bearing (see common.sh).
 
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "cache-poisoning"
 
-# Pre-flight: the mock upstream needs python3, and the backend has to be able
-# to dial the mock from the cluster. We pass MOCK_UPSTREAM_HOSTNAME from CI;
-# in local-dev runs we skip with a clear reason rather than silently passing.
-# RELEASE_GATE=1 turns the skip into a hard fail (silent-success class).
+# Pre-flight: the mock upstream needs python3 and the backend has to be able
+# to dial the mock from the cluster (MOCK_UPSTREAM_HOSTNAME, set by CI).
+# RELEASE_GATE=1 turns these skips into hard fails (silent-success class).
 if ! command -v python3 >/dev/null 2>&1; then
   skip_suite "python3 not available; cache-poisoning needs the mock upstream fixture"
 fi
@@ -36,52 +35,26 @@ fi
 auth_admin
 setup_workdir
 
-MOCK_PORT="${MOCK_UPSTREAM_PORT:-18080}"
-MOCK_STATE_DIR="${WORK_DIR}/mock-upstream"
-MOCK_BASE_URL="http://${MOCK_UPSTREAM_HOSTNAME}:${MOCK_PORT}"
 REMOTE_KEY="sec-cache-poison-${RUN_ID}"
 LOCAL_KEY="sec-cache-ref-${RUN_ID}"
 ARTIFACT_PATH="pkg/v1/payload.bin"
+ETAG_PATH="pkg/v1/etagged.bin"
+CL_PATH="pkg/v1/clmismatch.bin"
 
 # ---------------------------------------------------------------------------
 # Boot the mock upstream
 # ---------------------------------------------------------------------------
 
-mkdir -p "${MOCK_STATE_DIR}/files/$(dirname "$ARTIFACT_PATH")"
-GOOD_CONTENT="known-good-content-${RUN_ID}"
-TAMPERED_CONTENT="tampered-by-attacker-${RUN_ID}"
-printf '%s\n' "$GOOD_CONTENT" > "${MOCK_STATE_DIR}/files/${ARTIFACT_PATH}"
-GOOD_SHA256=$(shasum -a 256 "${MOCK_STATE_DIR}/files/${ARTIFACT_PATH}" | awk '{print $1}')
-
-MOCK_PID=""
-start_mock() {
-  MOCK_STATE_DIR="$MOCK_STATE_DIR" MOCK_PORT="$MOCK_PORT" \
-    python3 "$(dirname "$0")/../lib/mock-upstream.py" \
-    > "${WORK_DIR}/mock.out" 2> "${WORK_DIR}/mock.err" &
-  MOCK_PID=$!
-  # Wait until the mock answers locally before announcing it to the backend.
-  for _ in $(seq 1 20); do
-    if curl -sf --max-time 2 "http://127.0.0.1:${MOCK_PORT}/${ARTIFACT_PATH}" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  return 1
-}
-
-stop_mock() {
-  if [ -n "$MOCK_PID" ] && kill -0 "$MOCK_PID" 2>/dev/null; then
-    kill "$MOCK_PID" 2>/dev/null || true
-    wait "$MOCK_PID" 2>/dev/null || true
-  fi
-}
-trap 'stop_mock; rm -rf "$WORK_DIR"' EXIT
-
 begin_test "Mock upstream starts and serves seeded content"
-if start_mock; then
+if start_mock_upstream "${WORK_DIR}/mock-state"; then
+  GOOD_CONTENT="known-good-content-${RUN_ID}"
+  TAMPERED_CONTENT="tampered-by-attacker-${RUN_ID}"
+  mkdir -p "${MOCK_STATE_DIR}/files/$(dirname "$ARTIFACT_PATH")"
+  printf '%s\n' "$GOOD_CONTENT" > "${MOCK_STATE_DIR}/files/${ARTIFACT_PATH}"
+  GOOD_SHA256=$(shasum -a 256 "${MOCK_STATE_DIR}/files/${ARTIFACT_PATH}" | awk '{print $1}')
   pass
 else
-  fail "mock upstream did not become reachable on 127.0.0.1:${MOCK_PORT} within 10s"
+  fail "mock upstream did not boot"
   end_suite
 fi
 
@@ -154,7 +127,7 @@ fi
 # saw between prime and shutdown.
 # ---------------------------------------------------------------------------
 
-stop_mock
+stop_mock_upstream
 
 begin_test "Proxy serves cached good bytes (or 5xx) when upstream is unreachable"
 offline_status=$(curl -s -o "${WORK_DIR}/offline.bin" -w '%{http_code}' $CURL_TIMEOUT \
@@ -174,6 +147,91 @@ elif [ "$offline_status" = "502" ] || [ "$offline_status" = "503" ] || [ "$offli
   pass
 else
   fail "offline fetch returned HTTP ${offline_status} sha=${offline_sha:-<empty>} (neither cached-good nor 5xx)"
+fi
+
+# ---------------------------------------------------------------------------
+# Bring the mock back up for the remaining content-integrity probes.
+# ---------------------------------------------------------------------------
+
+begin_test "Mock upstream restarts (continues with content-integrity probes)"
+if start_mock_upstream "${WORK_DIR}/mock-state-2"; then
+  pass
+else
+  fail "mock upstream did not restart"
+  end_suite
+fi
+
+# ---------------------------------------------------------------------------
+# Coverage: upstream lies about Content-Length. A fetch that returns fewer
+# bytes than advertised must NOT be silently cached as if it were complete.
+# Acceptable: 200 (curl handles short read) followed by an integrity reject;
+# OR 502/503 from the proxy; OR a successful fetch with the actual bytes.
+# Forbidden: cache a partial as if complete and serve it as the full artifact.
+# ---------------------------------------------------------------------------
+
+begin_test "Upstream Content-Length mismatch is not silently cached as complete"
+mkdir -p "${MOCK_STATE_DIR}/files/$(dirname "$CL_PATH")"
+CL_BODY="full-body-content-${RUN_ID}"
+printf '%s\n' "$CL_BODY" > "${MOCK_STATE_DIR}/files/${CL_PATH}"
+# Lie: claim the body is twice as long. Real curl will detect short read and
+# either error or truncate; the question is whether the backend caches the
+# (potentially short) bytes as if they were the canonical artifact.
+real_len=$(wc -c < "${MOCK_STATE_DIR}/files/${CL_PATH}" | tr -d ' ')
+echo "Content-Length: $((real_len * 2))" > "${MOCK_STATE_DIR}/files/${CL_PATH}.headers"
+
+cl_status=$(curl -s -o "${WORK_DIR}/cl.bin" -w '%{http_code}' $CURL_TIMEOUT \
+  -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/${CL_PATH}") || true
+
+# Now repair the upstream and re-fetch. If the proxy cached the lying response
+# as if complete, the second fetch returns the (broken) cached copy. If it
+# refused to cache, the second fetch sees the corrected upstream.
+rm -f "${MOCK_STATE_DIR}/files/${CL_PATH}.headers"
+followup_status=$(curl -s -o "${WORK_DIR}/cl-followup.bin" -w '%{http_code}' $CURL_TIMEOUT \
+  -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/${CL_PATH}") || true
+
+if assert_http_2xx "$followup_status" "follow-up fetch should succeed once upstream is honest"; then
+  followup_sha=$(shasum -a 256 "${WORK_DIR}/cl-followup.bin" | awk '{print $1}')
+  expected_sha=$(shasum -a 256 "${MOCK_STATE_DIR}/files/${CL_PATH}" | awk '{print $1}')
+  if [ "$followup_sha" = "$expected_sha" ]; then
+    pass
+  else
+    fail "after Content-Length-lie-then-repair, proxy served sha=${followup_sha} but upstream now serves sha=${expected_sha}: a partial response was cached as canonical"
+  fi
+fi
+echo "  (initial mismatch fetch: HTTP ${cl_status})"
+
+# ---------------------------------------------------------------------------
+# Coverage: upstream sends a forged X-Checksum-Sha256 header that does not
+# match the body. If the backend trusts the header without recomputing, an
+# attacker who controls the upstream can poison the cache with a deceptive
+# checksum. The proxy should either ignore the header (recompute locally) or
+# reject the fetch.
+# ---------------------------------------------------------------------------
+
+begin_test "Forged upstream X-Checksum-Sha256 does not override on-disk hash"
+mkdir -p "${MOCK_STATE_DIR}/files/$(dirname "$ETAG_PATH")"
+HONEST_BODY="honest-payload-${RUN_ID}"
+printf '%s\n' "$HONEST_BODY" > "${MOCK_STATE_DIR}/files/${ETAG_PATH}"
+HONEST_SHA=$(shasum -a 256 "${MOCK_STATE_DIR}/files/${ETAG_PATH}" | awk '{print $1}')
+# Plant a wrong sha256 in the headers file.
+cat > "${MOCK_STATE_DIR}/files/${ETAG_PATH}.headers" <<EOF
+X-Checksum-Sha256: 0000000000000000000000000000000000000000000000000000000000000000
+ETag: "fake-etag"
+EOF
+
+forged_status=$(curl -s -o "${WORK_DIR}/forged.bin" -w '%{http_code}' $CURL_TIMEOUT \
+  -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/${ETAG_PATH}") || true
+
+if assert_http_2xx "$forged_status" "fetch should succeed; integrity must be enforced from bytes, not header"; then
+  forged_sha=$(shasum -a 256 "${WORK_DIR}/forged.bin" | awk '{print $1}')
+  if [ "$forged_sha" = "$HONEST_SHA" ]; then
+    pass
+  else
+    fail "served bytes (sha=${forged_sha}) do not match upstream body (sha=${HONEST_SHA}); proxy may have honored forged X-Checksum-Sha256 header"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -201,17 +259,13 @@ cross_status=$(curl -s -o "${WORK_DIR}/cross.bin" -w '%{http_code}' $CURL_TIMEOU
   -H "$(auth_header)" \
   "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/${ARTIFACT_PATH}") || true
 
-# Whatever bytes (if any) the remote serves must NOT be the local repo's
-# content. Either 5xx/404 (mock is down, no cache hit) or the previously-
-# cached good bytes from the mock are acceptable.
+# Cross-repo isolation invariant: a remote repo can only serve paths the
+# upstream actually had. Probe a path the local repo could conceivably leak
+# via a global cache table but the mock has never seen. A 2xx here proves a
+# cross-repo or unauthenticated cache leak.
 if [ -s "${WORK_DIR}/cross.bin" ] && [ "$cross_status" -ge 200 ] 2>/dev/null && [ "$cross_status" -lt 300 ] 2>/dev/null; then
   cross_sha=$(shasum -a 256 "${WORK_DIR}/cross.bin" | awk '{print $1}')
   ref_sha=$(shasum -a 256 "${WORK_DIR}/reference.bin" | awk '{print $1}')
-  # If the cached upstream content happened to be byte-equal to the local
-  # reference (we deliberately chose the same string for both -- the test
-  # is about isolation, not byte-distinguishability), distinguishing
-  # repos requires a different probe. Use a path that the local repo has
-  # but the mock NEVER served.
   status_only_local=$(curl -s -o "${WORK_DIR}/cross-only.bin" -w '%{http_code}' $CURL_TIMEOUT \
     -H "$(auth_header)" \
     "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/never-fetched-from-mock-${RUN_ID}.bin") || true

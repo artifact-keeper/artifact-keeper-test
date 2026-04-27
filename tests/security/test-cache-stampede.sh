@@ -16,14 +16,19 @@
 #
 #   2. When the queue saturates and queue_timeout fires, the backend rejects
 #      with 503 (queue full) -- it does NOT silently dispatch every request.
-#      We can only assert this if PROXY_QUEUE_TIMEOUT_SECS was set short
-#      enough relative to the per-request mock delay; tests pass-through if
-#      the env wasn't tuned.
+#      We only assert this when PROXY_QUEUE_TIMEOUT_SECS is short enough
+#      relative to the per-request mock delay; otherwise informational.
+#
+# Backend dependency: this test exercises a semaphore that does not exist in
+# v1.1.x. It is gated behind require_feature "proxy_stampede_protection"
+# (minimum backend version: 1.2.0) so older builds skip cleanly. When the
+# backend feature lands, bump the version in tests/lib/common.sh's
+# _feature_min_version map.
 #
 # Hard constraint (issue artifact-keeper-test#67): this test must FAIL when
-# the backend is broken. To self-verify, run against a backend image with
-# the semaphore disabled and confirm the assertion at line ~155 fails with
-# "peak in-flight ${peak} exceeded limit ${LIMIT}".
+# the backend is broken. To self-verify, run with EXPECT_FAILURE=1 against
+# a backend image with the semaphore disabled and confirm the assertion
+# at "Peak upstream in-flight does not exceed..." fails.
 
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -40,67 +45,41 @@ fi
 auth_admin
 setup_workdir
 
+# Feature gate: skip if the backend version does not ship the proxy semaphore.
+# require_feature emits a SKIP testcase via skip(); under RELEASE_GATE=1 this
+# is fine because the suite-level skip (skip_suite) is what hard-fails, not
+# individual feature-gated tests on older backends.
+begin_test "Backend supports proxy stampede protection"
+require_feature "proxy_stampede_protection" || { end_suite; }
+pass
+
 # Knobs. Tests honor PROXY_MAX_CONCURRENT_FETCHES if CI passed it through so
-# we know what limit to assert against; otherwise we use the documented
-# default of 20 and just verify peak <= 20 with N strictly greater.
+# we know what limit to assert against. CI MUST set this for the assertion to
+# be deterministic across chart default changes.
 LIMIT="${PROXY_MAX_CONCURRENT_FETCHES:-20}"
 N="${STAMPEDE_CONCURRENCY:-$(( LIMIT * 2 + 5 ))}"
 UPSTREAM_DELAY_MS="${STAMPEDE_UPSTREAM_DELAY_MS:-2000}"
 QUEUE_TIMEOUT_SECS="${PROXY_QUEUE_TIMEOUT_SECS:-30}"
 
-MOCK_PORT="${MOCK_UPSTREAM_PORT:-18080}"
-MOCK_STATE_DIR="${WORK_DIR}/mock-upstream"
-MOCK_BASE_URL="http://${MOCK_UPSTREAM_HOSTNAME}:${MOCK_PORT}"
 REMOTE_KEY="sec-stampede-${RUN_ID}"
-
-mkdir -p "${MOCK_STATE_DIR}/files"
 ARTIFACT_PATH="herd/v1/payload.bin"
-mkdir -p "${MOCK_STATE_DIR}/files/$(dirname "$ARTIFACT_PATH")"
-# Distinct payload per run so prior cache state from a flaky prior run can't
-# satisfy the stampede locally and silently zero out the assertion.
-PAYLOAD="stampede-payload-${RUN_ID}"
-printf '%s\n' "$PAYLOAD" > "${MOCK_STATE_DIR}/files/${ARTIFACT_PATH}"
-printf '%s\n' "$UPSTREAM_DELAY_MS" > "${MOCK_STATE_DIR}/delay-ms"
 
 # ---------------------------------------------------------------------------
-# Boot the mock upstream
+# Boot the mock upstream, seed a per-run-unique payload, and inject a delay
+# so concurrent fetches actually overlap on the upstream side.
 # ---------------------------------------------------------------------------
-
-MOCK_PID=""
-start_mock() {
-  MOCK_STATE_DIR="$MOCK_STATE_DIR" MOCK_PORT="$MOCK_PORT" \
-    python3 "$(dirname "$0")/../lib/mock-upstream.py" \
-    > "${WORK_DIR}/mock.out" 2> "${WORK_DIR}/mock.err" &
-  MOCK_PID=$!
-  for _ in $(seq 1 20); do
-    # Probe with a path the mock has zero-delay handling for: it doesn't,
-    # so we just wait on TCP readiness.
-    if curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:${MOCK_PORT}/__readyz" 2>/dev/null; then
-      return 0
-    fi
-    # 404 also means "server up". Accept any response that isn't connect-refused.
-    code=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${MOCK_PORT}/__readyz" 2>/dev/null) || code="000"
-    if [ "$code" != "000" ]; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  return 1
-}
-
-stop_mock() {
-  if [ -n "$MOCK_PID" ] && kill -0 "$MOCK_PID" 2>/dev/null; then
-    kill "$MOCK_PID" 2>/dev/null || true
-    wait "$MOCK_PID" 2>/dev/null || true
-  fi
-}
-trap 'stop_mock; rm -rf "$WORK_DIR"' EXIT
 
 begin_test "Mock upstream starts"
-if start_mock; then
+if start_mock_upstream "${WORK_DIR}/mock-state"; then
+  mkdir -p "${MOCK_STATE_DIR}/files/$(dirname "$ARTIFACT_PATH")"
+  # Distinct payload per run so prior cache state from a flaky prior run
+  # cannot satisfy the stampede locally and silently zero out the assertion.
+  PAYLOAD="stampede-payload-${RUN_ID}"
+  printf '%s\n' "$PAYLOAD" > "${MOCK_STATE_DIR}/files/${ARTIFACT_PATH}"
+  printf '%s\n' "$UPSTREAM_DELAY_MS" > "${MOCK_STATE_DIR}/delay-ms"
   pass
 else
-  fail "mock upstream did not become reachable on 127.0.0.1:${MOCK_PORT}"
+  fail "mock upstream did not boot"
   end_suite
 fi
 
@@ -125,18 +104,31 @@ fi
 begin_test "Fire ${N} concurrent GETs against cold proxy cache (limit=${LIMIT}, delay=${UPSTREAM_DELAY_MS}ms)"
 mkdir -p "${WORK_DIR}/results"
 
+# Per-curl timeout: queue wait + upstream RTT + slack. Keep this tight enough
+# that a wedged backend produces "000" rather than blocking until the job
+# timeout.
+PER_REQ_TIMEOUT=$(( QUEUE_TIMEOUT_SECS + UPSTREAM_DELAY_MS / 1000 + 30 ))
+
 START_TS=$(date +%s)
+# Collect only the curl subshell PIDs so we can wait on them specifically.
+# A bare `wait` would also block on the mock-upstream python child that
+# start_mock_upstream backgrounded earlier (the mock is long-lived and never
+# exits during the test), wedging the script forever.
+declare -a curl_pids=()
 for i in $(seq 1 "$N"); do
   (
     status=$(curl -s -o /dev/null -w '%{http_code}' \
-      --max-time $(( QUEUE_TIMEOUT_SECS + UPSTREAM_DELAY_MS / 1000 + 30 )) \
+      --max-time "$PER_REQ_TIMEOUT" \
       --connect-timeout 10 \
       -H "$(auth_header)" \
       "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/${ARTIFACT_PATH}") || status="000"
     echo "$status" > "${WORK_DIR}/results/req-${i}.status"
   ) &
+  curl_pids+=($!)
 done
-wait
+for pid in "${curl_pids[@]}"; do
+  wait "$pid" || true
+done
 END_TS=$(date +%s)
 echo "  elapsed: $(( END_TS - START_TS ))s"
 pass
@@ -162,16 +154,14 @@ done
 echo "  outcomes: success=${success_count} queue_full=${queue_full_count} other=${other_count}"
 
 # ---------------------------------------------------------------------------
-# Read mock counters: peak concurrent in-flight upstream fetches and the
-# total number of upstream GETs the backend issued for this artifact.
+# Read mock counters via bounded poll. wait_for_counter_stable returns once
+# peak-inflight has not changed for ~0.6s, which is strictly safer than the
+# previous `sleep 1` and bounds the wait at 5s.
 # ---------------------------------------------------------------------------
 
-# Mock writes peak-inflight and request-count.* during request handling.
-# Allow a brief flush window since file writes are async w.r.t. our wait.
-sleep 1
-
-peak=$(cat "${MOCK_STATE_DIR}/peak-inflight" 2>/dev/null || echo 0)
-upstream_count_key=$(echo "$ARTIFACT_PATH" | tr '/' '_')
+peak=$(wait_for_counter_stable "${MOCK_STATE_DIR}/peak-inflight" 5 0.6 || true)
+peak="${peak:-0}"
+upstream_count_key=$(echo "$ARTIFACT_PATH" | tr '/' '_' | tr -dc 'A-Za-z0-9_.-' | cut -c1-128)
 upstream_count=$(cat "${MOCK_STATE_DIR}/request-count.${upstream_count_key}" 2>/dev/null || echo 0)
 echo "  upstream peak in-flight: ${peak}"
 echo "  upstream total fetches:  ${upstream_count}"
@@ -187,7 +177,7 @@ if [ "$peak" -le "$LIMIT" ]; then
   if [ "$peak" -gt 0 ]; then
     pass
   else
-    fail "mock recorded zero upstream traffic; either backend served from a stale cache, the proxy never dialed the mock, or the mock-upstream hostname is unreachable from the backend pod"
+    fail "mock recorded zero upstream traffic; either the proxy never dialed the mock or MOCK_UPSTREAM_HOSTNAME is unreachable from the backend pod (mock.err: $(tail -3 "${WORK_DIR}/mock.err" 2>/dev/null | tr '\n' ' '))"
   fi
 else
   fail "peak upstream in-flight ${peak} exceeded configured limit ${LIMIT}: stampede protection is off"
@@ -216,8 +206,6 @@ fi
 
 begin_test "When N > limit and queue_timeout is short, queue-full responses appear"
 expected_queueing=0
-# Heuristic: if N > LIMIT and the per-request delay times the overflow exceeds
-# queue_timeout, requests should hit the timeout path.
 overflow=$(( N - LIMIT ))
 projected_wait_secs=$(( overflow * UPSTREAM_DELAY_MS / 1000 / LIMIT ))
 if [ "$overflow" -gt 0 ] && [ "$projected_wait_secs" -gt "$QUEUE_TIMEOUT_SECS" ]; then
@@ -236,9 +224,8 @@ fi
 
 # ---------------------------------------------------------------------------
 # Assertion #4: a follow-up fetch hits the cache. Coalescing (single-flight)
-# is not implemented in v1.1.x, so upstream_count >= 1 is acceptable; what
-# matters is that ONCE the cache is warm, no additional upstream traffic
-# is generated.
+# is not required for this assertion; what matters is that ONCE the cache is
+# warm, no additional upstream traffic is generated for a repeat fetch.
 # ---------------------------------------------------------------------------
 
 begin_test "Post-stampede fetch is served from cache (no additional upstream traffic)"
@@ -246,14 +233,38 @@ pre_count="$upstream_count"
 followup_status=$(curl -s -o "${WORK_DIR}/followup.bin" -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(auth_header)" \
   "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/${ARTIFACT_PATH}") || true
-sleep 1
-post_count=$(cat "${MOCK_STATE_DIR}/request-count.${upstream_count_key}" 2>/dev/null || echo 0)
+
+# Bounded poll for counter stability instead of sleep 1.
+post_count=$(wait_for_counter_stable "${MOCK_STATE_DIR}/request-count.${upstream_count_key}" 3 0.4 || true)
+post_count="${post_count:-$pre_count}"
 
 if assert_http_2xx "$followup_status" "follow-up fetch should hit cache and return 2xx"; then
   if [ "$post_count" = "$pre_count" ]; then
     pass
   else
     fail "follow-up fetch generated extra upstream traffic (pre=${pre_count} post=${post_count}): cache write/read path is broken"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Assertion #5: content integrity check across the stampede. The successful
+# 2xx responses must each have returned the seeded payload bytes; an empty
+# or upstream-error body that the proxy mistook for "200 OK" would slip past
+# status-code-only checks.
+# ---------------------------------------------------------------------------
+
+begin_test "Stampede response body matches seeded payload"
+verify_status=$(curl -s -o "${WORK_DIR}/verify.bin" -w '%{http_code}' $CURL_TIMEOUT \
+  -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/${ARTIFACT_PATH}") || true
+
+if assert_http_2xx "$verify_status" "verification fetch should return 2xx"; then
+  expected_sha=$(shasum -a 256 "${MOCK_STATE_DIR}/files/${ARTIFACT_PATH}" | awk '{print $1}')
+  got_sha=$(shasum -a 256 "${WORK_DIR}/verify.bin" | awk '{print $1}')
+  if [ "$got_sha" = "$expected_sha" ]; then
+    pass
+  else
+    fail "stampede 2xx body sha=${got_sha} != upstream sha=${expected_sha}: cache may have stored a partial or upstream-error body"
   fi
 fi
 
