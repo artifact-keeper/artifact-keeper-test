@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# test-totp-backup-codes.sh - TOTP backup code consumption (Epic 11.10, #76)
+#
+# Verifies:
+#   1. Enabling TOTP returns 10 backup codes
+#   2. Logging in with username/password returns a totp_required + totp_token
+#   3. POST /auth/totp/verify with a backup code (in lieu of the live TOTP)
+#      succeeds the first time
+#   4. The same backup code is rejected on the second use (single-use)
+#   5. After all 10 backup codes are consumed, none of them work
+#
+# Backend reference:
+#   - totp.rs:266-296 backup-code branch in verify_totp; matched code is
+#     replaced with empty string in the stored array, and an empty hash is
+#     skipped (`if !hash.is_empty()`), so each code is single-use
+#
+# Requires: curl, jq, oathtool
+source "$(dirname "$0")/../lib/common.sh"
+
+begin_suite "auth-totp-backup-codes"
+
+if ! command -v oathtool > /dev/null 2>&1; then
+  skip_suite "oathtool not installed; required to compute live TOTP code for /enable"
+fi
+
+auth_admin
+setup_workdir
+
+TOTP_USER="totp-bk-${RUN_ID}"
+TOTP_PASS="TotpBkPass123!"
+TOTP_EMAIL="totp-bk-${RUN_ID}@test.local"
+USER_ID=""
+USER_TOKEN=""
+TOTP_SECRET=""
+BACKUP_CODES_JSON=""
+
+# -------------------------------------------------------------------------
+# Setup user + login
+# -------------------------------------------------------------------------
+
+begin_test "Create test user"
+resp=$(api_post "/api/v1/users" \
+  "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\",\"email\":\"${TOTP_EMAIL}\"}" 2>/dev/null) || true
+USER_ID=$(echo "$resp" | jq -r '.user.id // .id // empty')
+if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
+  pass
+else
+  fail "could not create user: ${resp:0:200}"
+fi
+
+begin_test "Login as test user"
+if [ -z "${USER_ID:-}" ] || [ "$USER_ID" = "null" ]; then
+  skip "no user"
+else
+  login_resp=$(curl -sf $CURL_TIMEOUT -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\"}" \
+    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
+  USER_TOKEN=$(echo "$login_resp" | jq -r '.access_token // .token // empty')
+  if [ -n "$USER_TOKEN" ] && [ "$USER_TOKEN" != "null" ]; then
+    pass
+  else
+    fail "login failed"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# TOTP setup -> get the secret
+# -------------------------------------------------------------------------
+
+begin_test "TOTP setup returns base32 secret"
+if [ -z "${USER_TOKEN:-}" ]; then
+  skip "no user token"
+else
+  resp=$(curl -sf $CURL_TIMEOUT -X POST \
+    -H "Authorization: Bearer ${USER_TOKEN}" \
+    "${BASE_URL}/api/v1/auth/totp/setup" 2>/dev/null) || true
+  TOTP_SECRET=$(echo "$resp" | jq -r '.secret // empty')
+  if [ -n "$TOTP_SECRET" ] && [ "$TOTP_SECRET" != "null" ]; then
+    pass
+  else
+    fail "no secret returned: ${resp:0:200}"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Enable TOTP -> get backup codes
+# -------------------------------------------------------------------------
+
+begin_test "Enable TOTP returns 10 backup codes"
+if [ -z "${TOTP_SECRET:-}" ]; then
+  skip "no TOTP secret"
+else
+  CODE=$(oathtool --totp -b "$TOTP_SECRET" 2>/dev/null) || true
+  if [ -z "$CODE" ]; then
+    fail "oathtool failed to generate TOTP code"
+  else
+    resp=$(curl -sf $CURL_TIMEOUT -X POST \
+      -H "Authorization: Bearer ${USER_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "{\"code\":\"${CODE}\"}" \
+      "${BASE_URL}/api/v1/auth/totp/enable" 2>/dev/null) || true
+    BACKUP_CODES_JSON=$(echo "$resp" | jq -c '.backup_codes // empty')
+    count=$(echo "$BACKUP_CODES_JSON" | jq 'length // 0' 2>/dev/null)
+    if [ "$count" = "10" ]; then
+      pass
+    else
+      fail "expected 10 backup codes, got '${count}': ${resp:0:200}"
+    fi
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Helper: log in again to get a fresh totp_token, then verify with code.
+# Returns 0 if verify succeeds, prints HTTP status either way.
+# -------------------------------------------------------------------------
+
+login_and_verify_with_code() {
+  local backup_code="$1"
+  local login_resp
+  login_resp=$(curl -sf $CURL_TIMEOUT -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\"}" \
+    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
+  local totp_token
+  totp_token=$(echo "$login_resp" | jq -r '.totp_token // empty')
+  if [ -z "$totp_token" ] || [ "$totp_token" = "null" ]; then
+    echo "no_totp_token"
+    return 1
+  fi
+  local status
+  status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"totp_token\":\"${totp_token}\",\"code\":\"${backup_code}\"}" \
+    "${BASE_URL}/api/v1/auth/totp/verify" 2>/dev/null) || true
+  echo "$status"
+  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+# -------------------------------------------------------------------------
+# First use of backup code 0 succeeds
+# -------------------------------------------------------------------------
+
+begin_test "First use of backup code succeeds"
+if [ -z "${BACKUP_CODES_JSON:-}" ]; then
+  skip "no backup codes"
+else
+  FIRST_CODE=$(echo "$BACKUP_CODES_JSON" | jq -r '.[0]')
+  status=$(login_and_verify_with_code "$FIRST_CODE")
+  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+    pass
+  else
+    fail "first backup-code verify returned HTTP ${status} (expected 2xx)"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Second use of the same backup code is rejected
+# -------------------------------------------------------------------------
+
+begin_test "Replay of the same backup code is rejected"
+if [ -z "${BACKUP_CODES_JSON:-}" ]; then
+  skip "no backup codes"
+else
+  status=$(login_and_verify_with_code "$FIRST_CODE")
+  # backup-code mismatch -> AppError::Authentication -> 401
+  if [ "$status" = "401" ]; then
+    pass
+  else
+    fail "expected 401 on backup-code replay, got HTTP ${status}"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Consume the remaining 9 codes; each should work exactly once.
+# -------------------------------------------------------------------------
+
+begin_test "Each remaining backup code is single-use"
+if [ -z "${BACKUP_CODES_JSON:-}" ]; then
+  skip "no backup codes"
+else
+  used_ok=true
+  for i in 1 2 3 4 5 6 7 8 9; do
+    code=$(echo "$BACKUP_CODES_JSON" | jq -r ".[$i]")
+    if [ -z "$code" ] || [ "$code" = "null" ]; then
+      used_ok=false
+      echo "  missing backup code at index ${i}"
+      break
+    fi
+    s=$(login_and_verify_with_code "$code")
+    if ! { [ "$s" -ge 200 ] 2>/dev/null && [ "$s" -lt 300 ] 2>/dev/null; }; then
+      used_ok=false
+      echo "  backup code [${i}] (${code}) failed first use: HTTP ${s}"
+      break
+    fi
+    # Replay should be rejected with 401
+    s2=$(login_and_verify_with_code "$code")
+    if [ "$s2" != "401" ]; then
+      used_ok=false
+      echo "  backup code [${i}] replay returned HTTP ${s2} (expected 401)"
+      break
+    fi
+  done
+  if [ "$used_ok" = "true" ]; then
+    pass
+  else
+    fail "remaining backup codes did not behave as single-use"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# After all 10 are consumed, no original code works
+# -------------------------------------------------------------------------
+
+begin_test "Exhausted backup codes are all rejected"
+if [ -z "${BACKUP_CODES_JSON:-}" ]; then
+  skip "no backup codes"
+else
+  any_accepted=false
+  for i in 0 1 2 3 4 5 6 7 8 9; do
+    code=$(echo "$BACKUP_CODES_JSON" | jq -r ".[$i]")
+    s=$(login_and_verify_with_code "$code")
+    if [ "$s" -ge 200 ] 2>/dev/null && [ "$s" -lt 300 ] 2>/dev/null; then
+      any_accepted=true
+      echo "  backup code [${i}] still accepted after exhaustion (HTTP ${s})"
+      break
+    fi
+  done
+  if [ "$any_accepted" = "false" ]; then
+    pass
+  else
+    fail "at least one backup code was accepted after the pool was exhausted"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Cleanup
+# -------------------------------------------------------------------------
+
+if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
+  api_delete "/api/v1/users/${USER_ID}" > /dev/null 2>&1 || true
+fi
+
+# EXPECT_FAILURE=1 inverts the suite's exit code so this script can be used
+# as a fixture to validate the gate (a "broken" gate is a passing self-test).
+if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
+  trap 'rc=$?; if [ "$rc" -eq 0 ]; then exit 1; else exit 0; fi' EXIT
+fi
+
+end_suite
