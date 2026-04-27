@@ -135,9 +135,95 @@ NV_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
 assert_eq "$NV_STATUS" "400" "expected 400 (Validation) on non-virtual parent, got $NV_STATUS" && pass
 
 # -------------------------------------------------------------------------
+# 6.1.d: Cascade on local-repo delete (closes ak-wlib).
+#
+# Migration backend/migrations/003_repositories.sql defines:
+#   member_repo_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE
+# Deleting a local repo must therefore cascade-remove its rows in
+# virtual_repo_members. User-visible failure mode if it doesn't:
+# revoking a local repo silently degrades unrelated virtual aggregates.
+#
+# Uses a fresh set of repos (suffixed -casc-) to avoid colliding with
+# the LOCAL_A/LOCAL_B/VIRTUAL_KEY state mutated by 6.1.a/b/c above.
+# -------------------------------------------------------------------------
+
+LOCAL_C="test-vmr-cascade-c-${RUN_ID}"
+LOCAL_D="test-vmr-cascade-d-${RUN_ID}"
+VIRTUAL_W="test-vmr-cascade-w-${RUN_ID}"
+
+begin_test "Cascade setup: create local repo C"
+if create_local_repo "$LOCAL_C" "generic"; then
+  pass
+else
+  fail "could not create local repo C"
+fi
+
+begin_test "Cascade setup: create local repo D"
+if create_local_repo "$LOCAL_D" "generic"; then
+  pass
+else
+  fail "could not create local repo D"
+fi
+
+begin_test "Cascade setup: create virtual repo W with members C,D"
+if create_virtual_repo "$VIRTUAL_W" "generic" "${LOCAL_C},${LOCAL_D}"; then
+  pass
+else
+  fail "could not create virtual repo W with members"
+fi
+
+# Settle: poll for both members to be visible (same pattern as 6.1.a setup).
+deadline=$(( $(date +%s) + 10 ))
+until [ "$(api_get "/api/v1/repositories/${VIRTUAL_W}/members" 2>/dev/null | jq '.members | length // 0')" = "2" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+  sleep 0.2
+done
+
+begin_test "Cascade precondition: W has 2 members"
+if W_PRE=$(api_get "/api/v1/repositories/${VIRTUAL_W}/members" 2>/dev/null); then
+  w_pre_count=$(echo "$W_PRE" | jq '.members | length // 0' 2>/dev/null) || w_pre_count=0
+  if [ "$w_pre_count" -eq 2 ]; then
+    pass
+  else
+    fail "expected 2 members in W, got ${w_pre_count} (response: ${W_PRE:0:200})"
+  fi
+else
+  fail "could not list W members before cascade delete"
+fi
+
+# Delete the local repo C directly (NOT via /W/members/C). The FK cascade
+# should remove the row from virtual_repo_members on its own.
+begin_test "DELETE /api/v1/repositories/C succeeds"
+DEL_C_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+  -X DELETE -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${LOCAL_C}") || DEL_C_STATUS="000"
+assert_http_2xx "$DEL_C_STATUS" "DELETE local repo C returned non-2xx" && pass
+
+begin_test "After cascade, W has 1 member (D)"
+# Poll for the cascade to be visible to subsequent reads.
+deadline=$(( $(date +%s) + 10 ))
+until [ "$(api_get "/api/v1/repositories/${VIRTUAL_W}/members" 2>/dev/null | jq '.members | length // 0')" = "1" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+  sleep 0.2
+done
+if W_POST=$(api_get "/api/v1/repositories/${VIRTUAL_W}/members" 2>/dev/null); then
+  w_post_count=$(echo "$W_POST" | jq '.members | length // 0' 2>/dev/null) || w_post_count=0
+  remaining_w_key=$(echo "$W_POST" | jq -r '.members[0].member_repo_key // empty' 2>/dev/null)
+  if [ "$w_post_count" -eq 1 ] && [ "$remaining_w_key" = "$LOCAL_D" ]; then
+    pass
+  else
+    fail "expected 1 member (${LOCAL_D}) after cascade, got count=${w_post_count} key='${remaining_w_key}'"
+  fi
+else
+  fail "could not list W members after cascade delete"
+fi
+
+# -------------------------------------------------------------------------
 # Cleanup
 # -------------------------------------------------------------------------
 
+api_delete "/api/v1/repositories/${VIRTUAL_W}" > /dev/null 2>&1 || true
+api_delete "/api/v1/repositories/${LOCAL_D}" > /dev/null 2>&1 || true
+# LOCAL_C already deleted by the cascade test above; tolerate 404 here.
+api_delete "/api/v1/repositories/${LOCAL_C}" > /dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${VIRTUAL_KEY}" > /dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${LOCAL_B}" > /dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${LOCAL_A}" > /dev/null 2>&1 || true
