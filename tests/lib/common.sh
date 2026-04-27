@@ -474,6 +474,80 @@ skip() {
   echo "  SKIP: ${reason} (${duration}s)"
 }
 
+## skip_suite REASON
+##
+## Emit a JUnit testcase with <skipped/> for the SUITE itself, then exit
+## the script. Use this for pre-flight skips that fire BEFORE any
+## begin_test (e.g. "tool not installed"). Without this helper, a bare
+## `exit 0` after a pre-flight check writes nothing to JUnit and the
+## dashboard shows "no testcases" instead of an explicit skip reason.
+##
+## In release-gate context, if RELEASE_GATE=1 is set, skip_suite turns
+## into a hard FAIL: a skipped gate is a silent-success class
+## (#870/#871/#888) we want to catch loudly. Local-dev runs that don't
+## set RELEASE_GATE keep the graceful skip.
+skip_suite() {
+  local reason="${1:-suite skipped}"
+  local duration=0
+  if [ -n "${_SUITE_START:-}" ]; then
+    duration=$(( $(date +%s) - _SUITE_START ))
+  fi
+
+  if [ "${RELEASE_GATE:-0}" = "1" ]; then
+    echo "  FAIL: skip_suite called with RELEASE_GATE=1 (reason: ${reason})"
+    echo "        a skipped suite in release-gate is silent-success; failing the gate"
+    local xml_name
+    xml_name=$(_xml_escape "preflight")
+    local xml_suite
+    xml_suite=$(_xml_escape "$_SUITE_NAME")
+    local xml_reason
+    xml_reason=$(_xml_escape "skip in release-gate context: ${reason}")
+    cat > "${JUNIT_OUTPUT_DIR}/${_SUITE_NAME}.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="${xml_suite}" tests="1" failures="1" skipped="0" time="${duration}">
+  <testcase name="${xml_name}" classname="${xml_suite}" time="${duration}">
+    <failure message="${xml_reason}"/>
+  </testcase>
+</testsuite>
+EOF
+    exit 1
+  fi
+
+  echo "  SKIP_SUITE: ${reason} (${duration}s)"
+  local xml_name
+  xml_name=$(_xml_escape "preflight")
+  local xml_suite
+  xml_suite=$(_xml_escape "$_SUITE_NAME")
+  local xml_reason
+  xml_reason=$(_xml_escape "$reason")
+  cat > "${JUNIT_OUTPUT_DIR}/${_SUITE_NAME}.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="${xml_suite}" tests="1" failures="0" skipped="1" time="${duration}">
+  <testcase name="${xml_name}" classname="${xml_suite}" time="${duration}">
+    <skipped message="${xml_reason}"/>
+  </testcase>
+</testsuite>
+EOF
+  exit 0
+}
+
+## assert_http_2xx STATUS [MSG]
+##
+## Assert that STATUS is in the 200-299 range. Returns non-zero if not.
+## Replaces the inlined `[ -ge 200 -lt 300 ] 2>/dev/null` pattern that
+## was duplicated across native-client tests; the `2>/dev/null` masked
+## arithmetic failures (e.g. when STATUS was the literal string "000")
+## and made debugging painful.
+assert_http_2xx() {
+  local status="${1:-}"
+  local msg="${2:-HTTP status not in 2xx}"
+  if [[ "$status" =~ ^[0-9]+$ ]] && [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
+    return 0
+  fi
+  echo "ASSERTION FAILED: ${msg} (got status='${status}')" >&2
+  return 1
+}
+
 end_suite() {
   local total_duration=$(( $(date +%s) - _SUITE_START ))
   local total=$(( _PASS_COUNT + _FAIL_COUNT + _SKIP_COUNT ))

@@ -32,17 +32,25 @@ UNIQUE_TAG="1.0.$(date +%s)"
 # Pre-flight checks
 # -------------------------------------------------------------------------
 
+# Pre-flight skips use skip_suite() so they emit a JUnit testcase with
+# <skipped/>. The previous bare `exit 0` SKIPs wrote nothing to JUnit
+# and the release-gate dashboard showed "no testcases" rather than the
+# explicit skip reason. In release-gate context (RELEASE_GATE=1), every
+# skip_suite turns into a hard fail: a silently-skipped docker test is
+# the same silent-success class (#888-style) the gate exists to catch.
+
 if ! command -v docker &>/dev/null; then
-  echo "SKIP: docker CLI not installed"
-  exit 0
+  skip_suite "docker CLI not installed"
 fi
 
 if ! docker info > /dev/null 2>&1; then
-  echo "SKIP: docker daemon not reachable from this runner"
-  exit 0
+  skip_suite "docker daemon not reachable from this runner"
 fi
 
-# Strip scheme to get host:port for docker commands.
+# Strip scheme to get host:port for docker commands. REGISTRY_HOST keeps
+# the port (e.g. host:8080); REGISTRY_HOSTNAME is just the hostname for
+# DNS resolution. Both are needed -- the insecure-registries check below
+# matches against the host:port form.
 REGISTRY_HOST="${BASE_URL#http://}"
 REGISTRY_HOST="${REGISTRY_HOST#https://}"
 REGISTRY_HOSTNAME="${REGISTRY_HOST%%:*}"
@@ -51,28 +59,33 @@ REGISTRY_HOSTNAME="${REGISTRY_HOST%%:*}"
 # trying to push. Resolve via getent (Linux) or python (portable).
 if command -v getent &>/dev/null; then
   if ! getent hosts "$REGISTRY_HOSTNAME" > /dev/null 2>&1; then
-    echo "SKIP: registry hostname '${REGISTRY_HOSTNAME}' does not resolve from this runner"
-    exit 0
+    skip_suite "registry hostname '${REGISTRY_HOSTNAME}' does not resolve from this runner"
   fi
 elif ! python3 -c "import socket, sys; socket.gethostbyname('${REGISTRY_HOSTNAME}')" > /dev/null 2>&1; then
-  echo "SKIP: registry hostname '${REGISTRY_HOSTNAME}' does not resolve"
-  exit 0
+  skip_suite "registry hostname '${REGISTRY_HOSTNAME}' does not resolve"
 fi
 
 # Docker refuses to talk plain HTTP to anything that is not localhost
 # unless the daemon is started with `--insecure-registries`. We cannot
 # reconfigure dockerd from an unprivileged runner pod; if BASE_URL is
 # plain HTTP and not localhost, the push will fail with a clear error.
-# Surface this as a skip rather than a fail so the gate stays green
-# while we wait for HTTPS to be configured on the test deploy.
+#
+# The insecure-registries entry is keyed by host:port, not just host
+# (round-1 review caught this: matching on REGISTRY_HOSTNAME alone could
+# pass when the entry was actually for a different port on the same
+# host). We match against REGISTRY_HOST (with port) when the URL has a
+# port, falling back to hostname-only when it does not.
 if [[ "$BASE_URL" =~ ^http:// ]] && [[ "$REGISTRY_HOSTNAME" != "localhost" ]] && [[ "$REGISTRY_HOSTNAME" != "127.0.0.1" ]]; then
-  if ! docker info 2>/dev/null | grep -q "Insecure Registries"; then
-    echo "SKIP: BASE_URL is plain HTTP and dockerd has no insecure-registries entry for ${REGISTRY_HOSTNAME}"
-    exit 0
+  docker_info_out=$(docker info 2>/dev/null || true)
+  if ! echo "$docker_info_out" | grep -q "Insecure Registries"; then
+    skip_suite "BASE_URL is plain HTTP and dockerd has no insecure-registries entry for ${REGISTRY_HOST}"
   fi
-  if ! docker info 2>/dev/null | grep -A 5 "Insecure Registries" | grep -q "$REGISTRY_HOSTNAME"; then
-    echo "SKIP: dockerd has no insecure-registries entry for ${REGISTRY_HOSTNAME}"
-    exit 0
+  # Match REGISTRY_HOST (with port) first, fall back to hostname-only
+  # for entries that omit the port (less common but legal).
+  if ! echo "$docker_info_out" | grep -A 5 "Insecure Registries" | grep -qE "^\s*${REGISTRY_HOST}\b"; then
+    if ! echo "$docker_info_out" | grep -A 5 "Insecure Registries" | grep -qE "^\s*${REGISTRY_HOSTNAME}\b"; then
+      skip_suite "dockerd has no insecure-registries entry matching '${REGISTRY_HOST}' (or '${REGISTRY_HOSTNAME}')"
+    fi
   fi
 fi
 
@@ -131,8 +144,14 @@ fi
 
 begin_test "docker push"
 push_log="${WORK_DIR}/docker-push.log"
+PUSH_DIGEST=""
 if docker tag "$IMAGE_LOCAL" "$IMAGE_REMOTE" 2>>"$push_log" && \
    docker push "$IMAGE_REMOTE" > "$push_log" 2>&1; then
+  # Capture the digest from `docker inspect` after a successful push.
+  # We will compare this with the post-pull digest below to catch
+  # regressions where the registry re-tags layers under different
+  # digests (a real OCI silent-corruption class).
+  PUSH_DIGEST=$(docker inspect --format '{{.Id}}' "$IMAGE_LOCAL" 2>/dev/null || echo "")
   pass
 else
   fail "docker push failed; tail: $(tail -n 20 "$push_log" | tr '\n' ' ')"
@@ -164,6 +183,31 @@ if docker pull "$IMAGE_REMOTE" > "$pull_log" 2>&1; then
   fi
 else
   fail "docker pull failed; tail: $(tail -n 20 "$pull_log" | tr '\n' ' ')"
+fi
+
+# -------------------------------------------------------------------------
+# Digest stability assertion
+#
+# Catches the OCI silent-corruption class where the registry returns an
+# image with a different digest than what was pushed (e.g. layer
+# reordering, manifest content-type drift). A pure push+pull round-trip
+# without this assertion would still pass on a registry that mutates
+# bytes in transit.
+# -------------------------------------------------------------------------
+
+begin_test "Pulled image digest matches pushed digest"
+if [ -n "$PUSH_DIGEST" ]; then
+  PULL_DIGEST=$(docker inspect --format '{{.Id}}' "$IMAGE_REMOTE" 2>/dev/null || echo "")
+  if [ -n "$PULL_DIGEST" ] && [ "$PUSH_DIGEST" = "$PULL_DIGEST" ]; then
+    pass
+  else
+    fail "digest drift: pushed='${PUSH_DIGEST}', pulled='${PULL_DIGEST}'"
+  fi
+else
+  # Push step did not record a digest (likely because dind doesn't
+  # populate .Id consistently). Don't fail the suite over diagnostic
+  # absence -- mark as skipped with a clear reason.
+  skip "PUSH_DIGEST was empty; cannot compare with pulled digest"
 fi
 
 # -------------------------------------------------------------------------
