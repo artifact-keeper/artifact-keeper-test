@@ -125,12 +125,15 @@ _feature_min_version() {
     # emitting 503 when proxy_queue_timeout_secs fires. Tracked by backend
     # work to land in v1.2.0 (companion to discussion #872 customer pain).
     "proxy_stampede_protection")      echo "1.2.0" ;;
-    # Auth/Epic-11 features (refresh-token rotation, download ticket
-    # consumer endpoint, and is_active flush on user deactivation are
-    # tracked under Epic 11 follow-ups; targeted for 1.2.0).
-    "refresh_token_rotation")         echo "1.2.0" ;;
-    "download_ticket_consumer")       echo "1.2.0" ;;
-    "user_deactivation_token_flush")  echo "1.2.0" ;;
+    # Auth/Epic-11 features. Targeted for v1.1.9 because security-flavoured
+    # work (rotation + token revocation on deactivate) is likely to land on
+    # the release/1.1.x maintenance branch as a backport rather than wait
+    # for the next minor. If a backport ships earlier than 1.1.9, drop the
+    # min-version here; if any of these slip past 1.1.9 to 1.2.0, raise it.
+    # Tracked: artifact-keeper#929, #930, #931 (milestone v1.1.9).
+    "refresh_token_rotation")         echo "1.1.9" ;;
+    "download_ticket_consumer")       echo "1.1.9" ;;
+    "user_deactivation_token_flush")  echo "1.1.9" ;;
     *) return 1 ;;
   esac
 }
