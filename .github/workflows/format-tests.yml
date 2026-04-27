@@ -17,6 +17,12 @@ on:
 jobs:
   test:
     runs-on: ak-e2e-runners
+    # Bound the per-batch runtime. Without this a single hung mvn / pip /
+    # docker-pull burns a runner slot for the workflow's default 6h. The
+    # heaviest batch (jvm with maven install + remote fetch) routinely
+    # completes inside 8 min on a warm runner; 25m gives headroom for
+    # cold-start + image pulls without leaking runners on a real hang.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -24,23 +30,28 @@ jobs:
           - name: node
             scripts: "test-npm.sh test-vscode.sh"
           - name: python
-            scripts: "test-pypi.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
+            scripts: "test-pypi.sh test-pypi-native-client.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
           - name: jvm
-            scripts: "test-maven.sh test-maven-virtual-snapshot.sh test-sbt.sh"
+            scripts: "test-maven.sh test-maven-native-client.sh test-maven-virtual-snapshot.sh test-sbt.sh"
           - name: rust-go-swift
             scripts: "test-cargo.sh test-go.sh test-swift.sh test-pub.sh"
           - name: system-packages
             scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-opkg.sh"
           - name: containers
-            scripts: "test-oci.sh test-helm.sh test-incus.sh"
+            scripts: "test-oci.sh test-docker-native-client.sh test-helm.sh test-incus.sh"
           - name: misc-native
             scripts: "test-terraform.sh test-composer.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
-            scripts: "test-generic.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
+            scripts: "test-generic.sh test-generic-native-client.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
     env:
       BASE_URL: ${{ inputs.backend_url }}
       RUN_ID: ${{ inputs.run_id }}
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      # Local-dev runs don't set this and keep graceful skip behavior.
+      RELEASE_GATE: '1'
     steps:
       - uses: actions/checkout@v4
 
