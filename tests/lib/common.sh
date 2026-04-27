@@ -544,7 +544,7 @@ assert_http_2xx() {
   if [[ "$status" =~ ^[0-9]+$ ]] && [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
     return 0
   fi
-  echo "ASSERTION FAILED: ${msg} (got status='${status}')" >&2
+  fail "$msg (got status='$status')"
   return 1
 }
 
