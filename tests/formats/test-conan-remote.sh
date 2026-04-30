@@ -226,6 +226,11 @@ fi
 # =========================================================================
 
 begin_test "Fetch locallib latest through virtual matches local"
+# Virtual recipe_latest fan-out across non-Remote members landed in v1.2.x
+# via #875. v1.1.x backend lacks fan-out so virtual_resp is empty.
+# Tracked for v1.1.10 backport in artifact-keeper#986.
+if require_feature "conan_virtual_recipe_fanout"; then
+
 # Get latest revision directly from the local repo
 local_resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
@@ -257,6 +262,8 @@ else
     fi
   fi
 fi
+
+fi  # require_feature "conan_virtual_recipe_fanout"
 
 # =========================================================================
 # Test 12: Verify virtual repo ping endpoint

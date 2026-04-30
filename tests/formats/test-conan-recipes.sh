@@ -305,6 +305,13 @@ fi
 # ---------------------------------------------------------------------------
 begin_test "Fetch user/channel recipe independently from default"
 
+# Backend support for user/channel scoping landed in v1.2.x via #869.
+# v1.1.x collapses all variants to _/_/latest, returning the wrong revision.
+# Tracked for v1.1.10 backport in artifact-keeper#986.
+if ! require_feature "conan_user_channel_scoping"; then
+  :  # require_feature already emitted skip; continue to next test
+else
+
 # Fetch latest for user/channel recipe
 uc_latest=$(curl -sf \
   -H "$(format_auth_header)" \
@@ -327,6 +334,8 @@ else
     fi
   fi
 fi
+
+fi  # require_feature "conan_user_channel_scoping"
 
 # ---------------------------------------------------------------------------
 # 14. Upload recipe with conanfile.txt (not .py) and verify round-trip
