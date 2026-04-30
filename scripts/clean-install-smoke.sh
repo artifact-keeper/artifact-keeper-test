@@ -393,6 +393,13 @@ HELM_OVERRIDES=(
   --set 'opensearch.javaOpts=-Xms512m -Xmx512m'
   --set 'opensearch.resources.requests.memory=1Gi'
   --set 'opensearch.resources.limits.memory=1Gi'
+  # v1.1.x charts: values-production.yaml ships meilisearch.masterKey=""
+  # and env="production" so operators must provide the key out-of-band.
+  # The smoke gate is a transient test deploy: provide a hardcoded test
+  # key (>= 16 bytes) so Meilisearch boots. Harmless on v1.2.x charts
+  # (which dropped Meilisearch in artifact-keeper-iac#67) since the keys
+  # have no template binding there.
+  --set 'meilisearch.masterKey=ak-smoke-meilisearch-test-master-key'
 )
 
 # Fixture override: when SMOKE_BACKEND_REPO_OVERRIDE is set (used by the
