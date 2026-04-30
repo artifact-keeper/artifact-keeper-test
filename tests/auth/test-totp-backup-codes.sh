@@ -102,7 +102,15 @@ fi
 
 # -------------------------------------------------------------------------
 # Helper: log in again to get a fresh totp_token, then verify with code.
-# Returns 0 if verify succeeds, prints HTTP status either way.
+# Always returns 0 and prints the HTTP status (or a sentinel string) on
+# stdout. Callers inspect the printed value directly.
+#
+# NOTE: this MUST always return 0 because the test runs with `set -e` and the
+# helper is called via plain command substitution (`status=$(...)`). If the
+# helper returned non-zero on a 401 response, bash would abort the whole
+# script before the test could assert that 401 was the expected outcome —
+# which is exactly the bug release-gate run 25191428274 surfaced for the
+# "Replay of the same backup code is rejected" case.
 # -------------------------------------------------------------------------
 
 login_and_verify_with_code() {
@@ -116,7 +124,7 @@ login_and_verify_with_code() {
   totp_token=$(echo "$login_resp" | jq -r '.totp_token // empty')
   if [ -z "$totp_token" ] || [ "$totp_token" = "null" ]; then
     echo "no_totp_token"
-    return 1
+    return 0
   fi
   local status
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
@@ -126,10 +134,7 @@ login_and_verify_with_code() {
     "${BASE_URL}/api/v1/auth/totp/verify" 2>/dev/null) || true
   status="${status:-000}"
   echo "$status"
-  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
-    return 0
-  fi
-  return 1
+  return 0
 }
 
 # -------------------------------------------------------------------------
