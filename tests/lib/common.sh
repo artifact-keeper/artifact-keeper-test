@@ -117,6 +117,13 @@ _feature_min_version() {
   case "$1" in
     "conan_remote_search_forward")    echo "1.3.0" ;;
     "conan_virtual_search_aggregate") echo "1.3.0" ;;
+    # recipe_latest / recipe_revisions filter by user/channel rather than
+    # collapsing variants to _/_/latest. Backported via artifact-keeper#869.
+    # v1.1.x backend lacks this scoping; tracked for v1.1.10 backport in #986.
+    "conan_user_channel_scoping")     echo "1.2.0" ;;
+    # Virtual-repo recipe_latest fans out across non-Remote members. Landed
+    # via artifact-keeper#875. v1.1.x backend lacks this; tracked in #986.
+    "conan_virtual_recipe_fanout")    echo "1.2.0" ;;
     "maven_virtual_snapshot")         echo "1.2.0" ;;
     "guest_access_toggle")            echo "1.2.0" ;;
     "opensearch_indexing")            echo "1.2.0" ;;
