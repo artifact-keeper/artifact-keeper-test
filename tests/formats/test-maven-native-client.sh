@@ -107,12 +107,40 @@ SETTINGS_FILE="${WORK_DIR}/settings.xml"
 LOCAL_REPO="${WORK_DIR}/.m2-local"
 mkdir -p "$LOCAL_REPO"
 
+# Maven 3.8.1+ ships a default mirror called `maven-default-http-blocker`
+# that refuses any plain-HTTP repository (mirrorOf = `external:http:*`).
+# In release-gate runs the backend lives at the cluster-internal HTTP URL
+# `http://artifact-keeper-backend.test-${RUN_ID}.svc.cluster.local:8080/maven/...`,
+# which the blocker rejects with:
+#   "Blocked mirror for repositories: [ak-test (...)] from the specified
+#    remote repositories: [central, maven-default-http-blocker]".
+#
+# We override the blocker by declaring our own mirror that captures the
+# `ak-test` repo id with `<blocked>false</blocked>`. Maven evaluates
+# user-defined mirrors before the built-in blocker, so this lets the
+# request through. The mirror url is the same as the upstream repo,
+# making the redirect a no-op. The mirror id needs matching credentials
+# in <servers> because Maven looks up auth by the resolved mirror id.
 cat > "$SETTINGS_FILE" <<EOF
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
   <localRepository>${LOCAL_REPO}</localRepository>
+  <mirrors>
+    <mirror>
+      <id>ak-test-allow-http</id>
+      <name>Allow plain-HTTP for ak-test cluster-internal repo</name>
+      <url>${MAVEN_URL}</url>
+      <mirrorOf>ak-test</mirrorOf>
+      <blocked>false</blocked>
+    </mirror>
+  </mirrors>
   <servers>
     <server>
       <id>ak-test</id>
+      <username>${ADMIN_USER}</username>
+      <password>${ADMIN_PASS}</password>
+    </server>
+    <server>
+      <id>ak-test-allow-http</id>
       <username>${ADMIN_USER}</username>
       <password>${ADMIN_PASS}</password>
     </server>
@@ -153,12 +181,27 @@ PULL_REPO="${WORK_DIR}/.m2-pull"
 mkdir -p "$PULL_REPO"
 
 PULL_SETTINGS="${WORK_DIR}/settings-pull.xml"
+# Same http-blocker override as above, but for the pull-side settings.
 cat > "$PULL_SETTINGS" <<EOF
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
   <localRepository>${PULL_REPO}</localRepository>
+  <mirrors>
+    <mirror>
+      <id>ak-test-allow-http</id>
+      <name>Allow plain-HTTP for ak-test cluster-internal repo</name>
+      <url>${MAVEN_URL}</url>
+      <mirrorOf>ak-test</mirrorOf>
+      <blocked>false</blocked>
+    </mirror>
+  </mirrors>
   <servers>
     <server>
       <id>ak-test</id>
+      <username>${ADMIN_USER}</username>
+      <password>${ADMIN_PASS}</password>
+    </server>
+    <server>
+      <id>ak-test-allow-http</id>
       <username>${ADMIN_USER}</username>
       <password>${ADMIN_PASS}</password>
     </server>
