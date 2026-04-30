@@ -125,6 +125,14 @@ _feature_min_version() {
     # emitting 503 when proxy_queue_timeout_secs fires. Tracked by backend
     # work to land in v1.2.0 (companion to discussion #872 customer pain).
     "proxy_stampede_protection")      echo "1.2.0" ;;
+    # Strict-contract assertions on virtual repository member endpoints
+    # (PUT /:key/members, DELETE /:key/members/:member_key, PUT /:key/cache-ttl).
+    # The endpoints themselves exist in 1.1.x. This flag gates the v1.2.0
+    # follow-on tests (response-shape assertions, DELETE idempotency,
+    # malformed-JSON 400 contract, 401/403 auth-failure paths) so they
+    # only run against a 1.2.0+ backend and stay out of the in-flight
+    # 1.1.9 release-gate. Tracks artifact-keeper-test#92, #93, #94, #95.
+    "virtual_member_strict_contract") echo "1.2.0" ;;
     # Auth/Epic-11 features. Targeted for v1.1.9 because security-flavoured
     # work (rotation + token revocation on deactivate) is likely to land on
     # the release/1.1.x maintenance branch as a backport rather than wait
