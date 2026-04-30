@@ -141,6 +141,15 @@ _feature_min_version() {
     "refresh_token_rotation")         echo "1.1.9" ;;
     "download_ticket_consumer")       echo "1.1.9" ;;
     "user_deactivation_token_flush")  echo "1.1.9" ;;
+    # Conan error-path correctness work. v1.1.x conan handler lacks repo
+    # existence checks before format dispatch (uploads to non-existent repos
+    # return 500 instead of 404), the /v2/ping endpoint short-circuits before
+    # repo lookup (returns 200 for any repo path), and the file-upload handler
+    # panics on >255-char path segments instead of returning a structured
+    # error. These are correctness gaps that pre-date v1.1.x rather than
+    # regressions, so they're slated for v1.1.10 / v1.2.0. Tracked in
+    # artifact-keeper#990.
+    "conan_error_correctness")        echo "1.1.10" ;;
     *) return 1 ;;
   esac
 }
