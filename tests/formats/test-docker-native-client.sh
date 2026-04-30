@@ -74,22 +74,76 @@ fi
 # reconfigure dockerd from an unprivileged runner pod; if BASE_URL is
 # plain HTTP and not localhost, the push will fail with a clear error.
 #
-# The insecure-registries entry is keyed by host:port, not just host
-# (round-1 review caught this: matching on REGISTRY_HOSTNAME alone could
-# pass when the entry was actually for a different port on the same
-# host). We match against REGISTRY_HOST (with port) when the URL has a
-# port, falling back to hostname-only when it does not.
+# dockerd's insecure-registries supports three forms:
+#   1. exact host:port (e.g. ak-cache-backend...:8080)
+#   2. exact hostname (matches any port on that host)
+#   3. CIDR for IPs (e.g. 10.96.0.0/12 -- matches by *resolved* IP)
+#
+# In release-gate runs the backend is at a per-namespace hostname
+# (artifact-keeper-backend.test-${RUN_ID}.svc.cluster.local:8080) which
+# is never going to be in a static allowlist by name. The iac-side
+# allowlist (iac PR #85) covers it via the cluster service CIDR
+# 10.96.0.0/12. The pre-flight check needs to recognize that case;
+# otherwise it skip_suites and -- under RELEASE_GATE=1 -- fails the
+# gate even though the daemon is configured correctly. (See iac#82.)
 if [[ "$BASE_URL" =~ ^http:// ]] && [[ "$REGISTRY_HOSTNAME" != "localhost" ]] && [[ "$REGISTRY_HOSTNAME" != "127.0.0.1" ]]; then
   docker_info_out=$(docker info 2>/dev/null || true)
   if ! echo "$docker_info_out" | grep -q "Insecure Registries"; then
     skip_suite "BASE_URL is plain HTTP and dockerd has no insecure-registries entry for ${REGISTRY_HOST}"
   fi
-  # Match REGISTRY_HOST (with port) first, fall back to hostname-only
-  # for entries that omit the port (less common but legal).
-  if ! echo "$docker_info_out" | grep -A 5 "Insecure Registries" | grep -qE "^\s*${REGISTRY_HOST}\b"; then
-    if ! echo "$docker_info_out" | grep -A 5 "Insecure Registries" | grep -qE "^\s*${REGISTRY_HOSTNAME}\b"; then
-      skip_suite "dockerd has no insecure-registries entry matching '${REGISTRY_HOST}' (or '${REGISTRY_HOSTNAME}')"
+
+  # Extract the lines that belong to the Insecure Registries section.
+  # `docker info` formats as:
+  #    Insecure Registries:
+  #     entry-1
+  #     entry-2
+  #    Next Section:
+  # Each section header starts with a single space + capital letter; the
+  # entries are indented further. Stop at the next single-space-capital
+  # header line.
+  insecure_block=$(echo "$docker_info_out" | awk '/^ [A-Z]/{flag=0} /Insecure Registries:/{flag=1; next} flag')
+
+  matched=0
+  # 1. Exact host:port match.
+  if echo "$insecure_block" | grep -qE "^\s*${REGISTRY_HOST}\b"; then
+    matched=1
+  # 2. Exact hostname-only match (legal but less common).
+  elif echo "$insecure_block" | grep -qE "^\s*${REGISTRY_HOSTNAME}\b"; then
+    matched=1
+  else
+    # 3. CIDR match: resolve REGISTRY_HOSTNAME to an IP, then check each
+    #    insecure-registries entry that looks like a CIDR (a.b.c.d/n) to
+    #    see whether the resolved IP falls inside. This is the path that
+    #    covers cluster-internal Service ClusterIPs in the 10.96.0.0/12
+    #    range without needing per-namespace static allowlist entries.
+    resolved_ip=""
+    if command -v getent &>/dev/null; then
+      resolved_ip=$(getent ahostsv4 "$REGISTRY_HOSTNAME" 2>/dev/null | awk '{print $1; exit}')
     fi
+    if [ -z "$resolved_ip" ] && command -v python3 &>/dev/null; then
+      resolved_ip=$(python3 -c "import socket; print(socket.gethostbyname('${REGISTRY_HOSTNAME}'))" 2>/dev/null || true)
+    fi
+    if [ -n "$resolved_ip" ] && command -v python3 &>/dev/null; then
+      while IFS= read -r entry; do
+        entry=$(echo "$entry" | tr -d '[:space:]')
+        if [[ "$entry" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+          if python3 -c "
+import ipaddress, sys
+try:
+    sys.exit(0 if ipaddress.ip_address('${resolved_ip}') in ipaddress.ip_network('${entry}') else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+            matched=1
+            break
+          fi
+        fi
+      done <<<"$insecure_block"
+    fi
+  fi
+
+  if [ "$matched" -ne 1 ]; then
+    skip_suite "dockerd has no insecure-registries entry matching '${REGISTRY_HOST}' (or '${REGISTRY_HOSTNAME}', or any CIDR covering its resolved IP)"
   fi
 fi
 
