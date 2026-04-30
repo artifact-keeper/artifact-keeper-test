@@ -289,24 +289,52 @@ create_test_user() {
 # Log in as the named user and echo the access_token on stdout.
 # On failure, echoes empty string and the response body to stderr.
 #
+# Retries on HTTP 429 (auth rate-limit) because non-admin users are not in
+# RATE_LIMIT_EXEMPT_USERNAMES. When parallel suites burst-call /auth/login
+# (e.g. test-idor creates two users + logs one in, all in <1s), the bucket
+# can momentarily refuse the login that immediately follows. Same retry
+# budget as auth_admin: 5x3s = 15s. 429s honor a doubled delay.
+#
 # Usage:
 #   USER_TOKEN=$(login_as "$USERNAME" "$PASSWORD")
 login_as() {
   local username="$1"
   local password="$2"
-  local resp
-  resp=$(curl -sf $CURL_TIMEOUT -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${username}\",\"password\":\"${password}\"}" \
-    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
-  local tok
-  tok=$(echo "$resp" | jq -r '.access_token // .token // empty')
-  if [ -z "$tok" ] || [ "$tok" = "null" ]; then
-    echo "login_as failed for ${username}: ${resp:0:200}" >&2
-    echo ""
-    return 1
-  fi
-  echo "$tok"
+  local _max="${LOGIN_AS_MAX_ATTEMPTS:-5}"
+  local _delay="${LOGIN_AS_RETRY_DELAY:-3}"
+  local _attempt _http_status _body _tmp tok=""
+  for _attempt in $(seq 1 "$_max"); do
+    _tmp=$(mktemp)
+    _http_status=$(curl -s $CURL_TIMEOUT -o "$_tmp" -w '%{http_code}' \
+      -X POST -H "Content-Type: application/json" \
+      -d "{\"username\":\"${username}\",\"password\":\"${password}\"}" \
+      "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || _http_status="000"
+    _body=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_http_status" = "200" ] && [ -n "$_body" ]; then
+      tok=$(echo "$_body" | jq -r '.access_token // .token // empty')
+      if [ -n "$tok" ] && [ "$tok" != "null" ]; then
+        echo "$tok"
+        return 0
+      fi
+    fi
+
+    # Only retry on transient 429 / 503 / network. 401/400 are real failures.
+    if [ "$_http_status" != "429" ] && [ "$_http_status" != "503" ] && [ "$_http_status" != "000" ]; then
+      break
+    fi
+    if [ "$_attempt" -lt "$_max" ]; then
+      if [ "$_http_status" = "429" ]; then
+        sleep "$(( _delay * 2 ))"
+      else
+        sleep "$_delay"
+      fi
+    fi
+  done
+  echo "login_as failed for ${username} after ${_max} attempts (last HTTP ${_http_status}): ${_body:0:200}" >&2
+  echo ""
+  return 1
 }
 
 api_post() {
