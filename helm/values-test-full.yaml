@@ -31,8 +31,10 @@ backend:
     # See values-test.yaml for rationale (iac#97). Parallel test pods exhaust
     # the default 120/min auth rate-limit on shared admin bootstrap.
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
-    TRIVY_URL: "http://artifact-keeper-trivy:8090"
-    SCAN_WORKSPACE_PATH: "/data/scan-workspace"
+    # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
+    # the chart's backend-deployment.yaml auto-injects them when
+    # trivy.enabled=true. Setting them here too produces duplicate env keys
+    # and helm rejects the manifest. Kept the chart-side values authoritative.
   persistence:
     size: 2Gi
   scanWorkspace:
