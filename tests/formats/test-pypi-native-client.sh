@@ -71,10 +71,19 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Build a real sdist
+# Build a real sdist + wheel
+#
+# We build both and upload both. The wheel is what `pip install` resolves
+# to in the next step: an sdist would force pip to bootstrap its build
+# backend (setuptools>=61) from the same private index, which doesn't
+# proxy public PyPI in this test, so that resolution would always fail.
+# The sdist is still uploaded so the index-listing assertions stay
+# meaningful and so the upload path itself is exercised against both
+# distribution types (twine treats them differently in its multipart
+# encoding).
 # -------------------------------------------------------------------------
 
-begin_test "Build sdist tarball"
+begin_test "Build sdist tarball and wheel"
 SRC_DIR="${WORK_DIR}/src"
 mkdir -p "$SRC_DIR"
 cd "$SRC_DIR"
@@ -98,27 +107,31 @@ def hello():
 EOF
 
 # Pin the build backend version so this test does not break when
-# setuptools or pyproject-build changes their CLI.
-if ! pip install --quiet --disable-pip-version-check "build==1.2.2" "setuptools==75.6.0" 2>"${WORK_DIR}/pip-build.log"; then
-  skip "could not install build/setuptools: $(tail -n 5 "${WORK_DIR}/pip-build.log" | tr '\n' ' ')"
+# setuptools or pyproject-build changes their CLI. wheel is required
+# for `python -m build --wheel` to succeed without network calls.
+if ! pip install --quiet --disable-pip-version-check "build==1.2.2" "setuptools==75.6.0" "wheel==0.45.1" 2>"${WORK_DIR}/pip-build.log"; then
+  skip "could not install build/setuptools/wheel: $(tail -n 5 "${WORK_DIR}/pip-build.log" | tr '\n' ' ')"
   end_suite
 fi
 
-if python -m build --sdist --outdir "${WORK_DIR}/dist" "${SRC_DIR}" > "${WORK_DIR}/build.log" 2>&1; then
+if python -m build --sdist --wheel --outdir "${WORK_DIR}/dist" "${SRC_DIR}" > "${WORK_DIR}/build.log" 2>&1; then
   pass
 else
   fail "python -m build failed; tail: $(tail -n 10 "${WORK_DIR}/build.log" | tr '\n' ' ')"
 fi
 
 SDIST_FILE=$(ls "${WORK_DIR}/dist/"*.tar.gz 2>/dev/null | head -n1)
+WHEEL_FILE=$(ls "${WORK_DIR}/dist/"*.whl 2>/dev/null | head -n1)
 
 # -------------------------------------------------------------------------
 # twine upload
 # -------------------------------------------------------------------------
 
-begin_test "twine upload pushes sdist"
+begin_test "twine upload pushes sdist and wheel"
 if [ -z "$SDIST_FILE" ] || [ ! -s "$SDIST_FILE" ]; then
   fail "no sdist file to upload"
+elif [ -z "$WHEEL_FILE" ] || [ ! -s "$WHEEL_FILE" ]; then
+  fail "no wheel file to upload"
 else
   upload_log="${WORK_DIR}/twine-upload.log"
   if TWINE_USERNAME="$ADMIN_USER" \
@@ -127,7 +140,7 @@ else
        --repository-url "${PYPI_URL}/" \
        --non-interactive \
        --disable-progress-bar \
-       "$SDIST_FILE" \
+       "$SDIST_FILE" "$WHEEL_FILE" \
        > "$upload_log" 2>&1; then
     pass
   else
@@ -157,11 +170,19 @@ fi
 INDEX_URL="${AUTHED_BASE}/pypi/${REPO_KEY}/simple/"
 
 install_log="${WORK_DIR}/pip-install.log"
+# --only-binary=:all: forces pip to resolve the wheel and never fall back
+# to the sdist. Falling back would require pip to bootstrap setuptools>=61
+# from this same private index, which doesn't proxy public PyPI, so an
+# sdist resolution would always fail with "No matching distribution
+# found for setuptools>=61". Keeping the install wheel-only also matches
+# how the upload step above publishes both sdist + wheel: this asserts
+# the wheel survived the round trip.
 if pip install \
     --quiet \
     --disable-pip-version-check \
     --index-url "$INDEX_URL" \
     --trusted-host "$TRUSTED_HOST" \
+    --only-binary=:all: \
     --target "$INSTALL_TARGET" \
     "${PKG_NAME}==${PKG_VERSION}" \
     > "$install_log" 2>&1; then
