@@ -30,6 +30,13 @@ backend:
     RUST_LOG: info
     ADMIN_PASSWORD: TestRunner!2026secure
     ACCOUNT_LOCKOUT_THRESHOLD: "0"
+    # Release-gate runs 20+ test pods in parallel. Each calls auth_admin to
+    # bootstrap via POST /api/v1/auth/login with the shared admin user, which
+    # exhausts the default 120/min auth rate-limit bucket and trips HTTP 429
+    # (the failing-on-main pattern in iac#97). Exempt the admin user so the
+    # bootstrap flow doesn't compete with itself across parallel pods. Per-test
+    # users that the suites create are still rate-limited normally.
+    RATE_LIMIT_EXEMPT_USERNAMES: "admin"
   persistence:
     size: 2Gi
 

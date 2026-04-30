@@ -28,6 +28,9 @@ backend:
     RUST_LOG: info
     ADMIN_PASSWORD: TestRunner!2026secure
     ACCOUNT_LOCKOUT_THRESHOLD: "0"
+    # See values-test.yaml for rationale (iac#97). Parallel test pods exhaust
+    # the default 120/min auth rate-limit on shared admin bootstrap.
+    RATE_LIMIT_EXEMPT_USERNAMES: "admin"
     TRIVY_URL: "http://artifact-keeper-trivy:8090"
     SCAN_WORKSPACE_PATH: "/data/scan-workspace"
   persistence:
