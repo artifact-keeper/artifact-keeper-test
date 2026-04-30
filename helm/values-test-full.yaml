@@ -64,7 +64,12 @@ postgres:
       memory: 512Mi
   persistence:
     size: 2Gi
-  password: "test-db-password"
+  # The chart's secrets.yaml validation expects auth.password (not a flat
+  # password key). Mirrors the structure used in values-test.yaml.
+  auth:
+    username: registry
+    password: "test-db-password"
+    database: artifact_registry
 
 meilisearch:
   enabled: true
