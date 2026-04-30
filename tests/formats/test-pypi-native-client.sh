@@ -53,7 +53,12 @@ fi
 source "$VENV_DIR/bin/activate"
 
 # Pin twine to a known-good version. No floating :latest equivalents.
-TWINE_VERSION="5.1.1"
+#
+# twine 6.x is required because setuptools 75.x emits Metadata-Version 2.4
+# in PKG-INFO, which twine 5.1.1's bundled pkginfo cannot parse. With the
+# old combination twine reports "Metadata is missing required fields:
+# Name, Version" before the upload ever leaves the client.
+TWINE_VERSION="6.1.0"
 if ! pip install --quiet --disable-pip-version-check "twine==${TWINE_VERSION}" 2>"${WORK_DIR}/pip-bootstrap.log"; then
   skip "could not install twine==${TWINE_VERSION}: $(tail -n 5 "${WORK_DIR}/pip-bootstrap.log" | tr '\n' ' ')"
   end_suite
