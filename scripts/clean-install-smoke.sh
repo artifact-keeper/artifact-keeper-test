@@ -506,7 +506,6 @@ watch_rollout "ak-smoke-web"     "web"     || exit $?
 readyz_probe_loop() {
   local service_url="http://ak-smoke-backend.${NAMESPACE}.svc.cluster.local:8080"
   echo ""
-  echo "Polling ${service_url}/readyz from inside backend pod (timeout: ${TIMEOUT_SECONDS}s)"
 
   local backend_pod
   backend_pod=$(kubectl get pods -n "$NAMESPACE" \
@@ -517,27 +516,51 @@ readyz_probe_loop() {
     return 3
   fi
 
-  # The backend image is RHEL ubi-micro + curl-minimal (per the backend
-  # Dockerfile). It does NOT ship `which`, so we use POSIX `command -v`
-  # for detection. wget is checked first because Alpine-style images that
-  # might be used in development tend to have it; curl is the production
-  # default and is also fine.
-  local probe_cmd
+  # Pick a probe pod. Preference order:
+  #   1. Backend pod if it has wget or curl (no extra image pull)
+  #   2. Ephemeral curl pod in the same namespace (one image pull, reused
+  #      across all probe iterations)
+  #
+  # Production backend images on the v1.1.x line are slim and may have
+  # neither curl nor wget. Falling back to a curl pod keeps the smoke
+  # test functional without requiring shell utilities in production
+  # images. The ephemeral pod is reaped automatically when the namespace
+  # is torn down.
+  local probe_pod="$backend_pod"
+  local probe_cmd=""
   if kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c 'command -v wget >/dev/null' 2>/dev/null; then
     # GNU wget indents response headers with two spaces; busybox wget
     # uses one. Match either with `-i 'HTTP/'`.
     probe_cmd="wget -q --timeout=5 -O - --server-response ${service_url}/readyz 2>&1 | grep -i 'HTTP/'"
+    echo "Polling ${service_url}/readyz from backend pod (wget; timeout: ${TIMEOUT_SECONDS}s)"
   elif kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c 'command -v curl >/dev/null' 2>/dev/null; then
     probe_cmd="curl -fsS -o /dev/null -w '%{http_code}\n' --max-time 5 ${service_url}/readyz"
+    echo "Polling ${service_url}/readyz from backend pod (curl; timeout: ${TIMEOUT_SECONDS}s)"
   else
-    # No portable fallback — `/dev/tcp` is a bash builtin and busybox sh
-    # in Alpine-based images does not support it. If neither curl nor
-    # wget is present, fail with a clear classification rather than a
-    # silent timeout. Adding a probe tool to the backend image is the
-    # right fix.
-    echo "ERROR: backend pod has neither curl nor wget; cannot probe /readyz" >&2
-    echo "       fix: add curl or wget to the backend image" >&2
-    return 3
+    # Backend image has neither curl nor wget. Provision a long-lived
+    # ephemeral curl pod to use for the probe loop. Single image pull
+    # (cached by the ARC runner pull-through cache when configured), and
+    # exec into the same pod each iteration for speed.
+    local probe_pod_name="ak-smoke-probe-${RUN_ID}"
+    echo "Backend image has no curl/wget; provisioning ephemeral curl pod ${probe_pod_name}"
+    if ! kubectl run "$probe_pod_name" -n "$NAMESPACE" \
+        --image=curlimages/curl:8.10.1 \
+        --restart=Never \
+        --labels="app.kubernetes.io/component=smoke-probe" \
+        --command -- sleep 600 >/dev/null 2>&1; then
+      echo "ERROR: failed to create ephemeral curl pod for /readyz probe" >&2
+      return 3
+    fi
+    if ! kubectl wait --for=condition=Ready \
+        -n "$NAMESPACE" "pod/${probe_pod_name}" \
+        --timeout=60s >/dev/null 2>&1; then
+      echo "ERROR: ephemeral curl pod did not become Ready within 60s" >&2
+      kubectl describe pod -n "$NAMESPACE" "$probe_pod_name" 2>&1 | tail -20 >&2 || true
+      return 3
+    fi
+    probe_pod="$probe_pod_name"
+    probe_cmd="curl -fsS -o /dev/null -w '%{http_code}\n' --max-time 5 ${service_url}/readyz"
+    echo "Polling ${service_url}/readyz from ${probe_pod_name} (curl; timeout: ${TIMEOUT_SECONDS}s)"
   fi
 
   local start now elapsed deadline output
@@ -550,11 +573,11 @@ readyz_probe_loop() {
       echo "ERROR: /readyz did not return 200 within ${TIMEOUT_SECONDS}s" >&2
       echo ""
       echo "Last probe output:"
-      kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c "$probe_cmd" 2>&1 | tail -5 || true
+      kubectl exec -n "$NAMESPACE" "$probe_pod" -- sh -c "$probe_cmd" 2>&1 | tail -5 || true
       return 3
     fi
 
-    if output=$(kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c "$probe_cmd" 2>&1); then
+    if output=$(kubectl exec -n "$NAMESPACE" "$probe_pod" -- sh -c "$probe_cmd" 2>&1); then
       if echo "$output" | grep -qE '\b200\b'; then
         elapsed=$(( now - start ))
         echo "Backend /readyz returned 200 (took ${elapsed}s after rollout completed)"
