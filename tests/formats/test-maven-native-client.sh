@@ -158,17 +158,39 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "mvn deploy:deploy-file pushes JAR + POM"
+# The maven-deploy-plugin (default v2.7) uses the legacy Wagon HTTP transport,
+# which has no built-in retry. A transient 401/5xx from the backend during the
+# initial PUT (POM upload) tanks the whole deploy. Run 25214268566 hit this on
+# v1.1.6 with no test/backend changes vs the run that passed (25194405511);
+# the deploy reported "401 Unauthorized" while curl-based maven, mvn
+# dependency:get, and other format tests in the same namespace worked fine.
+#
+# Retry up to 3 times on any failure with a 2s backoff, mirroring the policy
+# already used by auth_admin() in tests/lib/common.sh and the password-change
+# retry added in PR #125.
 deploy_log="${WORK_DIR}/mvn-deploy.log"
-if mvn -B -q --settings "$SETTINGS_FILE" \
-    deploy:deploy-file \
-    -Dfile="$JAR_FILE" \
-    -DpomFile="$POM_FILE" \
-    -DrepositoryId="ak-test" \
-    -Durl="$MAVEN_URL" \
-    > "$deploy_log" 2>&1; then
+deploy_attempts=3
+deploy_ok=false
+for deploy_attempt in $(seq 1 "$deploy_attempts"); do
+  if mvn -B -q --settings "$SETTINGS_FILE" \
+      deploy:deploy-file \
+      -Dfile="$JAR_FILE" \
+      -DpomFile="$POM_FILE" \
+      -DrepositoryId="ak-test" \
+      -Durl="$MAVEN_URL" \
+      > "$deploy_log" 2>&1; then
+    deploy_ok=true
+    break
+  fi
+  if [ "$deploy_attempt" -lt "$deploy_attempts" ]; then
+    echo "  mvn deploy:deploy-file attempt ${deploy_attempt}/${deploy_attempts} failed, retrying in 2s..."
+    sleep 2
+  fi
+done
+if $deploy_ok; then
   pass
 else
-  fail "mvn deploy:deploy-file failed; tail of log: $(tail -n 20 "$deploy_log" | tr '\n' ' ')"
+  fail "mvn deploy:deploy-file failed after ${deploy_attempts} attempts; tail of log: $(tail -n 20 "$deploy_log" | tr '\n' ' ')"
 fi
 
 # -------------------------------------------------------------------------
