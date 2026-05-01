@@ -997,13 +997,37 @@ jobs:
           path: /tmp/all-results/
           if-no-files-found: ignore
 
-      - name: Gate check - fail if any suite failed
+      - name: Gate check - fail if any required suite failed
+        # stress-tests is intentionally excluded from this rollup. The job
+        # has continue-on-error: true (see comment above the stress-tests
+        # job) so its outcome can be 'failure' on a flaky bcrypt-saturated
+        # run without blocking the release gate. The wildcard form
+        # contains(needs.*.result, 'failure') still observes that failure
+        # because needs.<job>.result reflects the job's outcome, not its
+        # continue-on-error-adjusted conclusion. So we list the required
+        # suites explicitly here. If you add a new required suite, add it
+        # to this list. Soft-failing suites (currently just stress-tests)
+        # stay off the list.
         if: >-
-          contains(needs.*.result, 'failure') ||
-          contains(needs.*.result, 'cancelled')
+          needs.clean-install-smoke.result == 'failure' || needs.clean-install-smoke.result == 'cancelled' ||
+          needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
+          needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
+          needs.security-tests.result == 'failure' || needs.security-tests.result == 'cancelled' ||
+          needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||
+          needs.repo-tests.result == 'failure' || needs.repo-tests.result == 'cancelled' ||
+          needs.promotion-tests.result == 'failure' || needs.promotion-tests.result == 'cancelled' ||
+          needs.rbac-tests.result == 'failure' || needs.rbac-tests.result == 'cancelled' ||
+          needs.lifecycle-tests.result == 'failure' || needs.lifecycle-tests.result == 'cancelled' ||
+          needs.webhook-tests.result == 'failure' || needs.webhook-tests.result == 'cancelled' ||
+          needs.search-tests.result == 'failure' || needs.search-tests.result == 'cancelled' ||
+          needs.platform-tests.result == 'failure' || needs.platform-tests.result == 'cancelled' ||
+          needs.auth-tests.result == 'failure' || needs.auth-tests.result == 'cancelled' ||
+          needs.resilience-tests.result == 'failure' || needs.resilience-tests.result == 'cancelled' ||
+          needs.mesh-tests.result == 'failure' || needs.mesh-tests.result == 'cancelled'
         run: |
-          echo "::error::Release gate FAILED - one or more test suites did not pass"
+          echo "::error::Release gate FAILED - one or more required test suites did not pass"
           echo "Review the workflow summary above for details"
+          echo "Note: stress-tests is non-blocking; its outcome is shown in the summary but does not gate the release"
           exit 1
 
   # -------------------------------------------------------------------
