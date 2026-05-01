@@ -256,6 +256,93 @@ format_auth_header() {
   echo "Authorization: Basic $(printf '%s:%s' "$ADMIN_USER" "$ADMIN_PASS" | base64)"
 }
 
+# PUT a file to a format-native endpoint with retry on transient auth/rate-limit
+# failures. Echoes the final HTTP status on stdout.
+#
+# The 1.1.x backend reauthenticates Basic credentials on every format-native
+# request via bcrypt(cost=12) inside spawn_blocking. Under back-to-back PUT
+# bursts within the same suite (and parallel suites sharing the same admin
+# user), the spawn_blocking pool can transiently drop a verify task, surfacing
+# as HTTP 401 even though credentials are valid. The 1.2.x backend grew
+# RATE_LIMIT_EXEMPT_USERNAMES (#697) to take the admin user off the auth
+# bucket, but that exemption was never backported to release/1.1.x, so the
+# release-gate (which targets 1.1.6) needs test-side resilience.
+#
+# Retries on HTTP 401, 429, 503, and network errors. Returns the final status
+# so callers can assert success.
+#
+# Usage:
+#   status=$(format_put_with_retry "$URL" "$DATA_FILE" [extra_curl_args...])
+format_put_with_retry() {
+  local url="$1"
+  local data_file="$2"
+  shift 2
+  local _max="${FORMAT_PUT_MAX_ATTEMPTS:-4}"
+  local _delay="${FORMAT_PUT_RETRY_DELAY:-2}"
+  local _attempt _status="000"
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X PUT \
+      -H "$(format_auth_header)" \
+      -H "Content-Type: application/octet-stream" \
+      --data-binary "@${data_file}" \
+      "$@" \
+      "$url" 2>/dev/null) || _status="000"
+
+    # Success
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      echo "$_status"
+      return 0
+    fi
+
+    # Non-transient failure: stop retrying
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+  echo "$_status"
+  return 1
+}
+
+# GET from a format-native endpoint with retry on transient auth/rate-limit
+# failures. Writes body to OUT_FILE (-) and echoes the final HTTP status.
+# Same retry rationale as format_put_with_retry.
+#
+# Usage:
+#   status=$(format_get_with_retry "$URL" "$OUT_FILE")
+format_get_with_retry() {
+  local url="$1"
+  local out_file="${2:-/dev/null}"
+  local _max="${FORMAT_PUT_MAX_ATTEMPTS:-4}"
+  local _delay="${FORMAT_PUT_RETRY_DELAY:-2}"
+  local _attempt _status="000"
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o "$out_file" -w '%{http_code}' $CURL_TIMEOUT \
+      -H "$(format_auth_header)" \
+      "$url" 2>/dev/null) || _status="000"
+
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      echo "$_status"
+      return 0
+    fi
+
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+  echo "$_status"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 #
