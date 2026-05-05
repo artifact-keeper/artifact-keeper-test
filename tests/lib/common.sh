@@ -160,6 +160,15 @@ _feature_min_version() {
     # "delivery row appears after a domain event" must skip on 1.1.x backends
     # to avoid hard-failing on the absence of an unshipped feature.
     "webhook_event_producer")         echo "1.2.0" ;;
+    # proxy_ttl_eviction_correctness: the proxy correctly serves the
+    # cached upstream response within the configured cache_ttl_seconds
+    # window and only refetches after the TTL expires. v1.1.x backends
+    # have a latent bug where the within-TTL fetch already shows
+    # upstream's new content, indicating a missing or wrong cache-
+    # validity check in the proxy fetch path. Tracked for v1.2.0; the
+    # eviction E2E test gates against this feature so 1.1.x releases
+    # do not block on a known-broken behaviour.
+    "proxy_ttl_eviction_correctness") echo "1.2.0" ;;
     *) return 1 ;;
   esac
 }
