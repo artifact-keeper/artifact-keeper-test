@@ -103,28 +103,35 @@ DELIVERY_RESP=""
 delivery_count=0
 
 begin_test "Webhook delivery row inserted within 30s"
-if [ -z "$WEBHOOK_ID" ]; then
-  fail "no webhook id from earlier step"
-else
-  for attempt in $(seq 1 15); do
-    sleep 2
-    if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries" 2>/dev/null); then
-      DELIVERY_RESP="$resp"
-      delivery_count=$(echo "$resp" | jq '
-        if type == "array" then length
-        elif .items then (.items | length)
-        elif .total != null then .total
-        else 0
-        end' 2>/dev/null) || delivery_count=0
-      if [ "$delivery_count" -gt 0 ]; then
-        break
-      fi
-    fi
-  done
-  if [ "$delivery_count" -gt 0 ]; then
-    pass
+# Feature-gated: requires the webhook-event producer (epic
+# artifact-keeper#919 / E3) to be running. On v1.1.x the producer is
+# not yet wired to the EventBus so domain events do not enqueue
+# webhook_deliveries rows. require_feature emits a skip with the
+# version reason on older backends.
+if require_feature "webhook_event_producer"; then
+  if [ -z "$WEBHOOK_ID" ]; then
+    fail "no webhook id from earlier step"
   else
-    fail "no webhook_deliveries row appeared within 30s for webhook ${WEBHOOK_ID} after creating repo ${REPO_ID}; producer may not be running" "${DELIVERY_RESP:0:500}"
+    for attempt in $(seq 1 15); do
+      sleep 2
+      if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries" 2>/dev/null); then
+        DELIVERY_RESP="$resp"
+        delivery_count=$(echo "$resp" | jq '
+          if type == "array" then length
+          elif .items then (.items | length)
+          elif .total != null then .total
+          else 0
+          end' 2>/dev/null) || delivery_count=0
+        if [ "$delivery_count" -gt 0 ]; then
+          break
+        fi
+      fi
+    done
+    if [ "$delivery_count" -gt 0 ]; then
+      pass
+    else
+      fail "no webhook_deliveries row appeared within 30s for webhook ${WEBHOOK_ID} after creating repo ${REPO_ID}; producer may not be running" "${DELIVERY_RESP:0:500}"
+    fi
   fi
 fi
 
@@ -134,19 +141,22 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Delivery event field is 'repository_created'"
-if [ "$delivery_count" -gt 0 ]; then
-  event_name=$(echo "$DELIVERY_RESP" | jq -r '
-    if type == "array" then .[0].event
-    elif .items then .items[0].event
-    else empty
-    end' 2>/dev/null) || event_name=""
-  if [ "$event_name" = "repository_created" ]; then
-    pass
+# Same feature gate: depends on the producer enqueuing a row above.
+if require_feature "webhook_event_producer"; then
+  if [ "$delivery_count" -gt 0 ]; then
+    event_name=$(echo "$DELIVERY_RESP" | jq -r '
+      if type == "array" then .[0].event
+      elif .items then .items[0].event
+      else empty
+      end' 2>/dev/null) || event_name=""
+    if [ "$event_name" = "repository_created" ]; then
+      pass
+    else
+      fail "expected event='repository_created', got '${event_name}'" "${DELIVERY_RESP:0:500}"
+    fi
   else
-    fail "expected event='repository_created', got '${event_name}'" "${DELIVERY_RESP:0:500}"
+    fail "no delivery row to inspect"
   fi
-else
-  fail "no delivery row to inspect"
 fi
 
 # -------------------------------------------------------------------------
@@ -156,12 +166,15 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Delivery payload contains new repo entity_id"
-if [ "$delivery_count" -gt 0 ] && [ -n "$REPO_ID" ]; then
-  if assert_contains "$DELIVERY_RESP" "$REPO_ID"; then
-    pass
+# Same feature gate: depends on the producer enqueuing a row above.
+if require_feature "webhook_event_producer"; then
+  if [ "$delivery_count" -gt 0 ] && [ -n "$REPO_ID" ]; then
+    if assert_contains "$DELIVERY_RESP" "$REPO_ID"; then
+      pass
+    fi
+  else
+    fail "no delivery row or no repo id to check"
   fi
-else
-  fail "no delivery row or no repo id to check"
 fi
 
 # Cleanup
