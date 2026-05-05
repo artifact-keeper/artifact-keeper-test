@@ -150,6 +150,16 @@ _feature_min_version() {
     # regressions, so they're slated for v1.1.10 / v1.2.0. Tracked in
     # artifact-keeper#990.
     "conan_error_correctness")        echo "1.1.10" ;;
+    # webhook_event_producer: the in-process EventBus -> webhook_deliveries
+    # producer task. Subscribes to domain events and enqueues delivery rows
+    # for the existing retry scheduler. v1.1.x ships the wire contract
+    # (webhook CRUD, /test, signing, retry scheduler) but not the producer:
+    # rows only appear in webhook_deliveries when /test is hit synchronously.
+    # Real EventBus events do not produce rows on 1.1.x. Producer wire-up is
+    # epic artifact-keeper#919 (E3) for v1.2.0. Until then, tests that assert
+    # "delivery row appears after a domain event" must skip on 1.1.x backends
+    # to avoid hard-failing on the absence of an unshipped feature.
+    "webhook_event_producer")         echo "1.2.0" ;;
     *) return 1 ;;
   esac
 }
