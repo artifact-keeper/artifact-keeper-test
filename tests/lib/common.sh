@@ -503,6 +503,29 @@ api_upload() {
 # ---------------------------------------------------------------------------
 
 # create_repo KEY FORMAT [REPO_TYPE] [UPSTREAM_URL]
+#
+# Creates a repository via POST /api/v1/repositories. The previous version
+# called `api_post ... > /dev/null` which used `curl -sf`: any non-2xx
+# returned non-zero with the body discarded, so callers (`fail "could not
+# create local OCI repo"`) had no signal about WHY the call failed.
+#
+# This rewrite adds two things:
+#   1. Visibility: on failure, print "create_repo <key> (format=... type=...)
+#      failed: HTTP <status> body=<body-snippet>" to stderr so the test
+#      log shows what the server actually said.
+#   2. Resilience: retry on the same transient class as
+#      format_put_with_retry (HTTP 401, 429, 503, network 000). The
+#      release/1.1.x admin path bcrypt-reauths every basic-auth call in
+#      spawn_blocking and can transiently drop a verify task under burst
+#      load. The 1.2.x backend grew RATE_LIMIT_EXEMPT_USERNAMES (#697) to
+#      take the admin user off the auth bucket, but that exemption was
+#      never backported to release/1.1.x. We saw this exact failure mode
+#      on v1.1.9-rc.5's release-gate run #25466619896: an identical
+#      create_local_repo "...." "docker" call PASSED in test-oci.sh and
+#      then FAILED 4 seconds later in test-oci-remote.sh against the same
+#      backend pod, with no distinguishing payload difference.
+#
+# Returns 0 on success, 1 on final failure (after retries exhausted).
 create_repo() {
   local key="$1"
   local format="$2"
@@ -516,7 +539,39 @@ create_repo() {
   fi
   payload="${payload}}"
 
-  api_post "/api/v1/repositories" "$payload" > /dev/null
+  local _max="${CREATE_REPO_MAX_ATTEMPTS:-4}"
+  local _delay="${CREATE_REPO_RETRY_DELAY:-2}"
+  local _attempt _status="000" _body_file _body=""
+  _body_file=$(mktemp)
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o "$_body_file" -w '%{http_code}' $CURL_TIMEOUT \
+      -X POST \
+      -H "$(auth_header)" \
+      -H "Content-Type: application/json" \
+      -d "$payload" \
+      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || _status="000"
+
+    # Success: 2xx
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      rm -f "$_body_file"
+      return 0
+    fi
+
+    # Non-transient failure: stop retrying.
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+
+  _body=$(head -c 400 "$_body_file" 2>/dev/null || true)
+  rm -f "$_body_file"
+  echo "create_repo ${key} (format=${format} type=${repo_type}) failed: HTTP ${_status} body=${_body}" >&2
+  return 1
 }
 
 create_local_repo() {
