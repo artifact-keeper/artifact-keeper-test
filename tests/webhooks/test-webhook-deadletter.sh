@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # test-webhook-deadletter.sh
 #
-# Epic 7 / sub-task 7.2, 7.3 (artifact-keeper-test#73): exercise the dead-letter
-# path. The receiver always returns 500, so a delivery should advance through
-# all max_attempts (default 5, see migration 067) and end with
-# next_retry_at = NULL and success = false.
+# Webhooks v2 wire contract (artifact-keeper#919, E5): exercise the dead-
+# letter path. The receiver always returns 500, so a delivery should advance
+# through all 12 retry attempts and end with the webhook auto-disabled
+# (is_enabled = false, disabled_reason non-null).
 #
-# Same retry-window constraint as test-webhook-retry-recover.sh: the full
-# 30s -> 2m -> 15m -> 1h -> 4h schedule is hours. There is no fast-forward
-# admin endpoint in v1.1.x, so this test verifies the API surface used to
-# detect dead-letter (the deliveries list with status filter) and the
-# determine_retry_outcome shape, but does not wait the full schedule.
+# Retry schedule (jittered +/-20%):
+#   30s, 1m, 2m, 5m, 10m, 30m, 1h, 2h, 4h, 8h, 16h, 24h
+# Total walltime is ~65h; this test does NOT wait the full schedule. It
+# verifies the wire contract, the API surface used to query failed
+# deliveries, and the auto-disable shape on rows that have already
+# exhausted attempts (if the producer has populated any in the test
+# window).
 #
-# Receiver discovery: same env vars as test-webhook-retry-recover.sh. The
-# receiver is configured with WEBHOOK_FAIL_FIRST_N=999999 so every POST
-# returns 500.
+# Receiver discovery: WEBHOOK_RECEIVER_PORT (default in 18000-19000 range).
+# The receiver runs on the test runner with WEBHOOK_FAIL_FIRST_N=999999 so
+# every POST returns 500.
 #
-# Self-test mode: EXPECT_FAILURE=1 inverts the script exit code.
+# Companion backend PR: artifact-keeper#1140. The producer feature flag is
+# WEBHOOKS_V2_PRODUCER_ENABLED; the harness sets it to 1.
 #
 # Requires: curl, jq, python3
 
@@ -37,15 +40,6 @@ cleanup_and_finalize() {
     wait "${RECEIVER_PID}" 2>/dev/null || true
   fi
   rm -f "${WEBHOOK_RECEIVER_LOG}"
-  if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-    if [ "$code" -eq 0 ]; then
-      echo "ERROR: EXPECT_FAILURE=1 but suite passed" >&2
-      exit 4
-    else
-      echo "Self-test PASSED: suite exited ${code} as expected"
-      exit 0
-    fi
-  fi
   exit "$code"
 }
 trap cleanup_and_finalize EXIT
@@ -83,7 +77,7 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Mock self-test: the receiver returns 500 to ANY POST (FAIL_FIRST_N is huge).
+# Mock self-test: receiver returns 500 to every POST.
 # -------------------------------------------------------------------------
 
 begin_test "Mock receiver returns 500 for every POST"
@@ -102,7 +96,7 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Create a webhook pointing at the mock. Skip if URL validation rejects.
+# Create a webhook pointing at the mock receiver.
 # -------------------------------------------------------------------------
 
 WEBHOOK_NAME="deadletter-${RUN_ID}"
@@ -152,17 +146,10 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# The dead-letter detection contract is: the deliveries list endpoint
-# accepts a `status=failed` filter and returns failed deliveries. v1.1.x
-# implements `status=success` (truthy filter) -- we assert the endpoint
-# at least responds successfully, and that any delivery with attempts
-# >= max_attempts has next_retry_at == null.
-#
-# Because v1.1.x does not auto-INSERT webhook_deliveries from artifact
-# upload, the list will normally be empty and we degrade gracefully.
+# Deliveries-list filter shape check.
 # -------------------------------------------------------------------------
 
-begin_test "Deliveries list filter returns a usable shape"
+begin_test "Deliveries list with status=failed returns a usable shape"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
@@ -180,11 +167,10 @@ fi
 
 # -------------------------------------------------------------------------
 # When delivery rows DO exist, dead-lettered ones must satisfy:
-#   success == false AND attempts >= max_attempts
-# We poll for up to DEADLETTER_TIMEOUT seconds; if we never see a row, we
-# skip with a clear reason rather than failing (the producer wiring is
-# out of scope for this gate).
+#   success == false AND attempts >= max_attempts (default 12 in v2).
 # -------------------------------------------------------------------------
+
+SAW_EXHAUSTED=false
 
 begin_test "Any failed delivery is exhausted (attempts >= max_attempts)"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
@@ -198,8 +184,11 @@ else
       n=$(echo "$list" | jq '.items | length // 0')
       if [ "$n" -gt 0 ]; then
         saw_any=true
-        # Exhausted = success == false AND attempts >= 5 (default max).
-        exhausted=$(echo "$list" | jq '[.items[] | select(.success == false and .attempts >= 5)] | length')
+        # In v2 the default budget is 12. Fall back to whatever max_attempts
+        # the row carries so older rows (default 5) don't false-fail.
+        exhausted=$(echo "$list" | jq '
+          [.items[] | select(.success == false and (.attempts >= (.max_attempts // 12)))]
+          | length')
         if [ "$exhausted" -gt 0 ]; then
           found_exhausted=true
           break
@@ -211,11 +200,39 @@ else
   done
 
   if [ "$found_exhausted" = "true" ]; then
+    SAW_EXHAUSTED=true
     pass
   elif [ "$saw_any" = "true" ]; then
-    skip "deliveries exist but none reached attempts >= 5 within ${DEADLETTER_TIMEOUT}s (full backoff schedule is hours)"
+    skip "deliveries exist but none reached max_attempts within ${DEADLETTER_TIMEOUT}s (full v2 schedule is ~65h walltime)"
   else
-    skip "no webhook_deliveries rows produced; v1.1.x does not auto-create deliveries on upload"
+    skip "no webhook_deliveries rows produced in window"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Auto-disable on dead-letter (v2 contract): once max_attempts is exhausted
+# the webhook itself is flipped to is_enabled=false with a non-null
+# disabled_reason. We assert this on the webhook row only when we observed
+# an exhausted delivery in the previous step (otherwise the auto-disable
+# branch has not been reached yet and asserting would false-fail).
+# -------------------------------------------------------------------------
+
+begin_test "Auto-disable: webhook is_enabled=false and disabled_reason non-null after dead-letter"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
+  skip "no webhook id"
+elif [ "$SAW_EXHAUSTED" != "true" ]; then
+  skip "no exhausted delivery observed in this window; auto-disable branch not exercised"
+else
+  if hook=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}" 2>/dev/null); then
+    enabled=$(echo "$hook" | jq -r '.enabled // .is_enabled // empty')
+    reason=$(echo "$hook" | jq -r '.disabled_reason // empty')
+    if [ "$enabled" = "false" ] && [ -n "$reason" ] && [ "$reason" != "null" ]; then
+      pass
+    else
+      fail "expected enabled=false and non-null disabled_reason, got enabled='${enabled}' disabled_reason='${reason}' (raw: ${hook:0:200})"
+    fi
+  else
+    fail "could not GET /api/v1/webhooks/${WEBHOOK_ID}"
   fi
 fi
 

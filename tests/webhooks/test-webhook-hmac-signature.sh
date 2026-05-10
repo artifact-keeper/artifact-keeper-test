@@ -1,24 +1,32 @@
 #!/usr/bin/env bash
 # test-webhook-hmac-signature.sh
 #
-# Epic 7 / sub-task 7.5 (artifact-keeper-test#73): verify HMAC signature
-# generation and X-Webhook-Signature header injection.
+# Webhooks v2 wire contract (artifact-keeper#919, E2 / E4): assert that the
+# backend emits the new X-ArtifactKeeper-Signature header AND keeps emitting
+# the legacy X-Webhook-Signature header alongside it for one release window
+# (legacy form is removed in v1.3.0).
 #
-# Contract (per the security review for v1.1.9):
-#   - When a webhook is created with a `secret`, every delivery POST must
-#     include an `X-Webhook-Signature` header.
-#   - The header value must be `sha256=<hex>` where <hex> is
-#     HMAC-SHA256(secret, body).
+# Contract under test:
+#   X-ArtifactKeeper-Signature: t=<unix_secs>,v1=<hex_hmac_sha256>
+#                               (multi-value during 24h rotation:
+#                                t=...,v1=<new>,v1=<old>)
+#   Signed bytes: "<unix_secs>.<raw_body>"
 #
-# Implementation note: in v1.1.x, the backend (api/handlers/webhooks.rs)
-# emits a placeholder string ("test-signature" for /test, "hmac-signature"
-# for retry deliveries) instead of a real HMAC. This test asserts the real
-# contract; on v1.1.x it will FAIL the signature-match assertion and PASS
-# the header-presence assertion. The signature-match failure is the
-# tracked bug (#73 sub-task 7.5).
+#   X-Webhook-Signature (legacy): sha256=<hex_hmac_sha256>
+#                                 Signed bytes: <raw_body> (no timestamp)
 #
-# Receiver discovery: WEBHOOK_RECEIVER_URL / WEBHOOK_RECEIVER_PORT, same as
-# the sibling tests. EXPECT_FAILURE=1 inverts the script exit code.
+# Plus the supporting headers:
+#   X-ArtifactKeeper-Delivery       UUID
+#   X-ArtifactKeeper-Event          event type
+#   X-ArtifactKeeper-Event-Version  schema version (default 2026-04-01)
+#
+# The companion backend PR (artifact-keeper#1140) finalizes this contract.
+# This test is meant to land AFTER that backend change. Do not enable in
+# release-gate until #1140 is merged.
+#
+# Receiver discovery: WEBHOOK_RECEIVER_PORT (default in the 18000-19000
+# range, matches the sibling tests). The mock receiver runs locally on the
+# test runner and the backend POSTs to it directly.
 #
 # Requires: curl, jq, python3, openssl
 
@@ -39,15 +47,6 @@ cleanup_and_finalize() {
     wait "${RECEIVER_PID}" 2>/dev/null || true
   fi
   rm -f "${WEBHOOK_RECEIVER_LOG}"
-  if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-    if [ "$code" -eq 0 ]; then
-      echo "ERROR: EXPECT_FAILURE=1 but suite passed" >&2
-      exit 4
-    else
-      echo "Self-test PASSED: suite exited ${code} as expected"
-      exit 0
-    fi
-  fi
   exit "$code"
 }
 trap cleanup_and_finalize EXIT
@@ -58,10 +57,11 @@ auth_admin
 # Pre-flight: required tools.
 # -------------------------------------------------------------------------
 
-begin_test "openssl and python3 available"
+begin_test "openssl, python3, and jq available"
 miss=""
 command -v openssl >/dev/null 2>&1 || miss="${miss} openssl"
 command -v python3  >/dev/null 2>&1 || miss="${miss} python3"
+command -v jq       >/dev/null 2>&1 || miss="${miss} jq"
 if [ -n "$miss" ]; then
   skip "missing tools:${miss}"
   end_suite
@@ -69,8 +69,7 @@ fi
 pass
 
 # -------------------------------------------------------------------------
-# Start the mock receiver in always-200 mode (no failure simulation; we
-# care about the request, not the response).
+# Start the mock receiver in always-200 mode.
 # -------------------------------------------------------------------------
 
 begin_test "Start mock receiver"
@@ -96,10 +95,9 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Create a webhook WITH a secret. The backend hashes the secret on create
-# (Argon2 -- see auth_service::hash_password), so we cannot extract it
-# back. We use the plaintext secret we sent on the way in to compute the
-# expected HMAC locally.
+# Create a webhook WITH a secret. We use the plaintext secret we sent on
+# the way in to compute the expected HMAC locally; the backend hashes the
+# secret on storage, so we cannot read it back.
 # -------------------------------------------------------------------------
 
 WEBHOOK_NAME="hmac-${RUN_ID}"
@@ -160,53 +158,155 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Header presence: X-Webhook-Signature must be set.
+# X-ArtifactKeeper-Signature: presence + shape (t=<int>,v1=<hex64>).
 # -------------------------------------------------------------------------
 
-SIGNATURE_HEADER=""
+NEW_SIG_HEADER=""
+NEW_SIG_TS=""
+NEW_SIG_V1=""
 
-begin_test "X-Webhook-Signature header is present on the delivery"
+begin_test "X-ArtifactKeeper-Signature is present and well-formed"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LATEST_HEADERS" ]; then
   skip "no receiver entry"
 else
-  # Header lookup is case-insensitive: try common spellings.
-  SIGNATURE_HEADER=$(echo "$LATEST_HEADERS" | jq -r '
-    (.["X-Webhook-Signature"] // .["x-webhook-signature"] // .["X-WEBHOOK-SIGNATURE"] // empty)
+  NEW_SIG_HEADER=$(echo "$LATEST_HEADERS" | jq -r '
+    (.["X-ArtifactKeeper-Signature"] //
+     .["x-artifactkeeper-signature"] //
+     .["X-ARTIFACTKEEPER-SIGNATURE"] // empty)
   ')
-  if [ -n "$SIGNATURE_HEADER" ] && [ "$SIGNATURE_HEADER" != "null" ]; then
-    pass
+  if [ -z "$NEW_SIG_HEADER" ] || [ "$NEW_SIG_HEADER" = "null" ]; then
+    fail "X-ArtifactKeeper-Signature header missing (headers: ${LATEST_HEADERS:0:300})"
   else
-    fail "X-Webhook-Signature header missing (headers: ${LATEST_HEADERS:0:300})"
-  fi
-fi
-
-# -------------------------------------------------------------------------
-# Signature value: must equal sha256=<hex> where hex = HMAC-SHA256(secret, body).
-# -------------------------------------------------------------------------
-
-begin_test "X-Webhook-Signature equals HMAC-SHA256(secret, body)"
-if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$SIGNATURE_HEADER" ] || [ -z "$LATEST_BODY" ]; then
-  skip "no signature or body"
-else
-  expected_hex=$(printf '%s' "$LATEST_BODY" \
-    | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" 2>/dev/null \
-    | awk '{print $NF}')
-
-  if [ -z "$expected_hex" ]; then
-    fail "openssl produced empty HMAC"
-  else
-    expected="sha256=${expected_hex}"
-    # Some implementations emit the raw hex without the "sha256=" prefix.
-    if [ "$SIGNATURE_HEADER" = "$expected" ] || [ "$SIGNATURE_HEADER" = "$expected_hex" ]; then
+    # Shape: t=<digits>(,v1=<64-hex>)+
+    if echo "$NEW_SIG_HEADER" | grep -Eq '^t=[0-9]+(,v1=[0-9a-f]{64})+$'; then
+      NEW_SIG_TS=$(echo "$NEW_SIG_HEADER" | sed -nE 's/^t=([0-9]+).*/\1/p')
+      # Take the FIRST v1 token (current secret, per render_header order).
+      NEW_SIG_V1=$(echo "$NEW_SIG_HEADER" | sed -nE 's/.*,v1=([0-9a-f]{64}).*/\1/p' | head -n 1)
       pass
     else
-      fail "signature mismatch: header='${SIGNATURE_HEADER}' expected='${expected}' (or '${expected_hex}'). v1.1.x is known to emit a placeholder; this assertion tracks the real-HMAC contract for v1.1.9."
+      fail "header value '${NEW_SIG_HEADER}' does not match t=<int>,v1=<64-hex>[,v1=<64-hex>]"
     fi
   fi
 fi
 
 # -------------------------------------------------------------------------
-# Sanity: the body should be valid JSON that includes the event field.
+# X-ArtifactKeeper-Signature: HMAC equality. Recompute over
+# "<t>.<raw_body>" with the known plaintext secret.
+# -------------------------------------------------------------------------
+
+begin_test "X-ArtifactKeeper-Signature v1 token equals HMAC-SHA256(secret, <t>.<body>)"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$NEW_SIG_V1" ] || [ -z "$NEW_SIG_TS" ] || [ -z "$LATEST_BODY" ]; then
+  skip "no signature components captured"
+else
+  expected=$(printf '%s.%s' "$NEW_SIG_TS" "$LATEST_BODY" \
+    | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" 2>/dev/null \
+    | awk '{print $NF}')
+  if [ -z "$expected" ]; then
+    fail "openssl produced empty HMAC"
+  elif [ "$NEW_SIG_V1" = "$expected" ]; then
+    pass
+  else
+    fail "HMAC mismatch: header v1='${NEW_SIG_V1}' expected='${expected}' (signed bytes: '${NEW_SIG_TS}.<body>')"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Legacy X-Webhook-Signature header presence + value. The legacy form is
+# `sha256=<hex>` over the raw body (no timestamp, secret-only). Removed in
+# v1.3.0 per the deprecation plan; still emitted in v1.2.0.
+# -------------------------------------------------------------------------
+
+LEGACY_SIG_HEADER=""
+
+begin_test "Legacy X-Webhook-Signature header is still emitted"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LATEST_HEADERS" ]; then
+  skip "no receiver entry"
+else
+  LEGACY_SIG_HEADER=$(echo "$LATEST_HEADERS" | jq -r '
+    (.["X-Webhook-Signature"] //
+     .["x-webhook-signature"] //
+     .["X-WEBHOOK-SIGNATURE"] // empty)
+  ')
+  if [ -n "$LEGACY_SIG_HEADER" ] && [ "$LEGACY_SIG_HEADER" != "null" ]; then
+    pass
+  else
+    fail "X-Webhook-Signature legacy header missing (still required in v1.2.0; removed in v1.3.0)"
+  fi
+fi
+
+begin_test "Legacy X-Webhook-Signature equals sha256=HMAC(secret, body)"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LEGACY_SIG_HEADER" ] || [ -z "$LATEST_BODY" ]; then
+  skip "no legacy signature or body"
+else
+  expected_hex=$(printf '%s' "$LATEST_BODY" \
+    | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" 2>/dev/null \
+    | awk '{print $NF}')
+  expected="sha256=${expected_hex}"
+  if [ -z "$expected_hex" ]; then
+    fail "openssl produced empty legacy HMAC"
+  elif [ "$LEGACY_SIG_HEADER" = "$expected" ]; then
+    pass
+  else
+    fail "legacy signature mismatch: header='${LEGACY_SIG_HEADER}' expected='${expected}'"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Supporting headers: delivery UUID, event type, event version.
+# -------------------------------------------------------------------------
+
+begin_test "X-ArtifactKeeper-Delivery is a UUID"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LATEST_HEADERS" ]; then
+  skip "no receiver entry"
+else
+  delivery=$(echo "$LATEST_HEADERS" | jq -r '
+    (.["X-ArtifactKeeper-Delivery"] //
+     .["x-artifactkeeper-delivery"] //
+     .["X-ARTIFACTKEEPER-DELIVERY"] // empty)
+  ')
+  if [ -z "$delivery" ] || [ "$delivery" = "null" ]; then
+    fail "X-ArtifactKeeper-Delivery header missing"
+  elif echo "$delivery" | grep -Eiq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+    pass
+  else
+    fail "delivery '${delivery}' is not a UUID"
+  fi
+fi
+
+begin_test "X-ArtifactKeeper-Event is non-empty"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LATEST_HEADERS" ]; then
+  skip "no receiver entry"
+else
+  evt=$(echo "$LATEST_HEADERS" | jq -r '
+    (.["X-ArtifactKeeper-Event"] //
+     .["x-artifactkeeper-event"] //
+     .["X-ARTIFACTKEEPER-EVENT"] // empty)
+  ')
+  if [ -n "$evt" ] && [ "$evt" != "null" ]; then
+    pass
+  else
+    fail "X-ArtifactKeeper-Event header missing"
+  fi
+fi
+
+begin_test "X-ArtifactKeeper-Event-Version defaults to 2026-04-01"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LATEST_HEADERS" ]; then
+  skip "no receiver entry"
+else
+  ver=$(echo "$LATEST_HEADERS" | jq -r '
+    (.["X-ArtifactKeeper-Event-Version"] //
+     .["x-artifactkeeper-event-version"] //
+     .["X-ARTIFACTKEEPER-EVENT-VERSION"] // empty)
+  ')
+  if [ "$ver" = "2026-04-01" ]; then
+    pass
+  else
+    fail "expected event-version '2026-04-01', got '${ver}'"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# Sanity: body is JSON with an event field.
 # -------------------------------------------------------------------------
 
 begin_test "Delivery body is JSON with an event field"
