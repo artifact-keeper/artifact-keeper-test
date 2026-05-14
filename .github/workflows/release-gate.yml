@@ -241,12 +241,14 @@ jobs:
   # -------------------------------------------------------------------
   clean-install-smoke-with-deps:
     needs: clean-install-smoke
-    # TODO(#53): enable once a runner with >= 8 CPU / 16 Gi is available
-    # in the ARC pool. We gate on a non-existent input (always evaluates
-    # to false today) so the job is wired and validated by actionlint
-    # but does not execute. To enable, add a `run_smoke_with_deps`
-    # boolean input to the workflow's on.workflow_dispatch.inputs and
-    # toggle it from the dispatching workflow.
+    # TODO(#53): enable by default once a runner with >= 8 CPU / 16 Gi
+    # is available in the ARC pool. The `run_smoke_with_deps` input
+    # (defined in workflow_dispatch.inputs and workflow_call.inputs at
+    # the top of this file) defaults to false, so the job is wired
+    # and validated by actionlint but does not execute unless the
+    # dispatching workflow explicitly opts in. The dispatching
+    # workflow can override to true when running against a beefier
+    # runner pool.
     if: ${{ inputs.run_smoke_with_deps == true }}
     runs-on: ak-e2e-runners
     timeout-minutes: 20
@@ -1303,10 +1305,13 @@ jobs:
         #   - security-tests: Grype DB not pre-seeded in v1.1.x backend
         #     image; quality gate is last-scanner-wins so Trivy covers
         #     the policy gate (artifact-keeper#1001).
-        # clean-install-smoke-with-deps is also excluded today: it is
-        # gated `if: false` until a beefier runner pool is wired (see
-        # the job comment for #53). Once the runner exists, flip the
-        # `if:` and add this job to the required list.
+        # clean-install-smoke-with-deps is opt-in (gated on the
+        # `run_smoke_with_deps` workflow input, default false; see #53).
+        # When the input is false the job's result is 'skipped', which
+        # is neither 'failure' nor 'cancelled', so the rule below
+        # tolerates that case automatically. When the input is true,
+        # a failure DOES block the release: the line is included in
+        # the check below.
         # The wildcard form contains(needs.*.result, 'failure') still
         # observes those failures because needs.<job>.result reflects the
         # job's outcome, not its continue-on-error-adjusted conclusion.
@@ -1316,6 +1321,7 @@ jobs:
         if: >-
           needs.version-set-integrity.result == 'failure' || needs.version-set-integrity.result == 'cancelled' ||
           needs.clean-install-smoke.result == 'failure' || needs.clean-install-smoke.result == 'cancelled' ||
+          needs.clean-install-smoke-with-deps.result == 'failure' || needs.clean-install-smoke-with-deps.result == 'cancelled' ||
           needs.chart-upgrade-smoke.result == 'failure' || needs.chart-upgrade-smoke.result == 'cancelled' ||
           needs.real-flow-smoke.result == 'failure' || needs.real-flow-smoke.result == 'cancelled' ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||

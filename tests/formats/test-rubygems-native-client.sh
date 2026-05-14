@@ -26,7 +26,12 @@ setup_workdir
 require_cmd gem
 
 REPO_KEY="test-rubygems-nc-${RUN_ID}"
-GEM_NAME="rfs_gem_${RUN_ID//-/_}"
+# RubyGems names are case-sensitive at the registry, but client tools
+# (bundler, geminabox) normalize to lowercase in practice and `gem build`
+# rejects names with uppercase letters (RubyGems guidelines). Future
+# RUN_ID formats could include uppercase characters (e.g. a UUID), so
+# we lowercase defensively here.
+GEM_NAME="rfs_gem_$(printf '%s' "${RUN_ID//-/_}" | tr '[:upper:]' '[:lower:]')"
 GEM_VERSION="1.0.$(date +%s)"
 
 # -----------------------------------------------------------------------
