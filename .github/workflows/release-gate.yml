@@ -777,6 +777,12 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # Per-request HTTP-code logs end up here. The Upload stress-test logs
+      # step below ships this directory as a workflow artifact so a failed
+      # stress run can be debugged endpoint-by-endpoint instead of from
+      # aggregate error counts alone (artifact-keeper-test#138 /
+      # artifact-keeper#1088).
+      STRESS_LOG_DIR: /tmp/stress-logs
       # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
       # A silently-skipped test in release-gate context is exactly the
       # silent-success class (#870/#871/#888) the gate exists to catch.
@@ -789,8 +795,49 @@ jobs:
       - name: Run stress tests
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
+          mkdir -p "$STRESS_LOG_DIR"
           chmod +x scripts/run-suite.sh
           ./scripts/run-suite.sh --suite stress --run-id "${RUN_ID}"
+
+      - name: Summarize per-request status codes
+        if: always()
+        run: |
+          if [ ! -d "$STRESS_LOG_DIR" ] || [ -z "$(ls -A "$STRESS_LOG_DIR" 2>/dev/null)" ]; then
+            echo "No stress logs were emitted at ${STRESS_LOG_DIR}"
+            exit 0
+          fi
+          echo "## Stress-test per-request status codes" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Per-request rows logged to artifact \`stress-request-logs\` at \`${STRESS_LOG_DIR}\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Row format: \`<epoch_ms> <suite> <method> <endpoint> <http_code> <elapsed_ms>\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Suite | Total | 2xx | 3xx | 4xx | 5xx | Timeouts (000) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|------:|----:|----:|----:|----:|---------------:|" >> "$GITHUB_STEP_SUMMARY"
+          for log in "$STRESS_LOG_DIR"/*.log; do
+            [ -f "$log" ] || continue
+            suite=$(basename "$log" .log)
+            total=$(wc -l < "$log" | tr -d ' ')
+            s2=$(awk '$5 ~ /^2[0-9][0-9]$/ {c++} END {print c+0}' "$log")
+            s3=$(awk '$5 ~ /^3[0-9][0-9]$/ {c++} END {print c+0}' "$log")
+            s4=$(awk '$5 ~ /^4[0-9][0-9]$/ {c++} END {print c+0}' "$log")
+            s5=$(awk '$5 ~ /^5[0-9][0-9]$/ {c++} END {print c+0}' "$log")
+            s0=$(awk '$5 == "000" {c++} END {print c+0}' "$log")
+            echo "| ${suite} | ${total} | ${s2} | ${s3} | ${s4} | ${s5} | ${s0} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # Echo a short per-suite breakdown to the runner log too, so an
+          # operator can scan the job page without first downloading the
+          # artifact. Cap at the top 10 non-2xx endpoints to keep the log
+          # readable.
+          echo "Top non-2xx endpoints per suite:"
+          for log in "$STRESS_LOG_DIR"/*.log; do
+            [ -f "$log" ] || continue
+            suite=$(basename "$log" .log)
+            echo "  ${suite}:"
+            awk '$5 !~ /^2[0-9][0-9]$/ {print $5, $3, $4}' "$log" \
+              | sort | uniq -c | sort -rn | head -n 10 \
+              | sed 's/^/    /'
+          done
 
       - name: Upload test results
         if: always()
@@ -798,6 +845,20 @@ jobs:
         with:
           name: junit-stress
           path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+      - name: Upload stress-test logs
+        # Per-request HTTP-code rows from the stress-test workers. Captured
+        # before namespace teardown so a 50%-error run can be debugged
+        # endpoint-by-endpoint (which path returned what code, how often)
+        # instead of from aggregate counters alone. Investigating
+        # artifact-keeper#1088 (POST /repositories DB contention under
+        # load) would have been faster with this artifact in hand.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-request-logs
+          path: /tmp/stress-logs/
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------

@@ -21,7 +21,48 @@ export RUN_ID="${RUN_ID:-local-$(date +%s)}"
 export TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 export JUNIT_OUTPUT_DIR="${JUNIT_OUTPUT_DIR:-/tmp/test-results}"
 
+# STRESS_LOG_DIR is the deterministic path where stress-test scripts append
+# per-request HTTP status code rows. The release-gate workflow uploads this
+# directory as an artifact so a failed run can be debugged endpoint-by-endpoint
+# (see artifact-keeper-test#138, artifact-keeper#1088). Each row is space-
+# separated: <epoch_ms> <suite> <method> <endpoint> <http_code> <elapsed_ms>.
+export STRESS_LOG_DIR="${STRESS_LOG_DIR:-/tmp/stress-logs}"
+
 mkdir -p "$JUNIT_OUTPUT_DIR"
+mkdir -p "$STRESS_LOG_DIR"
+
+# log_request - Append one per-request row to the stress log for this suite.
+#
+# Usage:
+#   log_request <method> <endpoint> <http_code> <elapsed_ms>
+#
+# The suite name comes from $_SUITE_NAME (set by begin_suite). If begin_suite
+# has not been called yet (e.g. logging from a worker that runs before the
+# suite is named) the suite column falls back to "unknown".
+log_request() {
+  local method="${1:-?}"
+  local endpoint="${2:-?}"
+  local code="${3:-000}"
+  local elapsed_ms="${4:-0}"
+  local suite="${_SUITE_NAME:-unknown}"
+  local ts_ms
+  ts_ms=$(date +%s%3N 2>/dev/null || true)
+  # macOS / BSD date doesn't understand %3N and returns "<seconds>N". Fall
+  # back to seconds-with-zero-millis in that case so the log row stays a
+  # pure integer in the timestamp column. Linux ARC runners (the actual
+  # release-gate environment) emit the millisecond form natively.
+  if [ -z "$ts_ms" ] || ! [[ "$ts_ms" =~ ^[0-9]+$ ]]; then
+    ts_ms="$(date +%s)000"
+  fi
+  # Strip the BASE_URL prefix so the log is portable across runs.
+  endpoint="${endpoint#"${BASE_URL}"}"
+  # Replace any whitespace in the endpoint with %20 so the row stays single-
+  # field-per-column when grep/awk-ed later.
+  endpoint="${endpoint// /%20}"
+  printf '%s %s %s %s %s %s\n' \
+    "$ts_ms" "$suite" "$method" "$endpoint" "$code" "$elapsed_ms" \
+    >> "${STRESS_LOG_DIR}/${suite}.log"
+}
 
 # ---------------------------------------------------------------------------
 # Internal state

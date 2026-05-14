@@ -47,39 +47,55 @@ run_worker() {
     counter=$(( counter + 1 ))
     local op=$(( counter % 4 ))
     local start_s=$(date +%s)
+    local start_ms
+    start_ms=$(date +%s%3N 2>/dev/null || echo "${start_s}000")
     local http_code="000"
+    local method="GET"
+    local endpoint=""
 
     case $op in
       0) # auth
+        method="POST"
+        endpoint="/api/v1/auth/login"
         http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-          -X POST "${BASE_URL}/api/v1/auth/login" \
+          -X POST "${BASE_URL}${endpoint}" \
           -H "Content-Type: application/json" \
           -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) || http_code="000"
         ;;
       1) # upload
+        method="PUT"
+        endpoint="/api/v1/repositories/${REPO_KEY}/artifacts/sustained/w${worker_id}-${counter}.bin"
         echo "sustained-${worker_id}-${counter}-${RUN_ID}" > "${WORK_DIR}/w${worker_id}-${counter}.bin"
         http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
           -X PUT -H "Authorization: Bearer ${ADMIN_TOKEN}" \
           -H "Content-Type: application/octet-stream" \
           --data-binary "@${WORK_DIR}/w${worker_id}-${counter}.bin" \
-          "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/sustained/w${worker_id}-${counter}.bin" 2>/dev/null) || http_code="000"
+          "${BASE_URL}${endpoint}" 2>/dev/null) || http_code="000"
         rm -f "${WORK_DIR}/w${worker_id}-${counter}.bin"
         ;;
       2) # list
+        method="GET"
+        endpoint="/api/v1/repositories/${REPO_KEY}/artifacts"
         http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
           -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-          "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null) || http_code="000"
+          "${BASE_URL}${endpoint}" 2>/dev/null) || http_code="000"
         ;;
       3) # download
+        method="GET"
+        endpoint="/api/v1/repositories/${REPO_KEY}/artifacts/seed/download-target.bin"
         http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
           -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-          "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/seed/download-target.bin" 2>/dev/null) || http_code="000"
+          "${BASE_URL}${endpoint}" 2>/dev/null) || http_code="000"
         ;;
     esac
 
     local end_s=$(date +%s)
+    local end_ms
+    end_ms=$(date +%s%3N 2>/dev/null || echo "${end_s}000")
     local elapsed=$(( end_s - start_s ))
+    local elapsed_ms=$(( end_ms - start_ms ))
     echo "${end_s} ${http_code} ${elapsed}" >> "$log_file"
+    log_request "${method}" "${endpoint}" "${http_code}" "${elapsed_ms}"
   done
 }
 
