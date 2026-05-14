@@ -88,15 +88,15 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Run clean-install smoke test
         env:
@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: clean-install-smoke-logs
           path: /tmp/test-logs/
@@ -148,15 +148,15 @@ jobs:
       namespace: ${{ steps.setup.outputs.namespace }}
       backend_url: ${{ steps.deploy.outputs.backend_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Generate run ID
         id: setup
@@ -245,7 +245,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -325,7 +325,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-formats-${{ matrix.batch.name }}
           path: /tmp/test-results/*.xml
@@ -376,7 +376,7 @@ jobs:
       PROXY_QUEUE_TIMEOUT_SECS: '5'
       STAMPEDE_UPSTREAM_DELAY_MS: '2000'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -420,7 +420,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-security
           # Directory upload (not *.xml glob) so per-test diagnostic
@@ -447,7 +447,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -459,7 +459,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-compatibility
           path: /tmp/test-results/*.xml
@@ -482,7 +482,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -494,7 +494,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-repos
           path: /tmp/test-results/*.xml
@@ -517,7 +517,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -529,7 +529,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-promotion
           path: /tmp/test-results/*.xml
@@ -552,7 +552,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -564,7 +564,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-rbac
           path: /tmp/test-results/*.xml
@@ -587,7 +587,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -599,7 +599,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-lifecycle
           path: /tmp/test-results/*.xml
@@ -626,7 +626,7 @@ jobs:
       # (WEBHOOK_RETRY_TIMEOUT) so the wrapping timeout must exceed that.
       TEST_TIMEOUT: '300'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -638,7 +638,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-webhooks
           path: /tmp/test-results/*.xml
@@ -661,7 +661,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -673,7 +673,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-search
           path: /tmp/test-results/*.xml
@@ -696,7 +696,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -708,7 +708,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-platform
           path: /tmp/test-results/*.xml
@@ -731,7 +731,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -743,7 +743,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-auth
           path: /tmp/test-results/*.xml
@@ -782,7 +782,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -794,7 +794,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-stress
           path: /tmp/test-results/*.xml
@@ -827,12 +827,12 @@ jobs:
       NAMESPACE: ${{ needs.deploy.outputs.namespace }}
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
 
       - name: Run ${{ matrix.category }} resilience tests
         continue-on-error: true
@@ -854,7 +854,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-resilience-${{ matrix.category }}
           path: /tmp/test-results/*.xml
@@ -879,15 +879,15 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Deploy mesh topology
         id: mesh-deploy
@@ -944,7 +944,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-mesh
           path: /tmp/test-results/*.xml
@@ -959,7 +959,7 @@ jobs:
     runs-on: ak-e2e-runners
     steps:
       - name: Download all test artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: junit-*
           path: /tmp/all-results
@@ -1002,7 +1002,7 @@ jobs:
 
       - name: Upload combined results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-gate-results
           path: /tmp/all-results/
@@ -1054,15 +1054,15 @@ jobs:
     if: always() && inputs.skip_teardown != true
     runs-on: ak-e2e-runners
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Teardown test namespace
         env:
@@ -1073,7 +1073,7 @@ jobs:
 
       - name: Upload pod logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pod-logs
           path: /tmp/test-logs/
