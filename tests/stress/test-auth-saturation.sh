@@ -39,6 +39,7 @@ fire_auth_wave() {
       end_ms=$(date +%s%3N 2>/dev/null || date +%s)
       elapsed=$(( end_ms - start_ms ))
       echo "${http_code} ${elapsed}" > "${wave_dir}/${i}.txt"
+      log_request "POST" "/api/v1/auth/login?wave=${count}" "${http_code}" "${elapsed}"
     ) &
   done
   wait
