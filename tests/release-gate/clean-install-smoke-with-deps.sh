@@ -2,8 +2,13 @@
 # clean-install-smoke-with-deps.sh - Full-stack clean-install smoke (issue #53)
 #
 # Variant of scripts/clean-install-smoke.sh that enables Trivy,
-# Dependency-Track, edge replication, ingress, and openSCAP. Catches
-# chart-wiring regressions in subsystems the basic smoke disables.
+# Dependency-Track, edge replication, and ingress. Catches chart-wiring
+# regressions in subsystems the basic smoke disables.
+#
+# OpenSCAP is intentionally NOT enabled here: the chart has no openscap
+# subsystem (verified 2026-05-14, see helm/values-smoke-with-deps.yaml
+# header comment). When the chart grows one, add it to the expected
+# deployments list and re-enable it in the overlay.
 #
 # Usage:
 #   ./clean-install-smoke-with-deps.sh \
@@ -165,19 +170,23 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
 # generic "stack did not come up" message.
 # -----------------------------------------------------------------------
 
+# Resource shape verified via `helm template charts/artifact-keeper -f
+# helm/values-smoke-with-deps.yaml` against artifact-keeper-iac@main
+# on 2026-05-14. Single-replica OpenSearch renders as a Deployment
+# (Recreate strategy), Postgres alone is a StatefulSet, DependencyTrack
+# is named `dtrack` not `dependency-track`, and the chart has no
+# openscap subsystem (see overlay header comment).
 EXPECTED_DEPLOYMENTS=(
   "artifact-keeper-backend"
   "artifact-keeper-web"
   "artifact-keeper-trivy"
+  "artifact-keeper-dtrack"
   "artifact-keeper-edge"
-  "artifact-keeper-openscap"
+  "artifact-keeper-opensearch"
 )
 
-# Some subsystems land as StatefulSet. Postgres, OpenSearch, DT.
 EXPECTED_STATEFULSETS=(
   "artifact-keeper-postgres"
-  "artifact-keeper-opensearch"
-  "artifact-keeper-dependency-track"
 )
 
 failed_subsystems=()
