@@ -681,9 +681,20 @@ jobs:
 
   # -------------------------------------------------------------------
   # Platform tests (signing, SBOM, curation, labels, audit, backup)
+  #
+  # Serialized after auth-tests to avoid cross-suite admin-JWT
+  # contamination. test-admin-password-recovery.sh changes the admin
+  # password, which calls the backend's change_password handler
+  # (backend/src/api/handlers/users.rs) and triggers
+  # invalidate_user_tokens(admin_id). That writes the admin's UUID
+  # into the global CREDENTIAL_INVALIDATIONS map in
+  # backend/src/services/auth_service.rs, so any auth-tests step
+  # running in parallel that uses the admin JWT starts getting 401s
+  # mid-suite once its cached token validation flips to "rejected".
+  # See #137.
   # -------------------------------------------------------------------
   platform-tests:
-    needs: deploy
+    needs: [deploy, auth-tests]
     if: inputs.test_suite == 'all' || inputs.test_suite == 'platform'
     runs-on: ak-e2e-runners
     env:
