@@ -17,10 +17,17 @@
 #   2. Create a local npm repository via the management API
 #   3. Publish a tarball through `npm publish` (real client wire format)
 #   4. Pull the tarball through `npm pack <name>@<version>`
-#   5. Diff the published and pulled tarballs
-#   6. POST /api/v1/security/artifacts/{id}/rescan to trigger a scan
-#   7. Poll the scan endpoint until completion or 60s timeout
-#   8. Assert scan status is `completed`/`clean` and findings_count is numeric
+#   5. Look up the artifact's UUID via GET /api/v1/repositories/{key}/artifacts
+#   6. POST /api/v1/security/scan with {artifact_id, force:true}
+#   7. Poll GET /api/v1/security/artifacts/{id}/scans until terminal status (completed/failed) or 60s timeout
+#   8. Assert scan status is `completed` and findings_count is numeric
+#
+# Backend route sources of truth (verified against
+# artifact-keeper/backend/src/api/handlers/security.rs at this branch):
+#   - trigger_scan       POST /api/v1/security/scan         (line ~474)
+#   - list_artifact_scans GET /api/v1/security/artifacts/{artifact_id}/scans  (line ~920)
+#   - list_artifacts     GET /api/v1/repositories/{key}/artifacts  (handlers/repositories.rs ~1172)
+# artifact_id is a Uuid, not an integer.
 #
 # Exit codes:
 #   0 - All steps passed
@@ -152,97 +159,124 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 5. Trigger a scan
+# 5. Resolve the artifact's UUID
 #
-# Use the security rescan endpoint. The artifact id (or path) is
-# what the policy gate keys against. The backend exposes a few
-# variants of the rescan path across 1.1.x/1.2.x; the management
-# artifact-path form has been stable since 1.1.6.
-#
-# We POST and accept 200/202 as success: 202 means "queued",
-# the poll below settles the final state.
+# The scan trigger endpoint keys against artifact_id (a Uuid),
+# not the repo-key + path tuple. We look it up via the repo's
+# artifact listing endpoint. The path npm published lives under
+# `<name>/-/<name>-<version>.tgz` for scoped-package layout.
 # -------------------------------------------------------------------------
 
-begin_test "Trigger scan via rescan endpoint"
+begin_test "Resolve artifact UUID via repository listing"
 ARTIFACT_PATH="${PKG_NAME}/-/${PKG_NAME}-${PKG_VERSION}.tgz"
-rescan_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
-  -X POST \
-  -H "$(auth_header)" \
-  -H "Content-Type: application/json" \
-  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH}/security/rescan" \
-  2>/dev/null || echo "000")
-
-if [ "$rescan_status" = "200" ] || [ "$rescan_status" = "202" ] || [ "$rescan_status" = "204" ]; then
-  pass
-elif [ "$rescan_status" = "404" ]; then
-  # Older backends expose the rescan path under /artifacts/scan/rescan.
-  # Try the fallback before reporting failure.
-  fallback_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
-    -X POST \
-    -H "$(auth_header)" \
-    -H "Content-Type: application/json" \
-    "${BASE_URL}/api/v1/security/artifacts/${REPO_KEY}/${ARTIFACT_PATH}/rescan" \
-    2>/dev/null || echo "000")
-  if [ "$fallback_status" = "200" ] || [ "$fallback_status" = "202" ] || [ "$fallback_status" = "204" ]; then
-    pass
-  else
-    fail "rescan endpoint returned ${rescan_status} (primary) / ${fallback_status} (fallback)"
+ARTIFACT_ID=""
+# Poll briefly: npm publish returns when the index update commits,
+# but the artifact row may take a beat to appear in the listing.
+for _ in 1 2 3 4 5; do
+  list_resp=$(curl -s --max-time 15 -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts?per_page=100" \
+    2>/dev/null || echo "{}")
+  ARTIFACT_ID=$(echo "$list_resp" | jq -r --arg p "$ARTIFACT_PATH" \
+    '.items[]? | select(.path == $p) | .id' 2>/dev/null | head -n1)
+  if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" != "null" ]; then
+    break
   fi
+  sleep 2
+done
+
+if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
+  fail "could not resolve artifact UUID for path ${ARTIFACT_PATH}; resp: $(echo "$list_resp" | head -c 300)"
 else
-  fail "rescan endpoint returned HTTP ${rescan_status}"
+  echo "  artifact_id: ${ARTIFACT_ID}"
+  pass
 fi
 
 # -------------------------------------------------------------------------
-# 6. Poll scan status until completion or timeout
+# 6. Trigger a scan
 #
-# wait_for_scan already handles polling. Use it to drive the state
-# transition rather than reinventing the loop. 60s matches the
-# acceptance criteria in #45.
+# POST /api/v1/security/scan with {artifact_id, force:true}.
+# Verified against backend handler `trigger_scan` in
+# backend/src/api/handlers/security.rs line ~474.
+#
+# The handler returns 200 with `{message, artifacts_queued}` and
+# spawns the scan in a background task. There is no 202: the queue-
+# vs-finish split is handled by polling the scans endpoint below.
+# -------------------------------------------------------------------------
+
+begin_test "Trigger scan via POST /api/v1/security/scan"
+trigger_body=$(jq -n --arg id "$ARTIFACT_ID" '{artifact_id: $id, force: true}')
+trigger_status=$(curl -s -o /tmp/rfs-trigger-resp.json -w '%{http_code}' --max-time 15 \
+  -X POST \
+  -H "$(auth_header)" \
+  -H "Content-Type: application/json" \
+  -d "$trigger_body" \
+  "${BASE_URL}/api/v1/security/scan" \
+  2>/dev/null || echo "000")
+
+if [ "$trigger_status" = "200" ]; then
+  pass
+else
+  trigger_resp=$(head -c 300 /tmp/rfs-trigger-resp.json 2>/dev/null || echo "")
+  fail "POST /api/v1/security/scan returned HTTP ${trigger_status}; body: ${trigger_resp}"
+fi
+
+# -------------------------------------------------------------------------
+# 7. Poll scan status until completion or timeout
+#
+# GET /api/v1/security/artifacts/{artifact_id}/scans returns a
+# ScanListResponse {items, total}. The most recent scan is the
+# first item (the service sorts by created_at desc). Terminal
+# statuses are `completed` and `failed`. `pending` and `scanning`
+# are in-flight.
 # -------------------------------------------------------------------------
 
 begin_test "Scan reaches a terminal state within 60s"
 final_status=""
-if final_status=$(wait_for_scan "$REPO_KEY" "$ARTIFACT_PATH" 60); then
-  echo "  scan terminal status: ${final_status}"
-  # Acceptance: 'completed' or 'clean' is success. 'failed' on the
-  # scanner-side is still a terminal state we report so the operator
-  # can see the actual error class in the logs, but it's a fail for
-  # the gate.
-  if [ "$final_status" = "completed" ] || [ "$final_status" = "clean" ]; then
-    pass
-  else
-    fail "scan finished with status='${final_status}', expected 'completed' or 'clean'"
+elapsed=0
+LATEST_SCAN_JSON=""
+while [ "$elapsed" -lt 60 ]; do
+  scans_resp=$(curl -s --max-time 15 -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/security/artifacts/${ARTIFACT_ID}/scans?per_page=5" \
+    2>/dev/null || echo "{}")
+  # Pick the most recent scan (the handler returns items in
+  # descending created_at order; tolerate either field name in case
+  # the backend re-orders later).
+  LATEST_SCAN_JSON=$(echo "$scans_resp" | jq -c '.items[0] // empty' 2>/dev/null || echo "")
+  if [ -n "$LATEST_SCAN_JSON" ]; then
+    final_status=$(echo "$LATEST_SCAN_JSON" | jq -r '.status // "unknown"')
+    if [ "$final_status" = "completed" ] || [ "$final_status" = "failed" ]; then
+      break
+    fi
   fi
+  sleep 3
+  elapsed=$(( elapsed + 3 ))
+done
+
+echo "  scan terminal status: ${final_status:-unknown}"
+if [ "$final_status" = "completed" ]; then
+  pass
+elif [ "$final_status" = "failed" ]; then
+  err_msg=$(echo "$LATEST_SCAN_JSON" | jq -r '.error_message // "(none)"')
+  fail "scan ended with status='failed', error_message: ${err_msg}"
 else
   fail "scan did not reach a terminal state within 60s (last status: ${final_status:-unknown})"
 fi
 
 # -------------------------------------------------------------------------
-# 7. findings_count is a number (any value)
+# 8. findings_count is a number (any value)
 #
 # The acceptance criteria in #45 is "findings_count is a number (any
 # value)", not "non-zero". The npm tarball we built is a trivial
 # package with no vulnerable deps; expecting findings would flap.
-# What we DO want to assert is that the scan emitted a usable
-# response shape and the count field is numeric.
+# Backend ScanResponse always emits findings_count (i32) per
+# security.rs:125, so the field MUST be a number on a healthy backend.
 # -------------------------------------------------------------------------
 
 begin_test "Scan response includes a numeric findings_count"
-scan_resp=$(curl -s --max-time 15 -H "$(auth_header)" \
-  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH}/security/scan" \
-  2>/dev/null || echo "{}")
-
-# The 1.1.x backend reports `.findings | length`, 1.2.x adds an
-# explicit `.findings_count`. Tolerate both.
-findings_count=$(echo "$scan_resp" | jq '
-  if .findings_count != null then .findings_count
-  elif .findings != null then (.findings | length)
-  else null
-  end
-' 2>/dev/null || echo "null")
+findings_count=$(echo "$LATEST_SCAN_JSON" | jq -r '.findings_count // "null"' 2>/dev/null || echo "null")
 
 if [ "$findings_count" = "null" ] || [ -z "$findings_count" ]; then
-  fail "scan response has no findings_count or findings field; resp: $(echo "$scan_resp" | head -c 300)"
+  fail "scan response has no findings_count field; resp: $(echo "$LATEST_SCAN_JSON" | head -c 300)"
 elif [[ "$findings_count" =~ ^[0-9]+$ ]]; then
   echo "  findings_count: ${findings_count}"
   pass
