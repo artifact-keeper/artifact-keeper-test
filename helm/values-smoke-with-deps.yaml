@@ -1,0 +1,214 @@
+# values-smoke-with-deps.yaml - Helm values overlay for clean-install-smoke-with-deps (issue #53)
+#
+# Enables every optional subsystem the basic clean-install-smoke
+# deliberately disables: Trivy, Dependency-Track, edge replication,
+# and ingress. Used to catch chart-wiring regressions in those
+# subsystems that the basic smoke cannot see.
+#
+# Subsystem-to-chart-key mapping (verified against
+# artifact-keeper-iac/charts/artifact-keeper/values.yaml on 2026-05-14):
+#
+#   subsystem         chart key                  template emitted
+#   ---------------------------------------------------------------
+#   trivy             trivy.enabled              trivy-deployment.yaml
+#   dependency-track  dependencyTrack.enabled    dtrack-deployment.yaml
+#   edge replication  edge.enabled               edge-deployment.yaml
+#   ingress           ingress.enabled            ingress.yaml
+#   network policies  networkPolicy.enabled      networkpolicy.yaml
+#   service monitor   serviceMonitor.enabled     servicemonitor.yaml
+#   cosign            cosign.enabled             backend init container
+#   backend HPA       backend.autoscaling.*      backend-hpa.yaml
+#   backend PDB       backend.podDisruptionBudget.* backend-pdb.yaml
+#   web PDB           web.podDisruptionBudget.*  web-pdb.yaml
+#   edge PDB          edge.podDisruptionBudget.* edge-pdb.yaml
+#
+# OpenSCAP is NOT a chart-level subsystem. There is no openscap key,
+# template, or deployment in the chart (grep openscap returns only a
+# commented-out backend env var OPENSCAP_PROFILE at line ~209 of the
+# chart's values.yaml). Removing the `openscap.enabled: true` line
+# this overlay used previously is therefore a no-op cleanup, not a
+# behaviour change.
+#
+# RESOURCE FOOTPRINT (limits, not requests):
+#   - backend:           2 CPU /   2 Gi
+#   - web:             250m /  256 Mi
+#   - postgres:        500m /  512 Mi
+#   - opensearch:        1 CPU /    1 Gi
+#   - trivy:             1 CPU /    2 Gi
+#   - dependencyTrack:   2 CPU /    4 Gi
+#   - edge:            500m /  512 Mi
+#   - ingress:         100m /  128 Mi
+#   ---------------------------------------
+#   Total:           ~7.5 CPU /  ~12.4 Gi
+#
+# The ARC runner namespace default quota is 4 CPU / 8 Gi, which means
+# this overlay WILL NOT fit. The job that uses this overlay is gated
+# in release-gate.yml on the `run_smoke_with_deps` workflow input
+# (default false) until a beefier runner pool is wired (target:
+# ak-beefy-runners with 8+ CPU / 16+ Gi quota, see #53).
+#
+# NOTE: requests are intentionally lower than limits so the namespace
+# can over-commit; what matters for fit is limits (which the
+# ResourceQuota enforces).
+
+fullnameOverride: artifact-keeper
+
+backend:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-backend
+    tag: dev
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 384Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  env:
+    ENVIRONMENT: test
+    RUST_LOG: info
+    ADMIN_PASSWORD: TestRunner!2026secure
+    ACCOUNT_LOCKOUT_THRESHOLD: "0"
+    RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+  persistence:
+    size: 2Gi
+  scanWorkspace:
+    enabled: true
+    size: 2Gi
+  # Backend HPA. The chart wires HPA via backend-hpa.yaml gated on
+  # backend.autoscaling.enabled. We disable here; resilience-tests
+  # exercises the enabled path.
+  autoscaling:
+    enabled: false
+  # Backend PDB. Gated on backend.podDisruptionBudget.enabled.
+  podDisruptionBudget:
+    enabled: false
+
+web:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-web
+    tag: dev
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  # Web PDB. Gated on web.podDisruptionBudget.enabled.
+  podDisruptionBudget:
+    enabled: false
+
+postgres:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    size: 2Gi
+  auth:
+    username: registry
+    password: "test-db-password"
+    database: artifact_registry
+
+opensearch:
+  enabled: true
+  disableSecurityPlugin: true
+  javaOpts: "-Xms256m -Xmx256m"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  persistence:
+    enabled: true
+    size: 1Gi
+
+# Trivy: native CVE scanner used by the security policy gate.
+# Wiring regressions here were the v1.1.8-class scenario #53 was
+# filed to catch.
+trivy:
+  enabled: true
+  image:
+    repository: aquasec/trivy
+    tag: "0.62.1"
+  persistence:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# Dependency-Track: bigger / slower / JVM. Enabled for chart-wiring
+# coverage. Resource limits are conservative because DT's UI/API
+# pod (the only one we need for "subsystem reaches Ready") is much
+# lighter than its analyzer pool.
+dependencyTrack:
+  enabled: true
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+# Edge replication target. Verifying chart wiring only; we do not
+# exercise actual edge replication in this smoke (that's a separate
+# concern covered by the mesh-tests suite).
+edge:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Edge PDB. Gated on edge.podDisruptionBudget.enabled.
+  podDisruptionBudget:
+    enabled: false
+
+# Ingress: enable the chart's ingress rendering. We assert the
+# Ingress resource exists (chart wiring), not that traffic flows
+# (no real DNS/cert in CI).
+#
+# Chart schema: ingress.host is a single string, NOT a hosts[] array.
+# (See charts/artifact-keeper/templates/ingress.yaml: it reads
+# .Values.ingress.host and .Values.ingress.tls.{enabled,secretName}.)
+ingress:
+  enabled: true
+  className: nginx
+  host: smoke.invalid
+  tls:
+    enabled: false
+    secretName: smoke-tls-unused
+
+secrets:
+  jwtSecret: "test-jwt-secret-not-for-production"
+
+# Disabled subsystems: keep these off for now even in the "with-deps"
+# variant. NetworkPolicy default-deny would block the in-cluster
+# /readyz probe pod, serviceMonitor requires Prometheus operator,
+# cosign requires signing keys.
+networkPolicy:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+cosign:
+  enabled: false
