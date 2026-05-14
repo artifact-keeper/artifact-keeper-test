@@ -319,12 +319,18 @@ jobs:
         run: |
           chmod +x tests/release-gate/chart-upgrade-smoke.sh
           RUN_ID="${{ github.run_id }}-${{ github.run_attempt }}-upgrade"
+          # PREVIOUS_IAC_REF: the iac chart tag that shipped with the
+          # previous release. Defaults to artifact-keeper-1.1.9 inside
+          # the script; pinned here so the chart-template upgrade path
+          # exercises the actual prev->current chart diff (issue #54).
+          PREVIOUS_IAC_REF="artifact-keeper-${PREVIOUS_TAG}"
           ./tests/release-gate/chart-upgrade-smoke.sh \
             --run-id "${RUN_ID}" \
             --previous-tag "${PREVIOUS_TAG}" \
             --backend-tag "${BACKEND_TAG}" \
             --web-tag "${WEB_TAG}" \
             --iac-ref "${IAC_REF}" \
+            --previous-iac-ref "${PREVIOUS_IAC_REF}" \
             --timeout 600
 
       - name: Upload chart-upgrade diagnostics

@@ -15,7 +15,20 @@
 #       --backend-tag <tag> \
 #       [--web-tag <tag>] \
 #       [--iac-ref <ref>] \
+#       [--previous-iac-ref <ref>] \
+#       [--same-chart] \
 #       [--timeout <seconds>]
+#
+# By default the script clones TWO copies of the iac repo: one at
+# `previous-iac-ref` (default `artifact-keeper-1.1.9`) and one at
+# `iac-ref` (default `main`). It `helm install`s from the previous
+# chart and `helm upgrade`s to the current chart. This is the only
+# way to catch chart-template breakage on upgrade, which is the
+# point of issue #54.
+#
+# Pass `--same-chart` to fall back to the old single-clone behaviour
+# (install and upgrade share one chart, only the image tag changes).
+# This is faster but skips chart-template upgrade coverage.
 #
 # Exit codes:
 #   0 - upgrade succeeded, state preserved, /readyz 200
@@ -31,6 +44,12 @@ PREVIOUS_TAG=""
 BACKEND_TAG=""
 WEB_TAG="dev"
 IAC_REF="main"
+# previous-iac-ref tracks the chart that shipped with the previous
+# release. Default matches PREVIOUS_TAG default in release-gate.yml.
+# Update this default in lockstep with the release pipeline's
+# PREVIOUS_TAG when cutting a new release.
+PREVIOUS_IAC_REF="artifact-keeper-1.1.9"
+SAME_CHART=false
 TIMEOUT_SECONDS=600
 
 CHART_TMPDIR=""
@@ -38,12 +57,14 @@ GHCR_CONFIG_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --run-id)        RUN_ID="${2:-}"; shift 2 ;;
-    --previous-tag)  PREVIOUS_TAG="${2:-}"; shift 2 ;;
-    --backend-tag)   BACKEND_TAG="${2:-}"; shift 2 ;;
-    --web-tag)       WEB_TAG="${2:-}"; shift 2 ;;
-    --iac-ref)       IAC_REF="${2:-}"; shift 2 ;;
-    --timeout)       TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
+    --run-id)            RUN_ID="${2:-}"; shift 2 ;;
+    --previous-tag)      PREVIOUS_TAG="${2:-}"; shift 2 ;;
+    --backend-tag)       BACKEND_TAG="${2:-}"; shift 2 ;;
+    --web-tag)           WEB_TAG="${2:-}"; shift 2 ;;
+    --iac-ref)           IAC_REF="${2:-}"; shift 2 ;;
+    --previous-iac-ref)  PREVIOUS_IAC_REF="${2:-}"; shift 2 ;;
+    --same-chart)        SAME_CHART=true; shift ;;
+    --timeout)           TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -68,13 +89,18 @@ ADMIN_PASS="ChartUp!2026secure"
 
 echo "=================================================================="
 echo "Chart upgrade smoke (issue #54)"
-echo "  Namespace:        ${NAMESPACE}"
-echo "  Release:          ${RELEASE_NAME}"
-echo "  Previous tag:     ${PREVIOUS_TAG}"
-echo "  Current tag:      ${BACKEND_TAG}"
-echo "  Web tag:          ${WEB_TAG}"
-echo "  Timeout:          ${TIMEOUT_SECONDS}s"
-echo "  iac ref:          ${IAC_REF}"
+echo "  Namespace:           ${NAMESPACE}"
+echo "  Release:             ${RELEASE_NAME}"
+echo "  Previous tag:        ${PREVIOUS_TAG}"
+echo "  Current tag:         ${BACKEND_TAG}"
+echo "  Web tag:             ${WEB_TAG}"
+echo "  Timeout:             ${TIMEOUT_SECONDS}s"
+echo "  iac ref (current):   ${IAC_REF}"
+if [ "$SAME_CHART" = "true" ]; then
+  echo "  iac ref (previous):  (same as current, --same-chart)"
+else
+  echo "  iac ref (previous):  ${PREVIOUS_IAC_REF}"
+fi
 echo "=================================================================="
 
 # shellcheck disable=SC2329
@@ -106,24 +132,47 @@ cleanup() {
 trap cleanup EXIT
 
 # -----------------------------------------------------------------------
-# Resolve the iac chart. We use the same iac ref for both install and
-# upgrade: the chart-template change being validated is what the
-# release pipeline ships, not a hypothetical bisect across chart
-# refs. If a release ever needs to upgrade a chart from ref-A to
-# ref-B, that's a separate flow.
+# Resolve the iac chart(s).
+#
+# Default flow: clone TWO copies of the iac repo, one at the previous
+# ref and one at the current ref. This is what catches chart-template
+# breakage on upgrade (the actual point of issue #54). A regression
+# that lands in chart templates is invisible when both install and
+# upgrade use the same chart dir.
+#
+# --same-chart: clone once and use the current ref for both. Faster,
+# but only catches image-tag-level upgrade issues (e.g. the new
+# backend binary panicking on the previous DB schema).
 # -----------------------------------------------------------------------
 
 CHART_TMPDIR="$(mktemp -d)"
 echo ""
-echo "Cloning artifact-keeper-iac@${IAC_REF}"
+echo "Cloning artifact-keeper-iac@${IAC_REF} (current)"
 git clone --depth 1 --branch "$IAC_REF" \
   https://github.com/artifact-keeper/artifact-keeper-iac.git \
-  "$CHART_TMPDIR/iac"
-CHART_DIR="${CHART_TMPDIR}/iac/charts/artifact-keeper"
+  "$CHART_TMPDIR/iac-current"
+CURRENT_CHART_DIR="${CHART_TMPDIR}/iac-current/charts/artifact-keeper"
 
-if [ ! -f "${CHART_DIR}/Chart.yaml" ]; then
-  echo "ERROR: chart not found at ${CHART_DIR}" >&2
+if [ ! -f "${CURRENT_CHART_DIR}/Chart.yaml" ]; then
+  echo "ERROR: current chart not found at ${CURRENT_CHART_DIR}" >&2
   exit 1
+fi
+
+if [ "$SAME_CHART" = "true" ]; then
+  PREVIOUS_CHART_DIR="$CURRENT_CHART_DIR"
+  echo "  (--same-chart: reusing current chart for the install step)"
+else
+  echo "Cloning artifact-keeper-iac@${PREVIOUS_IAC_REF} (previous)"
+  git clone --depth 1 --branch "$PREVIOUS_IAC_REF" \
+    https://github.com/artifact-keeper/artifact-keeper-iac.git \
+    "$CHART_TMPDIR/iac-previous"
+  PREVIOUS_CHART_DIR="${CHART_TMPDIR}/iac-previous/charts/artifact-keeper"
+
+  if [ ! -f "${PREVIOUS_CHART_DIR}/Chart.yaml" ]; then
+    echo "ERROR: previous chart not found at ${PREVIOUS_CHART_DIR}" >&2
+    echo "       (tried ref '${PREVIOUS_IAC_REF}')" >&2
+    exit 1
+  fi
 fi
 
 # -----------------------------------------------------------------------
@@ -175,24 +224,33 @@ HELM_BASE_OVERRIDES=(
   --set 'opensearch.javaOpts=-Xms512m -Xmx512m'
   --set 'opensearch.resources.requests.memory=1Gi'
   --set 'opensearch.resources.limits.memory=1Gi'
-  --set 'meilisearch.masterKey=ak-upgrade-meilisearch-test-master-key'
 )
+# NOTE: meilisearch.masterKey was removed: the meilisearch subsystem
+# was deleted from the chart in iac PR #67 (squash-merged before
+# the artifact-keeper-1.1.9 tag). The chart accepts the --set
+# silently (helm tolerates unknown keys), but it was dead code.
 
 # -----------------------------------------------------------------------
 # Step 1: install the previous tag
 # -----------------------------------------------------------------------
 
-PROD_VALUES="${CHART_DIR}/values-production.yaml"
-if [ ! -f "$PROD_VALUES" ]; then
-  echo "ERROR: values-production.yaml not found at ${PROD_VALUES}" >&2
+PREVIOUS_PROD_VALUES="${PREVIOUS_CHART_DIR}/values-production.yaml"
+if [ ! -f "$PREVIOUS_PROD_VALUES" ]; then
+  echo "ERROR: values-production.yaml not found at ${PREVIOUS_PROD_VALUES}" >&2
+  exit 1
+fi
+
+CURRENT_PROD_VALUES="${CURRENT_CHART_DIR}/values-production.yaml"
+if [ ! -f "$CURRENT_PROD_VALUES" ]; then
+  echo "ERROR: values-production.yaml not found at ${CURRENT_PROD_VALUES}" >&2
   exit 1
 fi
 
 echo ""
-echo "Step 1: helm install previous tag ${PREVIOUS_TAG}"
-helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
+echo "Step 1: helm install previous tag ${PREVIOUS_TAG} (chart from ${PREVIOUS_IAC_REF})"
+helm upgrade --install "$RELEASE_NAME" "$PREVIOUS_CHART_DIR" \
   --namespace "$NAMESPACE" \
-  --values "$PROD_VALUES" \
+  --values "$PREVIOUS_PROD_VALUES" \
   --set backend.image.tag="$PREVIOUS_TAG" \
   --set web.image.tag="$PREVIOUS_TAG" \
   "${HELM_BASE_OVERRIDES[@]}" \
@@ -262,6 +320,33 @@ stop_port_forward() {
   fi
 }
 
+# wait_for_port_forward LOCAL_PORT
+#
+# Waits up to 30 seconds for the local port to accept TCP, and bails
+# out early if the background port-forward process has died. Replaces
+# the fragile `kubectl port-forward & sleep 5` pattern that races
+# against bind on slow runners.
+wait_for_port_forward() {
+  local port="$1"
+  local i
+  for i in $(seq 1 30); do
+    # Bail if the bg process has exited.
+    if [ -n "$PORT_FORWARD_PID" ] && ! kill -0 "$PORT_FORWARD_PID" 2>/dev/null; then
+      echo "ERROR: kubectl port-forward exited prematurely" >&2
+      return 1
+    fi
+    # nc -z is the most portable TCP probe; fall back to /dev/tcp on
+    # systems without ncat (ARC runners ship busybox netcat but the
+    # /dev/tcp path is bash-native and always available).
+    if (echo >"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: port-forward did not bind to 127.0.0.1:${port} within 30s" >&2
+  return 1
+}
+
 echo ""
 echo "Step 2: push artifact to establish state"
 
@@ -272,11 +357,13 @@ LOCAL_PORT="18080"
 kubectl port-forward -n "$NAMESPACE" "svc/ak-upgrade-backend" \
   "${LOCAL_PORT}:8080" >/tmp/upgrade-pf.log 2>&1 &
 PORT_FORWARD_PID=$!
-# Give port-forward time to bind. The first request after the bg
-# spawn races the listen.
-sleep 5
-
 trap "stop_port_forward; cleanup" EXIT
+# Block until the local port accepts TCP, instead of a blind sleep.
+# Fails fast (and emits the port-forward log) if the bg process dies.
+if ! wait_for_port_forward "$LOCAL_PORT"; then
+  tail -n 20 /tmp/upgrade-pf.log >&2 || true
+  exit 1
+fi
 
 BASE_URL="http://127.0.0.1:${LOCAL_PORT}"
 
@@ -352,10 +439,10 @@ stop_port_forward
 # -----------------------------------------------------------------------
 
 echo ""
-echo "Step 3: helm upgrade to ${BACKEND_TAG}"
-helm upgrade "$RELEASE_NAME" "$CHART_DIR" \
+echo "Step 3: helm upgrade to ${BACKEND_TAG} (chart from ${IAC_REF})"
+helm upgrade "$RELEASE_NAME" "$CURRENT_CHART_DIR" \
   --namespace "$NAMESPACE" \
-  --values "$PROD_VALUES" \
+  --values "$CURRENT_PROD_VALUES" \
   --set backend.image.tag="$BACKEND_TAG" \
   --set web.image.tag="$WEB_TAG" \
   "${HELM_BASE_OVERRIDES[@]}" \
@@ -439,7 +526,10 @@ echo "Step 5: verify pre-upgrade artifact survives"
 kubectl port-forward -n "$NAMESPACE" "svc/ak-upgrade-backend" \
   "${LOCAL_PORT}:8080" >/tmp/upgrade-pf2.log 2>&1 &
 PORT_FORWARD_PID=$!
-sleep 5
+if ! wait_for_port_forward "$LOCAL_PORT"; then
+  tail -n 20 /tmp/upgrade-pf2.log >&2 || true
+  exit 1
+fi
 
 pulled_body=$(curl -sf --max-time 15 \
   -u "${ADMIN_USER}:${ADMIN_PASS}" \
