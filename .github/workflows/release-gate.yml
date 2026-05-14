@@ -108,6 +108,22 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Install Helm (for chart-default verification)
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Clone iac chart for default-tag verification
+        env:
+          IAC_REF: ${{ inputs.iac_ref || 'main' }}
+        run: |
+          # Clone the iac repo into a sibling directory of the test
+          # checkout so verify-image-set.sh can render the chart with
+          # no overrides and compare default image tags. This is the
+          # #872 customer-pain shape: chart on a tag, images on a
+          # different tag, no --set bridging them.
+          git clone --depth 1 --branch "${IAC_REF}" \
+            https://github.com/artifact-keeper/artifact-keeper-iac.git \
+            "${RUNNER_TEMP}/iac"
+
       - name: Verify backend / web / openscap image tags exist on ghcr.io
         env:
           BACKEND_TAG: ${{ inputs.backend_tag }}
@@ -121,7 +137,8 @@ jobs:
           ./tests/release-gate/verify-image-set.sh \
             --backend-tag "${BACKEND_TAG}" \
             --web-tag "${WEB_TAG}" \
-            --openscap-tag "${OPENSCAP_TAG}"
+            --openscap-tag "${OPENSCAP_TAG}" \
+            --chart-dir "${RUNNER_TEMP}/iac/charts/artifact-keeper"
 
       - name: Upload version-set diagnostics
         if: failure()

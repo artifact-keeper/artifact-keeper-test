@@ -5,12 +5,24 @@
 #   ./verify-image-set.sh \
 #       --backend-tag <tag> \
 #       --web-tag <tag> \
-#       --openscap-tag <tag>
+#       --openscap-tag <tag> \
+#       [--chart-dir <path>]
 #
 # Probes the GHCR registry's manifest endpoint for each image at the
-# specified tag. A missing tag fails fast with a clear error. Catches
-# the structural failure behind:
-#   - artifact-keeper#872 (chart tagged but referenced images absent)
+# specified tag. A missing tag fails fast with a clear error.
+#
+# When --chart-dir is provided AND `helm` is on PATH, the script also
+# renders the chart with no overrides and asserts that the default
+# image tags emitted by `helm template` match the BACKEND_TAG /
+# WEB_TAG passed in. This catches the artifact-keeper#872 customer
+# scenario: a user who runs `helm install -f values-production.yaml`
+# without `--set backend.image.tag=...` and gets whatever the chart's
+# defaults (Chart.yaml appVersion / values.yaml image.tag) point at
+# (currently "1.1.0" via Chart.yaml#appVersion, stale).
+#
+# Catches the structural failure behind:
+#   - artifact-keeper#872 (chart tagged but referenced images absent /
+#     default tag stale on a release branch)
 #   - artifact-keeper#905 (versioned tags missing on ghcr.io)
 #   - artifact-keeper-web#320 (v1.1.8 web image never published)
 #
@@ -36,15 +48,17 @@ set -euo pipefail
 BACKEND_TAG=""
 WEB_TAG=""
 OPENSCAP_TAG=""
+CHART_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --backend-tag)  BACKEND_TAG="${2:-}"; shift 2 ;;
     --web-tag)      WEB_TAG="${2:-}"; shift 2 ;;
     --openscap-tag) OPENSCAP_TAG="${2:-}"; shift 2 ;;
+    --chart-dir)    CHART_DIR="${2:-}"; shift 2 ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: verify-image-set.sh --backend-tag <tag> --web-tag <tag> --openscap-tag <tag>" >&2
+      echo "Usage: verify-image-set.sh --backend-tag <tag> --web-tag <tag> --openscap-tag <tag> [--chart-dir <path>]" >&2
       exit 1
       ;;
   esac
@@ -155,11 +169,112 @@ probe_image "artifact-keeper-web" "$WEB_TAG_NORM" \
 probe_image "artifact-keeper-openscap" "$OPENSCAP_TAG_NORM" \
   || FAILED_IMAGES+=("artifact-keeper-openscap:${OPENSCAP_TAG_NORM}")
 
+# -----------------------------------------------------------------------
+# Optional: chart default-tag verification (artifact-keeper#872)
+#
+# A green check above tells us the images exist. It does NOT tell us
+# whether a customer running `helm install -f values-production.yaml`
+# (with no --set backend.image.tag) would pull those images by
+# default. That is the actual customer-pain scenario in #872.
+#
+# When --chart-dir is supplied and `helm` is on PATH, render the chart
+# with no overrides and compare:
+#   - The default image: lines emitted for backend / web containers
+#     against the passed-in BACKEND_TAG / WEB_TAG.
+#   - Chart.yaml appVersion against BACKEND_TAG (warn-only because the
+#     chart's appVersion is allowed to lag by design in some shops).
+# -----------------------------------------------------------------------
+
+CHART_WARNINGS=()
+
+if [ -n "$CHART_DIR" ]; then
+  echo ""
+  echo "Chart default-tag verification (chart dir: ${CHART_DIR})"
+  if [ ! -f "${CHART_DIR}/Chart.yaml" ]; then
+    echo "  WARN: --chart-dir was given but ${CHART_DIR}/Chart.yaml is missing; skipping"
+    CHART_WARNINGS+=("chart-dir-missing")
+  elif ! command -v helm >/dev/null 2>&1; then
+    echo "  WARN: helm is not on PATH; skipping chart default-tag check"
+    CHART_WARNINGS+=("helm-not-installed")
+  else
+    appversion=$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2; exit}' "${CHART_DIR}/Chart.yaml" 2>/dev/null || echo "")
+    if [ -n "$appversion" ]; then
+      appversion_norm=$(_strip_v "$appversion")
+      if [ "$appversion_norm" = "$BACKEND_TAG_NORM" ]; then
+        echo "  OK: Chart.yaml appVersion (${appversion_norm}) matches backend tag"
+      else
+        echo "  WARN: Chart.yaml appVersion (${appversion_norm}) != backend tag (${BACKEND_TAG_NORM})"
+        echo "        This is the #872 customer-pain shape: chart on a tagged release"
+        echo "        but appVersion lagging the published image set."
+        CHART_WARNINGS+=("appversion-${appversion_norm}-vs-${BACKEND_TAG_NORM}")
+      fi
+    fi
+
+    # Render the chart with NO image-tag overrides (the whole point is
+    # to see what defaults the chart ships with). We pass the two
+    # chart-required values (secrets.jwtSecret, postgres.auth.password)
+    # because the chart errors out without them; neither affects the
+    # rendered image tags.
+    rendered=$(helm template ak-default "$CHART_DIR" \
+      --set "secrets.jwtSecret=verify-image-set-default-render-only" \
+      --set "postgres.auth.password=verify-image-set-default-render-only" \
+      2>/dev/null || echo "")
+    if [ -z "$rendered" ]; then
+      echo "  WARN: helm template failed; skipping default-tag rendering check"
+      CHART_WARNINGS+=("helm-template-failed")
+    else
+      # awk extracts image: <repo>:<tag>; we lowercase the line and
+      # filter to artifact-keeper-* repositories.
+      defaults=$(echo "$rendered" \
+        | awk -F'image: *' '/image: /{print $2}' \
+        | tr -d '"' \
+        | grep -E 'artifact-keeper-(backend|web|openscap)' \
+        | sort -u)
+      echo "  Defaults rendered by chart:"
+      # shellcheck disable=SC2001  # multi-line input, parameter expansion can't do this
+      echo "$defaults" | sed 's/^/    /'
+
+      for line in $defaults; do
+        case "$line" in
+          *artifact-keeper-backend:*)
+            got="${line##*:}"
+            if [ "$got" != "$BACKEND_TAG_NORM" ]; then
+              echo "  WARN: chart default backend tag is '${got}', expected '${BACKEND_TAG_NORM}'"
+              CHART_WARNINGS+=("backend-default-${got}-vs-${BACKEND_TAG_NORM}")
+            fi
+            ;;
+          *artifact-keeper-web:*)
+            got="${line##*:}"
+            if [ "$got" != "$WEB_TAG_NORM" ]; then
+              echo "  WARN: chart default web tag is '${got}', expected '${WEB_TAG_NORM}'"
+              CHART_WARNINGS+=("web-default-${got}-vs-${WEB_TAG_NORM}")
+            fi
+            ;;
+          *artifact-keeper-openscap:*)
+            got="${line##*:}"
+            if [ "$got" != "$OPENSCAP_TAG_NORM" ]; then
+              echo "  WARN: chart default openscap tag is '${got}', expected '${OPENSCAP_TAG_NORM}'"
+              CHART_WARNINGS+=("openscap-default-${got}-vs-${OPENSCAP_TAG_NORM}")
+            fi
+            ;;
+        esac
+      done
+    fi
+  fi
+fi
+
 echo ""
 echo "=================================================================="
 if [ "${#FAILED_IMAGES[@]}" -eq 0 ]; then
   echo "Version-set integrity check PASSED"
   echo "  All ${REGISTRY}/${NAMESPACE} images exist at their tags."
+  if [ "${#CHART_WARNINGS[@]}" -gt 0 ]; then
+    echo ""
+    echo "  Chart-default warnings (non-blocking, see #872):"
+    for w in "${CHART_WARNINGS[@]}"; do
+      echo "    - ${w}"
+    done
+  fi
   echo "=================================================================="
   exit 0
 fi
