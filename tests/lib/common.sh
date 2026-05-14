@@ -55,7 +55,14 @@ log_request() {
     ts_ms="$(date +%s)000"
   fi
   # Strip the BASE_URL prefix so the log is portable across runs.
-  endpoint="${endpoint#"${BASE_URL}"}"
+  # Defensive: BASE_URL is set at top of file but ${VAR:-} guards against
+  # any caller that `unset BASE_URL` before sourcing this helper.
+  endpoint="${endpoint#"${BASE_URL:-}"}"
+  # Strip query strings before logging: defense against future callers that
+  # accidentally log URLs containing `?token=...`, `?api_key=...`, or signed
+  # share-link / pre-signed-S3 URLs. The artifact is retained 90 days; keeping
+  # secrets out by construction is cheaper than scrubbing later.
+  endpoint="${endpoint%%\?*}"
   # Replace any whitespace in the endpoint with %20 so the row stays single-
   # field-per-column when grep/awk-ed later.
   endpoint="${endpoint// /%20}"

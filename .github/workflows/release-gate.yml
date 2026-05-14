@@ -855,7 +855,7 @@ jobs:
         # artifact-keeper#1088 (POST /repositories DB contention under
         # load) would have been faster with this artifact in hand.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: stress-request-logs
           path: /tmp/stress-logs/
