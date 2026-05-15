@@ -52,13 +52,17 @@ mkdir -p "${WORK_DIR}/results"
 
 for i in $(seq 1 "$CONCURRENCY"); do
   (
+    endpoint="/api/v1/repositories/${REPO_KEY}/artifacts/stress/file-${i}.bin"
+    start_ms=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
     status=$(curl -s -o /dev/null -w '%{http_code}' \
       -X PUT \
       -H "$(auth_header)" \
       -H "Content-Type: application/octet-stream" \
       --data-binary "@${WORK_DIR}/files/file-${i}.bin" \
-      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/stress/file-${i}.bin") || true
+      "${BASE_URL}${endpoint}") || true
+    end_ms=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
     echo "$status" > "${WORK_DIR}/results/upload-${i}.status"
+    log_request "PUT" "${endpoint}" "${status:-000}" "$(( end_ms - start_ms ))"
   ) &
 done
 
@@ -105,9 +109,13 @@ for i in $(seq 1 "$CONCURRENCY"); do
   if [ -f "$status_file" ]; then
     code=$(cat "$status_file")
     if [ "$code" -ge 200 ] 2>/dev/null && [ "$code" -lt 300 ] 2>/dev/null; then
+      dl_endpoint="/api/v1/repositories/${REPO_KEY}/download/stress/file-${i}.bin"
+      dl_start_ms=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
       dl_status=$(curl -s -o /dev/null -w '%{http_code}' \
         -H "$(auth_header)" \
-        "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/stress/file-${i}.bin") || true
+        "${BASE_URL}${dl_endpoint}") || true
+      dl_end_ms=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
+      log_request "GET" "${dl_endpoint}" "${dl_status:-000}" "$(( dl_end_ms - dl_start_ms ))"
       if [ "$dl_status" = "200" ]; then
         download_ok=$((download_ok + 1))
       else

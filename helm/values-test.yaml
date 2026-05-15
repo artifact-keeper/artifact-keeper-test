@@ -12,17 +12,31 @@ backend:
     tag: dev
     pullPolicy: Always
   replicaCount: 1
+  # CPU bumped from 2 to 2500m for v1.2.x: uploads now write to OpenSearch
+  # in the same critical path, so the backend competes with the JVM for
+  # CPU under sustained load. Total namespace CPU requests stay under
+  # the 4 CPU quota: 750m (backend) + 50m (web) + 50m (postgres) +
+  # 100m (opensearch) = 950m requested, with limits totaling 4250m
+  # (oversubscribed at the limit, fine for CI smoke).
   resources:
     requests:
-      cpu: 500m
-      memory: 256Mi
+      cpu: 750m
+      memory: 384Mi
     limits:
-      cpu: "2"
+      cpu: 2500m
       memory: 2Gi
   env:
     ENVIRONMENT: test
     RUST_LOG: info
     ADMIN_PASSWORD: TestRunner!2026secure
+    ACCOUNT_LOCKOUT_THRESHOLD: "0"
+    # Release-gate runs 20+ test pods in parallel. Each calls auth_admin to
+    # bootstrap via POST /api/v1/auth/login with the shared admin user, which
+    # exhausts the default 120/min auth rate-limit bucket and trips HTTP 429
+    # (the failing-on-main pattern in iac#97). Exempt the admin user so the
+    # bootstrap flow doesn't compete with itself across parallel pods. Per-test
+    # users that the suites create are still rate-limited normally.
+    RATE_LIMIT_EXEMPT_USERNAMES: "admin"
   persistence:
     size: 2Gi
 
@@ -51,20 +65,30 @@ postgres:
       memory: 512Mi
   persistence:
     size: 2Gi
-  password: "test-db-password"
+  auth:
+    username: registry
+    password: "test-db-password"
+    database: artifact_registry
 
-meilisearch:
+# Search backend: in v1.2.x the chart deploys OpenSearch (replaces Meilisearch).
+# Enable it so the search-tests suite can run end-to-end. disableSecurityPlugin
+# keeps us off the cert/auth dance that production uses (the chart's default
+# for non-prod). Reduced JVM heap and resources to fit the test namespace's
+# 4 CPU / 8 Gi quota alongside backend, web, and postgres.
+opensearch:
   enabled: true
+  disableSecurityPlugin: true
+  javaOpts: "-Xms256m -Xmx256m"
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 512Mi
     limits:
       cpu: "1"
-      memory: 2Gi
+      memory: 1Gi
   persistence:
+    enabled: true
     size: 1Gi
-  masterKey: "artifact-keeper-test-key"
 
 secrets:
   jwtSecret: "test-jwt-secret-not-for-production"

@@ -21,7 +21,55 @@ export RUN_ID="${RUN_ID:-local-$(date +%s)}"
 export TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 export JUNIT_OUTPUT_DIR="${JUNIT_OUTPUT_DIR:-/tmp/test-results}"
 
+# STRESS_LOG_DIR is the deterministic path where stress-test scripts append
+# per-request HTTP status code rows. The release-gate workflow uploads this
+# directory as an artifact so a failed run can be debugged endpoint-by-endpoint
+# (see artifact-keeper-test#138, artifact-keeper#1088). Each row is space-
+# separated: <epoch_ms> <suite> <method> <endpoint> <http_code> <elapsed_ms>.
+export STRESS_LOG_DIR="${STRESS_LOG_DIR:-/tmp/stress-logs}"
+
 mkdir -p "$JUNIT_OUTPUT_DIR"
+mkdir -p "$STRESS_LOG_DIR"
+
+# log_request - Append one per-request row to the stress log for this suite.
+#
+# Usage:
+#   log_request <method> <endpoint> <http_code> <elapsed_ms>
+#
+# The suite name comes from $_SUITE_NAME (set by begin_suite). If begin_suite
+# has not been called yet (e.g. logging from a worker that runs before the
+# suite is named) the suite column falls back to "unknown".
+log_request() {
+  local method="${1:-?}"
+  local endpoint="${2:-?}"
+  local code="${3:-000}"
+  local elapsed_ms="${4:-0}"
+  local suite="${_SUITE_NAME:-unknown}"
+  local ts_ms
+  ts_ms=$(date +%s%3N 2>/dev/null || true)
+  # macOS / BSD date doesn't understand %3N and returns "<seconds>N". Fall
+  # back to seconds-with-zero-millis in that case so the log row stays a
+  # pure integer in the timestamp column. Linux ARC runners (the actual
+  # release-gate environment) emit the millisecond form natively.
+  if [ -z "$ts_ms" ] || ! [[ "$ts_ms" =~ ^[0-9]+$ ]]; then
+    ts_ms="$(date +%s)000"
+  fi
+  # Strip the BASE_URL prefix so the log is portable across runs.
+  # Defensive: BASE_URL is set at top of file but ${VAR:-} guards against
+  # any caller that `unset BASE_URL` before sourcing this helper.
+  endpoint="${endpoint#"${BASE_URL:-}"}"
+  # Strip query strings before logging: defense against future callers that
+  # accidentally log URLs containing `?token=...`, `?api_key=...`, or signed
+  # share-link / pre-signed-S3 URLs. The artifact is retained 90 days; keeping
+  # secrets out by construction is cheaper than scrubbing later.
+  endpoint="${endpoint%%\?*}"
+  # Replace any whitespace in the endpoint with %20 so the row stays single-
+  # field-per-column when grep/awk-ed later.
+  endpoint="${endpoint// /%20}"
+  printf '%s %s %s %s %s %s\n' \
+    "$ts_ms" "$suite" "$method" "$endpoint" "$code" "$elapsed_ms" \
+    >> "${STRESS_LOG_DIR}/${suite}.log"
+}
 
 # ---------------------------------------------------------------------------
 # Internal state
@@ -42,6 +90,171 @@ _JUNIT_CASES=""
 
 ADMIN_TOKEN=""
 
+# AUTH_ADMIN_MAX_ATTEMPTS / AUTH_ADMIN_RETRY_DELAY can be overridden by callers
+# that need a different retry budget. Defaults give ~60s of total wait time,
+# which is enough to absorb short backend hiccups (rate-limiter window resets,
+# OpenSearch JVM warmup, GC pauses, brief pod readiness flaps) that happen
+# when many test suites run concurrently against a single namespace. The
+# previous 5x3s = 15s budget was too tight: it would tip over during parallel
+# release-gate runs and leave the very next suite to recover, which manifested
+# as "first script in suite fails, rest pass" (release-gate run 24934467423).
+AUTH_ADMIN_MAX_ATTEMPTS="${AUTH_ADMIN_MAX_ATTEMPTS:-12}"
+AUTH_ADMIN_RETRY_DELAY="${AUTH_ADMIN_RETRY_DELAY:-5}"
+
+# ---------------------------------------------------------------------------
+# Backend feature detection
+# ---------------------------------------------------------------------------
+#
+# Tests should never assume the backend supports every feature in the suite.
+# When a test exercises a feature that only ships in a specific minor (or
+# later), call `require_feature "<name>"` at the start. If the backend is
+# older than the version that introduced the feature, the helper records the
+# current test as `skip` with a precise reason and returns 1; the caller
+# should `return` immediately. If supported, the helper returns 0 and the
+# test runs as normal.
+#
+# The feature -> minimum-version map below is the single source of truth for
+# the gate suite. When a feature ships in a release, add an entry here in
+# the SAME PR that ships the feature.
+#
+# This pattern lets one main branch of the test repo run cleanly against
+# any backend version. v1.2.0 backend auto-skips v1.3.0 features; v1.3.0
+# backend runs them automatically.
+
+# Cached result of `GET /health` so we only hit the backend once per suite.
+BACKEND_VERSION=""
+
+# Strip a leading 'v' if present and return the cleaned version string.
+_strip_v_prefix() {
+  local v="$1"
+  echo "${v#v}"
+}
+
+# Compare two semver strings. Returns 0 if $1 >= $2, 1 otherwise.
+# Pre-release suffixes (-rc.N) are stripped before comparison so a release
+# candidate validates the same feature set as its target release. We only ship
+# -rc.N suffixes, never -alpha/-beta, so dropping the suffix is safe.
+version_ge() {
+  local a_core b_core
+  a_core=$(_strip_v_prefix "$1")
+  b_core=$(_strip_v_prefix "$2")
+  a_core="${a_core%%-*}"
+  b_core="${b_core%%-*}"
+  if [ "$a_core" = "$b_core" ]; then
+    return 0
+  fi
+  local lower
+  lower=$(printf '%s\n%s\n' "$a_core" "$b_core" | sort -V | head -n1)
+  [ "$lower" = "$b_core" ]
+}
+
+# Read the backend version from /health, cache it, return it on stdout.
+get_backend_version() {
+  if [ -z "$BACKEND_VERSION" ]; then
+    BACKEND_VERSION=$(curl -sf --max-time 5 "${BASE_URL}/health" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+    if [ -z "$BACKEND_VERSION" ]; then
+      BACKEND_VERSION="unknown"
+    fi
+  fi
+  echo "$BACKEND_VERSION"
+}
+
+# Map of feature flag -> minimum backend version that ships it.
+# Add entries here in the same PR that ships the feature.
+_feature_min_version() {
+  case "$1" in
+    "conan_remote_search_forward")    echo "1.3.0" ;;
+    "conan_virtual_search_aggregate") echo "1.3.0" ;;
+    # recipe_latest / recipe_revisions filter by user/channel rather than
+    # collapsing variants to _/_/latest. Backported via artifact-keeper#869.
+    # v1.1.x backend lacks this scoping; tracked for v1.1.10 backport in #986.
+    "conan_user_channel_scoping")     echo "1.2.0" ;;
+    # Virtual-repo recipe_latest fans out across non-Remote members. Landed
+    # via artifact-keeper#875. v1.1.x backend lacks this; tracked in #986.
+    "conan_virtual_recipe_fanout")    echo "1.2.0" ;;
+    "maven_virtual_snapshot")         echo "1.2.0" ;;
+    "guest_access_toggle")            echo "1.2.0" ;;
+    "opensearch_indexing")            echo "1.2.0" ;;
+    # proxy_stampede_protection: ProxyService gains a per-(repo,path) semaphore
+    # capping concurrent upstream fetches at proxy_max_concurrent_fetches and
+    # emitting 503 when proxy_queue_timeout_secs fires. Tracked by backend
+    # work to land in v1.2.0 (companion to discussion #872 customer pain).
+    "proxy_stampede_protection")      echo "1.2.0" ;;
+    # Strict-contract assertions on virtual repository member endpoints
+    # (PUT /:key/members, DELETE /:key/members/:member_key, PUT /:key/cache-ttl).
+    # The endpoints themselves exist in 1.1.x. This flag gates the v1.2.0
+    # follow-on tests (response-shape assertions, DELETE idempotency,
+    # malformed-JSON 400 contract, 401/403 auth-failure paths) so they
+    # only run against a 1.2.0+ backend and stay out of the in-flight
+    # 1.1.9 release-gate. Tracks artifact-keeper-test#92, #93, #94, #95.
+    "virtual_member_strict_contract") echo "1.2.0" ;;
+    # Auth/Epic-11 features. Targeted for v1.1.9 because security-flavoured
+    # work (rotation + token revocation on deactivate) is likely to land on
+    # the release/1.1.x maintenance branch as a backport rather than wait
+    # for the next minor. If a backport ships earlier than 1.1.9, drop the
+    # min-version here; if any of these slip past 1.1.9 to 1.2.0, raise it.
+    # Tracked: artifact-keeper#929, #930, #931 (milestone v1.1.9).
+    "refresh_token_rotation")         echo "1.1.9" ;;
+    "download_ticket_consumer")       echo "1.1.9" ;;
+    "user_deactivation_token_flush")  echo "1.1.9" ;;
+    # Conan error-path correctness work. v1.1.x conan handler lacks repo
+    # existence checks before format dispatch (uploads to non-existent repos
+    # return 500 instead of 404), the /v2/ping endpoint short-circuits before
+    # repo lookup (returns 200 for any repo path), and the file-upload handler
+    # panics on >255-char path segments instead of returning a structured
+    # error. These are correctness gaps that pre-date v1.1.x rather than
+    # regressions, so they're slated for v1.1.10 / v1.2.0. Tracked in
+    # artifact-keeper#990.
+    "conan_error_correctness")        echo "1.1.10" ;;
+    # webhook_event_producer: the in-process EventBus -> webhook_deliveries
+    # producer task. Subscribes to domain events and enqueues delivery rows
+    # for the existing retry scheduler. v1.1.x ships the wire contract
+    # (webhook CRUD, /test, signing, retry scheduler) but not the producer:
+    # rows only appear in webhook_deliveries when /test is hit synchronously.
+    # Real EventBus events do not produce rows on 1.1.x. Producer wire-up is
+    # epic artifact-keeper#919 (E3) for v1.2.0. Until then, tests that assert
+    # "delivery row appears after a domain event" must skip on 1.1.x backends
+    # to avoid hard-failing on the absence of an unshipped feature.
+    "webhook_event_producer")         echo "1.2.0" ;;
+    # proxy_ttl_eviction_correctness: the proxy correctly serves the
+    # cached upstream response within the configured cache_ttl_seconds
+    # window and only refetches after the TTL expires. v1.1.x backends
+    # have a latent bug where the within-TTL fetch already shows
+    # upstream's new content, indicating a missing or wrong cache-
+    # validity check in the proxy fetch path. Tracked for v1.2.0; the
+    # eviction E2E test gates against this feature so 1.1.x releases
+    # do not block on a known-broken behaviour.
+    "proxy_ttl_eviction_correctness") echo "1.2.0" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Skip the current test if the backend doesn't support the named feature.
+# Usage:
+#   begin_test "Search through remote proxy"
+#   require_feature "conan_remote_search_forward" || return
+#   ... rest of the test ...
+require_feature() {
+  local feature="$1"
+  local min_ver
+  min_ver=$(_feature_min_version "$feature") || {
+    fail "require_feature: unknown feature '$feature' (add to _feature_min_version map in tests/lib/common.sh)"
+    return 1
+  }
+  local backend_ver
+  backend_ver=$(get_backend_version)
+  if [ "$backend_ver" = "unknown" ]; then
+    skip "could not determine backend version, skipping ${feature}"
+    return 1
+  fi
+  if version_ge "$backend_ver" "$min_ver"; then
+    return 0
+  else
+    skip "feature '${feature}' requires backend >= ${min_ver}, running ${backend_ver}"
+    return 1
+  fi
+}
+
 auth_admin() {
   # Wait for backend readiness (handles parallel suite load bursts)
   local _ready=false
@@ -60,18 +273,41 @@ auth_admin() {
 
   local resp=""
   local _attempt
-  for _attempt in 1 2 3 4 5; do
-    if resp=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
+  local _http_status=""
+  local _body=""
+  local _max="$AUTH_ADMIN_MAX_ATTEMPTS"
+  local _delay="$AUTH_ADMIN_RETRY_DELAY"
+  for _attempt in $(seq 1 "$_max"); do
+    # Capture status + body separately so a 429 / 503 / 401 surfaces in logs.
+    # We deliberately drop -f here (it suppresses the body on >=400) so we can
+    # report what actually came back instead of an opaque "auth failed".
+    local _tmp
+    _tmp=$(mktemp)
+    _http_status=$(curl -s --max-time 10 -o "$_tmp" -w '%{http_code}' \
+      -X POST "${BASE_URL}/api/v1/auth/login" \
       -H "Content-Type: application/json" \
-      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) && [ -n "$resp" ]; then
+      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) || _http_status="000"
+    _body=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_http_status" = "200" ] && [ -n "$_body" ]; then
+      resp="$_body"
       break
     fi
-    resp=""
-    echo "  auth attempt ${_attempt}/5 failed, retrying in 3s..."
-    sleep 3
+
+    # Truncate body for log output to avoid spamming on large error pages.
+    local _body_snip="${_body:0:200}"
+    echo "  auth attempt ${_attempt}/${_max} failed (HTTP ${_http_status}, body: ${_body_snip:-<empty>}), retrying in ${_delay}s..."
+
+    # If we got a 429, honor Retry-After when present by waiting a bit longer.
+    if [ "$_http_status" = "429" ]; then
+      sleep "$(( _delay * 2 ))"
+    else
+      sleep "$_delay"
+    fi
   done
   if [ -z "$resp" ]; then
-    echo "FATAL: failed to authenticate as ${ADMIN_USER} at ${BASE_URL} after 5 attempts"
+    echo "FATAL: failed to authenticate as ${ADMIN_USER} at ${BASE_URL} after ${_max} attempts (last HTTP ${_http_status})"
     exit 1
   fi
 
@@ -95,6 +331,93 @@ format_auth_header() {
   echo "Authorization: Basic $(printf '%s:%s' "$ADMIN_USER" "$ADMIN_PASS" | base64)"
 }
 
+# PUT a file to a format-native endpoint with retry on transient auth/rate-limit
+# failures. Echoes the final HTTP status on stdout.
+#
+# The 1.1.x backend reauthenticates Basic credentials on every format-native
+# request via bcrypt(cost=12) inside spawn_blocking. Under back-to-back PUT
+# bursts within the same suite (and parallel suites sharing the same admin
+# user), the spawn_blocking pool can transiently drop a verify task, surfacing
+# as HTTP 401 even though credentials are valid. The 1.2.x backend grew
+# RATE_LIMIT_EXEMPT_USERNAMES (#697) to take the admin user off the auth
+# bucket, but that exemption was never backported to release/1.1.x, so the
+# release-gate (which targets 1.1.6) needs test-side resilience.
+#
+# Retries on HTTP 401, 429, 503, and network errors. Returns the final status
+# so callers can assert success.
+#
+# Usage:
+#   status=$(format_put_with_retry "$URL" "$DATA_FILE" [extra_curl_args...])
+format_put_with_retry() {
+  local url="$1"
+  local data_file="$2"
+  shift 2
+  local _max="${FORMAT_PUT_MAX_ATTEMPTS:-4}"
+  local _delay="${FORMAT_PUT_RETRY_DELAY:-2}"
+  local _attempt _status="000"
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X PUT \
+      -H "$(format_auth_header)" \
+      -H "Content-Type: application/octet-stream" \
+      --data-binary "@${data_file}" \
+      "$@" \
+      "$url" 2>/dev/null) || _status="000"
+
+    # Success
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      echo "$_status"
+      return 0
+    fi
+
+    # Non-transient failure: stop retrying
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+  echo "$_status"
+  return 1
+}
+
+# GET from a format-native endpoint with retry on transient auth/rate-limit
+# failures. Writes body to OUT_FILE (-) and echoes the final HTTP status.
+# Same retry rationale as format_put_with_retry.
+#
+# Usage:
+#   status=$(format_get_with_retry "$URL" "$OUT_FILE")
+format_get_with_retry() {
+  local url="$1"
+  local out_file="${2:-/dev/null}"
+  local _max="${FORMAT_PUT_MAX_ATTEMPTS:-4}"
+  local _delay="${FORMAT_PUT_RETRY_DELAY:-2}"
+  local _attempt _status="000"
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o "$out_file" -w '%{http_code}' $CURL_TIMEOUT \
+      -H "$(format_auth_header)" \
+      "$url" 2>/dev/null) || _status="000"
+
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      echo "$_status"
+      return 0
+    fi
+
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+  echo "$_status"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 #
@@ -110,6 +433,79 @@ CURL_TIMEOUT="--max-time 60 --connect-timeout 10"
 api_get() {
   local path="$1"; shift
   curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"
+}
+
+# Create a test user (admin auth) and echo the new user's UUID on stdout.
+# On failure, echoes empty string and the response body to stderr.
+#
+# Usage:
+#   USER_ID=$(create_test_user "$USERNAME" "$PASSWORD" "$EMAIL")
+create_test_user() {
+  local username="$1"
+  local password="$2"
+  local email="$3"
+  local resp
+  resp=$(api_post "/api/v1/users" \
+    "{\"username\":\"${username}\",\"password\":\"${password}\",\"email\":\"${email}\"}" 2>/dev/null) || true
+  local uid
+  uid=$(echo "$resp" | jq -r '.user.id // .id // empty')
+  if [ -z "$uid" ] || [ "$uid" = "null" ]; then
+    echo "create_test_user failed: ${resp:0:200}" >&2
+    echo ""
+    return 1
+  fi
+  echo "$uid"
+}
+
+# Log in as the named user and echo the access_token on stdout.
+# On failure, echoes empty string and the response body to stderr.
+#
+# Retries on HTTP 429 (auth rate-limit) because non-admin users are not in
+# RATE_LIMIT_EXEMPT_USERNAMES. When parallel suites burst-call /auth/login
+# (e.g. test-idor creates two users + logs one in, all in <1s), the bucket
+# can momentarily refuse the login that immediately follows. Same retry
+# budget as auth_admin: 5x3s = 15s. 429s honor a doubled delay.
+#
+# Usage:
+#   USER_TOKEN=$(login_as "$USERNAME" "$PASSWORD")
+login_as() {
+  local username="$1"
+  local password="$2"
+  local _max="${LOGIN_AS_MAX_ATTEMPTS:-5}"
+  local _delay="${LOGIN_AS_RETRY_DELAY:-3}"
+  local _attempt _http_status _body _tmp tok=""
+  for _attempt in $(seq 1 "$_max"); do
+    _tmp=$(mktemp)
+    _http_status=$(curl -s $CURL_TIMEOUT -o "$_tmp" -w '%{http_code}' \
+      -X POST -H "Content-Type: application/json" \
+      -d "{\"username\":\"${username}\",\"password\":\"${password}\"}" \
+      "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || _http_status="000"
+    _body=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_http_status" = "200" ] && [ -n "$_body" ]; then
+      tok=$(echo "$_body" | jq -r '.access_token // .token // empty')
+      if [ -n "$tok" ] && [ "$tok" != "null" ]; then
+        echo "$tok"
+        return 0
+      fi
+    fi
+
+    # Only retry on transient 429 / 503 / network. 401/400 are real failures.
+    if [ "$_http_status" != "429" ] && [ "$_http_status" != "503" ] && [ "$_http_status" != "000" ]; then
+      break
+    fi
+    if [ "$_attempt" -lt "$_max" ]; then
+      if [ "$_http_status" = "429" ]; then
+        sleep "$(( _delay * 2 ))"
+      else
+        sleep "$_delay"
+      fi
+    fi
+  done
+  echo "login_as failed for ${username} after ${_max} attempts (last HTTP ${_http_status}): ${_body:0:200}" >&2
+  echo ""
+  return 1
 }
 
 api_post() {
@@ -163,6 +559,29 @@ api_upload() {
 # ---------------------------------------------------------------------------
 
 # create_repo KEY FORMAT [REPO_TYPE] [UPSTREAM_URL]
+#
+# Creates a repository via POST /api/v1/repositories. The previous version
+# called `api_post ... > /dev/null` which used `curl -sf`: any non-2xx
+# returned non-zero with the body discarded, so callers (`fail "could not
+# create local OCI repo"`) had no signal about WHY the call failed.
+#
+# This rewrite adds two things:
+#   1. Visibility: on failure, print "create_repo <key> (format=... type=...)
+#      failed: HTTP <status> body=<body-snippet>" to stderr so the test
+#      log shows what the server actually said.
+#   2. Resilience: retry on the same transient class as
+#      format_put_with_retry (HTTP 401, 429, 503, network 000). The
+#      release/1.1.x admin path bcrypt-reauths every basic-auth call in
+#      spawn_blocking and can transiently drop a verify task under burst
+#      load. The 1.2.x backend grew RATE_LIMIT_EXEMPT_USERNAMES (#697) to
+#      take the admin user off the auth bucket, but that exemption was
+#      never backported to release/1.1.x. We saw this exact failure mode
+#      on v1.1.9-rc.5's release-gate run #25466619896: an identical
+#      create_local_repo "...." "docker" call PASSED in test-oci.sh and
+#      then FAILED 4 seconds later in test-oci-remote.sh against the same
+#      backend pod, with no distinguishing payload difference.
+#
+# Returns 0 on success, 1 on final failure (after retries exhausted).
 create_repo() {
   local key="$1"
   local format="$2"
@@ -176,24 +595,118 @@ create_repo() {
   fi
   payload="${payload}}"
 
-  api_post "/api/v1/repositories" "$payload" > /dev/null
+  local _max="${CREATE_REPO_MAX_ATTEMPTS:-4}"
+  local _delay="${CREATE_REPO_RETRY_DELAY:-2}"
+  local _attempt _status="000" _body_file _body=""
+  _body_file=$(mktemp)
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o "$_body_file" -w '%{http_code}' $CURL_TIMEOUT \
+      -X POST \
+      -H "$(auth_header)" \
+      -H "Content-Type: application/json" \
+      -d "$payload" \
+      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || _status="000"
+
+    # Success: 2xx
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      rm -f "$_body_file"
+      return 0
+    fi
+
+    # Non-transient failure: stop retrying.
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+
+  _body=$(head -c 400 "$_body_file" 2>/dev/null || true)
+  rm -f "$_body_file"
+  echo "create_repo ${key} (format=${format} type=${repo_type}) failed: HTTP ${_status} body=${_body}" >&2
+  return 1
 }
 
 create_local_repo() {
   create_repo "$1" "$2" "local"
 }
 
-create_remote_repo() {
-  local key="$1"
-  local format="$2"
-  local upstream_url="$3"
-  create_repo "$key" "$format" "remote" "$upstream_url"
+# ---------------------------------------------------------------------------
+# User / group helpers
+#
+# The backend's group membership endpoints expect user UUIDs, not usernames:
+#   POST   /api/v1/groups/{id}/members   { "user_ids": ["<uuid>", ...] }
+#   DELETE /api/v1/groups/{id}/members   { "user_ids": ["<uuid>", ...] }
+# Tests typically know the username (because they just created the user),
+# so these helpers resolve the username to a UUID and send the correct shape.
+# ---------------------------------------------------------------------------
+
+# resolve_user_id_by_username USERNAME
+# Looks up a user by exact username via /api/v1/users?search=<name> and prints
+# the matching user's UUID on stdout. Returns 1 if no exact match is found.
+resolve_user_id_by_username() {
+  local username="$1"
+  local resp
+  if ! resp=$(api_get "/api/v1/users?search=${username}&per_page=100" 2>/dev/null); then
+    return 1
+  fi
+  local id
+  id=$(echo "$resp" | jq -r --arg u "$username" '.items[]? | select(.username == $u) | .id' | head -n1)
+  if [ -z "$id" ] || [ "$id" = "null" ]; then
+    return 1
+  fi
+  echo "$id"
 }
 
-create_virtual_repo() {
-  local key="$1"
-  local format="$2"
-  create_repo "$key" "$format" "virtual"
+# add_group_members GROUP_ID USERNAME [USERNAME ...]
+# Resolves each username to a UUID and POSTs the user_ids array to the
+# group's members endpoint. Returns non-zero if any username cannot be
+# resolved or the API call fails.
+add_group_members() {
+  local group_id="$1"
+  shift
+  local ids=()
+  local username
+  for username in "$@"; do
+    local uid
+    if ! uid=$(resolve_user_id_by_username "$username"); then
+      echo "  resolve_user_id_by_username: no user found for '${username}'"
+      return 1
+    fi
+    ids+=("$uid")
+  done
+  local payload
+  payload=$(printf '%s\n' "${ids[@]}" | jq -R . | jq -s '{user_ids: .}')
+  api_post "/api/v1/groups/${group_id}/members" "$payload"
+}
+
+# remove_group_members GROUP_ID USERNAME [USERNAME ...]
+# Resolves usernames to UUIDs and DELETEs the user_ids array from the
+# group's members endpoint. The backend expects a JSON body on DELETE,
+# which is why we cannot simply use api_delete with a path suffix.
+remove_group_members() {
+  local group_id="$1"
+  shift
+  local ids=()
+  local username
+  for username in "$@"; do
+    local uid
+    if ! uid=$(resolve_user_id_by_username "$username"); then
+      echo "  resolve_user_id_by_username: no user found for '${username}'"
+      return 1
+    fi
+    ids+=("$uid")
+  done
+  local payload
+  payload=$(printf '%s\n' "${ids[@]}" | jq -R . | jq -s '{user_ids: .}')
+  curl -sf $CURL_TIMEOUT -X DELETE \
+    -H "$(auth_header)" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "${BASE_URL}/api/v1/groups/${group_id}/members"
 }
 
 # ---------------------------------------------------------------------------
@@ -247,7 +760,16 @@ pass() {
 }
 
 fail() {
+  # Usage: fail <msg> [body]
+  #
+  # The optional <body> emits as a CDATA section inside the JUnit
+  # <failure> element so dashboards (Jenkins, ReportPortal, GitHub
+  # test reporter) render multi-line diagnostic context instead of
+  # truncating the message attribute at ~120 chars. Use it for
+  # response snippets, scan ids, kubectl commands, anything an
+  # operator needs to triage without re-running the gate.
   local msg="${1:-assertion failed}"
+  local body="${2:-}"
   local duration=$(( $(date +%s) - _TEST_START ))
   _FAIL_COUNT=$(( _FAIL_COUNT + 1 ))
   local xml_name
@@ -256,11 +778,24 @@ fail() {
   xml_suite=$(_xml_escape "$_SUITE_NAME")
   local xml_msg
   xml_msg=$(_xml_escape "$msg")
-  _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
+  if [ -n "$body" ]; then
+    # Defuse any embedded "]]>" so the CDATA terminator cannot be
+    # injected via a response snippet that happens to contain it.
+    local safe_body="${body//]]>/]]]]><![CDATA[>}"
+    _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
+    <failure message=\"${xml_msg}\"><![CDATA[${safe_body}]]></failure>
+  </testcase>
+"
+  else
+    _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
     <failure message=\"${xml_msg}\"/>
   </testcase>
 "
+  fi
   echo "  FAIL: ${msg} (${duration}s)"
+  if [ -n "$body" ]; then
+    echo "$body" | sed 's/^/    /'
+  fi
   # NOTE: does NOT exit. end_suite handles the final exit code.
 }
 
@@ -281,6 +816,80 @@ skip() {
   echo "  SKIP: ${reason} (${duration}s)"
 }
 
+## skip_suite REASON
+##
+## Emit a JUnit testcase with <skipped/> for the SUITE itself, then exit
+## the script. Use this for pre-flight skips that fire BEFORE any
+## begin_test (e.g. "tool not installed"). Without this helper, a bare
+## `exit 0` after a pre-flight check writes nothing to JUnit and the
+## dashboard shows "no testcases" instead of an explicit skip reason.
+##
+## In release-gate context, if RELEASE_GATE=1 is set, skip_suite turns
+## into a hard FAIL: a skipped gate is a silent-success class
+## (#870/#871/#888) we want to catch loudly. Local-dev runs that don't
+## set RELEASE_GATE keep the graceful skip.
+skip_suite() {
+  local reason="${1:-suite skipped}"
+  local duration=0
+  if [ -n "${_SUITE_START:-}" ]; then
+    duration=$(( $(date +%s) - _SUITE_START ))
+  fi
+
+  if [ "${RELEASE_GATE:-0}" = "1" ]; then
+    echo "  FAIL: skip_suite called with RELEASE_GATE=1 (reason: ${reason})"
+    echo "        a skipped suite in release-gate is silent-success; failing the gate"
+    local xml_name
+    xml_name=$(_xml_escape "preflight")
+    local xml_suite
+    xml_suite=$(_xml_escape "$_SUITE_NAME")
+    local xml_reason
+    xml_reason=$(_xml_escape "skip in release-gate context: ${reason}")
+    cat > "${JUNIT_OUTPUT_DIR}/${_SUITE_NAME}.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="${xml_suite}" tests="1" failures="1" skipped="0" time="${duration}">
+  <testcase name="${xml_name}" classname="${xml_suite}" time="${duration}">
+    <failure message="${xml_reason}"/>
+  </testcase>
+</testsuite>
+EOF
+    exit 1
+  fi
+
+  echo "  SKIP_SUITE: ${reason} (${duration}s)"
+  local xml_name
+  xml_name=$(_xml_escape "preflight")
+  local xml_suite
+  xml_suite=$(_xml_escape "$_SUITE_NAME")
+  local xml_reason
+  xml_reason=$(_xml_escape "$reason")
+  cat > "${JUNIT_OUTPUT_DIR}/${_SUITE_NAME}.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="${xml_suite}" tests="1" failures="0" skipped="1" time="${duration}">
+  <testcase name="${xml_name}" classname="${xml_suite}" time="${duration}">
+    <skipped message="${xml_reason}"/>
+  </testcase>
+</testsuite>
+EOF
+  exit 0
+}
+
+## assert_http_2xx STATUS [MSG]
+##
+## Assert that STATUS is in the 200-299 range. Returns non-zero if not.
+## Replaces the inlined `[ -ge 200 -lt 300 ] 2>/dev/null` pattern that
+## was duplicated across native-client tests; the `2>/dev/null` masked
+## arithmetic failures (e.g. when STATUS was the literal string "000")
+## and made debugging painful.
+assert_http_2xx() {
+  local status="${1:-}"
+  local msg="${2:-HTTP status not in 2xx}"
+  if [[ "$status" =~ ^[0-9]+$ ]] && [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
+    return 0
+  fi
+  fail "$msg (got status='$status')"
+  return 1
+}
+
 end_suite() {
   local total_duration=$(( $(date +%s) - _SUITE_START ))
   local total=$(( _PASS_COUNT + _FAIL_COUNT + _SKIP_COUNT ))
@@ -299,6 +908,19 @@ end_suite() {
 <testsuite name="${xml_suite}" tests="${total}" failures="${_FAIL_COUNT}" skipped="${_SKIP_COUNT}" time="${total_duration}">
 ${_JUNIT_CASES}</testsuite>
 EOF
+
+  # EXPECT_FAILURE self-test mode: inverts the exit code so an author can
+  # point the suite at a known-broken backend (e.g. semaphore disabled) and
+  # confirm the load-bearing assertion actually catches it. See the
+  # "EXPECT_FAILURE self-test mode" block above for full semantics.
+  if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
+    if [ "$_FAIL_COUNT" -gt 0 ]; then
+      echo "EXPECT_FAILURE=1: at least one test failed as expected; exiting 0"
+      exit 0
+    fi
+    echo "EXPECT_FAILURE=1: every test passed but a failure was expected; exiting 1"
+    exit 1
+  fi
 
   if [ "$_FAIL_COUNT" -gt 0 ]; then
     exit 1
@@ -415,16 +1037,335 @@ require_cmd() {
 }
 
 # ---------------------------------------------------------------------------
+# Composable EXIT trap (LIFO)
+# ---------------------------------------------------------------------------
+#
+# Bash only supports one EXIT trap per shell, so multiple `trap '...' EXIT`
+# calls clobber each other. Tests that boot fixtures (mock upstreams, sidecar
+# processes) need to chain cleanups onto whatever setup_workdir already
+# registered.
+#
+# Usage:
+#   add_exit_handler 'stop_mock_upstream'
+#   add_exit_handler 'rm -rf "$STATE_DIR"'
+# Handlers run in LIFO order (last-added first), each in a subshell-safe form
+# so a failing handler does not block subsequent cleanups.
+
+_EXIT_HANDLERS=()
+_EXIT_HANDLERS_INSTALLED=0
+
+_run_exit_handlers() {
+  local rc=$?
+  local i
+  for (( i=${#_EXIT_HANDLERS[@]}-1; i>=0; i-- )); do
+    eval "${_EXIT_HANDLERS[$i]}" || true
+  done
+  return $rc
+}
+
+add_exit_handler() {
+  local cmd="$1"
+  _EXIT_HANDLERS+=("$cmd")
+  if [ "$_EXIT_HANDLERS_INSTALLED" -eq 0 ]; then
+    trap _run_exit_handlers EXIT
+    _EXIT_HANDLERS_INSTALLED=1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# TOTP helper
+#
+# Compute the current 6-digit TOTP code for a base32 secret using Python's
+# stdlib (hmac/base64). Replaces oathtool so we do not have to extend the
+# ARC runner image.
+#
+# Usage:
+#   CODE=$(totp_code "$TOTP_SECRET")        # current window
+#   CODE=$(totp_code "$TOTP_SECRET" wait)   # wait to next window if the
+#                                           # last call returned the same
+#                                           # code (avoids replay rejection
+#                                           # when calling /enable then
+#                                           # /disable back-to-back)
+# ---------------------------------------------------------------------------
+
+_totp_state_file() {
+  # Shared state across $() subshells so 'wait' mode can detect a repeat
+  # call. WORK_DIR is per-suite (set by setup_workdir), so this file is
+  # naturally scoped to a single test script.
+  echo "${WORK_DIR:-/tmp}/.totp_last_window_${PPID:-$$}"
+}
+
+_totp_compute() {
+  python3 - "$1" <<'PY'
+import base64, hmac, hashlib, struct, sys, time
+secret = sys.argv[1].strip().upper().replace(" ", "")
+pad = (-len(secret)) % 8
+key = base64.b32decode(secret + ("=" * pad))
+counter = int(time.time() // 30)
+msg = struct.pack(">Q", counter)
+digest = hmac.new(key, msg, hashlib.sha1).digest()
+offset = digest[-1] & 0x0F
+code = (struct.unpack(">I", digest[offset:offset+4])[0] & 0x7FFFFFFF) % 1000000
+print(f"{code:06d} {counter}")
+PY
+}
+
+totp_code() {
+  local secret="$1"
+  local mode="${2:-now}"
+  if [ -z "$secret" ]; then
+    echo "totp_code: empty secret" >&2
+    return 1
+  fi
+  local out code window
+  if [ "$mode" = "wait" ]; then
+    local state_file last_window
+    state_file=$(_totp_state_file)
+    last_window=$(cat "$state_file" 2>/dev/null || echo 0)
+    out=$(_totp_compute "$secret") || return 1
+    code="${out%% *}"; window="${out##* }"
+    if [ "$window" -le "$last_window" ]; then
+      local now_sec sleep_for
+      now_sec=$(date +%s)
+      sleep_for=$(( 30 - (now_sec % 30) + 1 ))
+      sleep "$sleep_for"
+      out=$(_totp_compute "$secret") || return 1
+      code="${out%% *}"; window="${out##* }"
+    fi
+    echo "$window" > "$state_file" 2>/dev/null || true
+  else
+    out=$(_totp_compute "$secret") || return 1
+    code="${out%% *}"; window="${out##* }"
+    local state_file
+    state_file=$(_totp_state_file)
+    echo "$window" > "$state_file" 2>/dev/null || true
+  fi
+  echo "$code"
+}
+
+# ---------------------------------------------------------------------------
 # Temp directory with automatic cleanup
 # ---------------------------------------------------------------------------
 
 WORK_DIR=""
 
+_workdir_cleanup() {
+  if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
+    rm -rf "$WORK_DIR"
+  fi
+}
+
 setup_workdir() {
   WORK_DIR="$(mktemp -d)"
-  # shellcheck disable=SC2064
-  trap "rm -rf \"$WORK_DIR\"" EXIT
+  add_exit_handler "rm -rf \"$WORK_DIR\""
 }
+
+# enable_expect_failure_trap: deprecated no-op shim.
+#
+# Earlier auth tests (PR #98) called this helper expecting it to install an
+# EXIT trap that inverts the exit code under EXPECT_FAILURE=1. That logic now
+# lives centrally in end_suite() (see "EXPECT_FAILURE self-test mode" above).
+# Calling both would double-invert and break the self-test signal, so this
+# shim is intentionally empty -- it preserves the test interface during
+# rebase without altering behavior.
+enable_expect_failure_trap() {
+  : # no-op; end_suite handles EXPECT_FAILURE inversion centrally
+}
+
+# ---------------------------------------------------------------------------
+# Mock HTTP upstream fixture
+# ---------------------------------------------------------------------------
+#
+# Boots tests/lib/mock-upstream.py as a controllable HTTP upstream the backend
+# can dial. Used by proxy/cache tests (cache-poisoning, cache-stampede, ETag,
+# stale-on-error, etc.) to seed bytes, swap content mid-flight, and read
+# per-request counters.
+#
+# Globals set on success:
+#   MOCK_PID            background server PID
+#   MOCK_PORT           bound port (random by default; honors MOCK_PORT env)
+#   MOCK_STATE_DIR      state directory the mock reads from / writes to
+#   MOCK_BASE_URL       URL the *backend pod* should use (uses MOCK_UPSTREAM_HOSTNAME)
+#   MOCK_LOCAL_URL      URL the test runner should use (127.0.0.1)
+#
+# Auto-cleanup is registered via add_exit_handler so callers don't have to
+# manage trap stacks. Honors skip_teardown (env: SKIP_TEARDOWN=1) for debugging.
+#
+# Usage:
+#   setup_workdir
+#   start_mock_upstream "${WORK_DIR}/mock-state" || skip_suite "mock did not boot"
+#   echo "payload" > "${MOCK_STATE_DIR}/files/pkg/v1/payload.bin"
+
+# shellcheck disable=SC2034 # consumed by tests that source this file
+MOCK_PID=""
+# shellcheck disable=SC2034
+MOCK_PORT=""
+# shellcheck disable=SC2034
+MOCK_STATE_DIR=""
+# shellcheck disable=SC2034
+MOCK_BASE_URL=""
+# shellcheck disable=SC2034
+MOCK_LOCAL_URL=""
+
+# Pick an unused TCP port. Honors MOCK_PORT env (CI can pin); otherwise asks
+# the kernel for a free port via getsockname(). Avoids the 18080 collision
+# class when multiple suites run on the same runner pod.
+_pick_mock_port() {
+  if [ -n "${MOCK_PORT_OVERRIDE:-}" ]; then
+    echo "$MOCK_PORT_OVERRIDE"
+    return 0
+  fi
+  python3 -c '
+import socket
+s = socket.socket()
+s.bind(("0.0.0.0", 0))
+print(s.getsockname()[1])
+s.close()
+'
+}
+
+# start_mock_upstream STATE_DIR
+# Boots the mock, waits up to 10s for /__readyz, registers an EXIT handler.
+# Returns 0 on success; non-zero (and prints diagnostics) on failure.
+start_mock_upstream() {
+  local state_dir="$1"
+  MOCK_STATE_DIR="$state_dir"
+  mkdir -p "${MOCK_STATE_DIR}/files"
+  MOCK_PORT="$(_pick_mock_port)"
+
+  local mock_script
+  mock_script="$(dirname "${BASH_SOURCE[0]}")/mock-upstream.py"
+  if [ ! -f "$mock_script" ]; then
+    echo "start_mock_upstream: mock-upstream.py not found at $mock_script" >&2
+    return 1
+  fi
+
+  MOCK_STATE_DIR="$MOCK_STATE_DIR" MOCK_PORT="$MOCK_PORT" \
+    python3 "$mock_script" \
+    > "${WORK_DIR:-/tmp}/mock.out" 2> "${WORK_DIR:-/tmp}/mock.err" &
+  MOCK_PID=$!
+  # Disown so a bare `wait` in the caller (e.g. fan-out concurrency loops)
+  # does not block on the long-lived mock process. Cleanup is still handled
+  # via add_exit_handler -> stop_mock_upstream.
+  disown "$MOCK_PID" 2>/dev/null || true
+
+  MOCK_LOCAL_URL="http://127.0.0.1:${MOCK_PORT}"
+  if [ -n "${MOCK_UPSTREAM_HOSTNAME:-}" ]; then
+    MOCK_BASE_URL="http://${MOCK_UPSTREAM_HOSTNAME}:${MOCK_PORT}"
+  else
+    # shellcheck disable=SC2034 # consumed by sourcing test scripts
+    MOCK_BASE_URL="$MOCK_LOCAL_URL"
+  fi
+
+  add_exit_handler "stop_mock_upstream"
+
+  # Readiness probe: __readyz bypasses logging/counters/delay so the wait
+  # itself doesn't pollute mock state.
+  local code
+  for _ in $(seq 1 20); do
+    if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+      echo "start_mock_upstream: mock died during boot" >&2
+      [ -f "${WORK_DIR:-/tmp}/mock.err" ] && cat "${WORK_DIR:-/tmp}/mock.err" >&2 || true
+      return 1
+    fi
+    code=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "${MOCK_LOCAL_URL}/__readyz" 2>/dev/null) || code="000"
+    if [ "$code" = "200" ]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "start_mock_upstream: not ready on ${MOCK_LOCAL_URL} after 10s" >&2
+  return 1
+}
+
+stop_mock_upstream() {
+  if [ -n "${MOCK_PID:-}" ] && kill -0 "$MOCK_PID" 2>/dev/null; then
+    kill "$MOCK_PID" 2>/dev/null || true
+    # SIGTERM, then escalate after 2s if the handler is mid-sleep (stampede
+    # tests can have requests blocked in time.sleep at shutdown).
+    local i
+    for i in 1 2 3 4; do
+      kill -0 "$MOCK_PID" 2>/dev/null || break
+      sleep 0.5
+    done
+    if kill -0 "$MOCK_PID" 2>/dev/null; then
+      kill -9 "$MOCK_PID" 2>/dev/null || true
+    fi
+    wait "$MOCK_PID" 2>/dev/null || true
+  fi
+  MOCK_PID=""
+}
+
+# wait_for_file_value FILE EXPECTED_REGEX TIMEOUT_SECS
+# Polls FILE every 0.2s until its content matches EXPECTED_REGEX or the
+# timeout fires. Replaces ad-hoc `sleep N` waits for fixture state changes.
+# Returns 0 on match, 1 on timeout.
+wait_for_file_value() {
+  local file="$1"
+  local pattern="$2"
+  local timeout="${3:-5}"
+  local elapsed=0
+  local step=0.2
+  local steps
+  steps=$(awk -v t="$timeout" -v s="$step" 'BEGIN{print int(t/s)}')
+  for _ in $(seq 1 "$steps"); do
+    if [ -f "$file" ] && grep -qE "$pattern" "$file" 2>/dev/null; then
+      return 0
+    fi
+    sleep "$step"
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+# wait_for_counter_stable FILE TIMEOUT_SECS [STABLE_WINDOW_SECS]
+# Polls a numeric counter file (e.g. mock peak-inflight) until its value has
+# not changed for STABLE_WINDOW_SECS (default 0.6s) or TIMEOUT_SECS fires.
+# Use this in place of `sleep 1` when reading mock-upstream peak counters.
+# Echoes the final value on stdout. Returns 0 if stable; 1 on timeout.
+wait_for_counter_stable() {
+  local file="$1"
+  local timeout="${2:-5}"
+  local stable_window="${3:-0.6}"
+  local last="" cur=""
+  local stable_for=0
+  local elapsed=0
+  local steps
+  steps=$(awk -v t="$timeout" 'BEGIN{print int(t/0.2)}')
+  local stable_steps
+  stable_steps=$(awk -v t="$stable_window" 'BEGIN{print int(t/0.2)}')
+  for _ in $(seq 1 "$steps"); do
+    cur=$(cat "$file" 2>/dev/null || echo "")
+    if [ -n "$cur" ] && [ "$cur" = "$last" ]; then
+      stable_for=$((stable_for + 1))
+      if [ "$stable_for" -ge "$stable_steps" ]; then
+        echo "$cur"
+        return 0
+      fi
+    else
+      stable_for=0
+      last="$cur"
+    fi
+    sleep 0.2
+    elapsed=$((elapsed + 1))
+  done
+  echo "$last"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# EXPECT_FAILURE self-test mode
+# ---------------------------------------------------------------------------
+#
+# When EXPECT_FAILURE=1 is set, the *suite-level* exit code is inverted at
+# end_suite: a passing suite returns non-zero and a failing suite returns 0.
+# Use this to verify that a load-bearing assertion actually catches a known
+# breakage (e.g. point the test at a backend image with the semaphore
+# disabled and confirm EXIT=0 with the inversion). Without this, "the test
+# passed" is indistinguishable from "the test could never fail".
+#
+# This only inverts the exit code; it does NOT silence per-test failure
+# output, so logs still tell you which assertion fired.
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -439,4 +1380,262 @@ _xml_escape() {
   s="${s//\"/&quot;}"
   s="${s//\'/&apos;}"
   echo "$s"
+}
+
+# ---------------------------------------------------------------------------
+# Remote / Virtual repository helpers
+# ---------------------------------------------------------------------------
+
+# create_remote_repo KEY FORMAT UPSTREAM_URL [DESCRIPTION]
+# Creates a remote (proxy) repository that caches artifacts from an upstream.
+create_remote_repo() {
+  local key="$1"
+  local format="$2"
+  local upstream_url="$3"
+  local description="${4:-Remote proxy for ${format}}"
+
+  local payload
+  payload=$(jq -n \
+    --arg key "$key" \
+    --arg name "$key" \
+    --arg format "$format" \
+    --arg upstream_url "$upstream_url" \
+    --arg description "$description" \
+    '{key: $key, name: $name, format: $format, repo_type: "remote", upstream_url: $upstream_url, description: $description, is_public: true}')
+
+  api_post "/api/v1/repositories" "$payload" > /dev/null
+}
+
+# create_virtual_repo KEY FORMAT [MEMBER_KEYS] [DESCRIPTION]
+# Creates a virtual repository that aggregates multiple backing repos.
+# MEMBER_KEYS is a comma-separated list of repository keys (e.g. "local-npm,remote-npm").
+# If omitted, the virtual repo is created with no members (add them later via the API).
+create_virtual_repo() {
+  local key="$1"
+  local format="$2"
+  local member_keys="${3:-}"
+  local description="${4:-Virtual repo for ${format}}"
+
+  local payload
+  payload=$(jq -n \
+    --arg key "$key" \
+    --arg name "$key" \
+    --arg format "$format" \
+    --arg description "$description" \
+    '{key: $key, name: $name, format: $format, repo_type: "virtual", description: $description, is_public: true}')
+
+  api_post "/api/v1/repositories" "$payload" > /dev/null
+
+  # Add each member repository (if any specified). Use a subshell tr to split
+  # on commas so we don't leak `IFS=','` into downstream `api_post` calls -- the
+  # earlier in-place `local IFS=','` form caused `$CURL_TIMEOUT` to splat as a
+  # single arg rather than multiple flags, producing
+  # `curl: option --max-time 60 --connect-timeout 10: is unknown`.
+  if [ -n "$member_keys" ]; then
+    local member
+    for member in $(printf '%s\n' "$member_keys" | tr ',' '\n'); do
+      local member_payload
+      member_payload=$(jq -n --arg key "$member" '{member_key: $key}')
+      api_post "/api/v1/repositories/${key}/members" "$member_payload" > /dev/null
+    done
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Scan helpers
+# ---------------------------------------------------------------------------
+
+# wait_for_scan REPO_KEY ARTIFACT_PATH [TIMEOUT_SECS]
+# Polls the scan endpoint until the status is no longer "pending" or "scanning".
+# Returns the final scan status on stdout.
+wait_for_scan() {
+  local repo_key="$1"
+  local artifact_path="$2"
+  local timeout="${3:-60}"
+
+  local elapsed=0
+  local status=""
+  while [ "$elapsed" -lt "$timeout" ]; do
+    local resp
+    resp=$(api_get "/api/v1/repositories/${repo_key}/artifacts/${artifact_path}/security/scan" 2>/dev/null) || true
+    if [ -n "$resp" ]; then
+      status=$(echo "$resp" | jq -r '.scan_status // .status // "unknown"')
+      if [ "$status" != "pending" ] && [ "$status" != "scanning" ]; then
+        echo "$status"
+        return 0
+      fi
+    fi
+    sleep 3
+    elapsed=$(( elapsed + 3 ))
+  done
+
+  echo "${status:-timeout}"
+  return 1
+}
+
+# assert_scan_completed REPO_KEY ARTIFACT_PATH
+# Waits for the scan to finish and asserts the status is "completed" or "clean".
+assert_scan_completed() {
+  local repo_key="$1"
+  local artifact_path="$2"
+
+  local status
+  if ! status=$(wait_for_scan "$repo_key" "$artifact_path" 60); then
+    fail "scan did not complete within 60s for ${repo_key}/${artifact_path} (status: ${status})"
+    return 1
+  fi
+
+  if [ "$status" != "completed" ] && [ "$status" != "clean" ]; then
+    fail "expected scan status 'completed' or 'clean', got '${status}' for ${repo_key}/${artifact_path}"
+    return 1
+  fi
+  return 0
+}
+
+# assert_scan_has_findings REPO_KEY ARTIFACT_PATH
+# Waits for the scan and verifies the findings array is non-empty.
+assert_scan_has_findings() {
+  local repo_key="$1"
+  local artifact_path="$2"
+
+  wait_for_scan "$repo_key" "$artifact_path" 60 > /dev/null || true
+
+  local resp
+  resp=$(api_get "/api/v1/repositories/${repo_key}/artifacts/${artifact_path}/security/scan") || {
+    fail "failed to fetch scan results for ${repo_key}/${artifact_path}"
+    return 1
+  }
+
+  local count
+  count=$(echo "$resp" | jq '.findings | length // 0')
+  if [ "$count" -eq 0 ]; then
+    fail "expected scan findings for ${repo_key}/${artifact_path}, got none"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# SBOM helpers
+# ---------------------------------------------------------------------------
+
+# get_sbom REPO_KEY ARTIFACT_NAME ARTIFACT_VERSION
+# Fetches the SBOM for a specific artifact version. Outputs the JSON response.
+get_sbom() {
+  local repo_key="$1"
+  local artifact_name="$2"
+  local artifact_version="$3"
+
+  api_get "/api/v1/repositories/${repo_key}/artifacts/${artifact_name}/${artifact_version}/sbom"
+}
+
+# assert_sbom_has_components REPO_KEY ARTIFACT_NAME ARTIFACT_VERSION [MIN_COUNT]
+# Fetches the SBOM and asserts the components array has at least MIN_COUNT entries.
+assert_sbom_has_components() {
+  local repo_key="$1"
+  local artifact_name="$2"
+  local artifact_version="$3"
+  local min_count="${4:-1}"
+
+  local resp
+  resp=$(get_sbom "$repo_key" "$artifact_name" "$artifact_version") || {
+    fail "failed to fetch SBOM for ${repo_key}/${artifact_name}@${artifact_version}"
+    return 1
+  }
+
+  local count
+  count=$(echo "$resp" | jq '.components | length // 0')
+  if [ "$count" -lt "$min_count" ]; then
+    fail "expected >= ${min_count} SBOM components for ${repo_key}/${artifact_name}@${artifact_version}, got ${count}"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Cache helpers
+# ---------------------------------------------------------------------------
+
+# assert_artifact_cached REPO_KEY ARTIFACT_PATH
+# Verifies that an artifact exists in the repository's artifact list.
+assert_artifact_cached() {
+  local repo_key="$1"
+  local artifact_path="$2"
+
+  local resp
+  resp=$(api_get "/api/v1/repositories/${repo_key}/artifacts") || {
+    fail "failed to list artifacts for ${repo_key}"
+    return 1
+  }
+
+  local found
+  found=$(echo "$resp" | jq --arg path "$artifact_path" '
+    if type == "array" then map(select(.path == $path or .name == $path)) | length
+    elif .items then [.items[] | select(.path == $path or .name == $path)] | length
+    else 0
+    end
+  ')
+  if [ "$found" -eq 0 ]; then
+    fail "artifact '${artifact_path}' not found in cached artifacts for ${repo_key}"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Proxy helpers
+# ---------------------------------------------------------------------------
+
+# proxy_and_verify REPO_KEY FORMAT PACKAGE_NAME PACKAGE_VERSION
+# Pulls an artifact through the remote proxy using the format-native endpoint,
+# then verifies it was cached locally.
+proxy_and_verify() {
+  local repo_key="$1"
+  local format="$2"
+  local package_name="$3"
+  local package_version="$4"
+
+  local pull_path=""
+  case "$format" in
+    npm)
+      pull_path="/${repo_key}/${package_name}/-/${package_name}-${package_version}.tgz"
+      ;;
+    pypi)
+      pull_path="/api/v1/pypi/${repo_key}/packages/${package_name}/${package_version}/${package_name}-${package_version}.tar.gz"
+      ;;
+    maven)
+      # Expects package_name as "group/artifact" (e.g. "org/example/mylib")
+      pull_path="/${repo_key}/${package_name}/${package_version}/${package_name##*/}-${package_version}.jar"
+      ;;
+    cargo)
+      pull_path="/api/v1/crates/${repo_key}/${package_name}/${package_version}/download"
+      ;;
+    nuget)
+      pull_path="/api/v1/nuget/${repo_key}/package/${package_name}/${package_version}/${package_name}.${package_version}.nupkg"
+      ;;
+    go)
+      pull_path="/${repo_key}/${package_name}/@v/${package_version}.zip"
+      ;;
+    docker|oci)
+      # For OCI/Docker, pull the manifest to trigger caching
+      pull_path="/v2/${repo_key}/${package_name}/manifests/${package_version}"
+      ;;
+    *)
+      pull_path="/api/v1/repositories/${repo_key}/artifacts/${package_name}/${package_version}"
+      ;;
+  esac
+
+  local http_status
+  http_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+    -H "$(format_auth_header)" \
+    "${BASE_URL}${pull_path}") || true
+
+  if [ "$http_status" -lt 200 ] 2>/dev/null || [ "$http_status" -ge 300 ] 2>/dev/null; then
+    fail "proxy pull failed for ${format}/${package_name}@${package_version}: HTTP ${http_status}"
+    return 1
+  fi
+
+  # Verify the artifact was cached
+  assert_artifact_cached "$repo_key" "${package_name}" || return 1
+  return 0
 }

@@ -109,14 +109,46 @@ fi
 
 # ---------------------------------------------------------------------------
 # Verify that the actual test credentials still work
+#
+# Six wrong-credential attempts above can trip the per-IP auth rate limiter
+# (429). admin is in RATE_LIMIT_EXEMPT_USERNAMES for username-bucket checks,
+# but the IP bucket counts every failed login regardless of username. So the
+# positive assertion below has to tolerate a transient 429 by waiting for
+# the bucket to refill. Same retry budget pattern as auth_admin / login_as
+# (PR #118): 5 attempts with 3s base delay, doubled on 429.
 # ---------------------------------------------------------------------------
 
 begin_test "Actual admin credentials are accepted"
-status=$(try_login "$ADMIN_USER" "$ADMIN_PASS")
+_max_attempts="${ADMIN_LOGIN_MAX_ATTEMPTS:-5}"
+_base_delay="${ADMIN_LOGIN_RETRY_DELAY:-3}"
+status="000"
+for _attempt in $(seq 1 "$_max_attempts"); do
+  status=$(try_login "$ADMIN_USER" "$ADMIN_PASS")
+  if [ "$status" = "200" ]; then
+    break
+  fi
+  # Only retry on transient throttling / readiness signals. 401 / 403 mean
+  # the creds genuinely don't work and retrying would just mask a real bug.
+  case "$status" in
+    429|503|000)
+      if [ "$_attempt" -lt "$_max_attempts" ]; then
+        if [ "$status" = "429" ]; then
+          sleep "$(( _base_delay * 2 ))"
+        else
+          sleep "$_base_delay"
+        fi
+        continue
+      fi
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 if [ "$status" = "200" ]; then
   pass
 else
-  fail "expected admin credentials to be accepted, got HTTP ${status}"
+  fail "expected admin credentials to be accepted, got HTTP ${status} after ${_max_attempts} attempts"
 fi
 
 end_suite
