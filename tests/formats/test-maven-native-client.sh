@@ -107,12 +107,40 @@ SETTINGS_FILE="${WORK_DIR}/settings.xml"
 LOCAL_REPO="${WORK_DIR}/.m2-local"
 mkdir -p "$LOCAL_REPO"
 
+# Maven 3.8.1+ ships a default mirror called `maven-default-http-blocker`
+# that refuses any plain-HTTP repository (mirrorOf = `external:http:*`).
+# In release-gate runs the backend lives at the cluster-internal HTTP URL
+# `http://artifact-keeper-backend.test-${RUN_ID}.svc.cluster.local:8080/maven/...`,
+# which the blocker rejects with:
+#   "Blocked mirror for repositories: [ak-test (...)] from the specified
+#    remote repositories: [central, maven-default-http-blocker]".
+#
+# We override the blocker by declaring our own mirror that captures the
+# `ak-test` repo id with `<blocked>false</blocked>`. Maven evaluates
+# user-defined mirrors before the built-in blocker, so this lets the
+# request through. The mirror url is the same as the upstream repo,
+# making the redirect a no-op. The mirror id needs matching credentials
+# in <servers> because Maven looks up auth by the resolved mirror id.
 cat > "$SETTINGS_FILE" <<EOF
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
   <localRepository>${LOCAL_REPO}</localRepository>
+  <mirrors>
+    <mirror>
+      <id>ak-test-allow-http</id>
+      <name>Allow plain-HTTP for ak-test cluster-internal repo</name>
+      <url>${MAVEN_URL}</url>
+      <mirrorOf>ak-test</mirrorOf>
+      <blocked>false</blocked>
+    </mirror>
+  </mirrors>
   <servers>
     <server>
       <id>ak-test</id>
+      <username>${ADMIN_USER}</username>
+      <password>${ADMIN_PASS}</password>
+    </server>
+    <server>
+      <id>ak-test-allow-http</id>
       <username>${ADMIN_USER}</username>
       <password>${ADMIN_PASS}</password>
     </server>
@@ -130,17 +158,39 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "mvn deploy:deploy-file pushes JAR + POM"
+# The maven-deploy-plugin (default v2.7) uses the legacy Wagon HTTP transport,
+# which has no built-in retry. A transient 401/5xx from the backend during the
+# initial PUT (POM upload) tanks the whole deploy. Run 25214268566 hit this on
+# v1.1.6 with no test/backend changes vs the run that passed (25194405511);
+# the deploy reported "401 Unauthorized" while curl-based maven, mvn
+# dependency:get, and other format tests in the same namespace worked fine.
+#
+# Retry up to 3 times on any failure with a 2s backoff, mirroring the policy
+# already used by auth_admin() in tests/lib/common.sh and the password-change
+# retry added in PR #125.
 deploy_log="${WORK_DIR}/mvn-deploy.log"
-if mvn -B -q --settings "$SETTINGS_FILE" \
-    deploy:deploy-file \
-    -Dfile="$JAR_FILE" \
-    -DpomFile="$POM_FILE" \
-    -DrepositoryId="ak-test" \
-    -Durl="$MAVEN_URL" \
-    > "$deploy_log" 2>&1; then
+deploy_attempts=3
+deploy_ok=false
+for deploy_attempt in $(seq 1 "$deploy_attempts"); do
+  if mvn -B -q --settings "$SETTINGS_FILE" \
+      deploy:deploy-file \
+      -Dfile="$JAR_FILE" \
+      -DpomFile="$POM_FILE" \
+      -DrepositoryId="ak-test" \
+      -Durl="$MAVEN_URL" \
+      > "$deploy_log" 2>&1; then
+    deploy_ok=true
+    break
+  fi
+  if [ "$deploy_attempt" -lt "$deploy_attempts" ]; then
+    echo "  mvn deploy:deploy-file attempt ${deploy_attempt}/${deploy_attempts} failed, retrying in 2s..."
+    sleep 2
+  fi
+done
+if $deploy_ok; then
   pass
 else
-  fail "mvn deploy:deploy-file failed; tail of log: $(tail -n 20 "$deploy_log" | tr '\n' ' ')"
+  fail "mvn deploy:deploy-file failed after ${deploy_attempts} attempts; tail of log: $(tail -n 20 "$deploy_log" | tr '\n' ' ')"
 fi
 
 # -------------------------------------------------------------------------
@@ -153,12 +203,27 @@ PULL_REPO="${WORK_DIR}/.m2-pull"
 mkdir -p "$PULL_REPO"
 
 PULL_SETTINGS="${WORK_DIR}/settings-pull.xml"
+# Same http-blocker override as above, but for the pull-side settings.
 cat > "$PULL_SETTINGS" <<EOF
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
   <localRepository>${PULL_REPO}</localRepository>
+  <mirrors>
+    <mirror>
+      <id>ak-test-allow-http</id>
+      <name>Allow plain-HTTP for ak-test cluster-internal repo</name>
+      <url>${MAVEN_URL}</url>
+      <mirrorOf>ak-test</mirrorOf>
+      <blocked>false</blocked>
+    </mirror>
+  </mirrors>
   <servers>
     <server>
       <id>ak-test</id>
+      <username>${ADMIN_USER}</username>
+      <password>${ADMIN_PASS}</password>
+    </server>
+    <server>
+      <id>ak-test-allow-http</id>
       <username>${ADMIN_USER}</username>
       <password>${ADMIN_PASS}</password>
     </server>

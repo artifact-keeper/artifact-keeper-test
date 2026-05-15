@@ -102,22 +102,71 @@ fi
 
 # -------------------------------------------------------------------------
 # Helper: log in again to get a fresh totp_token, then verify with code.
-# Returns 0 if verify succeeds, prints HTTP status either way.
+# Always returns 0 and prints the HTTP status (or a sentinel string) on
+# stdout. Callers inspect the printed value directly.
+#
+# NOTE: this MUST always return 0 because the test runs with `set -e` and the
+# helper is called via plain command substitution (`status=$(...)`). If the
+# helper returned non-zero on a 401 response, bash would abort the whole
+# script before the test could assert that 401 was the expected outcome —
+# which is exactly the bug release-gate run 25191428274 surfaced for the
+# "Replay of the same backup code is rejected" case.
+#
+# Login is retried on transient failures (HTTP 429 / 5xx / curl error). Each
+# call to this helper performs a username+password login, and the loginAuth
+# rate limiter throttles bursts per-user. The "Each remaining backup code is
+# single-use" test makes ~18 logins back-to-back, so retry-on-429 is required
+# to avoid the no_totp_token sentinel surfacing as a flake (release-gate run
+# 25214268566 / job 73931323974 hit this on backup code [4]).
 # -------------------------------------------------------------------------
 
 login_and_verify_with_code() {
   local backup_code="$1"
-  local login_resp
-  login_resp=$(curl -sf $CURL_TIMEOUT -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\"}" \
-    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
-  local totp_token
-  totp_token=$(echo "$login_resp" | jq -r '.totp_token // empty')
-  if [ -z "$totp_token" ] || [ "$totp_token" = "null" ]; then
+  local _max="${LOGIN_VERIFY_MAX_ATTEMPTS:-8}"
+  local _delay="${LOGIN_VERIFY_RETRY_DELAY:-3}"
+  local _attempt _http_status _body _tmp totp_token=""
+  for _attempt in $(seq 1 "$_max"); do
+    _tmp=$(mktemp)
+    _http_status=$(curl -s --max-time 10 -o "$_tmp" -w '%{http_code}' \
+      -X POST "${BASE_URL}/api/v1/auth/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"${TOTP_USER}\",\"password\":\"${TOTP_PASS}\"}" 2>/dev/null) || _http_status="000"
+    _body=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_http_status" = "200" ]; then
+      totp_token=$(echo "$_body" | jq -r '.totp_token // empty' 2>/dev/null)
+      [ -n "$totp_token" ] && [ "$totp_token" != "null" ] && break
+      totp_token=""
+    fi
+
+    # Only retry on transient failures. A non-200 with a parseable body that
+    # isn't 429/5xx/000 means the backend rejected the credentials for some
+    # other reason and retrying won't help.
+    case "$_http_status" in
+      429|500|502|503|504|000) ;;
+      *)
+        # Non-transient: bail out so the caller sees the sentinel rather than
+        # spinning for ~24s on a permanent error.
+        break
+        ;;
+    esac
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      echo "  login_and_verify retry ${_attempt}/${_max} (HTTP ${_http_status}), sleeping ${_delay}s..." 1>&2
+      if [ "$_http_status" = "429" ]; then
+        sleep "$(( _delay * 2 ))"
+      else
+        sleep "$_delay"
+      fi
+    fi
+  done
+
+  if [ -z "$totp_token" ]; then
     echo "no_totp_token"
-    return 1
+    return 0
   fi
+
   local status
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -X POST \
@@ -126,10 +175,7 @@ login_and_verify_with_code() {
     "${BASE_URL}/api/v1/auth/totp/verify" 2>/dev/null) || true
   status="${status:-000}"
   echo "$status"
-  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
-    return 0
-  fi
-  return 1
+  return 0
 }
 
 # -------------------------------------------------------------------------

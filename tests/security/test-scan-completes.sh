@@ -251,9 +251,22 @@ fi
 # `date +%s` 1-second granularity and any clock-skew between the runner
 # and the backend pod (usually co-located on the same node, so skew is
 # bounded).
+#
+# We also sleep 2s+1 here so that any scan triggered after this point
+# has a `created_at` whose second-truncated value strictly exceeds
+# (TEST_START_EPOCH + 2). Without this sleep, a backend that scans
+# fast enough to complete in <1s relative to wall-clock will produce
+# a created_at truncated to the SAME second as TEST_START_EPOCH, which
+# fails `>= TEST_START_EPOCH + 2`. That is a false-positive: the scan
+# is in fact fresh, but the second-precision truncation hides it.
+# Observed against trivy in a co-located ARC runner / backend pod:
+# scan started_at and TEST_START_EPOCH both fell in the same wall
+# second. Sleeping past the +2 threshold makes the assertion robust
+# regardless of how fast the backend completes the scan.
 # ---------------------------------------------------------------------------
 
 TEST_START_EPOCH=$(date -u +%s)
+sleep 3
 
 # ---------------------------------------------------------------------------
 # Resolve the artifact_id. The metadata endpoint is GET /:key/artifacts/*path
