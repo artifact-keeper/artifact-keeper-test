@@ -169,6 +169,50 @@ else
 fi
 
 # -------------------------------------------------------------------------
+# 6.2.f: Strict-shape assertion on PUT /members response.
+#
+# Issue artifact-keeper-test#92: the test above asserts content (key+priority)
+# but not the JSON shape itself. A regression that renamed a field, dropped
+# one, or changed nesting would slip past content-only checks. The handler
+# returns VirtualMembersListResponse; its element fields (per
+# backend/src/api/handlers/repositories.rs:2185-2221) include id (UUID),
+# member_repo_key (string), priority (number). This assertion pins those
+# names and types so a silent rename breaks the gate loudly.
+#
+# Reuses RESP from the previous test to avoid a duplicate PUT.
+# Gated to v1.2.0 via require_feature so 1.1.9 release-gate runs
+# don't pick up this assertion.
+# -------------------------------------------------------------------------
+
+begin_test "PUT response body matches VirtualMembersListResponse shape"
+if require_feature "virtual_member_strict_contract"; then
+  if [ -z "${RESP:-}" ]; then
+    fail "RESP not populated by previous PUT-response test"
+  else
+    members_is_array=$(echo "$RESP" | jq '.members | type == "array"')
+    all_keys_string=$(echo "$RESP" | jq '[.members[].member_repo_key | type == "string"] | all')
+    all_priorities_number=$(echo "$RESP" | jq '[.members[].priority | type == "number"] | all')
+    # UUID v4-ish: 8-4-4-4-12 hex blocks. Tolerant of any v1-v5 hyphenated form.
+    uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    all_ids_uuid=true
+    while IFS= read -r id_val; do
+      if ! [[ "$id_val" =~ $uuid_re ]]; then
+        all_ids_uuid=false
+        break
+      fi
+    done < <(echo "$RESP" | jq -r '.members[].id // empty')
+    if [ "$members_is_array" = "true" ] \
+        && [ "$all_keys_string" = "true" ] \
+        && [ "$all_priorities_number" = "true" ] \
+        && [ "$all_ids_uuid" = "true" ]; then
+      pass
+    else
+      fail "shape mismatch: members_array=${members_is_array} keys_string=${all_keys_string} priorities_number=${all_priorities_number} ids_uuid=${all_ids_uuid} (resp head: ${RESP:0:200})"
+    fi
+  fi
+fi
+
+# -------------------------------------------------------------------------
 # 6.2.d: PUT with an unknown member_key -> 404 (resolution failure).
 #
 # update_virtual_members iterates payload.members and calls get_by_key for
