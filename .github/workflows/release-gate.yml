@@ -491,6 +491,177 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
+  # Scan-completion gate (matrix across representative formats).
+  #
+  # Closes the gap surfaced by artifact-keeper#888 ("works for npm,
+  # silently fails for docker"). Each matrix entry runs the gate
+  # primitive in its own job (parallel) so a regression in any one
+  # format's scanner pipeline fails the release-gate loud.
+  #
+  # The wired formats (currently: npm) run the lite primitive at
+  # tests/security/test-scan-completes.sh via the release-gate wrapper.
+  # The scaffolded formats (oci, maven, pypi, cargo, helm) exit 0 with
+  # a clear log entry until their fixture-builders land (#62).
+  #
+  # Why a matrix rather than a single sequential driver:
+  #   - Each format scan can take 30-60s; sequential 6-format runs
+  #     blow the 5-min release-gate budget.
+  #   - The workflow-level matrix surfaces per-format outcomes in the
+  #     GitHub Actions UI so an operator can see "oci failed, npm
+  #     passed" at a glance.
+  # -------------------------------------------------------------------
+  scan-completion-gate:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [npm, oci, maven, pypi, cargo, helm]
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # ALLOW_SCANNER_SKIP=0 is enforced inside the gate primitive --
+      # a scanner-pod-down skip in release-gate context is exactly the
+      # silent-success class this gate exists to catch.
+      RELEASE_GATE: '1'
+      ALLOW_SCANNER_SKIP: '0'
+      FIXTURE_FORMAT: ${{ matrix.format }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run scan-completion gate for ${{ matrix.format }}
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/scan-completion-gate.sh
+          # Per-format RUN_ID suffix so concurrent matrix jobs do not
+          # collide on the repo key (scan-complete-<RUN_ID>).
+          RUN_ID="${RUN_ID}-${{ matrix.format }}" \
+            ./tests/release-gate/scan-completion-gate.sh
+
+      - name: Capture scanner pod logs on failure
+        if: failure()
+        run: |
+          # The deploy job exports the test namespace; resolve it via
+          # the standard naming pattern. We use kubectl best-effort:
+          # if the runner pod has no kubeconfig, this step's failure
+          # is benign (we still surface the JUnit XML).
+          NS="test-${{ needs.deploy.outputs.run_id }}"
+          mkdir -p /tmp/test-logs
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=scanner \
+            --tail=2000 > /tmp/test-logs/scanner-${{ matrix.format }}.log 2>&1 || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/name=trivy \
+            --tail=2000 > /tmp/test-logs/trivy-${{ matrix.format }}.log 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=1000 > /tmp/test-logs/backend-${{ matrix.format }}.log 2>&1 || true
+
+      - name: Upload scan-completion gate results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-scan-completion-${{ matrix.format }}
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # SBOM correctness gate (scaffold).
+  #
+  # Pins the SBOM endpoint contract (POST /api/v1/sbom returns 200
+  # with the documented SbomResponse shape) so an endpoint deletion
+  # or 5xx regression fails the release loud. The component_count > 0
+  # assertion is deferred to artifact-keeper#903 (--list-all-pkgs)
+  # per the #57 epic.
+  # -------------------------------------------------------------------
+  sbom-correctness-gate:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 6
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run SBOM correctness gate
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/sbom-correctness-gate.sh
+          ./tests/release-gate/sbom-correctness-gate.sh
+
+      - name: Capture scanner pod logs on failure
+        if: failure()
+        run: |
+          NS="test-${{ needs.deploy.outputs.run_id }}"
+          mkdir -p /tmp/test-logs
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=scanner \
+            --tail=2000 > /tmp/test-logs/sbom-scanner.log 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=1000 > /tmp/test-logs/sbom-backend.log 2>&1 || true
+
+      - name: Upload SBOM gate results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-sbom-correctness
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Pinned-CVE assertion (#64).
+  #
+  # Tightens the gate beyond "findings_count >= 1" to a specific CVE
+  # id. Catches scanner-DB drift and parser-correctness regressions
+  # that the findings-count check alone would let through.
+  # -------------------------------------------------------------------
+  pinned-cve-gate:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 8
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+      # CVE-2019-10744 (lodash 4.17.4 prototype pollution) is what the
+      # lite fixture pins. log4j 2.14.0 / CVE-2021-44228 will move
+      # under the oci matrix entry once the oci fixture-builder lands
+      # (#62 + #64 extension).
+      EXPECTED_VULN_CVE: CVE-2019-10744
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run pinned-CVE gate
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/test-pinned-cve.sh
+          ./tests/release-gate/test-pinned-cve.sh
+
+      - name: Upload pinned-CVE gate results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-pinned-cve
+          path: /tmp/test-results/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
   # Format tests (8 parallel batches)
   # -------------------------------------------------------------------
   format-tests:
@@ -1308,7 +1479,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
     runs-on: ak-e2e-runners
     steps:
@@ -1327,7 +1498,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -1335,6 +1506,9 @@ jobs:
               clean-install-smoke-with-deps) status="${{ needs.clean-install-smoke-with-deps.result }}" ;;
               chart-upgrade-smoke) status="${{ needs.chart-upgrade-smoke.result }}" ;;
               real-flow-smoke) status="${{ needs.real-flow-smoke.result }}" ;;
+              scan-completion-gate) status="${{ needs.scan-completion-gate.result }}" ;;
+              sbom-correctness-gate) status="${{ needs.sbom-correctness-gate.result }}" ;;
+              pinned-cve-gate) status="${{ needs.pinned-cve-gate.result }}" ;;
               format-tests) status="${{ needs.format-tests.result }}" ;;
               repo-tests) status="${{ needs.repo-tests.result }}" ;;
               promotion-tests) status="${{ needs.promotion-tests.result }}" ;;
@@ -1396,6 +1570,9 @@ jobs:
           needs.clean-install-smoke-with-deps.result == 'failure' || needs.clean-install-smoke-with-deps.result == 'cancelled' ||
           needs.chart-upgrade-smoke.result == 'failure' || needs.chart-upgrade-smoke.result == 'cancelled' ||
           needs.real-flow-smoke.result == 'failure' || needs.real-flow-smoke.result == 'cancelled' ||
+          needs.scan-completion-gate.result == 'failure' || needs.scan-completion-gate.result == 'cancelled' ||
+          needs.sbom-correctness-gate.result == 'failure' || needs.sbom-correctness-gate.result == 'cancelled' ||
+          needs.pinned-cve-gate.result == 'failure' || needs.pinned-cve-gate.result == 'cancelled' ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
           needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||
