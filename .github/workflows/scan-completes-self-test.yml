@@ -41,21 +41,27 @@ name: Scan-Completes Self-Test
 # not run, defeating the meta-test entirely.
 
 on:
+  # Path filter is intentionally broad. The self-test must re-run on any
+  # change to the gate primitives, their helpers, or the workflow plumbing
+  # so a PR cannot weaken the gate without tripping the meta-test. Listing
+  # only the named gate scripts misses helper-weakening changes (e.g. a
+  # tolerant edit to tests/lib/common.sh that turns fail() into a warning),
+  # which is exactly the silent-success class the meta-test guards
+  # against. Hitting on a wider set of paths costs at most one runner job
+  # per unrelated PR; missing the trigger costs us the entire meta-test.
   pull_request:
     paths:
+      - 'tests/release-gate/**'
       - 'tests/security/test-scan-completes.sh'
-      - 'tests/release-gate/scan-completion-gate.sh'
-      - 'tests/release-gate/test-pinned-cve.sh'
-      - 'tests/lib/common.sh'
+      - 'tests/lib/**'
       - '.github/workflows/release-gate.yml'
       - '.github/workflows/scan-completes-self-test.yml'
   push:
     branches: [main]
     paths:
+      - 'tests/release-gate/**'
       - 'tests/security/test-scan-completes.sh'
-      - 'tests/release-gate/scan-completion-gate.sh'
-      - 'tests/release-gate/test-pinned-cve.sh'
-      - 'tests/lib/common.sh'
+      - 'tests/lib/**'
       - '.github/workflows/release-gate.yml'
       - '.github/workflows/scan-completes-self-test.yml'
 
