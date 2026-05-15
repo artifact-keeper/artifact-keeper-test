@@ -4,25 +4,23 @@
 # Epic 7 sub-task 7.15 (artifact-keeper-test#75). The backend exposes a
 # server-sent-events stream at /api/v1/events/stream that bridges the
 # in-process EventBus to external HTTP consumers. The platform suite
-# already verifies the endpoint returns 200 but doesn't read any frames
+# already verifies the endpoint returns 200 but does not read any frames
 # off the wire, so this test:
 #
 #   1. Opens a curl SSE connection in the background, writing frames to
 #      a temp file with a hard 10s wall-clock cap (curl --max-time).
 #   2. Triggers a domain event by creating a generic repository, which
-#      should emit a repository.* event onto the bus.
-#   3. Greps the frame log for an SSE-formatted "data:" line. We do NOT
-#      assert event name (the bus -> SSE mapping is version-sensitive)
-#      because the producer wire-up gate (webhook_event_producer) is
-#      v1.2.0; on 1.1.x the SSE bridge may not emit a frame even though
-#      the endpoint is live. Hence: skip cleanly if no frame appears,
-#      and only fail on protocol-shape violations (e.g. the endpoint
-#      returns HTML instead of an event stream).
+#      should emit a repository_created event onto the bus.
+#   3. Asserts an SSE-formatted frame appears in the log within 5s.
 #
-# This is intentionally a thin proof-of-concept; the full SSE coverage
-# (back-pressure, lagged-event handling, JSON payload schema, named
-# event types, last-event-id resumption) is broken out in the epic
-# tracking comment.
+# Gating: SSE-bus frame emission depends on the same producer wire-up
+# that powers webhook deliveries (webhook_event_producer, v1.2.0). On
+# older backends the endpoint is live but the bus does not emit frames
+# for domain events, so the assertion would fail for an unshipped
+# feature. The suite is skipped at the suite level when the producer is
+# unavailable; on supported backends, missing-frame is a HARD FAIL, not
+# a silent skip. This replaces the previous behaviour where the assertion
+# called skip on missing frames (false-green pattern).
 #
 # Requires: curl, jq
 
@@ -32,6 +30,17 @@ begin_suite "events-sse-stream"
 auth_admin
 setup_workdir
 
+# Suite-level gate. If the producer wire-up that powers SSE frames is
+# absent (v1.1.x), skip the whole suite cleanly instead of leaving
+# individual assertions to skip on missing frames.
+backend_ver=$(get_backend_version)
+if [ "$backend_ver" != "unknown" ]; then
+  min_ver=$(_feature_min_version "webhook_event_producer")
+  if ! version_ge "$backend_ver" "$min_ver"; then
+    skip_suite "events SSE producer requires backend >= ${min_ver}, running ${backend_ver}"
+  fi
+fi
+
 REPO_KEY="sse-trigger-${RUN_ID}"
 SSE_LOG="${WORK_DIR}/sse-frames.log"
 SSE_HDR="${WORK_DIR}/sse-headers.log"
@@ -40,7 +49,18 @@ SSE_PID=""
 cleanup_and_finalize() {
   local code=$?
   if [ -n "${SSE_PID}" ] && kill -0 "${SSE_PID}" 2>/dev/null; then
+    # SIGTERM first, then SIGKILL after a brief grace, so a curl that
+    # has already drained its connection exits cleanly while a wedged
+    # one is force-killed. The bounded sleep means cleanup can't hang.
     kill "${SSE_PID}" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "${SSE_PID}" 2>/dev/null || break
+      sleep 0.2
+    done
+    kill -9 "${SSE_PID}" 2>/dev/null || true
+    # The wait builtin returns immediately when the child has exited;
+    # it doesn't block on the curl --max-time window since we've already
+    # signalled. Redirect any "Killed" message from the shell.
     wait "${SSE_PID}" 2>/dev/null || true
   fi
   api_delete "/api/v1/repositories/${REPO_KEY}" >/dev/null 2>&1 || true
@@ -69,7 +89,10 @@ sleep 1
 if kill -0 "$SSE_PID" 2>/dev/null; then
   pass
 else
-  skip "SSE stream did not open (endpoint may not be available)"
+  # The producer feature was gated above; reaching here with a dead
+  # listener means the endpoint itself is not reachable on a backend
+  # that claims to support the feature. Fail hard.
+  fail "SSE listener died within 1s on a backend that claims webhook_event_producer support"
   end_suite
 fi
 
@@ -90,12 +113,10 @@ done
 if echo "$ct" | grep -qi 'text/event-stream'; then
   pass
 elif [ -z "$ct" ]; then
-  skip "no response headers captured (endpoint may have closed immediately)"
+  fail "no response headers captured within 3s; SSE endpoint may be unreachable on a producer-enabled backend"
   end_suite
 else
-  # Not a hard fail: some deployments serve plain JSON polling under the
-  # same path. We only insist when the path is wired as a real SSE source.
-  skip "endpoint returned non-SSE content-type: ${ct}"
+  fail "endpoint returned non-SSE content-type: ${ct}"
   end_suite
 fi
 
@@ -112,12 +133,20 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Wait for a frame.
+# Wait for a frame. On a feature-enabled backend, missing-frame is a
+# hard FAIL (not a skip): we are explicitly asserting the bus -> SSE
+# bridge emits something when a domain event fires.
 # -------------------------------------------------------------------------
 
 begin_test "SSE log accumulates a 'data:' frame within 5s"
+# Bound the wait against a wall-clock deadline so a wedged grep cannot
+# exceed the expected budget. We compute the deadline once and break out
+# as soon as a frame appears OR the deadline passes; 10 polls of 0.5s
+# would total 5s but a slow grep run could drift past that, so the
+# deadline guard is the load-bearing budget.
 saw_frame=false
-for _ in $(seq 1 10); do
+deadline=$(( $(date +%s) + 6 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
   if grep -qE '^data:|^event:|^id:' "$SSE_LOG" 2>/dev/null; then
     saw_frame=true
     break
@@ -127,10 +156,7 @@ done
 if [ "$saw_frame" = true ]; then
   pass
 else
-  # On 1.1.x backends with the producer disabled, the SSE bridge may be
-  # idle. Skip rather than fail so the test reports a clean signal once
-  # producer wire-up lands.
-  skip "no SSE frame observed; producer may not be wired (v1.1.x)"
+  fail "no SSE frame observed within 6s after firing repository_created on a producer-enabled backend"
 fi
 
 # -------------------------------------------------------------------------

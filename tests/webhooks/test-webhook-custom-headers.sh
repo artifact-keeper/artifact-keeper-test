@@ -22,10 +22,13 @@
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "webhook-custom-headers"
+auth_admin
+setup_workdir
 
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-18772}"
 WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
-WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-customhdr-${RUN_ID}.log}"
+WEBHOOK_RECEIVER_LOG="${WORK_DIR}/mock-webhook-receiver-customhdr.log"
+WEBHOOK_RECEIVER_STDERR="${WORK_DIR}/mock-webhook-receiver-customhdr.stderr"
 RECEIVER_PID=""
 
 cleanup_and_finalize() {
@@ -34,12 +37,11 @@ cleanup_and_finalize() {
     kill "${RECEIVER_PID}" 2>/dev/null || true
     wait "${RECEIVER_PID}" 2>/dev/null || true
   fi
-  rm -f "${WEBHOOK_RECEIVER_LOG}"
+  # WORK_DIR (and the logs inside it) are cleaned by setup_workdir's
+  # registered exit handler. No /tmp leakage.
   exit "$code"
 }
 trap cleanup_and_finalize EXIT
-
-auth_admin
 
 # -------------------------------------------------------------------------
 # Pre-flight + receiver.
@@ -55,12 +57,22 @@ if [ -n "$miss" ]; then
 fi
 pass
 
+# Port-collision pre-flight: if something is already listening on
+# WEBHOOK_RECEIVER_PORT, fail loudly rather than silently attaching to a
+# foreign receiver from another concurrent run.
+begin_test "Receiver port ${WEBHOOK_RECEIVER_PORT} is free"
+if curl -sf --max-time 1 "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/__health" >/dev/null 2>&1; then
+  fail "127.0.0.1:${WEBHOOK_RECEIVER_PORT} already serves /__health (concurrent run? stale receiver?); set WEBHOOK_RECEIVER_PORT to a free port"
+  end_suite
+fi
+pass
+
 begin_test "Start mock receiver"
 WEBHOOK_RECEIVER_PORT="$WEBHOOK_RECEIVER_PORT" \
   WEBHOOK_FAIL_FIRST_N=0 \
   WEBHOOK_RECEIVER_LOG="$WEBHOOK_RECEIVER_LOG" \
   python3 "$(dirname "$0")/../lib/mock-webhook-receiver.py" \
-  >/tmp/mock-webhook-receiver-customhdr-${RUN_ID}.stderr 2>&1 &
+  >"$WEBHOOK_RECEIVER_STDERR" 2>&1 &
 RECEIVER_PID=$!
 
 ready=false
