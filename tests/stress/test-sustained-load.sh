@@ -23,8 +23,17 @@ begin_suite "sustained-load"
 # script uses to that exempt account by default. Override only if you are
 # testing the rate-limiter behaviour itself (and then raise the threshold
 # correspondingly).
-SUSTAINED_AUTH_USER="${SUSTAINED_AUTH_USER:-admin}"
-SUSTAINED_AUTH_PASS="${SUSTAINED_AUTH_PASS:-${ADMIN_PASS}}"
+#
+# Resolution order for SUSTAINED_AUTH_USER:
+#   1. explicit SUSTAINED_AUTH_USER from the caller
+#   2. ADMIN_USER if the caller set it (lets a non-default admin name flow
+#      through without forcing SUSTAINED_AUTH_USER too)
+#   3. literal "admin" fallback
+# Same chain for SUSTAINED_AUTH_PASS via ADMIN_PASS. common.sh defaults
+# ADMIN_USER to "admin" and ADMIN_PASS to TestRunner!2026secure, so the
+# fallback is only reached when ADMIN_USER was unset before sourcing.
+SUSTAINED_AUTH_USER="${SUSTAINED_AUTH_USER:-${ADMIN_USER:-admin}}"
+SUSTAINED_AUTH_PASS="${SUSTAINED_AUTH_PASS:-${ADMIN_PASS:-}}"
 export ADMIN_USER="$SUSTAINED_AUTH_USER"
 export ADMIN_PASS="$SUSTAINED_AUTH_PASS"
 
@@ -222,6 +231,12 @@ else
   # outside the shared ARC namespace (a dedicated runner with no other
   # tenant pods should comfortably hold 30% or below). Production SLAs are
   # tracked separately and do not consult this number.
+  #
+  # TODO(artifact-keeper-test#153): once 5-10 successful baseline runs have
+  # accumulated on the current Helm CPU layout, switch this from a fixed
+  # ceiling to "error_pct <= median(baseline) + 15". A fixed 55% absorbs
+  # the worst observed flake AND a 40% regression with no signal to
+  # distinguish them; baseline-relative would catch the regression.
   threshold=${SUSTAINED_ERROR_PCT_THRESHOLD:-55}
   if [ "$error_pct" -le "$threshold" ]; then
     pass
