@@ -119,6 +119,28 @@ GHOST_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
 assert_eq "$GHOST_STATUS" "404" "expected 404 for non-existent member, got ${GHOST_STATUS}" && pass
 
 # -------------------------------------------------------------------------
+# 6.1.b.idempotency: DELETE the same (already-removed) member a second time.
+#
+# Issue artifact-keeper-test#95: pin the contract that re-issuing
+# DELETE /:key/members/:member_key against a member that was already
+# removed by a prior call returns 404 (not 200/204). The handler
+# resolves member_key via service.get_by_key BEFORE attempting the
+# delete, so the second call sees the missing row and surfaces
+# AppError::NotFound -> 404.
+#
+# Gated to v1.2.0 via require_feature so 1.1.9 release-gate runs
+# don't pick up this assertion.
+# -------------------------------------------------------------------------
+
+begin_test "DELETE same member twice is idempotent (second call returns 404)"
+if require_feature "virtual_member_strict_contract"; then
+  IDEMP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+    -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${VIRTUAL_KEY}/members/${LOCAL_A}") || IDEMP_STATUS="000"
+  assert_eq "$IDEMP_STATUS" "404" "expected 404 on repeat DELETE of already-removed member, got ${IDEMP_STATUS}" && pass
+fi
+
+# -------------------------------------------------------------------------
 # 6.1.c: DELETE on a non-virtual repo (member of a virtual is fine, but
 # calling /<local>/members/<x> should not delete from a real virtual).
 # remove_virtual_member returns 400 (Validation) when the parent isn't

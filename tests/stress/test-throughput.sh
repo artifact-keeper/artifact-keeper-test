@@ -53,22 +53,30 @@ upload_failures=0
 for i in $(seq 1 "$ITERATIONS"); do
   artifact_path="/api/v1/repositories/${REPO_KEY}/artifacts/bench/iteration-${i}/payload.bin"
 
-  # Use curl's write-out to get total transfer time in seconds (with decimals)
-  timing=$(curl -s -o /dev/null -w '%{time_total}' \
+  # Use curl's write-out to get total transfer time AND status code so the
+  # stress log records which iterations actually succeeded vs which silently
+  # returned a non-2xx but still produced a timing value.
+  curl_out=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' \
     -X PUT \
     -H "$(auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${WORK_DIR}/payload.bin" \
-    "${BASE_URL}${artifact_path}") || true
+    "${BASE_URL}${artifact_path}") || curl_out="000 0.000000"
+  http_code="${curl_out%% *}"
+  timing="${curl_out##* }"
+
+  # elapsed_ms for the log = round(timing * 1000)
+  elapsed_ms=$(echo "$timing" | awk '{printf "%d", $1 * 1000}')
+  log_request "PUT" "${artifact_path}" "${http_code:-000}" "${elapsed_ms:-0}"
 
   if [ -n "$timing" ] && [ "$timing" != "0.000000" ]; then
     # Use awk for floating point arithmetic
     throughput=$(echo "$FILE_SIZE_MB $timing" | awk '{printf "%.2f", $1 / $2}')
-    echo "  upload ${i}: ${timing}s (${throughput} MB/s)"
+    echo "  upload ${i}: ${timing}s (${throughput} MB/s) [HTTP ${http_code}]"
     upload_total_time=$(echo "$upload_total_time $timing" | awk '{printf "%.6f", $1 + $2}')
   else
     upload_failures=$((upload_failures + 1))
-    echo "  upload ${i}: failed"
+    echo "  upload ${i}: failed [HTTP ${http_code}]"
   fi
 done
 
@@ -99,17 +107,22 @@ download_failures=0
 for i in $(seq 1 "$ITERATIONS"); do
   download_path="/api/v1/repositories/${REPO_KEY}/download/bench/iteration-${i}/payload.bin"
 
-  timing=$(curl -s -o /dev/null -w '%{time_total}' \
+  curl_out=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' \
     -H "$(auth_header)" \
-    "${BASE_URL}${download_path}") || true
+    "${BASE_URL}${download_path}") || curl_out="000 0.000000"
+  http_code="${curl_out%% *}"
+  timing="${curl_out##* }"
+
+  elapsed_ms=$(echo "$timing" | awk '{printf "%d", $1 * 1000}')
+  log_request "GET" "${download_path}" "${http_code:-000}" "${elapsed_ms:-0}"
 
   if [ -n "$timing" ] && [ "$timing" != "0.000000" ]; then
     throughput=$(echo "$FILE_SIZE_MB $timing" | awk '{printf "%.2f", $1 / $2}')
-    echo "  download ${i}: ${timing}s (${throughput} MB/s)"
+    echo "  download ${i}: ${timing}s (${throughput} MB/s) [HTTP ${http_code}]"
     download_total_time=$(echo "$download_total_time $timing" | awk '{printf "%.6f", $1 + $2}')
   else
     download_failures=$((download_failures + 1))
-    echo "  download ${i}: failed"
+    echo "  download ${i}: failed [HTTP ${http_code}]"
   fi
 done
 

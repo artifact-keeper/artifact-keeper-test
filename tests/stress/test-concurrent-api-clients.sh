@@ -30,16 +30,23 @@ run_client() {
 
   local result="fail"
   local step="start"
+  local start_ms end_ms http_code
 
   # Step 1: authenticate
   step="auth"
   local token=""
   for _retry in 1 2 3; do
+    start_ms=$(date +%s%3N 2>/dev/null || date +%s)
     if resp=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null); then
+      end_ms=$(date +%s%3N 2>/dev/null || date +%s)
+      log_request "POST" "/api/v1/auth/login" "200" "$(( end_ms - start_ms ))"
       token=$(echo "$resp" | jq -r '.access_token // .token // empty') || true
       [ -n "$token" ] && break
+    else
+      end_ms=$(date +%s%3N 2>/dev/null || date +%s)
+      log_request "POST" "/api/v1/auth/login" "000" "$(( end_ms - start_ms ))"
     fi
     sleep 1
   done
@@ -48,31 +55,45 @@ run_client() {
   # Step 2: create repo
   step="create-repo"
   local repo_key="stress-client-${client_id}-${RUN_ID}"
-  if ! curl -sf --max-time 10 -X POST \
+  start_ms=$(date +%s%3N 2>/dev/null || date +%s)
+  http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \
       -d "{\"key\":\"${repo_key}\",\"name\":\"${repo_key}\",\"format\":\"generic\",\"repo_type\":\"local\",\"is_public\":true}" \
-      "${BASE_URL}/api/v1/repositories" > /dev/null 2>&1; then
+      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || http_code="000"
+  end_ms=$(date +%s%3N 2>/dev/null || date +%s)
+  log_request "POST" "/api/v1/repositories" "${http_code}" "$(( end_ms - start_ms ))"
+  if [ "$http_code" -lt 200 ] 2>/dev/null || [ "$http_code" -ge 300 ] 2>/dev/null; then
     echo "${step}" > "${client_dir}/failed"; return
   fi
 
   # Step 3: upload artifact
   step="upload"
+  local upload_path="/api/v1/repositories/${repo_key}/artifacts/test/payload.bin"
   echo "client-${client_id}-payload-${RUN_ID}" > "${client_dir}/payload.bin"
-  if ! curl -sf --max-time 15 -X PUT \
+  start_ms=$(date +%s%3N 2>/dev/null || date +%s)
+  http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X PUT \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/octet-stream" \
       --data-binary "@${client_dir}/payload.bin" \
-      "${BASE_URL}/api/v1/repositories/${repo_key}/artifacts/test/payload.bin" > /dev/null 2>&1; then
+      "${BASE_URL}${upload_path}" 2>/dev/null) || http_code="000"
+  end_ms=$(date +%s%3N 2>/dev/null || date +%s)
+  log_request "PUT" "${upload_path}" "${http_code}" "$(( end_ms - start_ms ))"
+  if [ "$http_code" -lt 200 ] 2>/dev/null || [ "$http_code" -ge 300 ] 2>/dev/null; then
     echo "${step}" > "${client_dir}/failed"; return
   fi
 
   # Step 4: read back
   step="read"
   sleep 1
-  if ! curl -sf --max-time 10 \
+  local list_path="/api/v1/repositories/${repo_key}/artifacts"
+  start_ms=$(date +%s%3N 2>/dev/null || date +%s)
+  http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
       -H "Authorization: Bearer ${token}" \
-      "${BASE_URL}/api/v1/repositories/${repo_key}/artifacts" > /dev/null 2>&1; then
+      "${BASE_URL}${list_path}" 2>/dev/null) || http_code="000"
+  end_ms=$(date +%s%3N 2>/dev/null || date +%s)
+  log_request "GET" "${list_path}" "${http_code}" "$(( end_ms - start_ms ))"
+  if [ "$http_code" -lt 200 ] 2>/dev/null || [ "$http_code" -ge 300 ] 2>/dev/null; then
     echo "${step}" > "${client_dir}/failed"; return
   fi
 

@@ -54,13 +54,13 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Run gate against nonexistent image and expect failure
         env:
@@ -82,7 +82,7 @@ jobs:
 
       - name: Upload self-test diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: smoke-self-test-pull-logs-${{ github.run_attempt }}
           path: /tmp/test-logs/
@@ -93,13 +93,13 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       # Fixture: tag a public busybox image as the "backend" via a
       # transient ImageStreamTag-style alias. busybox does not have
@@ -139,7 +139,7 @@ jobs:
 
       - name: Upload self-test diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: smoke-self-test-crash-logs-${{ github.run_attempt }}
           path: /tmp/test-logs/
