@@ -680,10 +680,91 @@ jobs:
       # under the oci matrix entry once the oci fixture-builder lands
       # (#62 + #64 extension).
       EXPECTED_VULN_CVE: CVE-2019-10744
+      # Trivy DB age threshold for the freshness pre-flight. The DB is
+      # rebuilt every 6 hours upstream; we accept anything <= 14 days
+      # so weekend gaps and slow mirror sync do not generate false
+      # failures, while still catching DBs old enough that
+      # CVE-2019-10744 (published 2019) could fall out of recent index
+      # shards. Override at workflow_dispatch via repo variable
+      # TRIVY_DB_MAX_AGE_DAYS if needed.
+      TRIVY_DB_MAX_AGE_DAYS: ${{ vars.TRIVY_DB_MAX_AGE_DAYS || '14' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+
+      - name: Trivy DB freshness pre-flight
+        # Distinguish "CVE database is stale" from "CVE-2019-10744 not
+        # surfaced". Without this step, a stale Trivy DB on the runner
+        # image causes the assertion to silently pass (no CVE found ==
+        # 0 findings == "did Trivy run at all?"). The misleading failure
+        # message blames the gate; the actual root cause is upstream.
+        #
+        # Exit codes:
+        #   0  - DB reachable, age within TRIVY_DB_MAX_AGE_DAYS
+        #   42 - DB too old (distinct so the rollup operator can tell
+        #        scanner DB drift apart from a real CVE-detection bug)
+        #   43 - Trivy pod unreachable or trivy --version failed
+        run: |
+          set -uo pipefail
+          NS="test-${{ needs.deploy.outputs.run_id }}"
+          MAX_AGE_DAYS="${TRIVY_DB_MAX_AGE_DAYS}"
+          MAX_AGE_SECONDS=$(( MAX_AGE_DAYS * 86400 ))
+
+          # Locate the Trivy pod. The Helm chart names the deployment
+          # artifact-keeper-trivy; we kubectl-exec into the first ready
+          # pod backed by that deployment.
+          POD=$(kubectl -n "$NS" get pods \
+            -l app.kubernetes.io/name=trivy \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          if [ -z "$POD" ]; then
+            echo "::error::Trivy pod not found in namespace ${NS} (pre-flight cannot run)"
+            exit 43
+          fi
+
+          # trivy --version emits "Vulnerability DB: ... UpdatedAt: 2026-04-30 ..."
+          # in older versions and a YAML-ish block in newer versions.
+          # Parse both shapes.
+          VER_OUT=$(kubectl -n "$NS" exec "$POD" -c trivy -- trivy --version 2>/dev/null \
+            || kubectl -n "$NS" exec "$POD" -- trivy --version 2>/dev/null \
+            || true)
+          if [ -z "$VER_OUT" ]; then
+            echo "::error::trivy --version returned empty output from pod ${POD}"
+            exit 43
+          fi
+          echo "trivy --version output:"
+          echo "$VER_OUT"
+          echo ""
+
+          # Extract UpdatedAt timestamp. Format varies:
+          #   "  UpdatedAt: 2026-04-30 12:34:56.789 +0000 UTC"
+          #   "    UpdatedAt 2026-04-30 12:34:56.789 +0000 UTC"
+          DB_DATE=$(echo "$VER_OUT" | grep -iE 'UpdatedAt' | head -n1 \
+            | sed -E 's/.*UpdatedAt[: ]+([0-9-]+ [0-9:.]+).*/\1/' \
+            | awk '{print $1" "$2}')
+          if [ -z "$DB_DATE" ] || ! date -d "$DB_DATE" +%s >/dev/null 2>&1; then
+            echo "::error::Could not parse Trivy DB UpdatedAt from --version output"
+            exit 43
+          fi
+
+          DB_EPOCH=$(date -d "$DB_DATE" -u +%s)
+          NOW_EPOCH=$(date -u +%s)
+          AGE_SECONDS=$(( NOW_EPOCH - DB_EPOCH ))
+          AGE_DAYS=$(( AGE_SECONDS / 86400 ))
+
+          echo "Trivy DB UpdatedAt: ${DB_DATE} (age: ${AGE_DAYS} days, threshold: ${MAX_AGE_DAYS} days)"
+
+          if [ "$AGE_SECONDS" -gt "$MAX_AGE_SECONDS" ]; then
+            echo "::error::Trivy DB is ${AGE_DAYS} days old, exceeds threshold of ${MAX_AGE_DAYS} days."
+            echo "::error::The pinned-CVE assertion below would surface a misleading 'CVE-2019-10744 not found' failure;"
+            echo "::error::the actual root cause is upstream DB staleness. Refresh Trivy DB or bump the runner image."
+            exit 42
+          fi
+
+          echo "Trivy DB freshness OK."
 
       - name: Run pinned-CVE gate
         run: |
