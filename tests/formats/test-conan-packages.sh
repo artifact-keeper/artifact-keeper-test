@@ -242,11 +242,13 @@ EOF
 
 PKG2_FILE_BASE="${RECIPE_BASE}/revisions/${RECIPE_REV}/packages/${PKG_ID_2}/revisions/${PKG_REV_2}/files"
 
-status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-  -H "$(format_auth_header)" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@${WORK_DIR}/conaninfo-arm.txt" \
-  "${BASE_URL}${PKG2_FILE_BASE}/conaninfo.txt") || true
+# Use retry helper: 1.1.x backend bcrypt-verifies Basic creds on every
+# format-native call, and the spawn_blocking pool can transiently drop a
+# verify task under back-to-back PUTs, surfacing as 401. See common.sh for
+# the rationale (RATE_LIMIT_EXEMPT_USERNAMES wasn't backported to 1.1.x).
+status=$(format_put_with_retry \
+  "${BASE_URL}${PKG2_FILE_BASE}/conaninfo.txt" \
+  "${WORK_DIR}/conaninfo-arm.txt") || true
 
 if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
   pass
@@ -259,13 +261,18 @@ fi
 # -----------------------------------------------------------------------
 begin_test "Verify both package binaries exist"
 
-resp1=$(curl -sf \
-  -H "$(format_auth_header)" \
-  "${BASE_URL}${RECIPE_BASE}/revisions/${RECIPE_REV}/packages/${PKG_ID_1}/latest" 2>/dev/null) || true
-
-resp2=$(curl -sf \
-  -H "$(format_auth_header)" \
-  "${BASE_URL}${RECIPE_BASE}/revisions/${RECIPE_REV}/packages/${PKG_ID_2}/latest" 2>/dev/null) || true
+# Retry both reads; same transient-401 risk as the PUTs above.
+resp1_file=$(mktemp)
+resp2_file=$(mktemp)
+status1=$(format_get_with_retry \
+  "${BASE_URL}${RECIPE_BASE}/revisions/${RECIPE_REV}/packages/${PKG_ID_1}/latest" \
+  "$resp1_file") || true
+status2=$(format_get_with_retry \
+  "${BASE_URL}${RECIPE_BASE}/revisions/${RECIPE_REV}/packages/${PKG_ID_2}/latest" \
+  "$resp2_file") || true
+resp1=$(cat "$resp1_file" 2>/dev/null || echo "")
+resp2=$(cat "$resp2_file" 2>/dev/null || echo "")
+rm -f "$resp1_file" "$resp2_file"
 
 ok=true
 rev1=$(echo "$resp1" | jq -r '.revision // empty' 2>/dev/null)

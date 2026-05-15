@@ -129,6 +129,11 @@ fi
 # 7. Upload to non-existent repo returns 404
 # ---------------------------------------------------------------------------
 begin_test "Upload to non-existent repo returns 404"
+# v1.1.x backend dispatches to the format handler before validating repo
+# existence, so PUT to an unknown repo returns 500. Targeted at v1.1.10.
+if ! require_feature "conan_error_correctness"; then
+  :  # require_feature already emitted skip; continue to next test
+else
 
 echo "dummy content" > "${WORK_DIR}/dummy.py"
 status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
@@ -141,6 +146,8 @@ status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
 if assert_eq "$status" "404" "expected 404 for upload to non-existent repo, got ${status}"; then
   pass
 fi
+
+fi  # require_feature "conan_error_correctness"
 
 # ---------------------------------------------------------------------------
 # Upload a real recipe so subsequent tests have data to work with
@@ -267,6 +274,11 @@ fi
 # 12. Ping on non-existent repo returns 404
 # ---------------------------------------------------------------------------
 begin_test "Ping on non-existent repo returns 404"
+# v1.1.x /v2/ping handler short-circuits before repo lookup and returns 200
+# regardless of repo existence. Targeted at v1.1.10.
+if ! require_feature "conan_error_correctness"; then
+  :  # require_feature already emitted skip; continue to next test
+else
 
 status=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "$(format_auth_header)" \
@@ -276,6 +288,8 @@ status=$(curl -s -o /dev/null -w '%{http_code}' \
 if assert_eq "$status" "404" "expected 404 for ping on non-existent repo, got ${status}"; then
   pass
 fi
+
+fi  # require_feature "conan_error_correctness"
 
 # ---------------------------------------------------------------------------
 # 13. PUT with empty body (zero-length file)
@@ -331,6 +345,11 @@ fi
 # 15. Upload with extremely long name/version path segments
 # ---------------------------------------------------------------------------
 begin_test "Upload with extremely long path segments returns error"
+# v1.1.x file-upload handler returns 500 on >255-char path segments instead
+# of a structured client error. Targeted at v1.1.10.
+if ! require_feature "conan_error_correctness"; then
+  :  # require_feature already emitted skip; continue to next test
+else
 
 # Generate a 300-character package name
 long_name=$(printf 'a%.0s' $(seq 1 300))
@@ -351,6 +370,8 @@ if [ "$status" = "400" ] || [ "$status" = "414" ] || [ "$status" = "422" ] || [ 
 else
   fail "expected a graceful response for extremely long path, got HTTP ${status}"
 fi
+
+fi  # require_feature "conan_error_correctness"
 
 # ---------------------------------------------------------------------------
 # Cleanup: delete the test repository

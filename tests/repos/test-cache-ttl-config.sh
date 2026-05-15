@@ -11,7 +11,13 @@
 # Validation rules from the backend:
 #   validate_cache_ttl(): 1 <= secs <= 2_592_000 (30 days). Out-of-range
 #   values yield AppError::Validation -> HTTP 400.
-#   Default when no row exists in repository_config: 3600 (1 hour).
+#   Default when no row exists in repository_config: 86400 (24 hours).
+#
+#   The default was 3600 (1 hour) before artifact-keeper#911 / PR #932.
+#   That PR unified the GET endpoint's default with the proxy's actual
+#   DEFAULT_CACHE_TTL_SECS constant (86400 in proxy_service.rs); the GET
+#   was returning 3600 while the proxy applied 86400, a 24x discrepancy
+#   that misled operators reading the GET response.
 #
 # -------------------------------------------------------------------------
 # COVERAGE GAP (documented per Epic 6 acceptance):
@@ -27,7 +33,7 @@
 #
 #   1. PUT a valid TTL -> 200 with the value echoed back.
 #   2. GET right after -> same value persisted.
-#   3. Default value when nothing was set (3600).
+#   3. Default value when nothing was set (86400).
 #   4. Boundary validation (lower/upper limits and out-of-range -> 400).
 # -------------------------------------------------------------------------
 #
@@ -73,17 +79,22 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 6.3.a: GET on a never-set repo returns the documented default (3600).
+# 6.3.a: GET on a never-set repo returns the documented default (86400).
+#
+# This default unified with the proxy's DEFAULT_CACHE_TTL_SECS constant
+# in artifact-keeper PR #932 (issue #911). Before that fix the GET
+# returned 3600 while the proxy used 86400, a 24x divergence that
+# misled operators. Backported to release/1.1.x via #960.
 # -------------------------------------------------------------------------
 
-begin_test "GET default cache-ttl is 3600"
+begin_test "GET default cache-ttl is 86400"
 if RESP=$(api_get "/api/v1/repositories/${DEFAULT_KEY}/cache-ttl" 2>/dev/null); then
   ttl=$(echo "$RESP" | jq -r '.cache_ttl_seconds // empty')
   rkey=$(echo "$RESP" | jq -r '.repository_key // empty')
-  if [ "$ttl" = "3600" ] && [ "$rkey" = "$DEFAULT_KEY" ]; then
+  if [ "$ttl" = "86400" ] && [ "$rkey" = "$DEFAULT_KEY" ]; then
     pass
   else
-    fail "expected default ttl=3600 key=${DEFAULT_KEY}; got ttl='${ttl}' key='${rkey}'"
+    fail "expected default ttl=86400 key=${DEFAULT_KEY}; got ttl='${ttl}' key='${rkey}'"
   fi
 else
   fail "GET cache-ttl failed for default-probe repo"

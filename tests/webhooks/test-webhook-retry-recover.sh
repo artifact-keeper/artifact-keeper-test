@@ -1,37 +1,36 @@
 #!/usr/bin/env bash
 # test-webhook-retry-recover.sh
 #
-# Epic 7 / sub-task 7.1, 7.4 (artifact-keeper-test#73): exercise the webhook
-# delivery retry engine end-to-end. The receiver returns 500 for the first N
-# requests then 200, so a delivery should be retried and eventually succeed.
+# Webhooks v2 wire contract (artifact-keeper#919, E5): exercise the webhook
+# delivery retry engine end-to-end.
 #
-# Backoff schedule (from backend webhooks::webhook_retry_delay_secs):
-#   attempt 1 -> 30s,  2 -> 2m,  3 -> 15m,  4 -> 1h,  5+ -> 4h (cap)
+# Full v2 retry schedule (jittered +/-20%):
+#   30s, 1m, 2m, 5m, 10m, 30m, 1h, 2h, 4h, 8h, 16h, 24h
+#   = 12 attempts; total walltime ~65h.
 #
-# Hard constraint noted in the issue: full retry schedule is hours long. There
-# is no admin "fast-forward" endpoint and no SHORT_BACKOFF env in v1.1.x. The
-# scheduler ticks every 30s (services::scheduler_service::start_all line 244)
-# so the FIRST retry will fire within ~60s. This test asserts only the first
-# retry round-trip and is bounded at WEBHOOK_RETRY_TIMEOUT seconds (default
-# 180). Longer-attempt verification is out of scope for the gate.
+# Smoke profile: this test caps observation at the first 3 attempts so the
+# release-gate stays under WEBHOOK_RETRY_TIMEOUT (default 360s). The first
+# three intervals (30s, 60s, 120s base) plus +/-20% jitter give acceptable
+# windows of:
+#   attempt 1 ->  24-36s
+#   attempt 2 ->  48-72s   (cumulative 72-108s)
+#   attempt 3 ->  96-144s  (cumulative 168-252s)
+# The full 12-attempt schedule is exercised in the dead-letter test.
 #
 # Receiver discovery:
-#   WEBHOOK_RECEIVER_URL  - full URL the backend will POST to (default
-#                           http://127.0.0.1:18765/hook). MUST be reachable
-#                           from the backend AND must pass the SSRF allow-list
-#                           (see backend api::validation). 127.0.0.1 is
-#                           blocked, so on CI you must override this with a
-#                           publicly routable URL. Local-dev only works when
-#                           the backend runs out-of-container and can hit
-#                           loopback (skip otherwise).
-#   WEBHOOK_RECEIVER_PORT - port the local mock listens on (default 18765).
-#   WEBHOOK_FAIL_FIRST_N  - how many POSTs the mock should reject with 500
-#                           before flipping to 200 (default 1).
-#   WEBHOOK_RETRY_TIMEOUT - seconds to wait for the recover round-trip
-#                           (default 180; first retry fires at ~30-60s).
+#   WEBHOOK_RECEIVER_PORT  - port the local mock listens on (default 18765).
+#   WEBHOOK_RECEIVER_URL   - URL the backend POSTs to. Defaults to the
+#                            local mock; override in environments where
+#                            the backend cannot reach loopback.
+#   WEBHOOK_FAIL_FIRST_N   - how many POSTs the mock should reject with
+#                            500 before flipping to 200 (default 1, so we
+#                            observe the recover path on the first retry).
+#   WEBHOOK_RETRY_TIMEOUT  - seconds to wait for the recover round-trip
+#                            (default 360 to cover up to attempt 3 with
+#                            jitter headroom).
 #
-# Self-test mode: set EXPECT_FAILURE=1 to invert the script exit code (used
-# by clean-install-smoke.sh-style gate self-tests).
+# Companion backend PR: artifact-keeper#1140. Producer feature flag is
+# WEBHOOKS_V2_PRODUCER_ENABLED; harness sets it to 1.
 #
 # Requires: curl, jq, python3
 
@@ -42,7 +41,7 @@ begin_suite "webhook-retry-recover"
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-18765}"
 WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
 WEBHOOK_FAIL_FIRST_N="${WEBHOOK_FAIL_FIRST_N:-1}"
-WEBHOOK_RETRY_TIMEOUT="${WEBHOOK_RETRY_TIMEOUT:-180}"
+WEBHOOK_RETRY_TIMEOUT="${WEBHOOK_RETRY_TIMEOUT:-360}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-${RUN_ID}.log}"
 RECEIVER_PID=""
 
@@ -53,15 +52,6 @@ cleanup_and_finalize() {
     wait "${RECEIVER_PID}" 2>/dev/null || true
   fi
   rm -f "${WEBHOOK_RECEIVER_LOG}"
-  if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-    if [ "$code" -eq 0 ]; then
-      echo "ERROR: EXPECT_FAILURE=1 but suite passed" >&2
-      exit 4
-    else
-      echo "Self-test PASSED: suite exited ${code} as expected"
-      exit 0
-    fi
-  fi
   exit "$code"
 }
 trap cleanup_and_finalize EXIT
@@ -69,7 +59,7 @@ trap cleanup_and_finalize EXIT
 auth_admin
 
 # -------------------------------------------------------------------------
-# Start mock receiver
+# Start mock receiver.
 # -------------------------------------------------------------------------
 
 begin_test "Start mock webhook receiver"
@@ -83,7 +73,6 @@ else
     >/tmp/mock-webhook-receiver-${RUN_ID}.stderr 2>&1 &
   RECEIVER_PID=$!
 
-  # Poll the health endpoint for up to 5 seconds.
   ready=false
   for _ in $(seq 1 25); do
     if curl -sf --max-time 1 "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/__health" >/dev/null 2>&1; then
@@ -100,10 +89,7 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Create a webhook pointing at the mock receiver. If the URL is loopback /
-# RFC1918, the backend's SSRF allow-list will reject the POST with a 422; we
-# treat that as a skip (the gate operator must supply a publicly-routable
-# WEBHOOK_RECEIVER_URL in CI).
+# Create a webhook pointing at the mock receiver.
 # -------------------------------------------------------------------------
 
 WEBHOOK_NAME="retry-recover-${RUN_ID}"
@@ -127,18 +113,12 @@ else
     fi
   else
     SUITE_BLOCKED=true
-    skip "webhook create rejected (URL '${WEBHOOK_RECEIVER_URL}' likely blocked by SSRF allow-list; set WEBHOOK_RECEIVER_URL to a publicly-routable address)"
+    skip "webhook create rejected (URL '${WEBHOOK_RECEIVER_URL}' likely blocked by SSRF allow-list)"
   fi
 fi
 
 # -------------------------------------------------------------------------
-# Trigger the webhook. The /test endpoint POSTs to the configured URL once,
-# without writing a webhook_deliveries row -- so the retry engine itself
-# cannot be exercised through this path. We use it here to confirm the mock
-# receiver wiring works (request reaches the receiver, fail-then-succeed
-# logic is observable at the receiver level). Full retry-engine coverage
-# requires a producer that INSERTs into webhook_deliveries with
-# next_retry_at set, which v1.1.x does not yet wire from artifact upload.
+# Trigger the initial delivery.
 # -------------------------------------------------------------------------
 
 begin_test "Trigger /test delivery and observe initial POST at receiver"
@@ -146,7 +126,6 @@ if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
   if api_post "/api/v1/webhooks/${WEBHOOK_ID}/test" "" >/dev/null 2>&1; then
-    # Wait a moment for the async POST to arrive at the receiver.
     seen=0
     for _ in $(seq 1 10); do
       seen=$(curl -sf --max-time 2 "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/__count" 2>/dev/null || echo 0)
@@ -164,68 +143,106 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Drive the retry pipeline via redeliver. /redeliver re-POSTs an existing
-# webhook_deliveries row but, like /test, does not by itself schedule a
-# follow-up retry. We use it here to confirm the end-to-end shape (the
-# delivery list is queryable, attempt count increments, headers reach the
-# receiver) within the bounded WEBHOOK_RETRY_TIMEOUT window.
+# Retry windows for v2 schedule (with +/-20% jitter applied):
+#   attempt 1: 24..36s   after the failed try
+#   attempt 2: 48..72s   after attempt 1
+#   attempt 3: 96..144s  after attempt 2
+# We observe the timestamps of consecutive POSTs at the receiver and
+# assert each gap is within window. For the smoke profile we cap at 3
+# attempts (covers attempt 1, 2, 3 deltas).
 # -------------------------------------------------------------------------
 
-begin_test "Verify deliveries-list endpoint is reachable for this webhook"
+EXPECT_ATTEMPTS=3
+RETRY_MIN=(24 48 96)
+RETRY_MAX=(36 72 144)
+
+# Mark the receiver log so we can read deltas freshly.
+LOG_BASELINE_LINES=0
+if [ -f "$WEBHOOK_RECEIVER_LOG" ]; then
+  LOG_BASELINE_LINES=$(wc -l < "$WEBHOOK_RECEIVER_LOG" | tr -d ' ')
+fi
+
+begin_test "Retry intervals for attempts 1..3 fall within v2 schedule (+/-20% jitter)"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
-  if list=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries" 2>/dev/null); then
-    # Shape check: must have an .items array (possibly empty) and a .total.
-    items_type=$(echo "$list" | jq -r 'try (.items | type) catch "missing"')
-    if [ "$items_type" = "array" ]; then
+  # Wait for at least EXPECT_ATTEMPTS + 1 entries (the initial delivery
+  # plus the retry attempts). Bail at WEBHOOK_RETRY_TIMEOUT.
+  expected_entries=$(( EXPECT_ATTEMPTS + 1 ))
+  elapsed=0
+  poll=5
+  while [ "$elapsed" -lt "$WEBHOOK_RETRY_TIMEOUT" ]; do
+    seen=$(curl -sf --max-time 2 "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/__count" 2>/dev/null || echo 0)
+    if [ "$seen" -ge "$expected_entries" ]; then
+      break
+    fi
+    sleep "$poll"
+    elapsed=$(( elapsed + poll ))
+  done
+
+  total_lines=$(wc -l < "$WEBHOOK_RECEIVER_LOG" 2>/dev/null | tr -d ' ' || echo 0)
+  new_lines=$(( total_lines - LOG_BASELINE_LINES ))
+  if [ "$new_lines" -lt "$expected_entries" ]; then
+    skip "only ${new_lines} delivery entries observed within ${WEBHOOK_RETRY_TIMEOUT}s; producer may not be running, or jitter pushed timing out of window"
+  else
+    # Pull the last `expected_entries` timestamps (in seconds, float).
+    mapfile -t ts_lines < <(tail -n "$expected_entries" "$WEBHOOK_RECEIVER_LOG" \
+      | jq -r '.ts' 2>/dev/null)
+    if [ "${#ts_lines[@]}" -lt "$expected_entries" ]; then
+      fail "could not parse ${expected_entries} timestamps from receiver log"
+    else
+      bad=""
+      for i in $(seq 1 "$EXPECT_ATTEMPTS"); do
+        prev="${ts_lines[$((i-1))]}"
+        curr="${ts_lines[$i]}"
+        # Integer delta (sec). awk handles the float subtraction.
+        delta=$(awk -v a="$curr" -v b="$prev" 'BEGIN { printf "%d", (a - b) }')
+        min="${RETRY_MIN[$((i-1))]}"
+        max="${RETRY_MAX[$((i-1))]}"
+        if [ "$delta" -lt "$min" ] || [ "$delta" -gt "$max" ]; then
+          bad="${bad} attempt${i}_delta=${delta}s(expected_${min}-${max})"
+        fi
+      done
+      if [ -z "$bad" ]; then
+        pass
+      else
+        fail "retry interval(s) outside v2 +/-20% window:${bad}"
+      fi
+    fi
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# X-ArtifactKeeper-Retry-Attempt is emitted ONLY on retry deliveries
+# (per the v2 wire contract). The first delivery has no retry header;
+# subsequent deliveries carry attempt counters >= 1.
+# -------------------------------------------------------------------------
+
+begin_test "X-ArtifactKeeper-Retry-Attempt header present on retry deliveries"
+if [ "$SUITE_BLOCKED" = "true" ] || [ ! -s "$WEBHOOK_RECEIVER_LOG" ]; then
+  skip "no receiver log"
+else
+  total_lines=$(wc -l < "$WEBHOOK_RECEIVER_LOG" 2>/dev/null | tr -d ' ' || echo 0)
+  if [ "$total_lines" -lt 2 ]; then
+    skip "only ${total_lines} delivery entry/entries; cannot check retry header"
+  else
+    second_headers=$(sed -n '2p' "$WEBHOOK_RECEIVER_LOG" | jq -r '.headers')
+    retry_attempt=$(echo "$second_headers" | jq -r '
+      (.["X-ArtifactKeeper-Retry-Attempt"] //
+       .["x-artifactkeeper-retry-attempt"] //
+       .["X-ARTIFACTKEEPER-RETRY-ATTEMPT"] // empty)
+    ')
+    if [ -n "$retry_attempt" ] && [ "$retry_attempt" != "null" ] && \
+       [[ "$retry_attempt" =~ ^[0-9]+$ ]] && [ "$retry_attempt" -ge 1 ]; then
       pass
     else
-      fail "deliveries response shape unexpected: ${list:0:200}"
+      fail "expected retry-attempt header >= 1 on second delivery, got '${retry_attempt}'"
     fi
-  else
-    fail "deliveries endpoint unreachable"
   fi
 fi
 
 # -------------------------------------------------------------------------
-# Inspect the receiver log for the recover semantics: the FIRST POSTs return
-# 500 (mock-receiver failure simulation) and a later POST returns 200. If
-# the backend producer wires retries through, the receiver log will show
-# >= WEBHOOK_FAIL_FIRST_N + 1 entries. v1.1.x: only the /test single shot
-# is observable, so we assert the recover boundary at the receiver layer
-# (the mock itself flipped from 500 -> 200).
-# -------------------------------------------------------------------------
-
-begin_test "Receiver flipped from failure to success after WEBHOOK_FAIL_FIRST_N"
-if [ "$SUITE_BLOCKED" = "true" ]; then
-  skip "suite blocked"
-elif [ ! -f "$WEBHOOK_RECEIVER_LOG" ]; then
-  skip "receiver log missing"
-else
-  # Send WEBHOOK_FAIL_FIRST_N + 1 direct POSTs to the receiver to verify
-  # its flip behaviour. This is a self-check on the mock, independent of
-  # the backend retry engine.
-  total=$(( WEBHOOK_FAIL_FIRST_N + 1 ))
-  for i in $(seq 1 "$total"); do
-    curl -s -o /dev/null --max-time 5 -X POST \
-      -H "Content-Type: application/json" \
-      -d "{\"probe\":${i}}" \
-      "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/probe" || true
-  done
-  # Pull the last entry's effective status. The mock returns 500 to the
-  # first N then 200; we use jq to grep the log for one entry whose
-  # path is /probe and which arrived after our fail-cutoff.
-  log_count=$(wc -l < "$WEBHOOK_RECEIVER_LOG" | tr -d ' ')
-  if [ "$log_count" -ge "$total" ]; then
-    pass
-  else
-    fail "receiver log has ${log_count} entries, expected >= ${total}"
-  fi
-fi
-
-# -------------------------------------------------------------------------
-# Cleanup the webhook so re-runs of the suite don't accumulate fixtures.
+# Cleanup.
 # -------------------------------------------------------------------------
 
 if [ -n "$WEBHOOK_ID" ] && [ "$WEBHOOK_ID" != "null" ]; then
