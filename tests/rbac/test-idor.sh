@@ -56,16 +56,13 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Login as User A"
-USER_A_TOKEN=""
-if resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${USER_A}\",\"password\":\"${USER_PASS}\"}" 2>/dev/null); then
-  USER_A_TOKEN=$(echo "$resp" | jq -r '.token // .access_token // empty') || true
-  if [ -n "$USER_A_TOKEN" ]; then
-    pass
-  else
-    fail "no token in login response"
-  fi
+# Use login_as helper so we get 429 retry behaviour. Non-admin users are not
+# in RATE_LIMIT_EXEMPT_USERNAMES, so a fresh login right after two POST
+# /api/v1/users calls (admin-token auth) can collide with the auth bucket
+# when many suites bootstrap in parallel (release-gate run 25192394163).
+USER_A_TOKEN=$(login_as "${USER_A}" "${USER_PASS}" || true)
+if [ -n "$USER_A_TOKEN" ]; then
+  pass
 else
   fail "login as User A failed"
 fi

@@ -93,7 +93,7 @@ else
   TARBALL_FILE="$WORK_DIR/${PKG_NAME}-${PKG_VERSION}.tgz"
   tar czf "$TARBALL_FILE" -C "$WORK_DIR/publish-pkg" .
 
-  TARBALL_B64=$(base64 < "$TARBALL_FILE")
+  TARBALL_B64=$(base64 < "$TARBALL_FILE" | tr -d '\n')
   TARBALL_SIZE=$(wc -c < "$TARBALL_FILE" | tr -d ' ')
 
   PUBLISH_PAYLOAD=$(cat <<EOJSON
