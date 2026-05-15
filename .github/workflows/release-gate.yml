@@ -1578,7 +1578,7 @@ jobs:
           path: /tmp/all-results/
           if-no-files-found: ignore
 
-      - name: Gate check - fail if any required suite failed
+      - name: Gate check - fail if any required suite did not succeed
         # stress-tests and security-tests are intentionally excluded from
         # this rollup. Both have continue-on-error: true (see the comments
         # above each job) so their outcome can be 'failure' on
@@ -1589,15 +1589,27 @@ jobs:
         #   - security-tests: Grype DB not pre-seeded in v1.1.x backend
         #     image; quality gate is last-scanner-wins so Trivy covers
         #     the policy gate (artifact-keeper#1001).
-        # clean-install-smoke-with-deps is opt-in (gated on the
-        # `run_smoke_with_deps` workflow input, default false; see #53).
-        # When the input is false the job's result is 'skipped', which
-        # is neither 'failure' nor 'cancelled', so the rule below
-        # tolerates that case automatically. When the input is true,
-        # a failure DOES block the release: the line is included in
-        # the check below.
+        #
+        # The three new silent-success gates (scan-completion-gate,
+        # sbom-correctness-gate, pinned-cve-gate) use the STRICTER
+        # `result != 'success'` predicate. The looser
+        # `result == 'failure' || result == 'cancelled'` form lets a
+        # 'skipped' outcome (matrix-leg eval failure, future conditional
+        # `if:` gate, or a transitive `needs:` skip when `deploy` is
+        # skipped) through as green. For the silent-success gates that
+        # is precisely the regression class we are guarding against, so
+        # we close it explicitly.
+        #
+        # clean-install-smoke-with-deps is the one legitimate 'skipped'
+        # case: it is opt-in (gated on the `run_smoke_with_deps` workflow
+        # input, default false; see #53). When the input is false the
+        # job's result is 'skipped' by design. We continue to use the
+        # looser predicate for it so the default-off path stays green.
+        # When the input is true, a failure or cancellation DOES block
+        # the release.
+        #
         # The wildcard form contains(needs.*.result, 'failure') still
-        # observes those failures because needs.<job>.result reflects the
+        # observes failures because needs.<job>.result reflects the
         # job's outcome, not its continue-on-error-adjusted conclusion.
         # So we list the required suites explicitly here. If you add a
         # new required suite, add it to this list. Soft-failing suites
@@ -1608,9 +1620,9 @@ jobs:
           needs.clean-install-smoke-with-deps.result == 'failure' || needs.clean-install-smoke-with-deps.result == 'cancelled' ||
           needs.chart-upgrade-smoke.result == 'failure' || needs.chart-upgrade-smoke.result == 'cancelled' ||
           needs.real-flow-smoke.result == 'failure' || needs.real-flow-smoke.result == 'cancelled' ||
-          needs.scan-completion-gate.result == 'failure' || needs.scan-completion-gate.result == 'cancelled' ||
-          needs.sbom-correctness-gate.result == 'failure' || needs.sbom-correctness-gate.result == 'cancelled' ||
-          needs.pinned-cve-gate.result == 'failure' || needs.pinned-cve-gate.result == 'cancelled' ||
+          needs.scan-completion-gate.result != 'success' ||
+          needs.sbom-correctness-gate.result != 'success' ||
+          needs.pinned-cve-gate.result != 'success' ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
           needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||
