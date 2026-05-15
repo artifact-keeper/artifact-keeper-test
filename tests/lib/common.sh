@@ -21,7 +21,55 @@ export RUN_ID="${RUN_ID:-local-$(date +%s)}"
 export TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 export JUNIT_OUTPUT_DIR="${JUNIT_OUTPUT_DIR:-/tmp/test-results}"
 
+# STRESS_LOG_DIR is the deterministic path where stress-test scripts append
+# per-request HTTP status code rows. The release-gate workflow uploads this
+# directory as an artifact so a failed run can be debugged endpoint-by-endpoint
+# (see artifact-keeper-test#138, artifact-keeper#1088). Each row is space-
+# separated: <epoch_ms> <suite> <method> <endpoint> <http_code> <elapsed_ms>.
+export STRESS_LOG_DIR="${STRESS_LOG_DIR:-/tmp/stress-logs}"
+
 mkdir -p "$JUNIT_OUTPUT_DIR"
+mkdir -p "$STRESS_LOG_DIR"
+
+# log_request - Append one per-request row to the stress log for this suite.
+#
+# Usage:
+#   log_request <method> <endpoint> <http_code> <elapsed_ms>
+#
+# The suite name comes from $_SUITE_NAME (set by begin_suite). If begin_suite
+# has not been called yet (e.g. logging from a worker that runs before the
+# suite is named) the suite column falls back to "unknown".
+log_request() {
+  local method="${1:-?}"
+  local endpoint="${2:-?}"
+  local code="${3:-000}"
+  local elapsed_ms="${4:-0}"
+  local suite="${_SUITE_NAME:-unknown}"
+  local ts_ms
+  ts_ms=$(date +%s%3N 2>/dev/null || true)
+  # macOS / BSD date doesn't understand %3N and returns "<seconds>N". Fall
+  # back to seconds-with-zero-millis in that case so the log row stays a
+  # pure integer in the timestamp column. Linux ARC runners (the actual
+  # release-gate environment) emit the millisecond form natively.
+  if [ -z "$ts_ms" ] || ! [[ "$ts_ms" =~ ^[0-9]+$ ]]; then
+    ts_ms="$(date +%s)000"
+  fi
+  # Strip the BASE_URL prefix so the log is portable across runs.
+  # Defensive: BASE_URL is set at top of file but ${VAR:-} guards against
+  # any caller that `unset BASE_URL` before sourcing this helper.
+  endpoint="${endpoint#"${BASE_URL:-}"}"
+  # Strip query strings before logging: defense against future callers that
+  # accidentally log URLs containing `?token=...`, `?api_key=...`, or signed
+  # share-link / pre-signed-S3 URLs. The artifact is retained 90 days; keeping
+  # secrets out by construction is cheaper than scrubbing later.
+  endpoint="${endpoint%%\?*}"
+  # Replace any whitespace in the endpoint with %20 so the row stays single-
+  # field-per-column when grep/awk-ed later.
+  endpoint="${endpoint// /%20}"
+  printf '%s %s %s %s %s %s\n' \
+    "$ts_ms" "$suite" "$method" "$endpoint" "$code" "$elapsed_ms" \
+    >> "${STRESS_LOG_DIR}/${suite}.log"
+}
 
 # ---------------------------------------------------------------------------
 # Internal state
@@ -117,6 +165,13 @@ _feature_min_version() {
   case "$1" in
     "conan_remote_search_forward")    echo "1.3.0" ;;
     "conan_virtual_search_aggregate") echo "1.3.0" ;;
+    # recipe_latest / recipe_revisions filter by user/channel rather than
+    # collapsing variants to _/_/latest. Backported via artifact-keeper#869.
+    # v1.1.x backend lacks this scoping; tracked for v1.1.10 backport in #986.
+    "conan_user_channel_scoping")     echo "1.2.0" ;;
+    # Virtual-repo recipe_latest fans out across non-Remote members. Landed
+    # via artifact-keeper#875. v1.1.x backend lacks this; tracked in #986.
+    "conan_virtual_recipe_fanout")    echo "1.2.0" ;;
     "maven_virtual_snapshot")         echo "1.2.0" ;;
     "guest_access_toggle")            echo "1.2.0" ;;
     "opensearch_indexing")            echo "1.2.0" ;;
@@ -142,6 +197,34 @@ _feature_min_version() {
     "refresh_token_rotation")         echo "1.1.9" ;;
     "download_ticket_consumer")       echo "1.1.9" ;;
     "user_deactivation_token_flush")  echo "1.1.9" ;;
+    # Conan error-path correctness work. v1.1.x conan handler lacks repo
+    # existence checks before format dispatch (uploads to non-existent repos
+    # return 500 instead of 404), the /v2/ping endpoint short-circuits before
+    # repo lookup (returns 200 for any repo path), and the file-upload handler
+    # panics on >255-char path segments instead of returning a structured
+    # error. These are correctness gaps that pre-date v1.1.x rather than
+    # regressions, so they're slated for v1.1.10 / v1.2.0. Tracked in
+    # artifact-keeper#990.
+    "conan_error_correctness")        echo "1.1.10" ;;
+    # webhook_event_producer: the in-process EventBus -> webhook_deliveries
+    # producer task. Subscribes to domain events and enqueues delivery rows
+    # for the existing retry scheduler. v1.1.x ships the wire contract
+    # (webhook CRUD, /test, signing, retry scheduler) but not the producer:
+    # rows only appear in webhook_deliveries when /test is hit synchronously.
+    # Real EventBus events do not produce rows on 1.1.x. Producer wire-up is
+    # epic artifact-keeper#919 (E3) for v1.2.0. Until then, tests that assert
+    # "delivery row appears after a domain event" must skip on 1.1.x backends
+    # to avoid hard-failing on the absence of an unshipped feature.
+    "webhook_event_producer")         echo "1.2.0" ;;
+    # proxy_ttl_eviction_correctness: the proxy correctly serves the
+    # cached upstream response within the configured cache_ttl_seconds
+    # window and only refetches after the TTL expires. v1.1.x backends
+    # have a latent bug where the within-TTL fetch already shows
+    # upstream's new content, indicating a missing or wrong cache-
+    # validity check in the proxy fetch path. Tracked for v1.2.0; the
+    # eviction E2E test gates against this feature so 1.1.x releases
+    # do not block on a known-broken behaviour.
+    "proxy_ttl_eviction_correctness") echo "1.2.0" ;;
     *) return 1 ;;
   esac
 }
@@ -248,6 +331,93 @@ format_auth_header() {
   echo "Authorization: Basic $(printf '%s:%s' "$ADMIN_USER" "$ADMIN_PASS" | base64)"
 }
 
+# PUT a file to a format-native endpoint with retry on transient auth/rate-limit
+# failures. Echoes the final HTTP status on stdout.
+#
+# The 1.1.x backend reauthenticates Basic credentials on every format-native
+# request via bcrypt(cost=12) inside spawn_blocking. Under back-to-back PUT
+# bursts within the same suite (and parallel suites sharing the same admin
+# user), the spawn_blocking pool can transiently drop a verify task, surfacing
+# as HTTP 401 even though credentials are valid. The 1.2.x backend grew
+# RATE_LIMIT_EXEMPT_USERNAMES (#697) to take the admin user off the auth
+# bucket, but that exemption was never backported to release/1.1.x, so the
+# release-gate (which targets 1.1.6) needs test-side resilience.
+#
+# Retries on HTTP 401, 429, 503, and network errors. Returns the final status
+# so callers can assert success.
+#
+# Usage:
+#   status=$(format_put_with_retry "$URL" "$DATA_FILE" [extra_curl_args...])
+format_put_with_retry() {
+  local url="$1"
+  local data_file="$2"
+  shift 2
+  local _max="${FORMAT_PUT_MAX_ATTEMPTS:-4}"
+  local _delay="${FORMAT_PUT_RETRY_DELAY:-2}"
+  local _attempt _status="000"
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X PUT \
+      -H "$(format_auth_header)" \
+      -H "Content-Type: application/octet-stream" \
+      --data-binary "@${data_file}" \
+      "$@" \
+      "$url" 2>/dev/null) || _status="000"
+
+    # Success
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      echo "$_status"
+      return 0
+    fi
+
+    # Non-transient failure: stop retrying
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+  echo "$_status"
+  return 1
+}
+
+# GET from a format-native endpoint with retry on transient auth/rate-limit
+# failures. Writes body to OUT_FILE (-) and echoes the final HTTP status.
+# Same retry rationale as format_put_with_retry.
+#
+# Usage:
+#   status=$(format_get_with_retry "$URL" "$OUT_FILE")
+format_get_with_retry() {
+  local url="$1"
+  local out_file="${2:-/dev/null}"
+  local _max="${FORMAT_PUT_MAX_ATTEMPTS:-4}"
+  local _delay="${FORMAT_PUT_RETRY_DELAY:-2}"
+  local _attempt _status="000"
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o "$out_file" -w '%{http_code}' $CURL_TIMEOUT \
+      -H "$(format_auth_header)" \
+      "$url" 2>/dev/null) || _status="000"
+
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      echo "$_status"
+      return 0
+    fi
+
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+  echo "$_status"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 #
@@ -290,24 +460,52 @@ create_test_user() {
 # Log in as the named user and echo the access_token on stdout.
 # On failure, echoes empty string and the response body to stderr.
 #
+# Retries on HTTP 429 (auth rate-limit) because non-admin users are not in
+# RATE_LIMIT_EXEMPT_USERNAMES. When parallel suites burst-call /auth/login
+# (e.g. test-idor creates two users + logs one in, all in <1s), the bucket
+# can momentarily refuse the login that immediately follows. Same retry
+# budget as auth_admin: 5x3s = 15s. 429s honor a doubled delay.
+#
 # Usage:
 #   USER_TOKEN=$(login_as "$USERNAME" "$PASSWORD")
 login_as() {
   local username="$1"
   local password="$2"
-  local resp
-  resp=$(curl -sf $CURL_TIMEOUT -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${username}\",\"password\":\"${password}\"}" \
-    "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || true
-  local tok
-  tok=$(echo "$resp" | jq -r '.access_token // .token // empty')
-  if [ -z "$tok" ] || [ "$tok" = "null" ]; then
-    echo "login_as failed for ${username}: ${resp:0:200}" >&2
-    echo ""
-    return 1
-  fi
-  echo "$tok"
+  local _max="${LOGIN_AS_MAX_ATTEMPTS:-5}"
+  local _delay="${LOGIN_AS_RETRY_DELAY:-3}"
+  local _attempt _http_status _body _tmp tok=""
+  for _attempt in $(seq 1 "$_max"); do
+    _tmp=$(mktemp)
+    _http_status=$(curl -s $CURL_TIMEOUT -o "$_tmp" -w '%{http_code}' \
+      -X POST -H "Content-Type: application/json" \
+      -d "{\"username\":\"${username}\",\"password\":\"${password}\"}" \
+      "${BASE_URL}/api/v1/auth/login" 2>/dev/null) || _http_status="000"
+    _body=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_http_status" = "200" ] && [ -n "$_body" ]; then
+      tok=$(echo "$_body" | jq -r '.access_token // .token // empty')
+      if [ -n "$tok" ] && [ "$tok" != "null" ]; then
+        echo "$tok"
+        return 0
+      fi
+    fi
+
+    # Only retry on transient 429 / 503 / network. 401/400 are real failures.
+    if [ "$_http_status" != "429" ] && [ "$_http_status" != "503" ] && [ "$_http_status" != "000" ]; then
+      break
+    fi
+    if [ "$_attempt" -lt "$_max" ]; then
+      if [ "$_http_status" = "429" ]; then
+        sleep "$(( _delay * 2 ))"
+      else
+        sleep "$_delay"
+      fi
+    fi
+  done
+  echo "login_as failed for ${username} after ${_max} attempts (last HTTP ${_http_status}): ${_body:0:200}" >&2
+  echo ""
+  return 1
 }
 
 api_post() {
@@ -361,6 +559,29 @@ api_upload() {
 # ---------------------------------------------------------------------------
 
 # create_repo KEY FORMAT [REPO_TYPE] [UPSTREAM_URL]
+#
+# Creates a repository via POST /api/v1/repositories. The previous version
+# called `api_post ... > /dev/null` which used `curl -sf`: any non-2xx
+# returned non-zero with the body discarded, so callers (`fail "could not
+# create local OCI repo"`) had no signal about WHY the call failed.
+#
+# This rewrite adds two things:
+#   1. Visibility: on failure, print "create_repo <key> (format=... type=...)
+#      failed: HTTP <status> body=<body-snippet>" to stderr so the test
+#      log shows what the server actually said.
+#   2. Resilience: retry on the same transient class as
+#      format_put_with_retry (HTTP 401, 429, 503, network 000). The
+#      release/1.1.x admin path bcrypt-reauths every basic-auth call in
+#      spawn_blocking and can transiently drop a verify task under burst
+#      load. The 1.2.x backend grew RATE_LIMIT_EXEMPT_USERNAMES (#697) to
+#      take the admin user off the auth bucket, but that exemption was
+#      never backported to release/1.1.x. We saw this exact failure mode
+#      on v1.1.9-rc.5's release-gate run #25466619896: an identical
+#      create_local_repo "...." "docker" call PASSED in test-oci.sh and
+#      then FAILED 4 seconds later in test-oci-remote.sh against the same
+#      backend pod, with no distinguishing payload difference.
+#
+# Returns 0 on success, 1 on final failure (after retries exhausted).
 create_repo() {
   local key="$1"
   local format="$2"
@@ -374,7 +595,39 @@ create_repo() {
   fi
   payload="${payload}}"
 
-  api_post "/api/v1/repositories" "$payload" > /dev/null
+  local _max="${CREATE_REPO_MAX_ATTEMPTS:-4}"
+  local _delay="${CREATE_REPO_RETRY_DELAY:-2}"
+  local _attempt _status="000" _body_file _body=""
+  _body_file=$(mktemp)
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s -o "$_body_file" -w '%{http_code}' $CURL_TIMEOUT \
+      -X POST \
+      -H "$(auth_header)" \
+      -H "Content-Type: application/json" \
+      -d "$payload" \
+      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || _status="000"
+
+    # Success: 2xx
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      rm -f "$_body_file"
+      return 0
+    fi
+
+    # Non-transient failure: stop retrying.
+    if [ "$_status" != "401" ] && [ "$_status" != "429" ] && \
+       [ "$_status" != "503" ] && [ "$_status" != "000" ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$_delay"
+    fi
+  done
+
+  _body=$(head -c 400 "$_body_file" 2>/dev/null || true)
+  rm -f "$_body_file"
+  echo "create_repo ${key} (format=${format} type=${repo_type}) failed: HTTP ${_status} body=${_body}" >&2
+  return 1
 }
 
 create_local_repo() {

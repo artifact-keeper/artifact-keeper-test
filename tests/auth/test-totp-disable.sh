@@ -160,7 +160,19 @@ else
   me_resp=$(curl -sf $CURL_TIMEOUT \
     -H "Authorization: Bearer ${USER_TOKEN}" \
     "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true
-  totp_state=$(echo "$me_resp" | jq -r '.totp_enabled // empty')
+  # NOTE: `jq -r '.totp_enabled // empty'` is buggy here — jq's `//` operator
+  # treats `false` as a missing alternative and returns empty, so a literal
+  # `"totp_enabled":false` would be reported as `''`. Use `if … then … end`
+  # so we distinguish false (the value we want), true, and absent.
+  totp_state=$(echo "$me_resp" | jq -r '
+    if has("totp_enabled") then
+      if .totp_enabled == false then "false"
+      elif .totp_enabled == true then "true"
+      else "non-bool"
+      end
+    else "missing"
+    end
+  ' 2>/dev/null) || totp_state=""
   if [ "$totp_state" = "false" ]; then
     pass
   else
