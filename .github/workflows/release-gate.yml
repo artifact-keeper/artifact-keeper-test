@@ -500,8 +500,16 @@ jobs:
   #
   # The wired formats (currently: npm) run the lite primitive at
   # tests/security/test-scan-completes.sh via the release-gate wrapper.
-  # The scaffolded formats (oci, maven, pypi, cargo, helm) exit 0 with
-  # a clear log entry until their fixture-builders land (#62).
+  #
+  # The matrix is intentionally restricted to formats whose fixtures
+  # exist. Scaffolded formats (oci, maven, pypi, cargo, helm) are NOT
+  # in the matrix because a green checkmark on an `exit 0` scaffold
+  # is the same silent-success class the gate exists to prevent. The
+  # scan-completion-gate-scaffolds-pending job below surfaces the
+  # deferred formats as ::warning:: annotations so the gap is visible
+  # without painting the dashboard with fake passes. When a fixture-
+  # builder for a deferred format lands (#62), add the format to this
+  # matrix in the same PR.
   #
   # Why a matrix rather than a single sequential driver:
   #   - Each format scan can take 30-60s; sequential 6-format runs
@@ -517,7 +525,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        format: [npm, oci, maven, pypi, cargo, helm]
+        format: [npm]
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
@@ -569,6 +577,36 @@ jobs:
             /tmp/test-results/
             /tmp/test-logs/
           if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Scaffolds-pending sentinel (#62).
+  #
+  # This job exists ONLY to surface the deferred formats as a
+  # ::warning:: annotation on every release-gate run so the gap is
+  # visible. It does NOT run any test. It is NOT a required gate.
+  # Deliberately a separate job (not a matrix step) so the GitHub
+  # Actions UI shows ONE warning row rather than five green
+  # checkmarks that imply broader format coverage than exists.
+  #
+  # When a fixture-builder for one of the listed formats lands,
+  # remove the format from this list and add it to the matrix above.
+  # -------------------------------------------------------------------
+  scan-completion-gate-scaffolds-pending:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 2
+    steps:
+      - name: Emit scaffolds-pending warnings
+        run: |
+          for fmt in oci maven pypi cargo helm; do
+            echo "::warning title=scan-completion gate: ${fmt} fixture missing::No scan-completion fixture exists for ${fmt}; the silent-success class (#888) is NOT covered for this format. Tracked under artifact-keeper-test#62."
+          done
+          # Echo to the runner log too so the operator sees this even
+          # without expanding the annotations pane.
+          echo ""
+          echo "Scan-completion format coverage:"
+          echo "  wired:    npm"
+          echo "  deferred: oci, maven, pypi, cargo, helm (artifact-keeper-test#62)"
 
   # -------------------------------------------------------------------
   # SBOM correctness gate (scaffold).
