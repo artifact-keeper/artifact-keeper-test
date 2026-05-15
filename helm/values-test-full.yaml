@@ -57,13 +57,22 @@ web:
 
 postgres:
   enabled: true
+  # CPU rebalanced for stress-tests: previous 2000m backend vs 500m postgres
+  # produced a 4:1 ratio. Under sustained load the backend issued queries
+  # faster than the database could serve them, the slowest sqlx pool
+  # acquires hit the 30s acquire_timeout, and the timeouts surfaced as
+  # HTTP 500s in the stress suites. Target is closer to 2:1, achieved by
+  # raising the postgres limit to 2000m (and the request to 250m so the
+  # scheduler can place the pod for the burst alongside backend + trivy +
+  # meilisearch). Mirrors the rebalance applied in values-test.yaml.
+  # Refs: artifact-keeper-test#140, artifact-keeper#1088, artifact-keeper#1176
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
+      cpu: 250m
+      memory: 128Mi
     limits:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 2000m
+      memory: 1Gi
   persistence:
     size: 2Gi
   # The chart's secrets.yaml validation expects auth.password (not a flat

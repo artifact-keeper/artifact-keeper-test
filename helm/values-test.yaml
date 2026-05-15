@@ -56,13 +56,24 @@ web:
 
 postgres:
   enabled: true
+  # CPU rebalanced for stress-tests: previous 2500m backend vs 500m postgres
+  # produced a 5:1 ratio, so under sustained load the backend issued queries
+  # roughly 5x faster than the database could serve them. The slowest sqlx
+  # pool acquires hit the 30s acquire_timeout and surfaced as HTTP 500s,
+  # which is what the 33-54% error rate in test-sustained-load measured on
+  # :1.1-dev. Target is closer to 2:1, achieved by raising the postgres
+  # limit to 2000m (and the request to 250m so the scheduler can place the
+  # pod under burst alongside backend + opensearch). Total namespace
+  # requests: 750m (backend) + 50m (web) + 250m (postgres) + 100m
+  # (opensearch) = 1150m, still well under the 4 CPU quota.
+  # Refs: artifact-keeper-test#140, artifact-keeper#1088, artifact-keeper#1176
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
+      cpu: 250m
+      memory: 128Mi
     limits:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 2000m
+      memory: 1Gi
   persistence:
     size: 2Gi
   auth:
