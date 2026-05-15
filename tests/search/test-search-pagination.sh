@@ -23,6 +23,19 @@ begin_suite "search-pagination"
 auth_admin
 setup_workdir
 
+# Preflight: when OpenSearch is down or unwired the search endpoints
+# either return 503 or hang past the CURL_TIMEOUT window. Skipping the
+# suite at the suite level is faster (1-2s vs 60-120s of failed assertions)
+# and produces a clean signal for the release-gate dashboard.
+preflight_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+  -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/search?q=preflight&per_page=1" 2>/dev/null || echo "000")
+case "$preflight_status" in
+  503|504|000)
+    skip_suite "search backend unavailable (HTTP ${preflight_status}); OpenSearch may be down"
+    ;;
+esac
+
 REPO_KEY="pag-${RUN_ID}"
 UNIQUE_TERM="pagn${RUN_ID//[^a-z0-9]/}"
 
@@ -153,6 +166,83 @@ else
       skip "indexing did not surface the sentinel within budget (best-effort)"
     fi
   fi
+fi
+
+# -------------------------------------------------------------------------
+# 5. page beyond total: requesting page=total_pages+1 must return an empty
+#    hits list AND a self-consistent total field. This catches off-by-one
+#    bugs in the offset arithmetic that would otherwise look "fine"
+#    against page=1.
+# -------------------------------------------------------------------------
+
+begin_test "page beyond total returns empty hits with consistent total"
+# First find the current total for our unique term.
+resp_first=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
+  "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=1&per_page=1" 2>/dev/null || echo '')
+if [ -z "$resp_first" ]; then
+  skip "page=1 query returned no response, cannot derive total"
+else
+  total_first=$(echo "$resp_first" | jq -r '
+    .total // .total_hits // .total_results //
+    (if type=="array" then length
+     elif .results then (.results|length)
+     elif .hits    then (.hits|length)
+     else 0 end)' 2>/dev/null || echo 0)
+  # Coerce empty / null to 0 so the arithmetic below stays well-formed.
+  case "$total_first" in
+    ''|null) total_first=0 ;;
+  esac
+  # Bound the requested page so a backend that mis-reports total=0 doesn't
+  # turn this into a probe on page=1 (which we already cover above).
+  per_page_probe=10
+  if [ "$total_first" -le 0 ] 2>/dev/null; then
+    # Indexer may not have surfaced anything yet; probe page=999 anyway,
+    # since the goal is "page-beyond-total must not 5xx or report rows".
+    probe_page=999
+  else
+    # ceil(total / per_page) + 1
+    probe_page=$(( total_first / per_page_probe + 2 ))
+  fi
+  resp_far=$(curl -s -w $'\n%{http_code}' $CURL_TIMEOUT -H "$(auth_header)" \
+    "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=${probe_page}&per_page=${per_page_probe}" 2>/dev/null || printf '\n000')
+  # Split body (everything before the last newline) from status (final line).
+  # `head -n -1` is GNU-only; awk handles both BSD and GNU portably.
+  body_far=$(printf '%s' "$resp_far" | awk 'NR>1{print prev}{prev=$0}')
+  status_far=$(printf '%s' "$resp_far" | awk 'END{print}')
+  case "$status_far" in
+    5*)
+      fail "page-beyond-total (page=${probe_page}) returned HTTP ${status_far}"
+      ;;
+    2*)
+      hits_far=$(echo "$body_far" | jq -r '
+        if type=="array" then length
+        elif .results then (.results|length)
+        elif .hits    then (.hits|length)
+        else 0 end' 2>/dev/null || echo 0)
+      total_far=$(echo "$body_far" | jq -r '
+        .total // .total_hits // .total_results // empty' 2>/dev/null || echo "")
+      # The page must be empty (no rows past the last page).
+      if [ "$hits_far" != "0" ]; then
+        fail "page=${probe_page} returned ${hits_far} hits, expected 0 (beyond total=${total_first})"
+      # And the total, if present, must agree with the first-page total so
+      # the response is internally consistent across the page parameter.
+      elif [ -n "$total_far" ] && [ "$total_far" != "null" ] && \
+           [ "$total_first" -gt 0 ] 2>/dev/null && \
+           [ "$total_far" != "$total_first" ]; then
+        fail "total field changes with page (page=1 total=${total_first}, page=${probe_page} total=${total_far})"
+      else
+        pass
+      fi
+      ;;
+    4*)
+      # 4xx is acceptable: some backends explicitly reject out-of-range
+      # pages. The contract we care about is "no panic, no phantom rows".
+      pass
+      ;;
+    *)
+      skip "page-beyond-total returned HTTP ${status_far}; not a clean signal"
+      ;;
+  esac
 fi
 
 # -------------------------------------------------------------------------

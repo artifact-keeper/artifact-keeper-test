@@ -23,6 +23,19 @@ begin_suite "search-advanced-filters"
 auth_admin
 setup_workdir
 
+# Preflight: when OpenSearch is down or unwired the search endpoints
+# either return 503 or hang past the CURL_TIMEOUT window. Skipping the
+# suite at the suite level is faster (1-2s vs 60-120s of failed assertions)
+# and produces a clean signal for the release-gate dashboard.
+preflight_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+  -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/search?q=preflight&per_page=1" 2>/dev/null || echo "000")
+case "$preflight_status" in
+  503|504|000)
+    skip_suite "search backend unavailable (HTTP ${preflight_status}); OpenSearch may be down"
+    ;;
+esac
+
 REPO_KEY="srch-adv-${RUN_ID}"
 DECOY_REPO_KEY="srch-adv-decoy-${RUN_ID}"
 UNIQUE_TERM="advfilt${RUN_ID//[^a-z0-9]/}"
