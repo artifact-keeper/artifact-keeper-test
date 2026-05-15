@@ -56,17 +56,25 @@ web:
 
 postgres:
   enabled: true
-  # CPU rebalanced for stress-tests: previous 2500m backend vs 500m postgres
-  # produced a 5:1 ratio, so under sustained load the backend issued queries
-  # roughly 5x faster than the database could serve them. The slowest sqlx
-  # pool acquires hit the 30s acquire_timeout and surfaced as HTTP 500s,
-  # which is what the 33-54% error rate in test-sustained-load measured on
-  # :1.1-dev. Target is closer to 2:1, achieved by raising the postgres
-  # limit to 2000m (and the request to 250m so the scheduler can place the
-  # pod under burst alongside backend + opensearch). Total namespace
+  # CPU rebalanced for stress-tests. The previous 2500m backend vs 500m
+  # postgres layout (5:1) is hypothesised to have starved the database
+  # under sustained load: workers timed out client-side and surfaced as
+  # HTTP 500s, which matches the 33-54% error rate test-sustained-load
+  # measured on :1.1-dev. The sqlx pool acquire histogram is not
+  # currently exported by the backend, so the link between the ratio and
+  # the error rate is inferential; the rebalance is a working hypothesis
+  # whose effect should be visible in post-merge runs. #154 tracks adding
+  # pg_stat_activity + sqlx acquire-time capture so the next operator
+  # has direct evidence, not narrative, to work from.
+  #
+  # New layout: postgres at 250m request / 2000m limit. Total namespace
   # requests: 750m (backend) + 50m (web) + 250m (postgres) + 100m
-  # (opensearch) = 1150m, still well under the 4 CPU quota.
-  # Refs: artifact-keeper-test#140, artifact-keeper#1088, artifact-keeper#1176
+  # (opensearch) = 1150m, well under the 4 CPU quota. Limit sum
+  # (2500m + 250m + 2000m + 1000m = 5750m) intentionally oversubscribes
+  # the quota; ResourceQuota is NOT enabled on this namespace so the
+  # scheduler allows it. If a quota is added later the postgres limit
+  # (or the backend's) must drop accordingly.
+  # Refs: artifact-keeper-test#140, #154, artifact-keeper#1088, artifact-keeper#1176
   resources:
     requests:
       cpu: 250m
