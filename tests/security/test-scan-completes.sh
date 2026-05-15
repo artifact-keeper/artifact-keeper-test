@@ -67,8 +67,16 @@ EXPECT_FAILURE="${EXPECT_FAILURE:-0}"
 # actually produce findings -- if findings_count == 0 on a healthy
 # backend, the scanner never inspected the bytes (Reality Checker /
 # Security Engineer reviews of PR #60).
+#
+# FIXTURE_LODASH_VERSION env override exists for the paired-evidence
+# self-test (scan-completes-self-test.yml fixture B): setting it to a
+# non-vulnerable version like 4.17.21 produces a fixture that Trivy
+# scans cleanly. With findings_count=0 on a healthy backend, the
+# load-bearing assertion below correctly FAILS, which paired with
+# EXPECT_FAILURE=1 proves the assertion is doing real work. Do NOT
+# set this env var outside the self-test fixture B job.
 EXPECTED_VULN_PACKAGE="lodash"
-EXPECTED_VULN_VERSION="4.17.4"
+EXPECTED_VULN_VERSION="${FIXTURE_LODASH_VERSION:-4.17.4}"
 EXPECTED_VULN_CVE_HINT="CVE-2019-10744"
 
 # ---------------------------------------------------------------------------
@@ -162,16 +170,29 @@ is_nonneg_int() {
 # the lockfile exactly.
 # ---------------------------------------------------------------------------
 
-begin_test "Build known-vulnerable fixture (lodash 4.17.4 / CVE-2019-10744)"
+begin_test "Build fixture (lodash ${EXPECTED_VULN_VERSION})"
 mkdir -p "${WORK_DIR}/package"
+
+# Trivy parses package-lock.json on the version field; the integrity
+# SHA does not gate detection. We use the published-npm SHA for 4.17.4
+# (the default vulnerable case) so the lockfile is realistic. For
+# overridden versions (FIXTURE_LODASH_VERSION set by the self-test
+# fixture B path) we use a known-fixture placeholder rather than a
+# real-but-wrong SHA, since no real consumer ever resolves this
+# tarball.
+if [ "$EXPECTED_VULN_VERSION" = "4.17.4" ]; then
+  LODASH_INTEGRITY="sha1-eCA6TRwyLuHBHJgwGu1myF0sR4U="
+else
+  LODASH_INTEGRITY="sha1-FIXTURE-NOT-FOR-NPM-RESOLUTION-PLACEHOLDER="
+fi
 
 cat > "${WORK_DIR}/package/package.json" <<EOF
 {
   "name": "scan-completes-fixture",
   "version": "1.0.0",
-  "description": "Release-gate fixture pinned to a known-vulnerable lodash for CVE-2019-10744 detection",
+  "description": "Release-gate fixture pinned to lodash ${EXPECTED_VULN_VERSION}",
   "dependencies": {
-    "lodash": "4.17.4"
+    "lodash": "${EXPECTED_VULN_VERSION}"
   }
 }
 EOF
@@ -187,20 +208,20 @@ cat > "${WORK_DIR}/package/package-lock.json" <<EOF
       "name": "scan-completes-fixture",
       "version": "1.0.0",
       "dependencies": {
-        "lodash": "4.17.4"
+        "lodash": "${EXPECTED_VULN_VERSION}"
       }
     },
     "node_modules/lodash": {
-      "version": "4.17.4",
-      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.4.tgz",
-      "integrity": "sha1-eCA6TRwyLuHBHJgwGu1myF0sR4U="
+      "version": "${EXPECTED_VULN_VERSION}",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-${EXPECTED_VULN_VERSION}.tgz",
+      "integrity": "${LODASH_INTEGRITY}"
     }
   },
   "dependencies": {
     "lodash": {
-      "version": "4.17.4",
-      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.4.tgz",
-      "integrity": "sha1-eCA6TRwyLuHBHJgwGu1myF0sR4U="
+      "version": "${EXPECTED_VULN_VERSION}",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-${EXPECTED_VULN_VERSION}.tgz",
+      "integrity": "${LODASH_INTEGRITY}"
     }
   }
 }

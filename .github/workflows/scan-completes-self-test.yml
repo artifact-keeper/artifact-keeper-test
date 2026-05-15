@@ -184,49 +184,117 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
-  # Fixture B: Findings forgery.
+  # Fixture B: Non-vulnerable fixture must trip the findings_count check.
   #
-  # Run the gate against a backend with the SCANNER_FORCE_EMPTY_FINDINGS
-  # env override (or equivalent debug-only knob). The override makes
-  # the scanner_service.rs path return Ok(vec![]) for every artifact
-  # regardless of content, which becomes `findings_count=0, status=completed,
-  # error_message=null` -- the exact #888 silent-success shape.
+  # The lite gate's load-bearing assertion is `findings_count >= 1` on
+  # a known-vulnerable lodash fixture. If a refactor weakens that check
+  # (drops it, replaces it with `>= 0`, swallows it in a tolerant
+  # branch), the gate goes green forever on a broken backend. Fixture A
+  # covers the scanner_unavailable half; Fixture B covers the
+  # findings-emitted half.
   #
-  # The lite gate's load-bearing assertion (findings_count >= 1 on the
-  # known-vulnerable lodash fixture) MUST fail against this backend.
-  # If a refactor weakens that check, this fixture surfaces it.
+  # Approach (no backend debug knob required):
+  #   - Override FIXTURE_LODASH_VERSION=4.17.21 (a non-vulnerable
+  #     release of lodash). Trivy's npm parser still parses the
+  #     lockfile but emits zero findings because the version carries
+  #     no published CVE.
+  #   - findings_count=0 on a non-vulnerable fixture is the CORRECT
+  #     scanner behavior. The gate's `findings_count >= 1` assertion
+  #     must therefore FAIL (the fixture proves the assertion is
+  #     load-bearing). EXPECT_FAILURE=1 inverts the exit code so a
+  #     gate failure becomes a self-test pass.
   #
-  # NOTE: this fixture requires the backend to honor a debug-only env
-  # knob. Until that lands (tracked as artifact-keeper#NNN -- TODO file
-  # once #61 merges), we scaffold the job with a clearly-marked TODO
-  # and exit 0. That keeps the workflow visible in the Actions UI but
-  # does not yet provide paired evidence for the findings_count
-  # assertion specifically.
+  # This fixture pairs with Fixture A to provide the full #883
+  # paired-evidence contract: A proves scanner-unavailable fails loud,
+  # B proves the findings_count >= 1 assertion bites.
   # -------------------------------------------------------------------
-  pin-gate-fails-on-findings-forgery:
-    name: Gate must reject findings forgery (fixture B, scaffold)
+  pin-gate-fails-on-non-vulnerable-fixture:
+    name: Gate must reject non-vulnerable fixture (fixture B)
     runs-on: ak-e2e-runners
-    timeout-minutes: 10
+    timeout-minutes: 12
+    env:
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+      ALLOW_SCANNER_SKIP: '0'
+      # EXPECT_FAILURE inverts common.sh's end_suite exit code: the gate
+      # must fail on the non-vulnerable fixture (correct scanner
+      # behavior: zero findings on a clean lockfile), and that failure
+      # becomes exit 0 here.
+      EXPECT_FAILURE: '1'
+      # Override the fixture to a clean lodash version. test-scan-completes.sh
+      # reads FIXTURE_LODASH_VERSION and builds the lockfile from it.
+      # 4.17.21 is the latest patch; no CVE rows for it.
+      FIXTURE_LODASH_VERSION: '4.17.21'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Scaffold note
+      - name: Install kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Deploy backend with Trivy enabled (full stack)
+        id: deploy
         run: |
-          echo "::warning::Fixture B (findings forgery) is currently a scaffold."
-          echo "::warning::Requires backend to honor SCANNER_FORCE_EMPTY_FINDINGS=1"
-          echo "::warning::(or equivalent debug-only knob) to deterministically emit"
-          echo "::warning::status=completed + findings_count=0 + error_message=null."
-          echo "::warning::Filed as a follow-up against artifact-keeper. Fixture A"
-          echo "::warning::(Trivy scaled to zero) already provides paired-failure"
-          echo "::warning::evidence for the scanner_unavailable path, which is the"
-          echo "::warning::other half of the #888 silent-success class."
-          echo ""
-          echo "When the backend gains the debug knob, replace this step with:"
-          echo "  1. Deploy stack with backend env SCANNER_FORCE_EMPTY_FINDINGS=1"
-          echo "  2. Run scan-completion-gate.sh with EXPECT_FAILURE=1"
-          echo "  3. Assert gate exits 0 (gate correctly rejected the forgery)"
-          # Exit 0 so the workflow itself is green; we surface the
-          # scaffold status via the ::warning:: annotations above so
-          # an operator browsing the PR sees the gap without the
-          # workflow falsely turning green-as-passed.
-          exit 0
+          RUN_ID="self-clean-fixture-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+          chmod +x scripts/create-test-namespace.sh
+          ./scripts/create-test-namespace.sh \
+            --run-id "${RUN_ID}" \
+            --backend-tag "dev" \
+            --web-tag "dev" \
+            --full-stack
+          echo "namespace=test-${RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "backend_url=http://artifact-keeper-backend.test-${RUN_ID}.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for backend + Trivy ready
+        run: |
+          chmod +x tests/lib/wait-for-ready.sh
+          ./tests/lib/wait-for-ready.sh "${{ steps.deploy.outputs.backend_url }}" 300
+          # Confirm Trivy is up; if it is not, fixture A's failure mode
+          # would mask fixture B's signal.
+          kubectl -n "${{ steps.deploy.outputs.namespace }}" wait \
+            --for=condition=Available deployment/artifact-keeper-trivy \
+            --timeout=120s
+
+      - name: Run gate against clean-lodash fixture; expect failure
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.backend_url }}
+          RUN_ID: ${{ steps.deploy.outputs.run_id }}
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/scan-completion-gate.sh
+          # FIXTURE_LODASH_VERSION=4.17.21 (set at job env). The fixture
+          # builds a clean lockfile, Trivy scans it, findings_count=0,
+          # the gate's `findings_count >= 1` assertion fires, end_suite
+          # exits non-zero. EXPECT_FAILURE=1 inverts to exit 0.
+          ./tests/release-gate/scan-completion-gate.sh
+
+      - name: Capture scanner diagnostics
+        if: always()
+        run: |
+          NS="${{ steps.deploy.outputs.namespace }}"
+          mkdir -p /tmp/test-logs
+          kubectl -n "$NS" get pods > /tmp/test-logs/pods-clean-fixture.txt 2>&1 || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/name=trivy \
+            --tail=2000 > /tmp/test-logs/trivy-clean-fixture.log 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=500 > /tmp/test-logs/backend-clean-fixture.log 2>&1 || true
+
+      - name: Teardown
+        if: always()
+        run: |
+          NS="${{ steps.deploy.outputs.namespace }}"
+          kubectl delete namespace "$NS" --wait=false --ignore-not-found || true
+
+      - name: Upload self-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scan-self-test-clean-fixture-${{ github.run_attempt }}
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore
