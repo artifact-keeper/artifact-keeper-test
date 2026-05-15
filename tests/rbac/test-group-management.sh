@@ -26,7 +26,11 @@ begin_test "Create group"
 if resp=$(api_post "/api/v1/groups" \
     "{\"name\":\"${GROUP_NAME}\",\"description\":\"E2E test group\"}" 2>/dev/null); then
   GROUP_ID=$(echo "$resp" | jq -r '.id // empty') || true
-  pass
+  if [ -n "$GROUP_ID" ]; then
+    pass
+  else
+    fail "create group response did not include an id"
+  fi
 else
   fail "could not create group"
 fi
@@ -49,13 +53,12 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Add members to group"
-endpoint="/api/v1/groups/${GROUP_ID:-$GROUP_NAME}/members"
-if api_post "$endpoint" "{\"usernames\":[\"${USER_A}\",\"${USER_B}\"]}" > /dev/null 2>&1; then
-  pass
-elif api_post "$endpoint" "{\"members\":[\"${USER_A}\",\"${USER_B}\"]}" > /dev/null 2>&1; then
+# Backend MembersRequest is { user_ids: Vec<Uuid> }; add_group_members resolves
+# usernames to UUIDs and posts the correct payload.
+if add_group_members "$GROUP_ID" "$USER_A" "$USER_B" > /dev/null 2>&1; then
   pass
 else
-  skip "add members endpoint not available or different shape"
+  fail "could not add members to group"
 fi
 
 # -------------------------------------------------------------------------
@@ -63,12 +66,13 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "List group members"
-if resp=$(api_get "$endpoint" 2>/dev/null); then
+# Group detail returns members inline, not via a separate /members GET.
+if resp=$(api_get "/api/v1/groups/${GROUP_ID}" 2>/dev/null); then
   if assert_contains "$resp" "$USER_A"; then
     pass
   fi
 else
-  skip "member listing not available"
+  fail "could not fetch group detail"
 fi
 
 # -------------------------------------------------------------------------
@@ -76,12 +80,11 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Remove member from group"
-if api_delete "${endpoint}/${USER_B}" > /dev/null 2>&1; then
-  pass
-elif api_post "${endpoint}/remove" "{\"usernames\":[\"${USER_B}\"]}" > /dev/null 2>&1; then
+# Backend remove_members takes the same { user_ids: [...] } body via DELETE.
+if remove_group_members "$GROUP_ID" "$USER_B" > /dev/null 2>&1; then
   pass
 else
-  skip "remove member not available"
+  fail "could not remove member from group"
 fi
 
 # -------------------------------------------------------------------------
@@ -89,7 +92,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Delete group"
-if api_delete "/api/v1/groups/${GROUP_ID:-$GROUP_NAME}" > /dev/null 2>&1; then
+if api_delete "/api/v1/groups/${GROUP_ID}" > /dev/null 2>&1; then
   pass
 else
   fail "could not delete group"

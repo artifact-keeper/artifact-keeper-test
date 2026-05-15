@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# test-generic-native-client.sh - Generic format native HTTP smoke test
+#
+# The generic format has no format-native wire protocol like PyPI or NPM
+# do. There is no `/generic/{key}/{path}` route in the backend. Real
+# consumers of a generic repository hit the management/upload API
+# directly with curl and HTTP Basic auth, which is what this test
+# exercises:
+#
+#   curl -u user:pass -T file.bin \
+#     https://ak/api/v1/repositories/myrepo/artifacts/path/to/file.bin
+#   curl -u user:pass -O \
+#     https://ak/api/v1/repositories/myrepo/download/path/to/file.bin
+#
+# Why this is separate from test-generic.sh and test-generic-conformance.sh:
+# both of those use the helpers in tests/lib/common.sh, which authenticate
+# with a Bearer JWT acquired via /api/v1/auth/login. This file forces
+# Basic auth on every call, so a regression in the Basic-auth code path
+# (the path that scripted CI consumers actually use) is caught here even
+# when the Bearer-auth path is healthy.
+#
+# Requires: curl, shasum
+
+source "$(dirname "$0")/../lib/common.sh"
+
+begin_suite "generic-native-client"
+auth_admin
+setup_workdir
+
+REPO_KEY="test-generic-nc-${RUN_ID}"
+UPLOAD_BASE="${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts"
+DOWNLOAD_BASE="${BASE_URL}/api/v1/repositories/${REPO_KEY}/download"
+
+# -------------------------------------------------------------------------
+# Create repository
+# -------------------------------------------------------------------------
+
+begin_test "Create generic local repository"
+if create_local_repo "$REPO_KEY" "generic"; then
+  pass
+else
+  fail "could not create generic repository"
+fi
+
+# -------------------------------------------------------------------------
+# PUT a binary blob via the management API with Basic auth
+# -------------------------------------------------------------------------
+
+begin_test "PUT binary blob with Basic auth"
+dd if=/dev/urandom of="${WORK_DIR}/blob.bin" bs=1024 count=8 2>/dev/null
+ORIG_SHA256=$(shasum -a 256 "${WORK_DIR}/blob.bin" | awk '{print $1}')
+
+put_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+  -X PUT \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary "@${WORK_DIR}/blob.bin" \
+  "${UPLOAD_BASE}/releases/v1/blob.bin") || put_status="000"
+
+if assert_http_2xx "$put_status" "PUT returned HTTP ${put_status}, expected 2xx"; then
+  pass
+else
+  fail "PUT returned HTTP ${put_status}, expected 2xx"
+fi
+
+# -------------------------------------------------------------------------
+# GET the same path back and verify SHA256
+# -------------------------------------------------------------------------
+
+begin_test "GET binary blob and verify SHA256 round-trip"
+if curl -sf $CURL_TIMEOUT \
+    -H "$(format_auth_header)" \
+    -o "${WORK_DIR}/downloaded.bin" \
+    "${DOWNLOAD_BASE}/releases/v1/blob.bin"; then
+  DL_SHA256=$(shasum -a 256 "${WORK_DIR}/downloaded.bin" | awk '{print $1}')
+  if assert_eq "$DL_SHA256" "$ORIG_SHA256" "SHA256 mismatch after generic Basic-auth round-trip"; then
+    pass
+  fi
+else
+  fail "GET returned non-2xx"
+fi
+
+# -------------------------------------------------------------------------
+# Deeply nested path
+#
+# Real consumers commonly publish under multi-segment paths like
+# tools/${VERSION}/linux/amd64/binary. Verify the path segments are
+# preserved through the management API with Basic auth.
+# -------------------------------------------------------------------------
+
+begin_test "PUT and GET deeply nested path"
+echo "nested path content for ${RUN_ID}" > "${WORK_DIR}/nested.txt"
+NESTED_SHA=$(shasum -a 256 "${WORK_DIR}/nested.txt" | awk '{print $1}')
+
+put_nested=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+  -X PUT \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: text/plain" \
+  --data-binary "@${WORK_DIR}/nested.txt" \
+  "${UPLOAD_BASE}/tools/2026/04/25/linux/amd64/cli.txt") || put_nested="000"
+
+if assert_http_2xx "$put_nested" "nested PUT returned HTTP ${put_nested}, expected 2xx"; then
+  if curl -sf $CURL_TIMEOUT \
+      -H "$(format_auth_header)" \
+      -o "${WORK_DIR}/nested-dl.txt" \
+      "${DOWNLOAD_BASE}/tools/2026/04/25/linux/amd64/cli.txt"; then
+    DL_NESTED_SHA=$(shasum -a 256 "${WORK_DIR}/nested-dl.txt" | awk '{print $1}')
+    if assert_eq "$DL_NESTED_SHA" "$NESTED_SHA" "SHA256 mismatch on nested path"; then
+      pass
+    fi
+  else
+    fail "GET on deeply nested path returned non-2xx"
+  fi
+else
+  fail "PUT on deeply nested path returned HTTP ${put_nested}"
+fi
+
+# -------------------------------------------------------------------------
+# 404 on a path that was never written
+# -------------------------------------------------------------------------
+
+begin_test "GET unknown path returns 404"
+status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+  -H "$(format_auth_header)" \
+  "${DOWNLOAD_BASE}/no/such/path-${RUN_ID}.bin") || status="000"
+if assert_eq "$status" "404" "expected 404 for unknown path, got ${status}"; then
+  pass
+fi
+
+# -------------------------------------------------------------------------
+# Unauthenticated PUT is rejected
+#
+# This guards against a regression where the management API accidentally
+# allows anonymous writes. A 401 (preferred) or 403 are both acceptable;
+# anything in 2xx is a security regression.
+# -------------------------------------------------------------------------
+
+begin_test "Unauthenticated PUT is rejected"
+echo "should not be accepted" > "${WORK_DIR}/anon.txt"
+anon_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+  -X PUT \
+  -H "Content-Type: text/plain" \
+  --data-binary "@${WORK_DIR}/anon.txt" \
+  "${UPLOAD_BASE}/anon/leak.txt") || anon_status="000"
+if [ "$anon_status" = "401" ] || [ "$anon_status" = "403" ]; then
+  pass
+else
+  fail "anonymous PUT returned ${anon_status}, expected 401 or 403"
+fi
+
+end_suite

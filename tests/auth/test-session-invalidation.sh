@@ -83,16 +83,43 @@ fi
 begin_test "Change user password"
 PASSWORD_CHANGED=false
 if [ -n "${TOKEN_T1:-}" ]; then
-  # POST /api/v1/users/{id}/password requires admin_middleware, so use admin token.
-  # Admins can change any user's password without current_password.
-  if curl -sf $CURL_TIMEOUT -X POST \
-      -H "$(auth_header)" -H "Content-Type: application/json" \
-      -d "{\"new_password\":\"${NEW_PASS}\"}" \
-      "${BASE_URL}/api/v1/users/${USER_ID}/password" > /dev/null 2>&1; then
+  # POST /api/v1/users/{id}/password requires admin auth; auth_header() carries
+  # the admin token captured at suite start. Admins can change any user's
+  # password without supplying current_password.
+  #
+  # Retry transient failures (5xx, 429, network 000) up to 3 times to absorb
+  # the occasional in-cluster blip. Capture status + body so any future failure
+  # surfaces the actual response instead of an opaque "could not change".
+  pwc_tmp=$(mktemp)
+  pwc_status="000"
+  pwc_body=""
+  for pwc_attempt in 1 2 3; do
+    pwc_status=$(curl -s $CURL_TIMEOUT -o "$pwc_tmp" -w '%{http_code}' -X POST \
+        -H "$(auth_header)" -H "Content-Type: application/json" \
+        -d "{\"new_password\":\"${NEW_PASS}\"}" \
+        "${BASE_URL}/api/v1/users/${USER_ID}/password" 2>/dev/null) || pwc_status="000"
+    pwc_body=$(cat "$pwc_tmp" 2>/dev/null || true)
+    if [ "$pwc_status" -ge 200 ] 2>/dev/null && [ "$pwc_status" -lt 300 ] 2>/dev/null; then
+      break
+    fi
+    # Only retry transient classes; deterministic 4xx (except 429) won't recover.
+    case "$pwc_status" in
+      000|429|5*)
+        echo "  attempt ${pwc_attempt}/3: password change returned HTTP ${pwc_status}, retrying..."
+        sleep 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  rm -f "$pwc_tmp"
+  if [ "$pwc_status" -ge 200 ] 2>/dev/null && [ "$pwc_status" -lt 300 ] 2>/dev/null; then
     PASSWORD_CHANGED=true
     pass
   else
-    fail "could not change password via POST /users/{id}/password"
+    pwc_snip="${pwc_body:0:200}"
+    fail "could not change password via POST /users/{id}/password (HTTP ${pwc_status}, body: ${pwc_snip:-<empty>})"
   fi
 else
   skip "no user token"
