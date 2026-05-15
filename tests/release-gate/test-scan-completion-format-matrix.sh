@@ -8,43 +8,44 @@
 # precisely the format-coverage gap ("works for npm, silently fails for
 # docker"). Matrixing across formats turns that gap into a loud failure.
 #
-# Matrix entries:
-#   - npm:    wired (delegates to test-scan-completes.sh via the gate primitive)
-#   - oci:    scaffold (TODO #62)
-#   - maven:  scaffold (TODO #62)
-#   - pypi:   scaffold (TODO #62)
-#   - cargo:  scaffold (TODO #62)
-#   - helm:   scaffold (TODO #62)
+# This script is for LOCAL developer use. CI uses the workflow-level
+# matrix in release-gate.yml directly (parallel runner jobs surface
+# per-format outcomes in the Actions UI).
 #
-# When a fixture-builder for a scaffolded format lands, the matrix entry
-# flips from "scaffold" to "wired" without touching this file -- the
-# gate primitive's case statement is the single source of truth.
+# Matrix entries (current):
+#   - npm: wired (delegates to test-scan-completes.sh via the gate primitive)
+#
+# Deferred formats (no fixture yet, NOT in the matrix; tracked under #62):
+#   oci, maven, pypi, cargo, helm. Adding any of these requires landing
+#   a format-specific fixture builder AND adding the format to BOTH:
+#     1. release-gate.yml workflow matrix (so CI runs it)
+#     2. SUPPORTED_FORMATS below (so local runs accept it)
 #
 # Why one driver script rather than per-format siblings in tests/security/:
-#   - Pacing: each format's scan can take 30-60s. Sequential 6-format
-#     pass would blow the release-gate 5-min budget. We let each matrix
-#     entry run in its own workflow job (parallel) by passing the format
-#     name via env. This script can also be invoked locally to run a
-#     subset (e.g. FORMATS=npm,oci ./test-scan-completion-format-matrix.sh).
+#   - Pacing: each format's scan can take 30-60s. Sequential pass over
+#     all formats would blow the release-gate 5-min budget. CI runs each
+#     matrix entry in its own workflow job (parallel).
 #   - Single source of truth: the gate primitive lives in one file. A
 #     fix to the polling logic propagates to every format automatically.
 #
 # Environment:
-#   FORMATS    comma-separated list of formats to run (default: all)
-#              e.g. FORMATS=npm,oci ./test-scan-completion-format-matrix.sh
+#   FORMATS    comma-separated list of formats to run (default: npm)
+#              e.g. FORMATS=npm ./test-scan-completion-format-matrix.sh
 #   BASE_URL, ADMIN_PASS, RUN_ID -- per usual
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Default matrix: all representative formats from artifact-keeper-test#62.
-FORMATS="${FORMATS:-npm,oci,maven,pypi,cargo,helm}"
+# Default matrix: only formats whose fixtures exist. Keep this in sync
+# with the workflow matrix in .github/workflows/release-gate.yml.
+SUPPORTED_FORMATS="npm"
+FORMATS="${FORMATS:-${SUPPORTED_FORMATS}}"
 
 # Track per-format outcomes for the final summary.
 declare -a PASSED=()
 declare -a FAILED=()
-declare -a SCAFFOLDED=()
+declare -a REJECTED=()
 
 # Per-format RUN_ID suffixes so concurrent runs don't clobber each other's
 # repos. Each format gets its own repo key derived from the base RUN_ID.
@@ -57,8 +58,8 @@ echo "  base run_id: ${BASE_RUN_ID}"
 echo "========================================"
 
 # We deliberately keep going on failure so the operator sees ALL format
-# regressions in one workflow run, not just the first. The aggregate
-# exit code at the end fails the gate if any format failed.
+# regressions in one run, not just the first. The aggregate exit code
+# at the end fails the gate if any format failed or was rejected.
 overall_exit=0
 
 IFS=',' read -ra FORMAT_LIST <<< "$FORMATS"
@@ -71,28 +72,20 @@ for fmt in "${FORMAT_LIST[@]}"; do
   # Per-format RUN_ID so the repo key (e.g. scan-complete-<RUN_ID>) is unique.
   fmt_run_id="${BASE_RUN_ID}-${fmt_trim}"
 
-  # Capture the gate primitive's stdout+stderr so its log shows up
-  # inline in the matrix log. Cannot use `exec` because we need control
-  # back to record the format's outcome.
+  # The gate primitive now exits 2 for unknown FIXTURE_FORMAT values
+  # rather than silently exiting 0. That removes the previous ambiguity
+  # between "format passed" and "format scaffolded": we no longer need
+  # a sentinel file, the exit code distinguishes the three outcomes.
   if FIXTURE_FORMAT="$fmt_trim" RUN_ID="$fmt_run_id" \
        "${SCRIPT_DIR}/scan-completion-gate.sh"; then
-    # The gate exits 0 on success OR on scaffolded formats. Distinguish
-    # by inspecting whether the gate emitted the scaffold marker.
-    # (cheap: re-run with a probe? no -- the scaffold path's exit 0 is
-    # accompanied by the marker on stdout, but we already consumed it.
-    # Solution: write a sentinel file from the gate. Until that exists,
-    # we conservatively classify wired-formats by name.)
-    case "$fmt_trim" in
-      npm|generic-payload)
-        PASSED+=("$fmt_trim")
-        ;;
-      *)
-        SCAFFOLDED+=("$fmt_trim")
-        ;;
-    esac
+    PASSED+=("$fmt_trim")
   else
     rc=$?
-    FAILED+=("${fmt_trim}(exit=${rc})")
+    if [ "$rc" = "2" ]; then
+      REJECTED+=("${fmt_trim}(no fixture; see #62)")
+    else
+      FAILED+=("${fmt_trim}(exit=${rc})")
+    fi
     overall_exit=1
   fi
 done
@@ -101,26 +94,27 @@ echo ""
 echo "========================================"
 echo "  scan-completion matrix summary"
 echo "----------------------------------------"
-echo "  passed:     ${PASSED[*]:-<none>}"
-echo "  scaffolded: ${SCAFFOLDED[*]:-<none>}  (TODO artifact-keeper-test#62)"
-echo "  failed:     ${FAILED[*]:-<none>}"
+echo "  passed:   ${PASSED[*]:-<none>}"
+echo "  rejected: ${REJECTED[*]:-<none>}  (no fixture builder; artifact-keeper-test#62)"
+echo "  failed:   ${FAILED[*]:-<none>}"
 echo "========================================"
 
 if [ "$overall_exit" -ne 0 ]; then
   echo ""
-  echo "FAIL: one or more formats failed the scan-completion gate."
-  echo "This indicates the scan-completion silent-success class (#888)"
-  echo "is reproducing for at least one package format."
+  echo "FAIL: one or more formats failed or were rejected."
+  if [ "${#REJECTED[@]}" -gt 0 ]; then
+    echo "  Rejected formats lack a fixture builder. To run only wired"
+    echo "  formats locally: FORMATS=${SUPPORTED_FORMATS} \$0"
+  fi
   exit 1
 fi
 
 if [ "${#PASSED[@]}" -eq 0 ]; then
   echo ""
-  echo "FAIL: no formats actually ran the wired gate; matrix degenerated to all-scaffolds."
-  echo "At minimum the npm fixture must be exercised."
+  echo "FAIL: no formats ran. At minimum the npm fixture must be exercised."
   exit 1
 fi
 
 echo ""
-echo "PASS: scan-completion gate passed for all wired formats."
+echo "PASS: scan-completion gate passed for all formats."
 exit 0
