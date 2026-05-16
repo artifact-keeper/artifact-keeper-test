@@ -1,0 +1,300 @@
+name: Scan-Completes Self-Test
+
+# Meta-test for the scan-completion gate per the #883 contract.
+#
+# Covers artifact-keeper-test#61.
+#
+# Why this exists
+# ---------------
+# The lite scan-completion gate at tests/security/test-scan-completes.sh
+# (and the release-gate wrapper at tests/release-gate/scan-completion-gate.sh)
+# is the load-bearing assertion against the #871 (stuck queued) and #888
+# (silent completed-but-not-scanned) regression classes.
+#
+# Without a paired pass/fail meta-test, a future PR can silently weaken
+# the gate -- drop the findings_count >= 1 check, raise the timeout
+# until SCAN_TIMEOUT is useless, swallow the assertion in a tolerant
+# ALLOW_SCANNER_SKIP path -- and the gate goes green forever on a
+# broken backend. That is the same silent-success failure class the
+# gate exists to prevent. The #883 contract requires explicit paired
+# evidence.
+#
+# We pin TWO distinct failure shapes because each exercises a different
+# code path in the gate:
+#
+#   A. Trivy scaled to zero (scanner pod unreachable).
+#      The lite gate's scanner_unavailable() helper MUST fail loud
+#      (RELEASE_GATE=1 + ALLOW_SCANNER_SKIP=0). If a refactor accidentally
+#      makes scanner-down silently exit 0, this fixture catches it.
+#
+#   B. Findings forgery (backend stub completes scans with findings_count=0).
+#      The lite gate's findings_count >= 1 assertion is the only
+#      thing standing between "scan ran" and "scan ran AND inspected
+#      the bytes". If a refactor removes that check (or replaces it
+#      with `>= 0`), this fixture catches it.
+#
+# Triggers
+# --------
+# Run on every PR that touches the gate primitive, the wrapper, the
+# common library, the release-gate workflow, or this self-test.
+# Without this, a PR could weaken the gate and the self-test would
+# not run, defeating the meta-test entirely.
+
+on:
+  # Path filter is intentionally broad. The self-test must re-run on any
+  # change to the gate primitives, their helpers, or the workflow plumbing
+  # so a PR cannot weaken the gate without tripping the meta-test. Listing
+  # only the named gate scripts misses helper-weakening changes (e.g. a
+  # tolerant edit to tests/lib/common.sh that turns fail() into a warning),
+  # which is exactly the silent-success class the meta-test guards
+  # against. Hitting on a wider set of paths costs at most one runner job
+  # per unrelated PR; missing the trigger costs us the entire meta-test.
+  pull_request:
+    paths:
+      - 'tests/release-gate/**'
+      - 'tests/security/test-scan-completes.sh'
+      - 'tests/lib/**'
+      - '.github/workflows/release-gate.yml'
+      - '.github/workflows/scan-completes-self-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/release-gate/**'
+      - 'tests/security/test-scan-completes.sh'
+      - 'tests/lib/**'
+      - '.github/workflows/release-gate.yml'
+      - '.github/workflows/scan-completes-self-test.yml'
+
+# Cancel stale runs of the same workflow on a branch when a new push
+# arrives. Keeps PR feedback fast.
+concurrency:
+  group: scan-completes-self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------
+  # Fixture A: Trivy scaled to zero.
+  #
+  # Deploy a test stack with `trivy.replicaCount=0` (or the chart's
+  # equivalent). With no scanner pod reachable, every scan trigger
+  # surfaces as 503 from the backend's scanner-service stub, OR the
+  # scan transitions to `failed` with error_message set. Either way
+  # the gate primitive MUST fail (RELEASE_GATE=1 + ALLOW_SCANNER_SKIP=0).
+  # EXPECT_FAILURE=1 inverts the exit code so this job reports green
+  # when the gate correctly rejects the broken backend.
+  # -------------------------------------------------------------------
+  pin-gate-fails-on-trivy-zero:
+    name: Gate must reject Trivy scaled to zero (fixture A)
+    runs-on: ak-e2e-runners
+    timeout-minutes: 12
+    env:
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+      ALLOW_SCANNER_SKIP: '0'
+      # EXPECT_FAILURE inverts common.sh's end_suite exit code: a fail
+      # (the gate working correctly on a broken backend) becomes exit 0;
+      # a pass (the gate weakened to a no-op) becomes exit 1.
+      EXPECT_FAILURE: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Deploy backend with trivy.replicaCount=0
+        id: deploy
+        run: |
+          RUN_ID="self-trivy-zero-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+          chmod +x scripts/create-test-namespace.sh
+          # --full-stack normally enables Trivy. Override the replica
+          # count to zero via a fixture-only values file so the chart
+          # still installs but the scanner pod is unschedulable. The
+          # backend's scan-trigger path then surfaces scanner-unavailable.
+          #
+          # The values file path is relative-to-repo-root because
+          # create-test-namespace.sh prepends REPO_ROOT to --values.
+          mkdir -p helm/.self-test-fixtures
+          cat > helm/.self-test-fixtures/values-trivy-zero.yaml <<'YAML'
+          trivy:
+            enabled: true
+            replicaCount: 0
+          YAML
+          # Target the rolling dev tag on PRs / main. The self-test is
+          # checking gate semantics, not release-image integrity; using
+          # :dev means we exercise the latest backend behavior. If a
+          # specific tag's gate semantics need pinning later, this can
+          # become a workflow_dispatch input.
+          ./scripts/create-test-namespace.sh \
+            --run-id "${RUN_ID}" \
+            --backend-tag "dev" \
+            --web-tag "dev" \
+            --full-stack \
+            --values helm/.self-test-fixtures/values-trivy-zero.yaml
+          echo "namespace=test-${RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "backend_url=http://artifact-keeper-backend.test-${RUN_ID}.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for backend ready (Trivy is intentionally absent)
+        run: |
+          chmod +x tests/lib/wait-for-ready.sh
+          ./tests/lib/wait-for-ready.sh "${{ steps.deploy.outputs.backend_url }}" 300
+
+      - name: Run gate against Trivy-zero fixture; expect failure
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.backend_url }}
+          RUN_ID: ${{ steps.deploy.outputs.run_id }}
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/scan-completion-gate.sh
+          # EXPECT_FAILURE=1 in env. end_suite() reads it and inverts
+          # the exit code. If the gate's findings_count assertion or
+          # the scanner_unavailable hard-fail is intact, this script
+          # exits 0 (because the gate exited 1 -- expected). If the
+          # gate has been weakened, the script exits 1 here.
+          ./tests/release-gate/scan-completion-gate.sh
+
+      - name: Capture scanner diagnostics
+        if: always()
+        run: |
+          NS="${{ steps.deploy.outputs.namespace }}"
+          mkdir -p /tmp/test-logs
+          kubectl -n "$NS" get pods > /tmp/test-logs/pods-trivy-zero.txt 2>&1 || true
+          kubectl -n "$NS" describe deploy trivy > /tmp/test-logs/describe-trivy-zero.txt 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=500 > /tmp/test-logs/backend-trivy-zero.log 2>&1 || true
+
+      - name: Teardown
+        if: always()
+        run: |
+          NS="${{ steps.deploy.outputs.namespace }}"
+          kubectl delete namespace "$NS" --wait=false --ignore-not-found || true
+
+      - name: Upload self-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scan-self-test-trivy-zero-${{ github.run_attempt }}
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Fixture B: Non-vulnerable fixture must trip the findings_count check.
+  #
+  # The lite gate's load-bearing assertion is `findings_count >= 1` on
+  # a known-vulnerable lodash fixture. If a refactor weakens that check
+  # (drops it, replaces it with `>= 0`, swallows it in a tolerant
+  # branch), the gate goes green forever on a broken backend. Fixture A
+  # covers the scanner_unavailable half; Fixture B covers the
+  # findings-emitted half.
+  #
+  # Approach (no backend debug knob required):
+  #   - Override FIXTURE_LODASH_VERSION=4.17.21 (a non-vulnerable
+  #     release of lodash). Trivy's npm parser still parses the
+  #     lockfile but emits zero findings because the version carries
+  #     no published CVE.
+  #   - findings_count=0 on a non-vulnerable fixture is the CORRECT
+  #     scanner behavior. The gate's `findings_count >= 1` assertion
+  #     must therefore FAIL (the fixture proves the assertion is
+  #     load-bearing). EXPECT_FAILURE=1 inverts the exit code so a
+  #     gate failure becomes a self-test pass.
+  #
+  # This fixture pairs with Fixture A to provide the full #883
+  # paired-evidence contract: A proves scanner-unavailable fails loud,
+  # B proves the findings_count >= 1 assertion bites.
+  # -------------------------------------------------------------------
+  pin-gate-fails-on-non-vulnerable-fixture:
+    name: Gate must reject non-vulnerable fixture (fixture B)
+    runs-on: ak-e2e-runners
+    timeout-minutes: 12
+    env:
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+      ALLOW_SCANNER_SKIP: '0'
+      # EXPECT_FAILURE inverts common.sh's end_suite exit code: the gate
+      # must fail on the non-vulnerable fixture (correct scanner
+      # behavior: zero findings on a clean lockfile), and that failure
+      # becomes exit 0 here.
+      EXPECT_FAILURE: '1'
+      # Override the fixture to a clean lodash version. test-scan-completes.sh
+      # reads FIXTURE_LODASH_VERSION and builds the lockfile from it.
+      # 4.17.21 is the latest patch; no CVE rows for it.
+      FIXTURE_LODASH_VERSION: '4.17.21'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Deploy backend with Trivy enabled (full stack)
+        id: deploy
+        run: |
+          RUN_ID="self-clean-fixture-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+          chmod +x scripts/create-test-namespace.sh
+          ./scripts/create-test-namespace.sh \
+            --run-id "${RUN_ID}" \
+            --backend-tag "dev" \
+            --web-tag "dev" \
+            --full-stack
+          echo "namespace=test-${RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "backend_url=http://artifact-keeper-backend.test-${RUN_ID}.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for backend + Trivy ready
+        run: |
+          chmod +x tests/lib/wait-for-ready.sh
+          ./tests/lib/wait-for-ready.sh "${{ steps.deploy.outputs.backend_url }}" 300
+          # Confirm Trivy is up; if it is not, fixture A's failure mode
+          # would mask fixture B's signal.
+          kubectl -n "${{ steps.deploy.outputs.namespace }}" wait \
+            --for=condition=Available deployment/artifact-keeper-trivy \
+            --timeout=120s
+
+      - name: Run gate against clean-lodash fixture; expect failure
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.backend_url }}
+          RUN_ID: ${{ steps.deploy.outputs.run_id }}
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/scan-completion-gate.sh
+          # FIXTURE_LODASH_VERSION=4.17.21 (set at job env). The fixture
+          # builds a clean lockfile, Trivy scans it, findings_count=0,
+          # the gate's `findings_count >= 1` assertion fires, end_suite
+          # exits non-zero. EXPECT_FAILURE=1 inverts to exit 0.
+          ./tests/release-gate/scan-completion-gate.sh
+
+      - name: Capture scanner diagnostics
+        if: always()
+        run: |
+          NS="${{ steps.deploy.outputs.namespace }}"
+          mkdir -p /tmp/test-logs
+          kubectl -n "$NS" get pods > /tmp/test-logs/pods-clean-fixture.txt 2>&1 || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/name=trivy \
+            --tail=2000 > /tmp/test-logs/trivy-clean-fixture.log 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=500 > /tmp/test-logs/backend-clean-fixture.log 2>&1 || true
+
+      - name: Teardown
+        if: always()
+        run: |
+          NS="${{ steps.deploy.outputs.namespace }}"
+          kubectl delete namespace "$NS" --wait=false --ignore-not-found || true
+
+      - name: Upload self-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scan-self-test-clean-fixture-${{ github.run_attempt }}
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore

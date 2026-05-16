@@ -491,6 +491,296 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
+  # Scan-completion gate (matrix across representative formats).
+  #
+  # Closes the gap surfaced by artifact-keeper#888 ("works for npm,
+  # silently fails for docker"). Each matrix entry runs the gate
+  # primitive in its own job (parallel) so a regression in any one
+  # format's scanner pipeline fails the release-gate loud.
+  #
+  # The wired formats (currently: npm) run the lite primitive at
+  # tests/security/test-scan-completes.sh via the release-gate wrapper.
+  #
+  # The matrix is intentionally restricted to formats whose fixtures
+  # exist. Scaffolded formats (oci, maven, pypi, cargo, helm) are NOT
+  # in the matrix because a green checkmark on an `exit 0` scaffold
+  # is the same silent-success class the gate exists to prevent. The
+  # scan-completion-gate-scaffolds-pending job below surfaces the
+  # deferred formats as ::warning:: annotations so the gap is visible
+  # without painting the dashboard with fake passes. When a fixture-
+  # builder for a deferred format lands (#62), add the format to this
+  # matrix in the same PR.
+  #
+  # Why a matrix rather than a single sequential driver:
+  #   - Each format scan can take 30-60s; sequential 6-format runs
+  #     blow the 5-min release-gate budget.
+  #   - The workflow-level matrix surfaces per-format outcomes in the
+  #     GitHub Actions UI so an operator can see "oci failed, npm
+  #     passed" at a glance.
+  # -------------------------------------------------------------------
+  scan-completion-gate:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [npm]
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # ALLOW_SCANNER_SKIP=0 is enforced inside the gate primitive --
+      # a scanner-pod-down skip in release-gate context is exactly the
+      # silent-success class this gate exists to catch.
+      RELEASE_GATE: '1'
+      ALLOW_SCANNER_SKIP: '0'
+      FIXTURE_FORMAT: ${{ matrix.format }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run scan-completion gate for ${{ matrix.format }}
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/scan-completion-gate.sh
+          # Per-format RUN_ID suffix so concurrent matrix jobs do not
+          # collide on the repo key (scan-complete-<RUN_ID>).
+          RUN_ID="${RUN_ID}-${{ matrix.format }}" \
+            ./tests/release-gate/scan-completion-gate.sh
+
+      - name: Capture scanner pod logs on failure
+        if: failure()
+        run: |
+          # The deploy job exports the test namespace; resolve it via
+          # the standard naming pattern. We use kubectl best-effort:
+          # if the runner pod has no kubeconfig, this step's failure
+          # is benign (we still surface the JUnit XML).
+          NS="test-${{ needs.deploy.outputs.run_id }}"
+          mkdir -p /tmp/test-logs
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=scanner \
+            --tail=2000 > /tmp/test-logs/scanner-${{ matrix.format }}.log 2>&1 || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/name=trivy \
+            --tail=2000 > /tmp/test-logs/trivy-${{ matrix.format }}.log 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=1000 > /tmp/test-logs/backend-${{ matrix.format }}.log 2>&1 || true
+
+      - name: Upload scan-completion gate results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-scan-completion-${{ matrix.format }}
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Scaffolds-pending sentinel (#62).
+  #
+  # This job exists ONLY to surface the deferred formats as a
+  # ::warning:: annotation on every release-gate run so the gap is
+  # visible. It does NOT run any test. It is NOT a required gate.
+  # Deliberately a separate job (not a matrix step) so the GitHub
+  # Actions UI shows ONE warning row rather than five green
+  # checkmarks that imply broader format coverage than exists.
+  #
+  # When a fixture-builder for one of the listed formats lands,
+  # remove the format from this list and add it to the matrix above.
+  # -------------------------------------------------------------------
+  scan-completion-gate-scaffolds-pending:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 2
+    steps:
+      - name: Emit scaffolds-pending warnings
+        run: |
+          for fmt in oci maven pypi cargo helm; do
+            echo "::warning title=scan-completion gate: ${fmt} fixture missing::No scan-completion fixture exists for ${fmt}; the silent-success class (#888) is NOT covered for this format. Tracked under artifact-keeper-test#62."
+          done
+          # Echo to the runner log too so the operator sees this even
+          # without expanding the annotations pane.
+          echo ""
+          echo "Scan-completion format coverage:"
+          echo "  wired:    npm"
+          echo "  deferred: oci, maven, pypi, cargo, helm (artifact-keeper-test#62)"
+
+  # -------------------------------------------------------------------
+  # SBOM correctness gate (scaffold).
+  #
+  # Pins the SBOM endpoint contract (POST /api/v1/sbom returns 200
+  # with the documented SbomResponse shape) so an endpoint deletion
+  # or 5xx regression fails the release loud. The component_count > 0
+  # assertion is deferred to artifact-keeper#903 (--list-all-pkgs)
+  # per the #57 epic.
+  # -------------------------------------------------------------------
+  sbom-correctness-gate:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 6
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run SBOM correctness gate
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/sbom-correctness-gate.sh
+          ./tests/release-gate/sbom-correctness-gate.sh
+
+      - name: Capture scanner pod logs on failure
+        if: failure()
+        run: |
+          NS="test-${{ needs.deploy.outputs.run_id }}"
+          mkdir -p /tmp/test-logs
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=scanner \
+            --tail=2000 > /tmp/test-logs/sbom-scanner.log 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=1000 > /tmp/test-logs/sbom-backend.log 2>&1 || true
+
+      - name: Upload SBOM gate results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-sbom-correctness
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Pinned-CVE assertion (#64).
+  #
+  # Tightens the gate beyond "findings_count >= 1" to a specific CVE
+  # id. Catches scanner-DB drift and parser-correctness regressions
+  # that the findings-count check alone would let through.
+  # -------------------------------------------------------------------
+  pinned-cve-gate:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 8
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+      # CVE-2019-10744 (lodash 4.17.4 prototype pollution) is what the
+      # lite fixture pins. log4j 2.14.0 / CVE-2021-44228 will move
+      # under the oci matrix entry once the oci fixture-builder lands
+      # (#62 + #64 extension).
+      EXPECTED_VULN_CVE: CVE-2019-10744
+      # Trivy DB age threshold for the freshness pre-flight. The DB is
+      # rebuilt every 6 hours upstream; we accept anything <= 14 days
+      # so weekend gaps and slow mirror sync do not generate false
+      # failures, while still catching DBs old enough that
+      # CVE-2019-10744 (published 2019) could fall out of recent index
+      # shards. Override at workflow_dispatch via repo variable
+      # TRIVY_DB_MAX_AGE_DAYS if needed.
+      TRIVY_DB_MAX_AGE_DAYS: ${{ vars.TRIVY_DB_MAX_AGE_DAYS || '14' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+
+      - name: Trivy DB freshness pre-flight
+        # Distinguish "CVE database is stale" from "CVE-2019-10744 not
+        # surfaced". Without this step, a stale Trivy DB on the runner
+        # image causes the assertion to silently pass (no CVE found ==
+        # 0 findings == "did Trivy run at all?"). The misleading failure
+        # message blames the gate; the actual root cause is upstream.
+        #
+        # Exit codes:
+        #   0  - DB reachable, age within TRIVY_DB_MAX_AGE_DAYS
+        #   42 - DB too old (distinct so the rollup operator can tell
+        #        scanner DB drift apart from a real CVE-detection bug)
+        #   43 - Trivy pod unreachable or trivy --version failed
+        run: |
+          set -uo pipefail
+          NS="test-${{ needs.deploy.outputs.run_id }}"
+          MAX_AGE_DAYS="${TRIVY_DB_MAX_AGE_DAYS}"
+          MAX_AGE_SECONDS=$(( MAX_AGE_DAYS * 86400 ))
+
+          # Locate the Trivy pod. The Helm chart names the deployment
+          # artifact-keeper-trivy; we kubectl-exec into the first ready
+          # pod backed by that deployment.
+          POD=$(kubectl -n "$NS" get pods \
+            -l app.kubernetes.io/name=trivy \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          if [ -z "$POD" ]; then
+            echo "::error::Trivy pod not found in namespace ${NS} (pre-flight cannot run)"
+            exit 43
+          fi
+
+          # trivy --version emits "Vulnerability DB: ... UpdatedAt: 2026-04-30 ..."
+          # in older versions and a YAML-ish block in newer versions.
+          # Parse both shapes.
+          VER_OUT=$(kubectl -n "$NS" exec "$POD" -c trivy -- trivy --version 2>/dev/null \
+            || kubectl -n "$NS" exec "$POD" -- trivy --version 2>/dev/null \
+            || true)
+          if [ -z "$VER_OUT" ]; then
+            echo "::error::trivy --version returned empty output from pod ${POD}"
+            exit 43
+          fi
+          echo "trivy --version output:"
+          echo "$VER_OUT"
+          echo ""
+
+          # Extract UpdatedAt timestamp. Format varies:
+          #   "  UpdatedAt: 2026-04-30 12:34:56.789 +0000 UTC"
+          #   "    UpdatedAt 2026-04-30 12:34:56.789 +0000 UTC"
+          DB_DATE=$(echo "$VER_OUT" | grep -iE 'UpdatedAt' | head -n1 \
+            | sed -E 's/.*UpdatedAt[: ]+([0-9-]+ [0-9:.]+).*/\1/' \
+            | awk '{print $1" "$2}')
+          if [ -z "$DB_DATE" ] || ! date -d "$DB_DATE" +%s >/dev/null 2>&1; then
+            echo "::error::Could not parse Trivy DB UpdatedAt from --version output"
+            exit 43
+          fi
+
+          DB_EPOCH=$(date -d "$DB_DATE" -u +%s)
+          NOW_EPOCH=$(date -u +%s)
+          AGE_SECONDS=$(( NOW_EPOCH - DB_EPOCH ))
+          AGE_DAYS=$(( AGE_SECONDS / 86400 ))
+
+          echo "Trivy DB UpdatedAt: ${DB_DATE} (age: ${AGE_DAYS} days, threshold: ${MAX_AGE_DAYS} days)"
+
+          if [ "$AGE_SECONDS" -gt "$MAX_AGE_SECONDS" ]; then
+            echo "::error::Trivy DB is ${AGE_DAYS} days old, exceeds threshold of ${MAX_AGE_DAYS} days."
+            echo "::error::The pinned-CVE assertion below would surface a misleading 'CVE-2019-10744 not found' failure;"
+            echo "::error::the actual root cause is upstream DB staleness. Refresh Trivy DB or bump the runner image."
+            exit 42
+          fi
+
+          echo "Trivy DB freshness OK."
+
+      - name: Run pinned-CVE gate
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/test-pinned-cve.sh
+          ./tests/release-gate/test-pinned-cve.sh
+
+      - name: Upload pinned-CVE gate results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-pinned-cve
+          path: /tmp/test-results/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
   # Format tests (8 parallel batches)
   # -------------------------------------------------------------------
   format-tests:
@@ -1383,7 +1673,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
     runs-on: ak-e2e-runners
     steps:
@@ -1402,7 +1692,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -1410,6 +1700,9 @@ jobs:
               clean-install-smoke-with-deps) status="${{ needs.clean-install-smoke-with-deps.result }}" ;;
               chart-upgrade-smoke) status="${{ needs.chart-upgrade-smoke.result }}" ;;
               real-flow-smoke) status="${{ needs.real-flow-smoke.result }}" ;;
+              scan-completion-gate) status="${{ needs.scan-completion-gate.result }}" ;;
+              sbom-correctness-gate) status="${{ needs.sbom-correctness-gate.result }}" ;;
+              pinned-cve-gate) status="${{ needs.pinned-cve-gate.result }}" ;;
               format-tests) status="${{ needs.format-tests.result }}" ;;
               repo-tests) status="${{ needs.repo-tests.result }}" ;;
               promotion-tests) status="${{ needs.promotion-tests.result }}" ;;
@@ -1442,7 +1735,7 @@ jobs:
           path: /tmp/all-results/
           if-no-files-found: ignore
 
-      - name: Gate check - fail if any required suite failed
+      - name: Gate check - fail if any required suite did not succeed
         # stress-tests and security-tests are intentionally excluded from
         # this rollup. Both have continue-on-error: true (see the comments
         # above each job) so their outcome can be 'failure' on
@@ -1453,15 +1746,27 @@ jobs:
         #   - security-tests: Grype DB not pre-seeded in v1.1.x backend
         #     image; quality gate is last-scanner-wins so Trivy covers
         #     the policy gate (artifact-keeper#1001).
-        # clean-install-smoke-with-deps is opt-in (gated on the
-        # `run_smoke_with_deps` workflow input, default false; see #53).
-        # When the input is false the job's result is 'skipped', which
-        # is neither 'failure' nor 'cancelled', so the rule below
-        # tolerates that case automatically. When the input is true,
-        # a failure DOES block the release: the line is included in
-        # the check below.
+        #
+        # The three new silent-success gates (scan-completion-gate,
+        # sbom-correctness-gate, pinned-cve-gate) use the STRICTER
+        # `result != 'success'` predicate. The looser
+        # `result == 'failure' || result == 'cancelled'` form lets a
+        # 'skipped' outcome (matrix-leg eval failure, future conditional
+        # `if:` gate, or a transitive `needs:` skip when `deploy` is
+        # skipped) through as green. For the silent-success gates that
+        # is precisely the regression class we are guarding against, so
+        # we close it explicitly.
+        #
+        # clean-install-smoke-with-deps is the one legitimate 'skipped'
+        # case: it is opt-in (gated on the `run_smoke_with_deps` workflow
+        # input, default false; see #53). When the input is false the
+        # job's result is 'skipped' by design. We continue to use the
+        # looser predicate for it so the default-off path stays green.
+        # When the input is true, a failure or cancellation DOES block
+        # the release.
+        #
         # The wildcard form contains(needs.*.result, 'failure') still
-        # observes those failures because needs.<job>.result reflects the
+        # observes failures because needs.<job>.result reflects the
         # job's outcome, not its continue-on-error-adjusted conclusion.
         # So we list the required suites explicitly here. If you add a
         # new required suite, add it to this list. Soft-failing suites
@@ -1472,6 +1777,9 @@ jobs:
           needs.clean-install-smoke-with-deps.result == 'failure' || needs.clean-install-smoke-with-deps.result == 'cancelled' ||
           needs.chart-upgrade-smoke.result == 'failure' || needs.chart-upgrade-smoke.result == 'cancelled' ||
           needs.real-flow-smoke.result == 'failure' || needs.real-flow-smoke.result == 'cancelled' ||
+          needs.scan-completion-gate.result != 'success' ||
+          needs.sbom-correctness-gate.result != 'success' ||
+          needs.pinned-cve-gate.result != 'success' ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
           needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||

@@ -67,8 +67,16 @@ EXPECT_FAILURE="${EXPECT_FAILURE:-0}"
 # actually produce findings -- if findings_count == 0 on a healthy
 # backend, the scanner never inspected the bytes (Reality Checker /
 # Security Engineer reviews of PR #60).
+#
+# FIXTURE_LODASH_VERSION env override exists for the paired-evidence
+# self-test (scan-completes-self-test.yml fixture B): setting it to a
+# non-vulnerable version like 4.17.21 produces a fixture that Trivy
+# scans cleanly. With findings_count=0 on a healthy backend, the
+# load-bearing assertion below correctly FAILS, which paired with
+# EXPECT_FAILURE=1 proves the assertion is doing real work. Do NOT
+# set this env var outside the self-test fixture B job.
 EXPECTED_VULN_PACKAGE="lodash"
-EXPECTED_VULN_VERSION="4.17.4"
+EXPECTED_VULN_VERSION="${FIXTURE_LODASH_VERSION:-4.17.4}"
 EXPECTED_VULN_CVE_HINT="CVE-2019-10744"
 
 # ---------------------------------------------------------------------------
@@ -80,36 +88,6 @@ EXPECTED_VULN_CVE_HINT="CVE-2019-10744"
 cleanup() {
   local exit_code=$?
 
-  # Mutual exclusion: EXPECT_FAILURE=1 inverts exit codes for self-test;
-  # ALLOW_SCANNER_SKIP=1 makes scanner_unavailable() return success. If
-  # both are set, the self-test would falsely report "gate caught a bad
-  # backend" when in fact it just gracefully skipped. This bug class
-  # would silently turn the self-test into a no-op -- the exact failure
-  # mode #883 is meant to prevent.
-  if [ "$EXPECT_FAILURE" = "1" ] && [ "$ALLOW_SCANNER_SKIP" = "1" ]; then
-    echo "" >&2
-    echo "ERROR: EXPECT_FAILURE=1 and ALLOW_SCANNER_SKIP=1 are mutually exclusive." >&2
-    echo "  EXPECT_FAILURE inverts exit codes; ALLOW_SCANNER_SKIP coerces failure to success." >&2
-    echo "  Together they corrupt the self-test signal. Pick one." >&2
-    exit 5
-  fi
-
-  # Self-test mode: invert the meaning of exit code so a *real* failure
-  # is reported as success (the gate is correctly catching a bad
-  # backend), and exit 0 is reported as exit 4 (the gate falsely passed
-  # on a bad backend).
-  if [ "$EXPECT_FAILURE" = "1" ]; then
-    if [ "$exit_code" -eq 0 ]; then
-      echo "" >&2
-      echo "ERROR: EXPECT_FAILURE=1 was set but the gate passed. Gate is broken or fixture is wrong." >&2
-      exit_code=4
-    else
-      echo ""
-      echo "Self-test PASSED: gate exited with code ${exit_code} as expected."
-      exit_code=0
-    fi
-  fi
-
   # shellcheck disable=SC2086  # CURL_TIMEOUT must word-split, per common.sh
   curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" \
     "${BASE_URL}/api/v1/repositories/${REPO_KEY}" >/dev/null 2>&1 || true
@@ -118,6 +96,18 @@ cleanup() {
   exit "$exit_code"
 }
 trap cleanup EXIT
+
+# Mutual exclusion guard. EXPECT_FAILURE=1 inverts the suite exit code (via
+# end_suite() in common.sh); ALLOW_SCANNER_SKIP=1 makes scanner_unavailable()
+# coerce failure into success. Together they would falsely report "gate caught
+# a bad backend" when the gate just gracefully skipped, silently turning the
+# self-test into a no-op -- the failure class #883 is meant to prevent.
+if [ "$EXPECT_FAILURE" = "1" ] && [ "$ALLOW_SCANNER_SKIP" = "1" ]; then
+  echo "ERROR: EXPECT_FAILURE=1 and ALLOW_SCANNER_SKIP=1 are mutually exclusive." >&2
+  echo "  EXPECT_FAILURE inverts exit codes; ALLOW_SCANNER_SKIP coerces failure to success." >&2
+  echo "  Together they corrupt the self-test signal. Pick one." >&2
+  exit 5
+fi
 
 # ---------------------------------------------------------------------------
 # Fail-or-skip helper. Scanner unreachability is a legitimate failure
@@ -162,16 +152,29 @@ is_nonneg_int() {
 # the lockfile exactly.
 # ---------------------------------------------------------------------------
 
-begin_test "Build known-vulnerable fixture (lodash 4.17.4 / CVE-2019-10744)"
+begin_test "Build fixture (lodash ${EXPECTED_VULN_VERSION})"
 mkdir -p "${WORK_DIR}/package"
+
+# Trivy parses package-lock.json on the version field; the integrity
+# SHA does not gate detection. We use the published-npm SHA for 4.17.4
+# (the default vulnerable case) so the lockfile is realistic. For
+# overridden versions (FIXTURE_LODASH_VERSION set by the self-test
+# fixture B path) we use a known-fixture placeholder rather than a
+# real-but-wrong SHA, since no real consumer ever resolves this
+# tarball.
+if [ "$EXPECTED_VULN_VERSION" = "4.17.4" ]; then
+  LODASH_INTEGRITY="sha1-eCA6TRwyLuHBHJgwGu1myF0sR4U="
+else
+  LODASH_INTEGRITY="sha1-FIXTURE-NOT-FOR-NPM-RESOLUTION-PLACEHOLDER="
+fi
 
 cat > "${WORK_DIR}/package/package.json" <<EOF
 {
   "name": "scan-completes-fixture",
   "version": "1.0.0",
-  "description": "Release-gate fixture pinned to a known-vulnerable lodash for CVE-2019-10744 detection",
+  "description": "Release-gate fixture pinned to lodash ${EXPECTED_VULN_VERSION}",
   "dependencies": {
-    "lodash": "4.17.4"
+    "lodash": "${EXPECTED_VULN_VERSION}"
   }
 }
 EOF
@@ -187,20 +190,20 @@ cat > "${WORK_DIR}/package/package-lock.json" <<EOF
       "name": "scan-completes-fixture",
       "version": "1.0.0",
       "dependencies": {
-        "lodash": "4.17.4"
+        "lodash": "${EXPECTED_VULN_VERSION}"
       }
     },
     "node_modules/lodash": {
-      "version": "4.17.4",
-      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.4.tgz",
-      "integrity": "sha1-eCA6TRwyLuHBHJgwGu1myF0sR4U="
+      "version": "${EXPECTED_VULN_VERSION}",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-${EXPECTED_VULN_VERSION}.tgz",
+      "integrity": "${LODASH_INTEGRITY}"
     }
   },
   "dependencies": {
     "lodash": {
-      "version": "4.17.4",
-      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.4.tgz",
-      "integrity": "sha1-eCA6TRwyLuHBHJgwGu1myF0sR4U="
+      "version": "${EXPECTED_VULN_VERSION}",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-${EXPECTED_VULN_VERSION}.tgz",
+      "integrity": "${LODASH_INTEGRITY}"
     }
   }
 }
