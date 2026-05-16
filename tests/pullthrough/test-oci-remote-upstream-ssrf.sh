@@ -27,7 +27,7 @@
 #         a. cloud metadata IP (169.254.169.254)
 #         b. loopback (127.0.0.1)
 #         c. RFC1918 (10.0.0.1, 192.168.1.1)
-#         d. cluster service hostname (kubernetes.default)
+#         d. cloud metadata DNS name (metadata.google.internal)
 #      The exact rejection reason MAY differ across these (IP literal
 #      check vs. DNS resolve-and-check), but every one MUST be rejected.
 #   2. A legitimate external upstream (e.g. https://registry-1.docker.io)
@@ -161,11 +161,20 @@ assert_ssrf_blocked "RFC1918 10.x (10.0.0.1)" \
 assert_ssrf_blocked "RFC1918 192.168.x (192.168.1.1)" \
   "http://192.168.1.1/v2/" 4
 
-# Cluster DNS: relies on the resolver path, not just IP-literal check.
-# A backend that ONLY blocks IP literals is still vulnerable through
-# DNS. We probe a representative kube hostname.
-assert_ssrf_blocked "Cluster DNS (kubernetes.default)" \
-  "http://kubernetes.default/v2/" 5
+# Cloud metadata via DNS: relies on the resolver path / hostname
+# blocklist, not just the IP-literal check. A backend that ONLY blocks
+# IP literals is still vulnerable through the metadata DNS name. We
+# probe `metadata.google.internal`, which is explicitly listed in
+# BLOCKED_HOSTS (backend/src/api/validation.rs) alongside the AWS IMDS
+# IP. (Earlier drafts of this test used `kubernetes.default` here, but
+# that name is NOT in BLOCKED_HOSTS and the backend would 2xx-accept
+# it, producing a false-failure on a backend that is otherwise
+# correctly defended; the SSRF surface for kube-internal services is
+# covered by the RFC1918 / loopback cases above on any sane cluster
+# CNI, and separately by the docker-internal service hostnames
+# `backend`, `postgres`, `redis`, etc., which ARE in BLOCKED_HOSTS.)
+assert_ssrf_blocked "Cloud metadata via DNS (metadata.google.internal)" \
+  "http://metadata.google.internal/computeMetadata/v1/" 5
 
 # Link-local IPv6 (fe80::). Often missed by IPv4-only blocklists.
 assert_ssrf_blocked "IPv6 link-local (fe80::1)" \
