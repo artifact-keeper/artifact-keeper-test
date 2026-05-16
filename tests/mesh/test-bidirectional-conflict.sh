@@ -159,44 +159,62 @@ begin_test "Both sides converge to the same checksum"
 if [ -z "${POLICY_ID:-}" ] || [ "$POLICY_ID" = "null" ]; then
   skip "no policy"
 else
-  elapsed=0
-  converged=false
-  main_sha=""
-  peer_sha=""
-  while [ "$elapsed" -lt "$SYNC_TIMEOUT" ]; do
-    # Pull both versions and diff their checksums.
-    curl -sf $CURL_TIMEOUT -H "Authorization: Bearer ${MAIN_TOKEN}" \
-      -o "${WORK_DIR}/got_main.txt" \
-      "${MAIN_URL}/api/v1/repositories/${REPO_KEY}/download/${ARTIFACT_PATH}" 2>/dev/null || true
-    curl -sf $CURL_TIMEOUT -H "Authorization: Bearer ${PEER1_TOKEN}" \
-      -o "${WORK_DIR}/got_peer.txt" \
-      "${PEER1_URL}/api/v1/repositories/${REPO_KEY}/download/${ARTIFACT_PATH}" 2>/dev/null || true
-
-    if [ -s "${WORK_DIR}/got_main.txt" ] && [ -s "${WORK_DIR}/got_peer.txt" ]; then
-      main_sha=$(shasum -a 256 "${WORK_DIR}/got_main.txt" | awk '{print $1}')
-      peer_sha=$(shasum -a 256 "${WORK_DIR}/got_peer.txt" | awk '{print $1}')
-      if [ "$main_sha" = "$peer_sha" ] && [ -n "$main_sha" ]; then
-        converged=true
-        break
-      fi
-    fi
-    sleep 4
-    elapsed=$(( elapsed + 4 ))
-  done
-
-  if $converged; then
-    # Sanity: the converged content must equal one of the two
-    # originals (a merge into a third blob would indicate a corrupt
-    # resolution policy).
-    orig_main=$(shasum -a 256 "${WORK_DIR}/main.txt" | awk '{print $1}')
-    orig_peer=$(shasum -a 256 "${WORK_DIR}/peer1.txt" | awk '{print $1}')
-    if [ "$main_sha" = "$orig_main" ] || [ "$main_sha" = "$orig_peer" ]; then
-      pass
+  # Pick a sha256 backend at runtime. Minimal containers may not ship
+  # shasum (which is a Perl wrapper); prefer sha256sum, then openssl,
+  # and last resort shasum.
+  sha256_of() {
+    if command -v sha256sum > /dev/null 2>&1; then
+      sha256sum "$1" | awk '{print $1}'
+    elif command -v openssl > /dev/null 2>&1; then
+      openssl dgst -sha256 "$1" | awk '{print $NF}'
+    elif command -v shasum > /dev/null 2>&1; then
+      shasum -a 256 "$1" | awk '{print $1}'
     else
-      fail "converged sha ${main_sha} matches neither original version (${orig_main}/${orig_peer})"
+      return 1
     fi
+  }
+  if ! sha256_of /dev/null > /dev/null 2>&1; then
+    skip "no sha256 tool available (sha256sum / openssl / shasum all missing)"
   else
-    skip "bidirectional convergence not observed within ${SYNC_TIMEOUT}s (main=${main_sha:0:8} peer=${peer_sha:0:8})"
+    elapsed=0
+    converged=false
+    main_sha=""
+    peer_sha=""
+    while [ "$elapsed" -lt "$SYNC_TIMEOUT" ]; do
+      # Pull both versions and diff their checksums.
+      curl -sf $CURL_TIMEOUT -H "Authorization: Bearer ${MAIN_TOKEN}" \
+        -o "${WORK_DIR}/got_main.txt" \
+        "${MAIN_URL}/api/v1/repositories/${REPO_KEY}/download/${ARTIFACT_PATH}" 2>/dev/null || true
+      curl -sf $CURL_TIMEOUT -H "Authorization: Bearer ${PEER1_TOKEN}" \
+        -o "${WORK_DIR}/got_peer.txt" \
+        "${PEER1_URL}/api/v1/repositories/${REPO_KEY}/download/${ARTIFACT_PATH}" 2>/dev/null || true
+
+      if [ -s "${WORK_DIR}/got_main.txt" ] && [ -s "${WORK_DIR}/got_peer.txt" ]; then
+        main_sha=$(sha256_of "${WORK_DIR}/got_main.txt")
+        peer_sha=$(sha256_of "${WORK_DIR}/got_peer.txt")
+        if [ "$main_sha" = "$peer_sha" ] && [ -n "$main_sha" ]; then
+          converged=true
+          break
+        fi
+      fi
+      sleep 4
+      elapsed=$(( elapsed + 4 ))
+    done
+
+    if $converged; then
+      # Sanity: the converged content must equal one of the two
+      # originals (a merge into a third blob would indicate a corrupt
+      # resolution policy).
+      orig_main=$(sha256_of "${WORK_DIR}/main.txt")
+      orig_peer=$(sha256_of "${WORK_DIR}/peer1.txt")
+      if [ "$main_sha" = "$orig_main" ] || [ "$main_sha" = "$orig_peer" ]; then
+        pass
+      else
+        fail "converged sha ${main_sha} matches neither original version (${orig_main}/${orig_peer})"
+      fi
+    else
+      skip "bidirectional convergence not observed within ${SYNC_TIMEOUT}s (main=${main_sha:0:8} peer=${peer_sha:0:8})"
+    fi
   fi
 fi
 

@@ -109,7 +109,11 @@ else
   policy_payload="{\"name\":\"${POLICY_NAME}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"match_peers\":[\"${PEER_ID}\"]},\"replication_mode\":\"push\",\"enabled\":true}"
   if resp=$(api_post "/api/v1/sync-policies" "$policy_payload" 2>/dev/null); then
     POLICY_ID=$(echo "$resp" | jq -r '.id // empty')
-    api_post "/api/v1/sync-policies/evaluate" "" > /dev/null 2>&1 || true
+    # NOTE: we deliberately do NOT call POST /sync-policies/evaluate.
+    # That endpoint fires a synchronous sync, which would contaminate
+    # the "did the cron tick?" assertion below: a pass would no longer
+    # prove the scheduler fired. The load-bearing check is now
+    # "sync evidence has a timestamp >= window start".
     pass
   else
     fail "could not create policy"
@@ -123,6 +127,10 @@ else
   echo "scheduled-fire ${RUN_ID}" > "${WORK_DIR}/sched.txt"
   if api_upload "/api/v1/repositories/${REPO_KEY}/artifacts/sched/marker.txt" \
       "${WORK_DIR}/sched.txt" "text/plain" > /dev/null; then
+    # Stamp the start of the schedule window. Any sync task / artifact
+    # landing observed with an earlier timestamp is a stale signal from
+    # before the upload and MUST NOT count as a tick.
+    SCHEDULE_WINDOW_START=$(date +%s)
     pass
   else
     fail "upload failed"
@@ -132,40 +140,70 @@ fi
 begin_test "Sync task / replication log entry appears within ${SCHEDULE_WAIT}s"
 if [ -z "${PEER_ID:-}" ] || [ "$PEER_ID" = "null" ]; then
   skip "no peer"
+elif [ -z "${SCHEDULE_WINDOW_START:-}" ]; then
+  skip "no upload anchor -- cannot bound schedule window"
 else
   elapsed=0
   observed=false
   while [ "$elapsed" -lt "$SCHEDULE_WAIT" ]; do
     if resp=$(api_get "/api/v1/peers/${PEER_ID}/sync/tasks" 2>/dev/null); then
-      # SyncTaskResponse is an array; the array is non-empty when the
-      # scheduler has fired and queued at least one task.
-      count=$(echo "$resp" | jq 'if type == "array" then length elif .items then (.items|length) else 0 end' 2>/dev/null || echo 0)
-      if [ "${count:-0}" -gt 0 ] 2>/dev/null; then
+      # Walk every task; consider it evidence ONLY if its
+      # created_at/started_at/updated_at parses to an epoch >= window
+      # start. Drops the off-by-default lenient "any non-empty array"
+      # check, which would otherwise pass on a stale queue entry from
+      # before the upload.
+      max_ts=$(printf '%s' "$resp" | jq -r --arg url "$MAIN_URL" '
+        def epoch:
+          if type == "number" then .
+          elif type == "string" and . != "" then (try fromdateiso8601 catch (try tonumber catch 0))
+          else 0
+          end;
+        [ (if type == "array" then .[] else .items[]? end)
+          | ((.created_at // .started_at // .updated_at // .scheduled_at // "") | epoch) ]
+        | max // 0
+      ' 2>/dev/null) || max_ts=0
+      if [ "${max_ts:-0}" -ge "$SCHEDULE_WINDOW_START" ] 2>/dev/null; then
         observed=true
         break
       fi
     fi
     sleep 5
     elapsed=$(( elapsed + 5 ))
-    echo "  ...waiting for scheduler tick (${elapsed}s)"
+    echo "  ...waiting for scheduler tick (${elapsed}s, window_start=${SCHEDULE_WINDOW_START})"
   done
 
   if $observed; then
     pass
   else
-    # Fallback: did the artifact actually land on peer1? If yes, the
-    # schedule fired, we just couldn't observe the queue snapshot
-    # (tasks may complete + drain between polls).
+    # Fallback: did the artifact actually land on peer1 AFTER window
+    # start? If yes, the schedule fired and the queue snapshot just
+    # drained between polls. Crucially we require a timestamp recency
+    # check -- "artifact present" alone could be a stale entry from a
+    # previous run. We compare against created_at/updated_at on the
+    # listing.
     ORIG_BASE="$BASE_URL"; ORIG_TOK="$ADMIN_TOKEN"
     export BASE_URL="$PEER1_URL"
     auth_admin || true
     create_local_repo "$REPO_KEY" "generic" > /dev/null 2>&1 || true
-    landed=false
+    landed_recent=false
     if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
-      [[ "$resp" == *"marker.txt"* ]] && landed=true
+      latest_ts=$(printf '%s' "$resp" | jq -r '
+        def epoch:
+          if type == "number" then .
+          elif type == "string" and . != "" then (try fromdateiso8601 catch (try tonumber catch 0))
+          else 0
+          end;
+        [ (if type == "array" then .[] else .items[]? end)
+          | select((.path // .name // "") | test("marker\\.txt$"))
+          | ((.created_at // .updated_at // .last_modified // "") | epoch) ]
+        | max // 0
+      ' 2>/dev/null) || latest_ts=0
+      if [ "${latest_ts:-0}" -ge "$SCHEDULE_WINDOW_START" ] 2>/dev/null; then
+        landed_recent=true
+      fi
     fi
     export BASE_URL="$ORIG_BASE"; export ADMIN_TOKEN="$ORIG_TOK"
-    if $landed; then
+    if $landed_recent; then
       pass
     else
       skip "scheduled run did not fire within ${SCHEDULE_WAIT}s (cron worker not running in ephemeral env)"

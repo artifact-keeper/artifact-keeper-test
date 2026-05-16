@@ -157,7 +157,16 @@ else
   synced=false
   while [ "$elapsed" -lt "$TRANSFER_TIMEOUT" ]; do
     if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
-      if [[ "$resp" == *"payload.bin"* ]]; then
+      # jq -e predicate: exit 0 iff at least one artifact's path/name
+      # actually ends in "payload.bin". Stricter than `[[ resp == *...* ]]`
+      # which can be spoofed by the substring appearing anywhere in the
+      # response (e.g. inside an unrelated error message).
+      if printf '%s' "$resp" | jq -e '
+          [ (if type == "array" then .[] else .items[]? end)
+            | (.path // .name // "")
+            | test("payload\\.bin$") ]
+          | any
+        ' > /dev/null 2>&1; then
         synced=true
         break
       fi
@@ -175,7 +184,16 @@ else
   if ! $synced; then
     skip "artifact did not sync within ${TRANSFER_TIMEOUT}s (sync worker not running in ephemeral env)"
   else
-    # bytes_per_second = PAYLOAD_BYTES / duration
+    # bytes_per_second = PAYLOAD_BYTES / duration.
+    # Asymmetric tolerance band: floor is CAP_BPS/4 (worker startup
+    # latency, slow first chunk, or HTTP overhead can plausibly land
+    # below cap without indicating a throttler bug). Ceiling is
+    # CAP_BPS*2 (2x faster than cap means the token bucket is not
+    # enforcing; anything looser would let bookkeeping-only throttling
+    # slip past). The band is intentionally asymmetric in the
+    # "too slow is more forgiving than too fast" direction because
+    # over-throttling is harder to distinguish from environment noise
+    # in CI -- the RELEASE_GATE branch below closes that loophole.
     effective_bps=$(( PAYLOAD_BYTES / duration ))
     floor_bps=$(( CAP_BPS / 4 ))    # allow worker startup latency
     ceiling_bps=$(( CAP_BPS * 2 ))  # 2x burst tolerance (bookkeeping-only
@@ -186,8 +204,15 @@ else
     elif [ "$effective_bps" -gt "$ceiling_bps" ]; then
       fail "effective rate ${effective_bps}bps exceeds 2x cap ${CAP_BPS}bps (throttler not enforced)"
     else
-      # Unusually slow can be a fluky env, not a regression of the cap.
-      skip "effective rate ${effective_bps}bps below floor ${floor_bps}bps (likely env noise)"
+      # Below the floor. In RELEASE_GATE this is the exact silent-success
+      # class the gate exists to catch -- a real over-throttling
+      # regression would land here and be silently skipped. Fail loudly
+      # under the gate; preserve the lenient skip for local dev runs.
+      if [ "${RELEASE_GATE:-0}" = "1" ]; then
+        fail "effective rate ${effective_bps}bps below floor ${floor_bps}bps (cap=${CAP_BPS}bps); over-throttling must not skip under RELEASE_GATE=1"
+      else
+        skip "effective rate ${effective_bps}bps below floor ${floor_bps}bps (likely env noise; set RELEASE_GATE=1 to fail)"
+      fi
     fi
   fi
 fi

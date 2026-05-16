@@ -145,7 +145,13 @@ else
   synced=false
   while [ "$elapsed" -lt "$FAILOVER_TIMEOUT" ]; do
     if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
-      if [[ "$resp" == *"marker.txt"* ]]; then
+      # jq -e predicate: stricter than substring match on raw JSON.
+      if printf '%s' "$resp" | jq -e '
+          [ (if type == "array" then .[] else .items[]? end)
+            | (.path // .name // "")
+            | test("marker\\.txt$") ]
+          | any
+        ' > /dev/null 2>&1; then
         synced=true
         break
       fi
@@ -158,7 +164,16 @@ else
   if $synced; then
     pass
   else
-    skip "healthy peer did not receive artifact within ${FAILOVER_TIMEOUT}s (sync worker timing)"
+    # Under RELEASE_GATE, a healthy-peer timeout is the exact silent-
+    # success class the gate exists to catch: a regression in failover
+    # would land here and be hidden by skip. Fail loudly under the gate;
+    # preserve the lenient skip for local-dev runs where sync workers
+    # may not be running.
+    if [ "${RELEASE_GATE:-0}" = "1" ]; then
+      fail "healthy peer did not receive artifact within ${FAILOVER_TIMEOUT}s; failover timeout must not skip under RELEASE_GATE=1"
+    else
+      skip "healthy peer did not receive artifact within ${FAILOVER_TIMEOUT}s (sync worker timing; set RELEASE_GATE=1 to fail)"
+    fi
   fi
 fi
 

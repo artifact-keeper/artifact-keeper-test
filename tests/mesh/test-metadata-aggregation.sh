@@ -125,17 +125,40 @@ else
   curl -s -o /dev/null $CURL_TIMEOUT -X POST -H "$(auth_header)" \
     "${MAIN_URL}/api/v1/peers/${PEER_ID}/sync" 2>/dev/null || true
 
-  # Also ask peer1 to push back; this is best-effort because the peer
-  # may not have a corresponding peer-instance row pointing at main.
+  # Also ask peer1 to push back. Bidirectional aggregation REQUIRES the
+  # reverse-sync to fire -- without it the 12.10 assertion only validates
+  # one-way main->peer aggregation, which is a silent-success class.
+  # Probe both response shapes (bare array vs {items:[...]}) defensively
+  # and fail loudly if the filter cannot parse either shape.
   export BASE_URL="$PEER1_URL"; export ADMIN_TOKEN="$PEER_TOKEN"
+  reverse_sync_triggered=false
+  rev_parse_failed=false
   if peers_resp=$(api_get "/api/v1/peers" 2>/dev/null); then
-    rev_peer_id=$(echo "$peers_resp" | jq -r '[.items // .[] | select(.endpoint_url == "'"$MAIN_URL"'")][0].id // empty' 2>/dev/null || true)
-    if [ -n "$rev_peer_id" ] && [ "$rev_peer_id" != "null" ]; then
-      api_post "/api/v1/peers/${rev_peer_id}/sync" "" > /dev/null 2>&1 || true
+    # Correct, shape-defensive filter. We deliberately do NOT swallow
+    # jq errors with `|| true` -- a malformed response is a real defect.
+    if rev_peer_id=$(printf '%s' "$peers_resp" | jq -r --arg url "$MAIN_URL" '
+        [ (if type == "array" then .[] else .items[]? end)
+          | select(.endpoint_url == $url) ][0].id // empty
+      '); then
+      if [ -n "$rev_peer_id" ] && [ "$rev_peer_id" != "null" ]; then
+        api_post "/api/v1/peers/${rev_peer_id}/sync" "" > /dev/null 2>&1 || true
+        reverse_sync_triggered=true
+      fi
+    else
+      rev_parse_failed=true
     fi
   fi
   export BASE_URL="$MAIN_URL"; export ADMIN_TOKEN="$MAIN_TOKEN"
-  pass
+  if $rev_parse_failed; then
+    fail "could not parse /api/v1/peers response on peer1 (neither array nor items-wrapped shape)"
+  elif $reverse_sync_triggered; then
+    pass
+  else
+    # peer1 has no peer-instance row pointing back at main, so reverse
+    # sync cannot fire. This makes the bidirectional aggregation
+    # assertion vacuous, so skip rather than mask the gap.
+    skip "peer1 has no peer-instance row for main -- reverse sync not configured, bidirectional aggregation cannot be exercised"
+  fi
 fi
 
 begin_test "GET /artifacts on main lists artifacts from both sides"
@@ -147,8 +170,17 @@ else
   saw_peer=false
   while [ "$elapsed" -lt "$SYNC_TIMEOUT" ]; do
     if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
-      [[ "$resp" == *"main-only.txt"* ]] && saw_main=true
-      [[ "$resp" == *"peer-only.txt"* ]] && saw_peer=true
+      # jq -e predicates: stricter than substring match on raw JSON.
+      printf '%s' "$resp" | jq -e '
+        [ (if type == "array" then .[] else .items[]? end)
+          | (.path // .name // "")
+          | test("main-only\\.txt$") ] | any
+      ' > /dev/null 2>&1 && saw_main=true
+      printf '%s' "$resp" | jq -e '
+        [ (if type == "array" then .[] else .items[]? end)
+          | (.path // .name // "")
+          | test("peer-only\\.txt$") ] | any
+      ' > /dev/null 2>&1 && saw_peer=true
       $saw_main && $saw_peer && break
     fi
     sleep 4
@@ -176,8 +208,28 @@ if [ -z "${POLICY_ID:-}" ] || [ "$POLICY_ID" = "null" ]; then
 else
   if resp=$(api_get "/api/v1/tree?repository_key=${REPO_KEY}&path=agg" 2>/dev/null); then
     tree_main=false; tree_peer=false
-    [[ "$resp" == *"main-only.txt"* ]] && tree_main=true
-    [[ "$resp" == *"peer-only.txt"* ]] && tree_peer=true
+    # Use jq -e where the response shape is known (.entries / .children
+    # / bare array of entries). Fall back to a substring probe only if
+    # jq cannot parse a meaningful predicate -- this is the case for
+    # HTML / non-JSON responses on clusters that don't ship /tree.
+    if printf '%s' "$resp" | jq -e '
+        [ (.entries // .children // (if type == "array" then . else [] end))[]?
+          | (.path // .name // "")
+          | test("main-only\\.txt$") ] | any
+      ' > /dev/null 2>&1; then
+      tree_main=true
+    elif [[ "$resp" == *"main-only.txt"* ]]; then
+      tree_main=true
+    fi
+    if printf '%s' "$resp" | jq -e '
+        [ (.entries // .children // (if type == "array" then . else [] end))[]?
+          | (.path // .name // "")
+          | test("peer-only\\.txt$") ] | any
+      ' > /dev/null 2>&1; then
+      tree_peer=true
+    elif [[ "$resp" == *"peer-only.txt"* ]]; then
+      tree_peer=true
+    fi
     if $tree_main && $tree_peer; then
       pass
     elif $tree_main || $tree_peer; then
