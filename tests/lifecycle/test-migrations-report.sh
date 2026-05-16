@@ -50,6 +50,11 @@ cleanup_migrations() {
   local id
   for id in "${JOB_IDS[@]:-}"; do
     [ -z "$id" ] && continue
+    # Best-effort cancel-then-delete: match the convention used by the
+    # other migrations lifecycle tests so a running job (if any survived)
+    # is cancelled before delete on backends that require it.
+    curl -sf $CURL_TIMEOUT -X POST -H "$(auth_header)" \
+      "${BASE_URL}${JOBS_BASE}/${id}/cancel" >/dev/null 2>&1 || true
     curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" \
       "${BASE_URL}${JOBS_BASE}/${id}" >/dev/null 2>&1 || true
   done

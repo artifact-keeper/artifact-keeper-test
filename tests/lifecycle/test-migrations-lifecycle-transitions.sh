@@ -7,23 +7,28 @@
 #   POST /migrations/{id}/resume
 #
 # The starter PR (#156) pinned cancel as the fail-safe transition from
-# queued -> cancelled. This script extends 9.3 to the positive path of the
-# state machine:
+# pending -> cancelled. This script extends 9.3 to the positive path of
+# the state machine. The authoritative backend vocabulary (per
+# backend/src/api/handlers/migration.rs:1013,1110,1150) is:
 #
-#   queued -> started   (POST /start)        running/started
-#   started -> paused   (POST /pause)        paused
-#   paused  -> resumed  (POST /resume)       running/started
+#   pending -> running  (POST /start)        status = 'running'
+#   running -> paused   (POST /pause)        status = 'paused'
+#   paused  -> running  (POST /resume)       status = 'running'
 #   running -> cancelled (POST /cancel)      terminal cleanup
+#   (failed is a terminal state set by the worker on error)
 #
 # Design notes
-#   - We deliberately do not assert which exact state label the backend
-#     uses (running vs started vs in_progress) -- different release lines
-#     have used different vocabulary. The load-bearing assertion is that
-#     each transition is OBSERVABLE: the POST returns 2xx AND the
-#     subsequent GET reports a state distinct from the prior one in a
-#     direction consistent with the transition. A transition that returns
-#     2xx but leaves the state unchanged would be silent-success
-#     (#870/#871/#888 class) and we fail it loudly.
+#   - The backend canonical states are: pending, running, paused,
+#     completed, cancelled, failed. We still match permissively in the
+#     case statements below (started/in_progress/active are accepted)
+#     to stay forward-compatible with backend vocabulary changes, but
+#     the documented contract is the pending/running/paused/... set
+#     above. The load-bearing assertion is that each transition is
+#     OBSERVABLE: the POST returns 2xx AND the subsequent GET reports
+#     a state distinct from the prior one in a direction consistent
+#     with the transition. A transition that returns 2xx but leaves
+#     the state unchanged would be silent-success (#870/#871/#888
+#     class) and we fail it loudly.
 #   - The job points at an unreachable source so we don't depend on any
 #     real artifact transfer happening. The state machine itself is the
 #     contract under test, not the transfer.
@@ -189,11 +194,29 @@ if [ -z "$JOB_ID" ]; then
   end_suite
 fi
 
-# Capture the initial queued/pending state for the silent-success guard.
+# Capture the initial pending state for the silent-success guard.
 INITIAL_STATE=$(get_job_state "$JOB_ID")
 
 # ---------------------------------------------------------------------------
-# 9.3.a queued -> started
+# Illegal-transition negative test: per openapi.yaml L4120 and
+# migration.rs:1110, /pause requires status = 'running'. A freshly-created
+# job is in 'pending', so /pause on it MUST return 409 (not 200, which
+# would be silent success, and not 500, which would be a crash).
+# ---------------------------------------------------------------------------
+
+begin_test "POST /pause on a pending (not-yet-started) job returns 409"
+RESP=$(migrations_request POST "${JOBS_BASE}/${JOB_ID}/pause")
+STATUS=$(echo "$RESP" | head -1)
+BODY=$(echo "$RESP" | tail -n +2)
+
+if [ "$STATUS" = "409" ]; then
+  pass
+else
+  fail "/pause on pending job expected 409, got ${STATUS}; body=${BODY:0:200}"
+fi
+
+# ---------------------------------------------------------------------------
+# 9.3.a pending -> running
 # ---------------------------------------------------------------------------
 
 begin_test "POST /start transitions job out of the initial state"
@@ -205,8 +228,8 @@ STARTED_OK=0
 if [[ "$STATUS" =~ ^2 ]]; then
   AFTER_START_STATE=$(get_job_state "$JOB_ID")
   # Either the state changed (good) OR the response body itself names a
-  # running-ish state. We treat "state unchanged from queued/pending" as
-  # silent success and fail loudly.
+  # running state. We treat "state unchanged from pending" as silent
+  # success and fail loudly.
   case "$AFTER_START_STATE" in
     running|started|in_progress|active)
       STARTED_OK=1
@@ -247,7 +270,7 @@ if [ "$STARTED_OK" -ne 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 9.3.b started -> paused
+# 9.3.b running -> paused
 # ---------------------------------------------------------------------------
 
 begin_test "POST /pause moves a running job to paused"
@@ -292,7 +315,7 @@ if [ "$PAUSE_OK" -ne 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 9.3.c paused -> resumed
+# 9.3.c paused -> running
 # ---------------------------------------------------------------------------
 
 begin_test "POST /resume moves a paused job back to running"
