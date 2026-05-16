@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-multipart-artifact-upload.sh - Multipart (chunked) artifact upload
+# test-multipart-artifact-upload.sh - Single-file multipart artifact upload
 #
 # Covers Epic 6 sub-task 6.13 (artifact-keeper-test#71):
 #   upload_artifact_multipart / upload_artifact_multipart_with_path
@@ -7,21 +7,35 @@
 # Background: the standard artifact upload path is PUT
 # /api/v1/repositories/{key}/artifacts/{path} with
 # application/octet-stream. The multipart variants on the backend
-# accept multipart/form-data, which lets clients chunk a single blob
-# across multiple form parts (typically named "chunk0", "chunk1", ...
-# or "file"). OpenAPI does not enumerate this transport explicitly,
-# so the test discovers it by trying multipart/form-data against the
-# existing path and gracefully skipping if the backend returns 4xx
-# (415 Unsupported Media Type / 400 / 404 / 501).
+# (POST .../artifacts and POST .../artifacts/{path}) accept
+# multipart/form-data with a SINGLE file field; the backend extracts
+# the first form field that has a filename and stores it as one blob
+# (see backend repositories.rs::extract_multipart_file, which returns
+# after the first matching field). The OpenAPI spec documents the
+# multipart/form-data POST surfaces but does not enumerate a chunked
+# transport, and no upload-session or chunked-part endpoint exists
+# anywhere in the spec.
 #
-# Contract under test:
-#   1. Split a payload of >= 64 KiB into 3 chunks on the client side.
-#   2. Upload via multipart/form-data with one form part per chunk.
-#   3. Download the artifact back as a single blob.
-#   4. Assert SHA256(downloaded) == SHA256(concatenated client-side
-#      chunks). This is the load-bearing assertion: if the backend
-#      reassembled correctly, the hash matches; if it concatenated in
-#      the wrong order or dropped a chunk, the hash differs.
+# Chunked-upload gap: a true multi-part chunked upload (client splits
+# a blob across N form fields and the backend reassembles in order)
+# is NOT supported by the current backend. Asserting "chunk0/chunk1/
+# chunk2 + SHA of concatenation" against the existing endpoint would
+# silently truncate to chunk0 and yield a false-positive failure. The
+# chunked-upload feature is documented as a v1.2.0 backend follow-up
+# (issue #71); when an upload-session/parts endpoint lands in OpenAPI,
+# extend this test to cover it.
+#
+# Contract under test (scope narrowed to what the backend actually
+# implements):
+#   1. POST multipart/form-data to the documented multipart upload
+#      endpoint with a single `file` field.
+#   2. The response is JSON describing the uploaded artifact, with
+#      content_type and checksum_sha256 set, and the server-reported
+#      checksum matches the client-computed checksum.
+#   3. Download the artifact back and assert SHA256(downloaded) ==
+#      SHA256(uploaded). This is the load-bearing assertion: if the
+#      backend silently dropped bytes or mis-stored the body, the
+#      hash differs.
 #
 # Requires: curl, jq, sha256sum
 source "$(dirname "$0")/../lib/common.sh"
@@ -48,83 +62,63 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Build 3 chunks. Use deterministic but non-uniform data so a wrong-order
-# reassembly is detectable in the SHA256 (vs all-zero data which would
-# hash to the same thing regardless of order).
+# Build a single 72 KiB blob with non-uniform content so any byte-range
+# corruption between upload and storage is detectable in the SHA256.
 # -------------------------------------------------------------------------
 
-CHUNK_SIZE=$((24 * 1024))  # 24 KiB per chunk = 72 KiB total.
+CHUNK_SIZE=$((24 * 1024))  # 24 KiB per segment = 72 KiB total.
+: > "${WORK_DIR}/blob.bin"
 for i in 0 1 2; do
-  # Fill each chunk with a distinct repeating byte (0x10+i) so the
-  # SHA256 of the concatenation is order-sensitive.
   byte=$(printf '\\x%02x' $((0x10 + i)))
   # shellcheck disable=SC2059
-  printf "$byte%.0s" $(seq 1 "$CHUNK_SIZE") > "${WORK_DIR}/chunk-${i}.bin"
+  printf "$byte%.0s" $(seq 1 "$CHUNK_SIZE") >> "${WORK_DIR}/blob.bin"
 done
 
-# Expected hash = SHA256 of chunks in order.
-cat "${WORK_DIR}/chunk-0.bin" "${WORK_DIR}/chunk-1.bin" "${WORK_DIR}/chunk-2.bin" \
-  > "${WORK_DIR}/expected.bin"
-EXPECTED_SHA=$(sha256sum "${WORK_DIR}/expected.bin" | awk '{print $1}')
-EXPECTED_LEN=$(wc -c < "${WORK_DIR}/expected.bin" | tr -d ' ')
+EXPECTED_SHA=$(sha256sum "${WORK_DIR}/blob.bin" | awk '{print $1}')
+EXPECTED_LEN=$(wc -c < "${WORK_DIR}/blob.bin" | tr -d ' ')
 
 # -------------------------------------------------------------------------
-# 6.13.a: Multipart upload. Try a couple of common form field name
-# conventions in case the backend names the field "chunks" / "files"
-# rather than a numeric "chunk0/chunk1/chunk2".
+# 6.13.a: Multipart POST upload. Try both documented surfaces:
+#   POST /repositories/{key}/artifacts            (path comes from filename)
+#   POST /repositories/{key}/artifacts/{path}     (path comes from URL)
+# A single `file` form field is what the backend's extract_multipart_file
+# accepts. If neither surface accepts the request (404/405/415/501),
+# skip the whole suite -- nothing to assert.
 # -------------------------------------------------------------------------
 
-UPLOAD_URL="${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ART_PATH}"
+UPLOAD_RESP="${WORK_DIR}/upload-resp.json"
 
-try_multipart() {
-  # $1 = HTTP verb (PUT or POST), $2 = form-field-name template printf
-  # ("chunk%d", "file", "chunks[]") so we can try variants.
-  local verb="$1"
-  local field_tpl="$2"
-  local out="${WORK_DIR}/upload-${verb}-$(echo "$field_tpl" | tr -d '%[]').json"
-  local field0 field1 field2
-  case "$field_tpl" in
-    *"%d"*)
-      field0=$(printf "$field_tpl" 0)
-      field1=$(printf "$field_tpl" 1)
-      field2=$(printf "$field_tpl" 2)
-      ;;
-    *)
-      # Same name three times for array-style fields.
-      field0="$field_tpl"
-      field1="$field_tpl"
-      field2="$field_tpl"
-      ;;
-  esac
-  curl -s -o "$out" -w '%{http_code}' $CURL_TIMEOUT \
-    -X "$verb" -H "$(auth_header)" \
-    -F "${field0}=@${WORK_DIR}/chunk-0.bin" \
-    -F "${field1}=@${WORK_DIR}/chunk-1.bin" \
-    -F "${field2}=@${WORK_DIR}/chunk-2.bin" \
-    "$UPLOAD_URL" 2>/dev/null || echo "000"
+try_multipart_post() {
+  # $1 = full URL
+  local url="$1"
+  curl -s -o "$UPLOAD_RESP" -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST -H "$(auth_header)" \
+    -F "file=@${WORK_DIR}/blob.bin;filename=${ART_PATH}" \
+    "$url" 2>/dev/null || echo "000"
 }
 
-begin_test "Multipart upload (chunked) returns 2xx"
+begin_test "Multipart upload (single file) returns 2xx"
 MP_STATUS="000"
-for verb in PUT POST; do
-  for tpl in "chunk%d" "chunks[]" "file"; do
-    s=$(try_multipart "$verb" "$tpl")
-    if [ "$s" -ge 200 ] 2>/dev/null && [ "$s" -lt 300 ] 2>/dev/null; then
-      MP_STATUS="$s"
-      MP_VERB="$verb"; MP_TPL="$tpl"
-      break 2
-    fi
-    # Track the most informative status code for the skip message.
-    case "$s" in
-      404|405|415|501) MP_STATUS="$s" ;;
-      *) [ "$MP_STATUS" = "000" ] && MP_STATUS="$s" ;;
-    esac
-  done
+MP_URL_USED=""
+for url in \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ART_PATH}" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts"
+do
+  s=$(try_multipart_post "$url")
+  if [ "$s" -ge 200 ] 2>/dev/null && [ "$s" -lt 300 ] 2>/dev/null; then
+    MP_STATUS="$s"
+    MP_URL_USED="$url"
+    break
+  fi
+  case "$s" in
+    404|405|415|501) MP_STATUS="$s" ;;
+    *) [ "$MP_STATUS" = "000" ] && MP_STATUS="$s" ;;
+  esac
 done
 
 case "$MP_STATUS" in
   2[0-9][0-9])
-    echo "  upload accepted via ${MP_VERB} with form field '${MP_TPL}'"
+    echo "  upload accepted at ${MP_URL_USED}"
     pass
     ;;
   404|405|415|501)
@@ -137,10 +131,29 @@ case "$MP_STATUS" in
 esac
 
 # -------------------------------------------------------------------------
-# 6.13.b: Download the blob back and compare SHA256.
+# 6.13.b: Response shape: id, content_type, and checksum_sha256 must be
+# present, and the server-reported checksum must match the client side.
 # -------------------------------------------------------------------------
 
-begin_test "Downloaded blob SHA256 matches concatenated chunks"
+begin_test "Multipart response carries content_type + matching checksum_sha256"
+RESP_CT=$(jq -r '.content_type // empty' < "$UPLOAD_RESP")
+RESP_SHA=$(jq -r '.checksum_sha256 // empty' < "$UPLOAD_RESP")
+RESP_ID=$(jq -r '.id // empty' < "$UPLOAD_RESP")
+if [ -z "$RESP_CT" ] || [ -z "$RESP_SHA" ] || [ -z "$RESP_ID" ]; then
+  body=$(head -c 400 "$UPLOAD_RESP" 2>/dev/null || true)
+  fail "response missing required fields (content_type='${RESP_CT}', checksum_sha256='${RESP_SHA}', id='${RESP_ID}'): ${body}"
+elif [ "$RESP_SHA" != "$EXPECTED_SHA" ]; then
+  fail "server-reported checksum_sha256=${RESP_SHA} does not match client-computed ${EXPECTED_SHA}"
+else
+  pass
+fi
+
+# -------------------------------------------------------------------------
+# 6.13.c: Download the blob back and compare SHA256. This catches any
+# byte-range corruption between upload and storage.
+# -------------------------------------------------------------------------
+
+begin_test "Downloaded blob SHA256 matches uploaded blob"
 DL_FILE="${WORK_DIR}/downloaded.bin"
 DL_STATUS=$(curl -s -o "$DL_FILE" -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(auth_header)" \
@@ -153,7 +166,7 @@ if [ "$DL_STATUS" != "200" ]; then
 fi
 
 if [ "$DL_STATUS" != "200" ]; then
-  fail "could not download reassembled blob; HTTP ${DL_STATUS}"
+  fail "could not download uploaded blob; HTTP ${DL_STATUS}"
 else
   GOT_LEN=$(wc -c < "$DL_FILE" | tr -d ' ')
   GOT_SHA=$(sha256sum "$DL_FILE" | awk '{print $1}')

@@ -141,7 +141,7 @@ count_versions() {
 # 6.5: Preview must be a true dry-run.
 # -------------------------------------------------------------------------
 
-begin_test "POST /lifecycle/:id/preview returns PolicyExecutionResult"
+begin_test "POST /lifecycle/:id/preview returns PolicyExecutionResult with dry_run=true"
 PREVIEW_BODY="${WORK_DIR}/preview.json"
 PREVIEW_STATUS=$(curl -s -o "$PREVIEW_BODY" -w '%{http_code}' $CURL_TIMEOUT \
   -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
@@ -149,10 +149,25 @@ PREVIEW_STATUS=$(curl -s -o "$PREVIEW_BODY" -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/api/v1/admin/lifecycle/${POLICY_A}/preview" 2>/dev/null) || PREVIEW_STATUS="000"
 case "$PREVIEW_STATUS" in
   200)
-    if jq -e 'type == "object"' < "$PREVIEW_BODY" > /dev/null 2>&1; then
+    # PolicyExecutionResult schema (openapi.yaml:15510) requires all 7
+    # fields below. dry_run MUST be true for the preview endpoint --
+    # the load-bearing distinction between preview and execute. Use
+    # jq -e with a single boolean expression so any missing field or
+    # wrong type fails the assertion.
+    if jq -e '
+      type == "object"
+      and (.dry_run == true)
+      and (has("policy_id") and (.policy_id | type) == "string")
+      and (has("policy_name") and (.policy_name | type) == "string")
+      and (has("artifacts_matched") and (.artifacts_matched | type) == "number")
+      and (has("artifacts_removed") and (.artifacts_removed | type) == "number")
+      and (has("bytes_freed") and (.bytes_freed | type) == "number")
+      and (has("errors") and (.errors | type) == "array")
+    ' < "$PREVIEW_BODY" > /dev/null 2>&1; then
       pass
     else
-      fail "preview response is not an object: $(head -c 200 "$PREVIEW_BODY")"
+      body=$(head -c 400 "$PREVIEW_BODY" 2>/dev/null || true)
+      fail "preview response missing required PolicyExecutionResult fields or dry_run!=true: ${body}"
     fi
     ;;
   404|501)

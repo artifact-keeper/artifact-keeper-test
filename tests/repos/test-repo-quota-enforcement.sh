@@ -101,11 +101,12 @@ assert_http_2xx "$UNDER_STATUS" "under-quota upload should succeed; got ${UNDER_
 
 # -------------------------------------------------------------------------
 # 6.4.b: An upload that would exceed the quota is rejected with a
-# documented 4xx. Per OpenAPI the upload endpoint enumerates 401 and 404
-# explicitly; quota rejection currently surfaces via the service layer's
-# check_quota method, mapping to either 413 (Payload Too Large) or 422
-# (Unprocessable Entity) depending on where the check fires in the
-# request pipeline. Accept either, reject anything else (including 2xx).
+# documented 4xx/5xx. The backend's AppError::QuotaExceeded maps to 507
+# INSUFFICIENT_STORAGE (see backend error.rs:95). 413 (Payload Too Large)
+# and 422 (Unprocessable Entity) are also defensible classifications if
+# the check fires earlier in the request pipeline. We accept only those
+# three; a generic 400 is too imprecise for a quota signal and is
+# rejected so the test surfaces classification drift.
 # -------------------------------------------------------------------------
 
 begin_test "Upload over quota (${OVER_BYTES} bytes > ${QUOTA_BYTES}) must be rejected"
@@ -116,24 +117,19 @@ OVER_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   --data-binary "@${WORK_DIR}/over.bin" \
   "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/over.bin" 2>/dev/null) || OVER_STATUS="000"
 case "$OVER_STATUS" in
-  413|422|507)
-    # 507 (Insufficient Storage) is also semantically correct for a quota
-    # overshoot; include it so the test stays green if the backend ever
-    # picks the most-specific RFC code.
+  507)
+    # 507 is the backend's documented quota-exceeded mapping.
+    pass
+    ;;
+  413|422)
+    # Also defensible if the check fires before the service layer.
     pass
     ;;
   2[0-9][0-9])
     fail "over-quota upload was accepted (HTTP ${OVER_STATUS}); quota enforcement broken"
     ;;
-  400)
-    # 400 is acceptable as a generic client error if the backend doesn't
-    # distinguish quota from other validation failures, but mark it so an
-    # operator notices the imprecise classification.
-    echo "  note: over-quota returned 400 (acceptable; 413/422 preferred)"
-    pass
-    ;;
   *)
-    fail "over-quota upload returned unexpected HTTP ${OVER_STATUS}; expected 413/422/507"
+    fail "over-quota upload returned unexpected HTTP ${OVER_STATUS}; expected 413, 422, or 507"
     ;;
 esac
 

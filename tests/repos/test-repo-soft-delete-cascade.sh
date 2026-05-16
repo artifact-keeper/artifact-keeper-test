@@ -1,38 +1,48 @@
 #!/usr/bin/env bash
-# test-repo-hard-delete-cascade.sh - Hard-delete cascade vs soft-delete
+# test-repo-soft-delete-cascade.sh - Soft-delete cascade behaviour
 #
 # Covers Epic 6 sub-task 6.17 (artifact-keeper-test#71):
-#   DELETE /api/v1/repositories/:key  with hard-delete semantics
+#   DELETE /api/v1/repositories/:key  (soft-delete cascade)
 #
-# Background: the existing soft-delete path is exercised by
-# test-repo-types-crud.sh which only confirms the repo disappears from
-# list/get. It does NOT prove the cascade: i.e. that artifacts and
-# associated rows are actually removed and not just hidden via a
-# soft-delete flag. This test fills that gap.
+# Background: the backend exposes a single DELETE
+# /api/v1/repositories/{key} endpoint (see backend repositories.rs lines
+# 100-128 and 810-825). The handler takes ONLY the path parameter; it
+# does NOT accept ?hard=true or any other query string, so a hard-delete
+# / purge query is silently dropped. The OpenAPI spec confirms there is
+# no purge or admin hard-delete endpoint for repositories anywhere (no
+# /admin/repositories/.../purge, no `force` parameter, no `?hard` query).
 #
-# Contract under test:
+# Hard-delete gap: a true hard-delete (purge artifacts row + binary
+# storage in one atomic admin action) is documented as a v1.2.0 backend
+# follow-up (issue #71). This test does NOT assert hard-delete; it pins
+# the observable soft-delete cascade contract that the current backend
+# does implement.
+#
+# Soft-delete cascade contract under test:
 #   1. Create a repo and upload >= 2 artifacts.
-#   2. Snapshot the artifact ids and confirm GET resolves each one.
-#   3. DELETE the repo (request hard-delete if the endpoint supports a
-#      ?hard=true / ?force=true query; otherwise fall back to the
-#      default DELETE which on 1.2.x+ does a cascading delete).
+#   2. Snapshot the artifact ids and confirm GET resolves each one
+#      via the per-artifact stats endpoint.
+#   3. DELETE the repo (no query string; the backend ignores them).
 #   4. After delete:
-#        a. GET /repositories/:key returns 404.
-#        b. Re-creating a repo with the SAME key succeeds (a soft-delete
-#           bug would surface here as 409 due to a lingering row with a
-#           unique-key violation).
-#        c. The previously-captured artifact ids return 404 on
-#           /api/v1/artifacts/{id}/stats, proving the rows are actually
-#           gone, not just hidden.
+#        a. GET /repositories/:key returns 404 (the row is hidden).
+#        b. Re-creating a repo with the SAME key succeeds. A broken
+#           soft-delete that leaves a live row behind would surface
+#           here as 409 due to a unique-key violation; the backend's
+#           soft-delete tombstone-then-cleanup pattern means re-create
+#           should succeed.
+#        c. The previously-captured artifact ids no longer resolve via
+#           the per-artifact endpoint (404). This is the load-bearing
+#           cascade assertion: a soft-delete that did NOT cascade
+#           through to artifact rows would still resolve them by id.
 #
 # Requires: curl, jq
 source "$(dirname "$0")/../lib/common.sh"
 
-begin_suite "repo-hard-delete-cascade"
+begin_suite "repo-soft-delete-cascade"
 auth_admin
 setup_workdir
 
-REPO_KEY="test-harddel-${RUN_ID}"
+REPO_KEY="test-softdel-${RUN_ID}"
 
 # Cleanup is best-effort: by the time we reach end_suite the repo should
 # already be gone. If anything went wrong, an EXIT delete is safe (404 is
@@ -54,7 +64,7 @@ ART_IDS=()
 begin_test "Upload 2 artifacts"
 UPLOAD_OK=true
 for i in 1 2; do
-  echo "harddel-payload-${i}-${RUN_ID}" > "${WORK_DIR}/blob-${i}.bin"
+  echo "softdel-payload-${i}-${RUN_ID}" > "${WORK_DIR}/blob-${i}.bin"
   body_file="${WORK_DIR}/up-${i}.json"
   st=$(curl -s -o "$body_file" -w '%{http_code}' $CURL_TIMEOUT \
     -X PUT -H "$(auth_header)" -H "Content-Type: application/octet-stream" \
@@ -87,23 +97,17 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 6.17.a: DELETE the repo. Try a hard-delete query string first; fall
-# back to the unparameterised DELETE if the backend rejects it (the
-# OpenAPI today exposes plain DELETE so the parameter may be silently
-# ignored, which is fine -- we assert via observable behaviour, not by
-# the query mechanism used).
+# 6.17.a: DELETE the repo. The backend's delete_repository handler takes
+# only a path parameter (see repositories.rs:810-825); query strings are
+# silently dropped, so we send no query string at all. Hard-delete is a
+# v1.2.0 backend follow-up; this test asserts only the documented soft-
+# delete cascade behaviour.
 # -------------------------------------------------------------------------
 
-begin_test "DELETE repo (hard)"
+begin_test "DELETE repo (soft, cascading)"
 DEL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X DELETE -H "$(auth_header)" \
-  "${BASE_URL}/api/v1/repositories/${REPO_KEY}?hard=true" 2>/dev/null) || DEL_STATUS="000"
-# If ?hard=true confused the router, retry without it.
-if [ "$DEL_STATUS" = "400" ] || [ "$DEL_STATUS" = "422" ]; then
-  DEL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-    -X DELETE -H "$(auth_header)" \
-    "${BASE_URL}/api/v1/repositories/${REPO_KEY}" 2>/dev/null) || DEL_STATUS="000"
-fi
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}" 2>/dev/null) || DEL_STATUS="000"
 assert_http_2xx "$DEL_STATUS" "DELETE repo returned ${DEL_STATUS}" && pass
 
 # -------------------------------------------------------------------------
@@ -117,8 +121,9 @@ GET_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
 assert_eq "$GET_STATUS" "404" "expected 404, got ${GET_STATUS}" && pass
 
 # -------------------------------------------------------------------------
-# 6.17.c: Re-creating with the same key succeeds. A soft-delete that
-# leaves a row behind would surface as 409 (unique key violation).
+# 6.17.c: Re-creating with the same key succeeds. A broken soft-delete
+# that leaves a live row behind would surface as 409 (unique key
+# violation).
 # -------------------------------------------------------------------------
 
 begin_test "Re-create repo with same key (catches soft-delete row leak)"
@@ -143,11 +148,11 @@ esac
 
 # -------------------------------------------------------------------------
 # 6.17.d: The captured artifact ids must return 404 on /stats. This is
-# the strongest signal that the cascade actually removed the rows; a
-# soft-delete-only backend would keep them queryable.
+# the load-bearing cascade signal: a soft-delete that did not cascade
+# through to artifact rows would keep them resolvable by id.
 # -------------------------------------------------------------------------
 
-begin_test "Artifact ids from old repo return 404 on /stats (cascade removal)"
+begin_test "Artifact ids from old repo return 404 on /stats (cascade)"
 if [ "${#ART_IDS[@]}" -eq 0 ]; then
   skip "no artifact ids captured pre-delete"
 else
@@ -157,10 +162,9 @@ else
       -H "$(auth_header)" \
       "${BASE_URL}/api/v1/artifacts/${aid}/stats" 2>/dev/null) || st="000"
     case "$st" in
-      404) ;;  # expected: row is gone
+      404) ;;  # expected: row is gone (or hidden via cascade)
       501)
         # Stats endpoint missing entirely; we cannot prove cascade this way.
-        # Fall back to the per-repo listing which is more weakly indicative.
         REMAINING=-1
         break
         ;;
