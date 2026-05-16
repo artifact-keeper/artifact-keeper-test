@@ -151,12 +151,22 @@ if [ "$list_status" = "501" ] || [ "$list_status" = "404" ]; then
   skip "repo-scoped scans endpoint not available (HTTP ${list_status})"
 elif [ "$list_status" = "200" ]; then
   # Required keys per ScanListResponse: items (array), total (integer).
+  # next_page metadata: must be null/absent when total <= per_page (the
+  # default page contains the whole set); otherwise must be a number.
   if ! jq -e '.items | type == "array"' "$WORK_DIR/list.json" > /dev/null 2>&1; then
     fail "response missing items[] array (body: $(head -c 200 "$WORK_DIR/list.json"))"
   elif ! jq -e '.total | type == "number"' "$WORK_DIR/list.json" > /dev/null 2>&1; then
     fail "response missing total integer (body: $(head -c 200 "$WORK_DIR/list.json"))"
   else
-    pass
+    # The default page contains everything that exists in this fresh
+    # repo, so next_page must be null or absent. Either is acceptable
+    # per the documented shape.
+    np_type=$(jq -r 'if has("next_page") then (.next_page | type) else "absent" end' "$WORK_DIR/list.json")
+    if [ "$np_type" != "null" ] && [ "$np_type" != "absent" ]; then
+      fail "default page next_page='${np_type}' but total fits on one page (expected null/absent). body: $(head -c 200 "$WORK_DIR/list.json")"
+    else
+      pass
+    fi
   fi
 else
   fail "GET /repositories/${REPO_KEY}/security/scans returned HTTP ${list_status} (body: $(head -c 200 "$WORK_DIR/list.json" 2>/dev/null))"
@@ -168,7 +178,7 @@ fi
 # (b) page=999 returns an empty items[] but total is unchanged.
 # ---------------------------------------------------------------------------
 
-begin_test "Pagination: per_page=1 returns at most one item"
+begin_test "Pagination: per_page=1 returns at most one item, next_page reflects total"
 p1_status=$(curl -s -o "$WORK_DIR/p1.json" -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(auth_header)" \
   "${BASE_URL}/api/v1/repositories/${REPO_KEY}/security/scans?page=1&per_page=1") || p1_status="000"
@@ -176,10 +186,27 @@ if [ "$p1_status" != "200" ]; then
   skip "endpoint not available (HTTP ${p1_status})"
 else
   count=$(jq -r '.items | length' "$WORK_DIR/p1.json" 2>/dev/null || echo "x")
-  if [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -le 1 ]; then
-    pass
-  else
+  total_p1_raw=$(jq -r '.total // 0' "$WORK_DIR/p1.json" 2>/dev/null || echo "0")
+  np_type=$(jq -r 'if has("next_page") then (.next_page | type) else "absent" end' "$WORK_DIR/p1.json")
+  np_val=$(jq -r '.next_page // empty' "$WORK_DIR/p1.json" 2>/dev/null || echo "")
+  if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -gt 1 ]; then
     fail "per_page=1 returned ${count} items (expected 0 or 1)"
+  elif [ "$total_p1_raw" -gt 1 ]; then
+    # total > per_page -> next_page MUST be a number pointing at page 2.
+    if [ "$np_type" != "number" ]; then
+      fail "per_page=1 total=${total_p1_raw} but next_page type='${np_type}' (expected number)"
+    elif [ "$np_val" != "2" ]; then
+      fail "per_page=1 next_page='${np_val}' (expected 2 since we requested page=1)"
+    else
+      pass
+    fi
+  else
+    # total <= per_page -> next_page must be null or absent.
+    if [ "$np_type" != "null" ] && [ "$np_type" != "absent" ]; then
+      fail "per_page=1 total=${total_p1_raw} (single page) but next_page='${np_val}' type='${np_type}' (expected null/absent)"
+    else
+      pass
+    fi
   fi
 fi
 

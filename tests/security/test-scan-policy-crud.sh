@@ -177,14 +177,19 @@ begin_test "PUT /security/policies/{id} updates max_severity AND is_enabled"
 if [ -z "$POLICY_ID" ]; then
   skip "no policy id"
 else
+  # Regression guard for the file-header bug class: PUT silently dropped
+  # min_staging_hours / max_artifact_age_days. If we re-send the same
+  # values used at create, a buggy PUT that ignores those columns would
+  # still pass the GET-after-PUT check (the row already has those
+  # values). Send DIFFERENT values so a regression fails loudly here.
   upd_payload=$(jq -n --arg n "$POLICY_NAME" '{
     name: $n,
     max_severity: "critical",
     block_unscanned: true,
     block_on_fail: true,
     is_enabled: false,
-    max_artifact_age_days: 30,
-    min_staging_hours: 24,
+    max_artifact_age_days: 60,
+    min_staging_hours: 48,
     require_signature: false
   }')
   u_status=$(curl -s -o "$WORK_DIR/upd.json" -w '%{http_code}' $CURL_TIMEOUT \
@@ -196,10 +201,16 @@ else
   else
     upd_sev=$(jq -r '.max_severity // empty' "$WORK_DIR/upd.json")
     upd_en=$(jq -r '.is_enabled // empty' "$WORK_DIR/upd.json")
+    upd_stag=$(jq -r '.min_staging_hours // empty' "$WORK_DIR/upd.json")
+    upd_age=$(jq -r '.max_artifact_age_days // empty' "$WORK_DIR/upd.json")
     if [ "$upd_sev" != "critical" ]; then
       fail "max_severity did not update: expected 'critical' got '${upd_sev}'"
     elif [ "$upd_en" != "false" ]; then
       fail "is_enabled did not update: expected false got '${upd_en}' (regression: PUT dropped 2nd-and-later fields)"
+    elif [ "$upd_stag" != "48" ]; then
+      fail "min_staging_hours did not update: expected 48 got '${upd_stag}' (regression: PUT silently dropped this column)"
+    elif [ "$upd_age" != "60" ]; then
+      fail "max_artifact_age_days did not update: expected 60 got '${upd_age}' (regression: PUT silently dropped this column)"
     else
       pass
     fi
@@ -222,8 +233,18 @@ else
   else
     sev=$(jq -r '.max_severity // empty' "$WORK_DIR/g2.json")
     en=$(jq -r '.is_enabled // empty' "$WORK_DIR/g2.json")
+    stag=$(jq -r '.min_staging_hours // empty' "$WORK_DIR/g2.json")
+    age=$(jq -r '.max_artifact_age_days // empty' "$WORK_DIR/g2.json")
+    # Assert the NEW values from PUT, not the create-row values: the
+    # whole point of the changed-values regression guard above is that
+    # a buggy PUT that silently drops min_staging_hours /
+    # max_artifact_age_days must fail loudly here.
     if [ "$sev" != "critical" ] || [ "$en" != "false" ]; then
       fail "post-PUT GET shows stale data: max_severity='${sev}' is_enabled='${en}' (expected 'critical', false)"
+    elif [ "$stag" != "48" ]; then
+      fail "post-PUT GET min_staging_hours='${stag}' (expected 48 -- PUT silently dropped this column)"
+    elif [ "$age" != "60" ]; then
+      fail "post-PUT GET max_artifact_age_days='${age}' (expected 60 -- PUT silently dropped this column)"
     else
       pass
     fi

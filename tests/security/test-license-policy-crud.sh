@@ -47,9 +47,12 @@ setup_workdir
 POLICY_NAME="e2e-lic-${RUN_ID}"
 POLICY_ID=""
 
-# Belt-and-suspenders cleanup: even if the DELETE test below succeeds,
-# a previous failed run can leave dangling rows. Look up by name on
-# entry and delete if found.
+# Cleanup: DELETE by id on exit if we still hold one. The DELETE test
+# below clears POLICY_ID on success so this is a no-op on the happy
+# path; the only case this guards is suite-aborts between create and
+# DELETE (network blip, fail). POLICY_NAME embeds RUN_ID so dangling
+# rows from previous runs cannot collide with this run -- no
+# name-lookup fallback is needed.
 cleanup_policy() {
   if [ -n "$POLICY_ID" ]; then
     # shellcheck disable=SC2086

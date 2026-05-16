@@ -306,7 +306,13 @@ else
         fail "converted SbomResponse missing required field(s):${missing} (body: $(head -c 250 "$WORK_DIR/conv.json"))"
       elif [ -z "$new_format" ]; then
         fail "converted SBOM has empty format field"
-      elif [ -n "$ORIGINAL_FORMAT" ] && [ "$new_format" = "$ORIGINAL_FORMAT" ]; then
+      elif [ -z "$ORIGINAL_FORMAT" ]; then
+        # An SBOM that materialized successfully must carry a format
+        # field; an empty pre-convert format is a regression in
+        # SbomResponse, not a soft state we should silently skip past
+        # by shape-only checking the post-convert body.
+        fail "pre-convert SBOM has empty format field (regression: SbomResponse.format missing/null on generate or GET /sbom/{id})"
+      elif [ "$new_format" = "$ORIGINAL_FORMAT" ]; then
         fail "convert did not change format: original='${ORIGINAL_FORMAT}', after-convert='${new_format}' (target='${target_format}')"
       else
         pass
