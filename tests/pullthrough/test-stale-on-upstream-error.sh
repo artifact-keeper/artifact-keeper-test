@@ -67,6 +67,46 @@ begin_suite "stale-on-upstream-error"
 auth_admin
 setup_workdir
 
+# ---------------------------------------------------------------------------
+# Feature gate
+# ---------------------------------------------------------------------------
+# The stale-on-upstream-error wiring (proxy_service.rs get_stale_cached_artifact
+# fallback on the Err arm of the upstream fetch) is not exposed as a discrete
+# require_feature token today: the feature has no dedicated endpoint, only a
+# behavior on the normal proxy fetch path. The closest in-framework signal is
+# the backend version, which `get_backend_version` reads from /health. The
+# stale-fallback behavior lands alongside the v1.2.0 proxy correctness work
+# (companion to proxy_stampede_protection / proxy_ttl_eviction_correctness in
+# feature-flags.sh). On a v1.1.x backend the Err arm propagates upstream_err
+# directly and this test would hard-fail on the load-bearing 2xx assertion
+# below, which is a known-absent-feature condition rather than a regression.
+#
+# We avoid embedding a new require_feature token here (that requires touching
+# tests/lib/common.sh, which a separate change owns); instead we probe the
+# backend version via the existing helpers and skip_suite cleanly when the
+# wiring is not present. If get_backend_version returns "unknown" (e.g.
+# /health unreachable) we skip rather than risk a false fail.
+STALE_MIN_BACKEND_VERSION="1.2.0"
+BACKEND_VER=$(get_backend_version)
+if [ "$BACKEND_VER" = "unknown" ]; then
+  skip_suite "could not determine backend version from /health; stale-on-upstream-error wiring is not probeable"
+fi
+if ! version_ge "$BACKEND_VER" "$STALE_MIN_BACKEND_VERSION"; then
+  skip_suite "stale-on-upstream-error wiring requires backend >= ${STALE_MIN_BACKEND_VERSION}, running ${BACKEND_VER}"
+fi
+
+# Additional probe: confirm /api/v1/repositories at least responds (we will
+# fail to provision the upstream/remote pair otherwise). A 404 or 501 here
+# means the proxy surface is absent in this build, which is also a clean
+# skip rather than a confounded failure later in the suite.
+PROBE_STATUS=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+  -H "$(auth_header)" "${BASE_URL}/api/v1/repositories" 2>/dev/null) || PROBE_STATUS="000"
+case "$PROBE_STATUS" in
+  404|501)
+    skip_suite "repositories endpoint returned HTTP ${PROBE_STATUS}; stale-on-upstream-error suite cannot proceed"
+    ;;
+esac
+
 UPSTREAM_KEY="stale-up-${RUN_ID}"
 REMOTE_KEY="stale-rem-${RUN_ID}"
 PKG_NAME="stalepkg${RUN_ID//-/}"

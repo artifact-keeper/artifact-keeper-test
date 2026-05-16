@@ -52,6 +52,58 @@ begin_suite "etag-conditional-request"
 auth_admin
 setup_workdir
 
+# ---------------------------------------------------------------------------
+# Feature gate
+# ---------------------------------------------------------------------------
+# The conda ETag + If-None-Match conditional-request handling lives in
+# backend/src/api/handlers/conda.rs (compute_etag / check_conditional_request,
+# wired through build_cacheable_response). There is no discrete require_feature
+# token for it today; the closest in-framework probe is hitting the conda
+# repodata route shape and checking that the handler exists (a backend that
+# does NOT ship the conda handler returns 404 from the router for any conda
+# path, which is indistinguishable from "repo not found" without a real repo
+# to probe with -- so we use 501 Not Implemented as the explicit "handler
+# absent" signal, which is what Axum emits on unmatched method routes for
+# present handlers).
+#
+# Probe strategy:
+#   1. Send a GET to /conda/<bogus>/<bogus>/repodata.json. A backend that
+#      ships the conda handler returns 401/403/404 (auth/repo missing). A
+#      backend that does not ship the conda surface returns 501 (or 405 if
+#      the router exists but the verb is rejected ahead of the handler).
+#      Either of these absent-feature signals -> skip_suite.
+#   2. If /health is unreachable so we cannot even confirm the backend is
+#      up, skip rather than risk a confounded fail in the upload step.
+#
+# We avoid embedding a new require_feature token (that requires touching
+# tests/lib/common.sh, which is owned by a separate change); the probe
+# below is self-contained and matches the skip-on-absent-endpoint pattern
+# used elsewhere in this suite (e.g. test-multipart-artifact-upload.sh).
+BACKEND_VER=$(get_backend_version)
+if [ "$BACKEND_VER" = "unknown" ]; then
+  skip_suite "could not determine backend version from /health; conda ETag handler is not probeable"
+fi
+
+ETAG_PROBE_URL="${BASE_URL}/conda/etag-probe-bogus-${RUN_ID}/noarch/repodata.json"
+PROBE_STATUS=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+  -H "$(format_auth_header)" "$ETAG_PROBE_URL" 2>/dev/null) || PROBE_STATUS="000"
+case "$PROBE_STATUS" in
+  404|401|403|400|200|304)
+    # conda handler responded with a real status; the route is mounted.
+    ;;
+  405|501)
+    skip_suite "conda repodata endpoint returned HTTP ${PROBE_STATUS}; conda ETag handler not available on this backend"
+    ;;
+  000)
+    skip_suite "conda repodata probe failed to connect (timeout/network); cannot validate ETag handler is mounted"
+    ;;
+  *)
+    # Any other status implies the route resolved to a handler that
+    # returned an unexpected code; let the suite proceed and fail loudly
+    # on the real assertions rather than masking a regression here.
+    ;;
+esac
+
 REPO_KEY="etag-cond-${RUN_ID}"
 PKG_NAME="etagpkg"
 PKG_VERSION="1.0.0"

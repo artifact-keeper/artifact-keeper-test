@@ -1,17 +1,44 @@
 #!/usr/bin/env bash
-# test-cache-stampede-prevention.sh -- Concurrent-fetch stampede must
-# NOT produce N upstream fetches for N client requests on a cold cache
+# test-cache-stampede-no-upstream-divergence.sh -- Concurrent fan-out
+# under a stampede MUST NOT produce divergent results served to clients
 # (issue #69 sub-task 1.1).
+#
+# Naming note (and what this test actually proves)
+# ------------------------------------------------
+# This file was originally named test-cache-stampede-prevention.sh.
+# That name overclaimed: the load-bearing assertions below (byte-
+# identical 2xx response bodies + 503-or-2xx-only status set) are
+# NECESSARY for a correctly-coalesced proxy, but they are NOT SUFFICIENT
+# to prove coalescing on their own. A non-coalesced backend that happens
+# to hit a deterministic local-PyPI upstream N times will also pass this
+# test, because each of the N upstream fetches returns the same bytes.
+# The real per-key semaphore admit count can only be proved by a
+# source-side fetch counter, which lives on the mock-upstream peak-
+# inflight signal and is currently SSRF-blocked pending artifact-keeper
+# #1224 (see the dedicated stub in tests/security/test-cache-stampede.sh).
+#
+# So the name was corrected to reflect what is actually proved here:
+# "no upstream divergence under stampede" -- i.e. regardless of how the
+# N concurrent fetches are scheduled, every successful client sees the
+# same bytes and any admission-control rejection surfaces as a clean
+# 503 rather than a 5xx crash. When #1224 lands and the mock unstubs,
+# the count-based sibling in tests/security/ takes ownership of the
+# "prevention" assertion; this script keeps the divergence-equality
+# assertion as a complementary check.
 #
 # What this asserts
 # -----------------
 # proxy_service in the backend exposes proxy_max_concurrent_fetches
-# (default 20) plus proxy_queue_timeout_secs (default 30). The contract:
-# N concurrent client requests for the SAME (repo, path) tuple on a
-# cold cache MUST be coalesced -- only one (or at most M, where M is
-# the per-key semaphore admit) upstream fetch happens, and the other
-# N-1 / N-M callers either wait for the in-flight fetch and reuse its
-# result or time out with 503.
+# (default 20) plus proxy_queue_timeout_secs (default 30). The contract
+# this test exercises is the CLIENT-OBSERVABLE half of stampede handling:
+# regardless of how many of the N concurrent client requests for the
+# SAME (repo, path) tuple on a cold cache actually reach the upstream,
+# every 2xx response served to a client MUST be byte-identical, and any
+# admission-control rejection MUST surface as 503 (not a 5xx crash and
+# not a silently different body). Coalescing collapses N fetches to 1
+# and trivially passes this contract; a non-coalesced run can also pass
+# it if the upstream is deterministic, but a coalesced run can never
+# FAIL it.
 #
 # Why this matters
 # ----------------
@@ -84,7 +111,7 @@
 
 source "$(dirname "$0")/../lib/common.sh"
 
-begin_suite "cache-stampede-prevention"
+begin_suite "cache-stampede-no-upstream-divergence"
 auth_admin
 setup_workdir
 
