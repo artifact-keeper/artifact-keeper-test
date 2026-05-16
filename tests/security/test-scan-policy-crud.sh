@@ -94,7 +94,7 @@ c_status=$(curl -s -o "$WORK_DIR/create.json" -w '%{http_code}' $CURL_TIMEOUT \
   -d "$create_payload" \
   "${BASE_URL}/api/v1/security/policies") || c_status="000"
 case "$c_status" in
-  200|201)
+  200)
     POLICY_ID=$(jq -r '.id // empty' "$WORK_DIR/create.json")
     uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
     missing=""

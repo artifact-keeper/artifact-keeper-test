@@ -144,11 +144,16 @@ list_status=$(curl -s -o "$WORK_DIR/list.json" -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(auth_header)" -H "Accept: application/json" \
   "${BASE_URL}/api/v1/repositories/${REPO_KEY}/security/scans") || list_status="000"
 
-if [ "$list_status" = "501" ] || [ "$list_status" = "404" ]; then
-  # 404 here would mean the repo-scoped scan endpoint is not mounted on
-  # this backend (some minimal stacks); skip the entire suite per
-  # contract (file header).
+if [ "$list_status" = "501" ]; then
+  # 501 means the repo-scoped scan endpoint is not mounted on this
+  # backend (some minimal stacks); skip the entire suite per contract
+  # (file header).
   skip "repo-scoped scans endpoint not available (HTTP ${list_status})"
+elif [ "$list_status" = "404" ]; then
+  # OpenAPI documents 404 as "repo not found" (spec line 7352). The
+  # repo was just created above; a 404 here means the create lied or
+  # the read path is broken. That's a regression, not a skip.
+  fail "repo-scoped scans listing returned 404 for just-created repo ${REPO_KEY} (OpenAPI documents 404 as repo-not-found; create succeeded so this is a regression)"
 elif [ "$list_status" = "200" ]; then
   # Required keys per ScanListResponse: items (array), total (integer).
   # next_page metadata: must be null/absent when total <= per_page (the

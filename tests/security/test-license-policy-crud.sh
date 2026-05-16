@@ -88,7 +88,7 @@ case "$c_status" in
   501|404)
     skip_suite "license policy endpoint not available (HTTP ${c_status})"
     ;;
-  200|201)
+  200)
     missing=""
     for field in id name allowed_licenses denied_licenses allow_unknown \
                  action is_enabled created_at; do
@@ -162,7 +162,7 @@ else
     -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
     -d "$upd_payload" \
     "${BASE_URL}/api/v1/sbom/license-policies") || u_status="000"
-  if [ "$u_status" != "200" ] && [ "$u_status" != "201" ]; then
+  if [ "$u_status" != "200" ]; then
     fail "upsert returned HTTP ${u_status} (body: $(head -c 200 "$WORK_DIR/upd.json"))"
   else
     upd_id=$(jq -r '.id' "$WORK_DIR/upd.json")

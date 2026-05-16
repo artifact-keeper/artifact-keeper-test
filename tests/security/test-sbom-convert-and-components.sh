@@ -166,7 +166,7 @@ gen_status=$(curl -s -o "$WORK_DIR/gen.json" -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/api/v1/sbom") || gen_status="000"
 
 case "$gen_status" in
-  200|201)
+  200)
     SBOM_ID=$(jq -r '.id // empty' "$WORK_DIR/gen.json" 2>/dev/null || echo "")
     ORIGINAL_FORMAT=$(jq -r '.format // empty' "$WORK_DIR/gen.json" 2>/dev/null || echo "")
     if [ -n "$SBOM_ID" ]; then
