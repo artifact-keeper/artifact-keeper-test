@@ -973,7 +973,9 @@ jobs:
   # backend/src/services/auth_service.rs, so any auth-tests step
   # running in parallel that uses the admin JWT starts getting 401s
   # mid-suite once its cached token validation flips to "rejected".
-  # See #137.
+  # See #137. admin-tests is serialized for the same reason and on the
+  # same job ordering (see the comment block above the admin-tests
+  # job definition below).
   # -------------------------------------------------------------------
   platform-tests:
     needs: [deploy, auth-tests]
@@ -1039,6 +1041,79 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: junit-auth
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Admin tests (Epic 10, #77): operational admin endpoints
+  #   livez, backup execute/cancel/delete, monitoring alerts,
+  #   storage backends listing, reindex trigger.
+  #
+  # Serialized after auth-tests (same reason as platform-tests, see #137):
+  # test-admin-password-recovery.sh in platform-tests changes the admin
+  # password via change_password (backend/src/api/handlers/users.rs),
+  # which writes the admin's UUID into the global CREDENTIAL_INVALIDATIONS
+  # map (backend/src/services/auth_service.rs). Any suite using the admin
+  # JWT that runs concurrently with auth-tests' password-change paths
+  # starts getting 401s mid-suite once its cached token validation flips
+  # to "rejected". admin-tests reuses ADMIN_PASS and exercises the admin
+  # JWT on every endpoint it hits, so it has the same exposure as
+  # platform-tests and gets the same serialization.
+  # -------------------------------------------------------------------
+  admin-tests:
+    needs: [deploy, auth-tests]
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'admin'
+    runs-on: ak-e2e-runners
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      NAMESPACE: ${{ needs.deploy.outputs.namespace }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+
+      - name: Wait for OpenSearch ready
+        # test-reindex.sh hits POST /api/v1/admin/reindex which requires
+        # OpenSearch to be ready. Without this wait the endpoint can 404
+        # (route not yet mounted on the backend's OpenSearch-dependent
+        # path) or 503 and the test was previously soft-skipping on 404,
+        # passing vacuously under RELEASE_GATE=1. Wait up to 120s for the
+        # OpenSearch pod to be Ready before running the suite.
+        run: |
+          # Try the bitnami chart label first, then app=opensearch as a
+          # fallback for charts that use the legacy label scheme. If the
+          # selector matches no pods (e.g. opensearch.enabled=false in this
+          # build) the wait is a no-op and the suite proceeds, which is
+          # the right behavior for builds that don't ship OpenSearch.
+          set -e
+          if kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/name=opensearch -o name 2>/dev/null | grep -q pod/; then
+            kubectl -n "$NAMESPACE" wait --for=condition=Ready pod \
+              -l app.kubernetes.io/name=opensearch --timeout=120s
+          elif kubectl -n "$NAMESPACE" get pod -l app=opensearch -o name 2>/dev/null | grep -q pod/; then
+            kubectl -n "$NAMESPACE" wait --for=condition=Ready pod \
+              -l app=opensearch --timeout=120s
+          else
+            echo "No OpenSearch pods found in ${NAMESPACE}; skipping wait."
+          fi
+
+      - name: Run admin tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite admin --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-admin
           path: /tmp/test-results/*.xml
           if-no-files-found: ignore
 
@@ -1308,7 +1383,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
     runs-on: ak-e2e-runners
     steps:
@@ -1327,7 +1402,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -1344,6 +1419,7 @@ jobs:
               search-tests) status="${{ needs.search-tests.result }}" ;;
               platform-tests) status="${{ needs.platform-tests.result }}" ;;
               auth-tests) status="${{ needs.auth-tests.result }}" ;;
+              admin-tests) status="${{ needs.admin-tests.result }}" ;;
               security-tests) status="${{ needs.security-tests.result }}" ;;
               compatibility-tests) status="${{ needs.compatibility-tests.result }}" ;;
               stress-tests) status="${{ needs.stress-tests.result }}" ;;
@@ -1407,6 +1483,7 @@ jobs:
           needs.search-tests.result == 'failure' || needs.search-tests.result == 'cancelled' ||
           needs.platform-tests.result == 'failure' || needs.platform-tests.result == 'cancelled' ||
           needs.auth-tests.result == 'failure' || needs.auth-tests.result == 'cancelled' ||
+          needs.admin-tests.result == 'failure' || needs.admin-tests.result == 'cancelled' ||
           needs.resilience-tests.result == 'failure' || needs.resilience-tests.result == 'cancelled' ||
           needs.mesh-tests.result == 'failure' || needs.mesh-tests.result == 'cancelled'
         run: |
