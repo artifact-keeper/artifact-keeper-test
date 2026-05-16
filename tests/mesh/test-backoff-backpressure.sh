@@ -101,6 +101,13 @@ fi
 # ---------- 12.5: degraded -> backoff -> recovery ----------
 
 begin_test "Broken peer reaches degraded/unhealthy within ${DEGRADE_TIMEOUT}s"
+# NOTE: PeerInstanceResponse only exposes `.status` (one of
+# online/offline/syncing/degraded per the InstanceStatus enum). The DB has
+# a richer `backoff_until` column (backend/src/models/peer_instance.rs:40)
+# but the handler at backend/src/api/handlers/peers.rs:59-74 + 245-258
+# does not serialize it, and openapi.yaml lines 15116-15165 confirm the
+# wire schema is `.status` only. Until the backend exposes a richer health
+# surface (followup on #78), we can only observe `.status` here.
 if [ -z "${BROKEN_ID:-}" ] || [ "$BROKEN_ID" = "null" ]; then
   skip "no broken peer"
 else
@@ -110,7 +117,7 @@ else
     sleep 2
     elapsed=$(( elapsed + 2 ))
     if resp=$(api_get "/api/v1/peers/${BROKEN_ID}" 2>/dev/null); then
-      health=$(echo "$resp" | jq -r '.health_status // .status // empty')
+      health=$(echo "$resp" | jq -r '.status // empty')
       case "$health" in
         degraded|unhealthy|down|offline|error)
           observed_degraded=1
@@ -150,31 +157,40 @@ else
   fi
 fi
 
-begin_test "Healthy peer recovers backoff_until / next_attempt_at after heartbeat"
-# Best-effort: after a fresh heartbeat from the healthy peer, the
-# backoff_until / next_attempt_at field (if exposed) must be in the past
-# or null. We tolerate missing fields, but if present they must clear.
+begin_test "Healthy peer accepts sync without 5xx after heartbeat"
+# Direct observation of `.backoff_until` / `.next_attempt_at` is not
+# possible: those columns exist on the model (peer_instance.rs:40) but
+# are not serialized through PeerInstanceResponse (openapi.yaml
+# 15116-15165, peers.rs:59-74 + 245-258). As a fallback observable
+# signal, we re-heartbeat the healthy peer and confirm that subsequent
+# /sync triggers + the /sync/tasks queue endpoint stay healthy (no 5xx),
+# which is the externally visible effect of a cleared back-off.
 if [ -z "${HEALTHY_ID:-}" ] || [ "$HEALTHY_ID" = "null" ]; then
   skip "no healthy peer"
 else
   api_post "/api/v1/peers/${HEALTHY_ID}/heartbeat" '{"cache_used_bytes":0}' > /dev/null 2>&1 || true
   sleep 2
-  if resp=$(api_get "/api/v1/peers/${HEALTHY_ID}" 2>/dev/null); then
-    backoff=$(echo "$resp" | jq -r '.backoff_until // .next_attempt_at // empty')
-    if [ -z "$backoff" ] || [ "$backoff" = "null" ]; then
-      pass
-    else
-      # If backoff is in the past compared to "now" we consider it cleared.
-      now_epoch=$(date -u +%s)
-      bo_epoch=$(date -u -d "$backoff" +%s 2>/dev/null || echo 0)
-      if [ "$bo_epoch" -le "$now_epoch" ]; then
-        pass
-      else
-        fail "healthy peer still backed off until ${backoff}"
-      fi
-    fi
+  bad=0
+  for endpoint in "/api/v1/peers/${HEALTHY_ID}" "/api/v1/peers/${HEALTHY_ID}/sync/tasks"; do
+    s=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+      -H "$(auth_header)" \
+      "${BASE_URL}${endpoint}" 2>/dev/null) || s=000
+    case "$s" in
+      5*) bad=$(( bad + 1 )) ;;
+      *) ;;
+    esac
+  done
+  s=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/peers/${HEALTHY_ID}/sync" 2>/dev/null) || s=000
+  case "$s" in
+    5*) bad=$(( bad + 1 )) ;;
+    *) ;;
+  esac
+  if [ "$bad" -eq 0 ]; then
+    pass
   else
-    skip "could not GET healthy peer"
+    fail "healthy peer endpoints returned ${bad} 5xx after heartbeat"
   fi
 fi
 

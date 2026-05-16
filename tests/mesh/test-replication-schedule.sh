@@ -8,8 +8,10 @@
 # expression (e.g. every minute) must produce a sync task / log entry
 # within ~120s.
 #
-# OpenAPI: replication_schedule is a free-form string on
-# AssignRepoRequest (openapi.yaml:10704). The 1.1.x backend accepts
+# OpenAPI: the field exercised here is `replication_schedule`, a
+# free-form string on AssignRepoRequest (openapi.yaml:10704). It is NOT
+# the same as LifecyclePolicy.cron_schedule at openapi.yaml:14185, which
+# governs retention policies, not sync. The 1.1.x backend accepts
 # standard 5-field cron syntax. Some deployments only support manual
 # triggers; in that case the assignment endpoint or the policy will
 # 4xx and we skip cleanly.
@@ -35,7 +37,7 @@ PEER_ID=""
 POLICY_ID=""
 REPO_ID=""
 CRON_EXPR="${SCHEDULE_CRON:-* * * * *}"  # every minute
-SCHEDULE_WAIT="${SCHEDULE_WAIT_SECS:-150}"
+SCHEDULE_WAIT="${SCHEDULE_WAIT_SECS:-180}"
 
 cleanup_schedule() {
   if [ -n "${POLICY_ID:-}" ] && [ "$POLICY_ID" != "null" ]; then

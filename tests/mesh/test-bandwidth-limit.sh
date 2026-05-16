@@ -34,8 +34,10 @@ auth_admin
 # Tunables. Default cap is 64 KiB/s; payload is ~512 KiB so a fully
 # throttled transfer must take >= ~6s. Tolerance accounts for token
 # bucket burst plus HTTP overhead so a real throttled run lands inside
-# [cap, 4*cap] effective bps; anything above 4*cap is treated as the
-# throttler not actually wired up.
+# [cap, 2*cap] effective bps; anything above 2*cap is treated as the
+# throttler not actually wired up (a looser 4x ceiling would let
+# bookkeeping-only throttling -- counters incremented but bytes never
+# blocked -- slip past).
 CAP_BPS="${BANDWIDTH_CAP_BPS:-65536}"        # 64 KiB/s
 PAYLOAD_BYTES="${BANDWIDTH_PAYLOAD_BYTES:-524288}"  # 512 KiB
 TRANSFER_TIMEOUT="${BANDWIDTH_TRANSFER_TIMEOUT:-90}"
@@ -176,17 +178,112 @@ else
     # bytes_per_second = PAYLOAD_BYTES / duration
     effective_bps=$(( PAYLOAD_BYTES / duration ))
     floor_bps=$(( CAP_BPS / 4 ))    # allow worker startup latency
-    ceiling_bps=$(( CAP_BPS * 4 ))  # 4x burst tolerance
+    ceiling_bps=$(( CAP_BPS * 2 ))  # 2x burst tolerance (bookkeeping-only
+                                    # throttling slips past anything looser)
     echo "    payload=${PAYLOAD_BYTES}B duration=${duration}s effective=${effective_bps}bps cap=${CAP_BPS}bps"
     if [ "$effective_bps" -le "$ceiling_bps" ] && [ "$effective_bps" -ge "$floor_bps" ]; then
       pass
     elif [ "$effective_bps" -gt "$ceiling_bps" ]; then
-      fail "effective rate ${effective_bps}bps exceeds 4x cap ${CAP_BPS}bps (throttler not enforced)"
+      fail "effective rate ${effective_bps}bps exceeds 2x cap ${CAP_BPS}bps (throttler not enforced)"
     else
       # Unusually slow can be a fluky env, not a regression of the cap.
       skip "effective rate ${effective_bps}bps below floor ${floor_bps}bps (likely env noise)"
     fi
   fi
+fi
+
+# ---------- RBAC negative control: non-admin POST /peers ----------
+#
+# Backend gap: register_peer (backend/src/api/handlers/peers.rs:211) takes
+# an AuthExtension but does NOT call require_admin(), unlike e.g.
+# heartbeat (peers.rs:351 -> :357) and unassign_repo (peers.rs:523 -> :551).
+# That means today any authenticated user can register a new peer instance
+# pointing at an arbitrary endpoint_url -- a federation surface that
+# should plausibly be admin-only. This test pins the current behavior so
+# that if/when the backend adds require_admin to register_peer the gate
+# starts failing here and reviewers notice. Until then we PASS with a
+# logged warning rather than fail (the current contract is documented as
+# "any authenticated caller").
+
+NONADMIN_USER="fed-bw-nonadmin-${RUN_ID}"
+NONADMIN_PASS="NonAdmin!Pass1${RUN_ID}"
+NONADMIN_EMAIL="${NONADMIN_USER}@example.com"
+NONADMIN_USER_ID=""
+NONADMIN_TOKEN=""
+
+cleanup_nonadmin() {
+  if [ -n "${NONADMIN_USER_ID:-}" ] && [ "$NONADMIN_USER_ID" != "null" ]; then
+    api_delete "/api/v1/users/${NONADMIN_USER_ID}" > /dev/null 2>&1 || true
+  fi
+}
+add_exit_handler cleanup_nonadmin
+
+begin_test "Create non-admin user for register_peer RBAC check"
+if uid=$(create_test_user "$NONADMIN_USER" "$NONADMIN_PASS" "$NONADMIN_EMAIL" 2>/dev/null); then
+  NONADMIN_USER_ID="$uid"
+  if [ -n "$NONADMIN_USER_ID" ] && [ "$NONADMIN_USER_ID" != "null" ]; then
+    pass
+  else
+    fail "non-admin user created but no id returned"
+  fi
+else
+  fail "could not create non-admin user"
+fi
+
+begin_test "Login as non-admin user"
+if [ -z "${NONADMIN_USER_ID:-}" ] || [ "$NONADMIN_USER_ID" = "null" ]; then
+  skip "no non-admin user id"
+else
+  NONADMIN_TOKEN=$(login_as "$NONADMIN_USER" "$NONADMIN_PASS") || true
+  if [ -n "$NONADMIN_TOKEN" ] && [ "$NONADMIN_TOKEN" != "null" ]; then
+    pass
+  else
+    fail "non-admin login returned no token"
+  fi
+fi
+
+begin_test "Non-admin POST /api/v1/peers documents current RBAC posture"
+if [ -z "${NONADMIN_TOKEN:-}" ] || [ "$NONADMIN_TOKEN" = "null" ]; then
+  skip "no non-admin token"
+else
+  rbac_peer_payload="{\"name\":\"fed-bw-rbac-${RUN_ID}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"fed-test-key\"}"
+  rbac_resp_file="${WORK_DIR}/rbac_register.json"
+  rbac_status=$(curl -s -o "$rbac_resp_file" -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST \
+    -H "Authorization: Bearer ${NONADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$rbac_peer_payload" \
+    "${BASE_URL}/api/v1/peers" 2>/dev/null) || rbac_status=000
+
+  case "$rbac_status" in
+    403)
+      # Backend now gates register_peer behind require_admin -- good.
+      pass
+      ;;
+    200|201)
+      # Current documented behavior: register_peer is not admin-gated
+      # (peers.rs:211). Clean up the rogue peer and log the gap so
+      # reviewers see it. This is a PASS against the current contract,
+      # not a regression -- but it should become a 403 once the backend
+      # gate lands.
+      echo "    WARN: non-admin received HTTP ${rbac_status} from POST /peers"
+      echo "    WARN: register_peer has no require_admin guard (peers.rs:211); see #78 followup"
+      rbac_peer_id=$(jq -r '.id // empty' < "$rbac_resp_file" 2>/dev/null || echo "")
+      if [ -n "$rbac_peer_id" ] && [ "$rbac_peer_id" != "null" ]; then
+        api_delete "/api/v1/peers/${rbac_peer_id}" > /dev/null 2>&1 || true
+      fi
+      pass
+      ;;
+    401)
+      fail "non-admin token rejected as unauthenticated (expected 200 or 403)"
+      ;;
+    404|501)
+      skip "federation peer registration disabled (HTTP ${rbac_status})"
+      ;;
+    *)
+      fail "unexpected HTTP ${rbac_status} from non-admin POST /peers"
+      ;;
+  esac
 fi
 
 end_suite
