@@ -1,0 +1,27 @@
+# Keeps SHA-pinned GitHub Actions current.
+#
+# Every workflow under .github/workflows/ pins actions to a full commit SHA
+# (supply-chain hygiene; see docs/CONTRIBUTING.md). Without dependabot, those
+# pins fossilize on whatever SHA was current the day the workflow landed.
+# This config tells dependabot to open weekly PRs that bump each action's
+# SHA to the latest tag-pointed commit, keeping the version-comment line in
+# sync.
+#
+# Scope is intentionally narrow: only GitHub Actions. The repo carries no
+# language-level dependency manifests (it is shell scripts + workflow YAML),
+# so no other ecosystems are wired here.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore
+      include: scope
