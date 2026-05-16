@@ -29,7 +29,10 @@ source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "webhook-hmac-tamper"
 
-WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-18781}"
+# Receiver port: derive from PID so parallel test runs do not collide
+# on the same listen socket. Callers can still override with
+# WEBHOOK_RECEIVER_PORT.
+WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-$(( 18000 + $$ % 1000 ))}"
 WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-tamper-${RUN_ID}.log}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-tamper-secret-${RUN_ID}}"
@@ -105,11 +108,15 @@ begin_test "Create webhook with shared secret"
 if [ "$ready" != "true" ]; then
   skip "receiver not running"
 else
+  # CreateWebhookRequest does not accept an enabled/is_enabled field
+  # (backend webhooks.rs:86-95); new webhooks default to enabled. Event
+  # names are the snake_case Display form of WebhookEvent (webhooks.rs:
+  # 50-74), e.g. "artifact_uploaded".
   PAYLOAD=$(jq -n \
     --arg name "$WEBHOOK_NAME" \
     --arg url "$WEBHOOK_RECEIVER_URL" \
     --arg secret "$WEBHOOK_SECRET" \
-    '{name: $name, url: $url, secret: $secret, events: ["artifact.uploaded"], enabled: true}')
+    '{name: $name, url: $url, secret: $secret, events: ["artifact_uploaded"]}')
   if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
     WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
     if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then

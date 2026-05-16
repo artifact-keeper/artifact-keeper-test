@@ -3,16 +3,22 @@
 #
 # Issue #75 sub-task 7.13: POST /api/v1/webhooks/{id}/enable and
 # /api/v1/webhooks/{id}/disable. test-webhook-crud.sh calls PUT
-# {"enabled":false} but never asserts the state actually flipped, and
+# {"is_enabled":false} but never asserts the state actually flipped, and
 # never exercises the dedicated /enable + /disable verbs at all.
 #
-# The .enabled flag is the operator's circuit-breaker. If a receiver is
-# dropping deliveries on the floor and we need to pause fan-out, /disable
-# is what we POST. The behavior under test:
+# Schema note: WebhookResponse.is_enabled is the documented field
+# (openapi.yaml:18591, backend webhooks.rs:103). CreateWebhookRequest
+# does not accept an is_enabled/enabled field -- new webhooks are
+# enabled by default at the DB layer -- so the create body in this
+# suite intentionally omits it.
 #
-#   1. New webhook is enabled by default.
-#   2. POST /disable flips the flag; GET reflects enabled=false.
-#   3. POST /enable flips it back; GET reflects enabled=true.
+# The is_enabled flag is the operator's circuit-breaker. If a receiver
+# is dropping deliveries on the floor and we need to pause fan-out,
+# /disable is what we POST. The behavior under test:
+#
+#   1. New webhook is enabled by default (is_enabled=true).
+#   2. POST /disable flips the flag; GET reflects is_enabled=false.
+#   3. POST /enable flips it back; GET reflects is_enabled=true.
 #   4. /disable and /enable are idempotent: calling them on a webhook
 #      already in the target state must still return 2xx (no 409
 #      conflicts -- the operator's tooling will retry, and a retry on
@@ -51,7 +57,11 @@ fi
 pass
 
 # -------------------------------------------------------------------------
-# Helpers: POST a verb and read the .enabled flag back.
+# Helpers: POST a verb and read the .is_enabled flag back. The field is
+# .is_enabled per openapi.yaml:18591 and backend webhooks.rs:103. An
+# earlier draft read .enabled, which is silently absent on every
+# response and would have caused the assertions below to compare ""
+# against "true"/"false" forever.
 # -------------------------------------------------------------------------
 
 # post_verb <verb>   ->   echoes HTTP status
@@ -67,7 +77,7 @@ post_verb() {
 # read_enabled   ->   echoes "true" | "false" | ""
 read_enabled() {
   if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}" 2>/dev/null); then
-    echo "$resp" | jq -r '.enabled // empty' 2>/dev/null || echo ""
+    echo "$resp" | jq -r '.is_enabled // empty' 2>/dev/null || echo ""
   else
     echo ""
   fi
@@ -84,17 +94,20 @@ WEBHOOK_NAME="toggle-${RUN_ID}"
 SUITE_BLOCKED=false
 
 begin_test "Create webhook (enabled by default)"
+# CreateWebhookRequest does not accept an enabled/is_enabled field
+# (backend webhooks.rs:86-95). New webhooks default to enabled at the
+# DB layer, which is the property this case asserts.
 PAYLOAD=$(jq -n \
   --arg name "$WEBHOOK_NAME" \
   --arg url "https://httpbin.org/post" \
-  '{name: $name, url: $url, events: ["artifact.uploaded"], enabled: true}')
+  '{name: $name, url: $url, events: ["artifact_uploaded"]}')
 if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
   WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
-  initial=$(echo "$resp" | jq -r '.enabled // empty')
+  initial=$(echo "$resp" | jq -r '.is_enabled // empty')
   if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then
     fail "create returned no id"
   elif [ "$initial" != "true" ]; then
-    fail "webhook created with enabled='${initial}', expected 'true'"
+    fail "webhook created with is_enabled='${initial}', expected 'true'"
   else
     pass
   fi
@@ -119,7 +132,7 @@ else
   esac
 fi
 
-begin_test "GET shows enabled=false after /disable"
+begin_test "GET shows is_enabled=false after /disable"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "/disable unavailable"
 else
@@ -127,7 +140,7 @@ else
   if [ "$state" = "false" ]; then
     pass
   else
-    fail "expected enabled=false after /disable, got '${state}'"
+    fail "expected is_enabled=false after /disable, got '${state}'"
   fi
 fi
 
@@ -165,7 +178,7 @@ else
   esac
 fi
 
-begin_test "GET shows enabled=true after /enable"
+begin_test "GET shows is_enabled=true after /enable"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "/enable unavailable"
 else
@@ -173,7 +186,7 @@ else
   if [ "$state" = "true" ]; then
     pass
   else
-    fail "expected enabled=true after /enable, got '${state}'"
+    fail "expected is_enabled=true after /enable, got '${state}'"
   fi
 fi
 
@@ -205,7 +218,7 @@ else
   if [ "$state" = "true" ]; then
     pass
   else
-    fail "after disable->enable round-trip, .enabled='${state}' (expected 'true')"
+    fail "after disable->enable round-trip, .is_enabled='${state}' (expected 'true')"
   fi
 fi
 

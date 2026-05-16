@@ -2,27 +2,34 @@
 # test-event-delivery-status-filter.sh
 #
 # Issue #75 sub-task 7.14: GET /api/v1/webhooks/{id}/deliveries supports
-# a `status` query parameter (openapi.yaml: parameter `status`, type
-# nullable string). No existing test exercises the filter; the delivery
-# and dead-letter suites read the list without a filter and inspect every
-# row.
+# a `status` query parameter (backend webhooks.rs:488-493). The handler
+# at webhooks.rs:541 normalizes the parameter to a boolean filter on the
+# DeliveryResponse.success column:
 #
-# The .status field is what the operator UI uses to surface "all
-# failures" / "all retries" / "all successes". A regression where the
-# query parameter is silently ignored returns the unfiltered list, the
-# UI shows the wrong rows, and on-call triages the wrong delivery.
+#     let success_filter = query.status.as_ref().map(|s| s == "success");
+#
+# So:
+#   status=success  -> WHERE success = TRUE
+#   status=anything -> WHERE success = FALSE
+#   status omitted  -> no filter
+#
+# DeliveryResponse exposes the verdict as a boolean .success field
+# (openapi.yaml:12703-12745, webhooks.rs:495-508). There is no string
+# .status field on the response row; an earlier draft of this test read
+# .status and would have produced "" for every row regardless of the
+# actual delivery verdict.
 #
 # Strategy:
 #   1. Drive a SUCCESS delivery via /test against a 200-always receiver.
-#   2. Read the unfiltered deliveries list to learn the actual status
-#      vocabulary the backend uses (it varies across builds:
-#      "success" | "succeeded" | "delivered" are all in the wild).
-#   3. Filter by that observed status. The returned set MUST be
-#      non-empty AND every row's .status MUST equal the queried value.
-#   4. Filter by a status vocabulary that does not match any row
-#      ("xfail-${RUN_ID}") -- the returned set MUST be empty. This is
-#      the load-bearing assertion: if the backend ignores the param,
-#      this query returns the full list and the test fails loudly.
+#   2. Read the unfiltered deliveries list. At least one row's .success
+#      must be true.
+#   3. Filter status=success. The returned set MUST be non-empty AND
+#      every row's .success MUST be true.
+#   4. Filter status=failure. Our /test row (success=true) MUST NOT be
+#      in the filtered set, and every returned row's .success MUST be
+#      false. This is the load-bearing assertion: if the backend
+#      ignores the param, this query returns the full list including
+#      our success row and the test fails loudly.
 #
 # Requires: curl, jq, python3
 
@@ -30,7 +37,11 @@ source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "event-delivery-status-filter"
 
-WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-18783}"
+# Receiver port: derive from PID so parallel test runs do not collide on
+# the same listen socket. The base 18000 + ($$ % 1000) keeps us away
+# from common reserved ports and inside an unprivileged range. Callers
+# can still override with WEBHOOK_RECEIVER_PORT.
+WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-$(( 18000 + $$ % 1000 ))}"
 WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-statusfilter-${RUN_ID}.log}"
 RECEIVER_PID=""
@@ -129,7 +140,7 @@ else
   PAYLOAD=$(jq -n \
     --arg name "$WEBHOOK_NAME" \
     --arg url "$WEBHOOK_RECEIVER_URL" \
-    '{name: $name, url: $url, events: ["artifact.uploaded"], enabled: true}')
+    '{name: $name, url: $url, events: ["artifact_uploaded"]}')
   if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
     WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
     if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then
@@ -167,78 +178,63 @@ fi
 # is async, and on cold start the first delivery can be slow to flush.
 # -------------------------------------------------------------------------
 
-UNFILTERED_JSON=""
 UNFILTERED_COUNT=0
-OBSERVED_STATUS=""
+SUCCESS_ROW_COUNT=0
 
-begin_test "Unfiltered list contains at least one delivery"
+begin_test "Unfiltered list contains at least one success row"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
   for _ in $(seq 1 15); do
     if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries" 2>/dev/null); then
-      UNFILTERED_JSON="$resp"
       rows=$(extract_rows "$resp")
       UNFILTERED_COUNT=$(echo "$rows" | jq 'length' 2>/dev/null || echo 0)
-      if [ "$UNFILTERED_COUNT" -gt 0 ]; then
-        OBSERVED_STATUS=$(echo "$rows" | jq -r '.[0].status // empty')
+      SUCCESS_ROW_COUNT=$(echo "$rows" | jq '[.[] | select(.success == true)] | length' 2>/dev/null || echo 0)
+      if [ "$SUCCESS_ROW_COUNT" -gt 0 ]; then
         break
       fi
     fi
     sleep 2
   done
-  if [ "$UNFILTERED_COUNT" -gt 0 ]; then
+  if [ "$SUCCESS_ROW_COUNT" -gt 0 ]; then
     pass
+  elif [ "$UNFILTERED_COUNT" -gt 0 ]; then
+    # Rows landed but none of them succeeded. /test against our local
+    # always-200 receiver should produce success=true; if it did not,
+    # the suite's premise is broken and downstream assertions cannot
+    # tell "filter ignored" from "no success rows to filter for".
+    SUITE_BLOCKED=true
+    skip "delivery rows exist but none have .success=true; cannot exercise success-vs-failure filter"
   else
     fail "no delivery row appeared within 30s for webhook ${WEBHOOK_ID}"
   fi
 fi
 
 # -------------------------------------------------------------------------
-# Discovered the actual status vocabulary. If the rows have no .status
-# field at all, the filter spec doesn't apply to this build; skip
-# rather than fail (would be a contract mismatch, not a regression).
+# Positive filter: status=success returns rows whose .success == true.
+# Per handler logic at webhooks.rs:541, status=success maps to a
+# WHERE success = TRUE filter. The returned set MUST be non-empty
+# (we just drove a success delivery) AND every returned row MUST have
+# .success == true. A regression where the filter is silently dropped
+# would surface as "the filtered set still contains success=false rows"
+# on any cluster with prior failed deliveries.
 # -------------------------------------------------------------------------
 
-begin_test "Delivery rows expose a .status field"
-if [ "$SUITE_BLOCKED" = "true" ] || [ "$UNFILTERED_COUNT" -eq 0 ]; then
-  skip "no rows to inspect"
-elif [ -z "$OBSERVED_STATUS" ] || [ "$OBSERVED_STATUS" = "null" ]; then
-  SUITE_BLOCKED=true
-  skip "rows have no .status field; filter spec inapplicable"
-else
-  pass
-fi
-
-# -------------------------------------------------------------------------
-# Positive filter: status=<observed> returns the row(s) we know exist.
-# Every returned row's .status must equal the queried value. A regression
-# where the filter is silently ignored manifests as
-#   "filter returned rows whose .status != queried value"
-# (because the unfiltered list might contain mixed statuses on a busy
-# cluster, even if our /test produced just one success).
-# -------------------------------------------------------------------------
-
-begin_test "Filter status=${OBSERVED_STATUS:-?} returns only matching rows"
+begin_test "Filter status=success returns only success=true rows"
 if [ "$SUITE_BLOCKED" = "true" ]; then
-  skip "no observed status to filter by"
+  skip "no success row to filter for"
 else
-  # URL-encode the status conservatively. Observed values are alnum +
-  # underscores in every build we've seen; if a build returns something
-  # exotic, jq quoting in the assert below catches it.
-  if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries?status=${OBSERVED_STATUS}" 2>/dev/null); then
+  if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries?status=success" 2>/dev/null); then
     rows=$(extract_rows "$resp")
     cnt=$(echo "$rows" | jq 'length' 2>/dev/null || echo 0)
     if [ "$cnt" -lt 1 ]; then
-      fail "filter status=${OBSERVED_STATUS} returned 0 rows, but unfiltered list had ${UNFILTERED_COUNT}"
+      fail "filter status=success returned 0 rows, but unfiltered list had ${SUCCESS_ROW_COUNT} success row(s)"
     else
-      mismatched=$(echo "$rows" | jq --arg s "$OBSERVED_STATUS" '
-        [.[] | select(.status != $s)] | length
-      ' 2>/dev/null || echo 0)
+      mismatched=$(echo "$rows" | jq '[.[] | select(.success != true)] | length' 2>/dev/null || echo 0)
       if [ "$mismatched" -eq 0 ]; then
         pass
       else
-        fail "filter returned ${mismatched}/${cnt} rows whose .status != '${OBSERVED_STATUS}' (filter likely ignored)" "${rows:0:500}"
+        fail "filter status=success returned ${mismatched}/${cnt} rows whose .success != true (filter likely ignored)" "${rows:0:500}"
       fi
     fi
   else
@@ -247,28 +243,32 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Negative filter: a status value that cannot exist must return zero
-# rows. This is the assertion that catches "the backend ignores the
-# status param and returns the full list". We embed RUN_ID so two
-# parallel runs of this suite cannot collide on this synthetic value.
+# Negative filter: status=failure must NOT return the success row we
+# just produced, and any rows it does return must have .success == false.
+# This is the assertion that catches "the backend ignores the status
+# param and returns the full list" -- if it did, the success row we
+# drove above would appear here.
+#
+# Per handler: status=anything-except-success maps to WHERE success=FALSE,
+# so "failure" is the documented spelling of the negative filter.
 # -------------------------------------------------------------------------
 
-begin_test "Filter status=xfail-${RUN_ID} returns zero rows"
+begin_test "Filter status=failure excludes success=true rows"
 if [ "$SUITE_BLOCKED" = "true" ]; then
-  skip "no observed status to compare against"
+  skip "no success row to compare against"
 else
-  bogus="xfail-${RUN_ID}"
-  if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries?status=${bogus}" 2>/dev/null); then
+  if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries?status=failure" 2>/dev/null); then
     rows=$(extract_rows "$resp")
     cnt=$(echo "$rows" | jq 'length' 2>/dev/null || echo 0)
-    if [ "$cnt" -eq 0 ]; then
+    success_leaked=$(echo "$rows" | jq '[.[] | select(.success == true)] | length' 2>/dev/null || echo 0)
+    if [ "$success_leaked" -eq 0 ]; then
       pass
     else
-      fail "filter status=${bogus} returned ${cnt} rows; expected 0 (filter likely ignored, returning unfiltered list of ${UNFILTERED_COUNT})" "${rows:0:500}"
+      fail "filter status=failure returned ${success_leaked}/${cnt} rows with .success=true; expected zero (filter likely ignored, returning unfiltered list)" "${rows:0:500}"
     fi
   else
-    # Some implementations reject an unknown status with 4xx -- that is
-    # also acceptable behavior (strict enum). Accept the rejection.
+    # Some implementations reject an unknown status with 4xx -- the
+    # handler today does not, but tolerate the stricter behavior.
     pass
   fi
 fi

@@ -88,9 +88,12 @@ attempt_ssrf() {
   local url="$2"
   local name="ssrf-${label}-${RUN_ID}"
 
+  # CreateWebhookRequest does not accept an enabled/is_enabled field
+  # (backend webhooks.rs:86-95). Event names are the snake_case Display
+  # form of WebhookEvent (webhooks.rs:50-74).
   local payload
   payload=$(jq -n --arg name "$name" --arg url "$url" \
-    '{name: $name, url: $url, events: ["artifact.uploaded"], enabled: true}')
+    '{name: $name, url: $url, events: ["artifact_uploaded"]}')
 
   local tmp status body
   tmp=$(mktemp)
