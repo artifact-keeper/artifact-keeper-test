@@ -162,43 +162,32 @@ fi
 begin_test "Create helm repo"
 if create_local_repo "$REPO_KEY" "helm"; then
   pass
+  # Clean the repo up at suite exit so throwaway repos don't accumulate
+  # across re-runs.
+  add_exit_handler "curl -s -X DELETE -H \"\$(auth_header)\" \"\${BASE_URL}/api/v1/repositories/${REPO_KEY}\" >/dev/null 2>&1 || true"
 else
   fail "could not create helm repo"
   end_suite
 fi
 
-begin_test "Upload chart.tgz via ChartMuseum API"
+begin_test "Upload chart.tgz + .prov via ChartMuseum multipart API"
+# The Helm router (helm.rs:35-45) has NO PUT route for *.tgz.prov; PUT
+# returns 405. The ChartMuseum convention is to upload both .tgz and
+# .prov in a single multipart POST with field names `chart` and `prov`.
+# This matches the pattern in test-helm-conformance.sh:367.
 UP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST \
     -H "$(format_auth_header)" \
     -F "chart=@${CHART_TGZ}" \
+    -F "prov=@${CHART_PROV}" \
     "${BASE_URL}/helm/${REPO_KEY}/api/charts") || UP_STATUS="000"
 
 if [ "$UP_STATUS" -ge 200 ] 2>/dev/null && [ "$UP_STATUS" -lt 300 ] 2>/dev/null; then
   pass
+elif [ "$UP_STATUS" = "404" ] || [ "$UP_STATUS" = "501" ]; then
+  skip_suite "chart+prov multipart upload not supported (HTTP ${UP_STATUS})"
 else
-  fail "chart upload returned HTTP ${UP_STATUS}"
-  end_suite
-fi
-
-begin_test "Upload .prov via direct PUT path"
-# Direct PUT to /charts/<file>.prov is the spec'd route for ChartMuseum-
-# style backends; some servers also accept it as a multipart "prov" field
-# on /api/charts. We try the direct PUT first because it's the canonical
-# location helm pull --verify will GET.
-PROV_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
-    -X PUT \
-    -H "$(format_auth_header)" \
-    -H "Content-Type: application/pgp-signature" \
-    --data-binary "@${CHART_PROV}" \
-    "${BASE_URL}/helm/${REPO_KEY}/charts/${CHART_NAME}-${CHART_VERSION}.tgz.prov") || PROV_STATUS="000"
-
-if [ "$PROV_STATUS" -ge 200 ] 2>/dev/null && [ "$PROV_STATUS" -lt 300 ] 2>/dev/null; then
-  pass
-elif [ "$PROV_STATUS" = "404" ] || [ "$PROV_STATUS" = "501" ]; then
-  skip_suite "direct .prov upload not supported (HTTP ${PROV_STATUS})"
-else
-  fail "PUT .prov returned HTTP ${PROV_STATUS}"
+  fail "chart+prov multipart upload returned HTTP ${UP_STATUS}"
   end_suite
 fi
 

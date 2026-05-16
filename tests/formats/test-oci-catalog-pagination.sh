@@ -114,6 +114,9 @@ created=0
 for k in "${REPO_KEYS[@]}"; do
   if create_local_repo "$k" "docker"; then
     created=$(( created + 1 ))
+    # Clean each repo up at suite exit so throwaway repos don't
+    # accumulate across re-runs.
+    add_exit_handler "curl -s -X DELETE -H \"\$(auth_header)\" \"\${BASE_URL}/api/v1/repositories/${k}\" >/dev/null 2>&1 || true"
   fi
 done
 if [ "$created" -eq 3 ]; then

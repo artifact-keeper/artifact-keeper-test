@@ -125,6 +125,9 @@ fi
 begin_test "Create Debian repo"
 if create_local_repo "$REPO_KEY" "debian"; then
   pass
+  # Clean the repo up at suite exit so throwaway repos don't accumulate
+  # across re-runs. Mirrors the signing-key cleanup above.
+  add_exit_handler "curl -s -X DELETE -H \"\$(auth_header)\" \"\${BASE_URL}/api/v1/repositories/${REPO_KEY}\" >/dev/null 2>&1 || true"
 else
   fail "could not create debian repo"
   end_suite
@@ -240,51 +243,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Fetch the repo's GPG public key. Two locations are common: a
-#    format-native /debian/<key>/key (or gpg-key.asc), and the platform
-#    /api/v1/signing/keys/<id>/public (verified in test-signing.sh). We
-#    try the format-native path first because that's what apt clients
-#    use; fall back to the platform path so the chain test still runs
-#    even if the format route is /key vs /gpg-key.asc.
+# 6. Fetch the repo's GPG public key. The Debian handler exposes this at
+#    /debian/<repo>/dists/<distribution>/gpg-key.asc (debian.rs:61). That
+#    is the format-native, OpenPGP-armored route apt clients use. We do
+#    NOT fall back to /api/v1/signing/keys/<id>/public here because that
+#    platform endpoint returns an X.509 SubjectPublicKeyInfo PEM
+#    ("BEGIN PUBLIC KEY"), which gpg --import rejects, breaking the
+#    entire trust chain we are trying to verify.
 # ---------------------------------------------------------------------------
 
-begin_test "Fetch repo GPG public key (format-native /key path)"
+begin_test "Fetch repo GPG public key (dists/<dist>/gpg-key.asc)"
 PUBKEY_FILE="${WORK_DIR}/repo.pub.asc"
 PK_STATUS=$(curl -s -o "$PUBKEY_FILE" -w '%{http_code}' \
     -H "$(format_auth_header)" \
-    "${BASE_URL}/debian/${REPO_KEY}/key") || PK_STATUS="000"
-
-# Some implementations expose the key as gpg-key.asc; try that next.
-if [ "$PK_STATUS" = "404" ]; then
-  PK_STATUS=$(curl -s -o "$PUBKEY_FILE" -w '%{http_code}' \
-      -H "$(format_auth_header)" \
-      "${BASE_URL}/debian/${REPO_KEY}/gpg-key.asc") || PK_STATUS="000"
-fi
-
-# Last resort: platform endpoint (test-signing.sh proves this exists).
-if [ "$PK_STATUS" = "404" ] && [ -n "${KEY_ID:-}" ]; then
-  PK_STATUS=$(curl -s -o "$PUBKEY_FILE" -w '%{http_code}' \
-      -H "$(auth_header)" \
-      "${BASE_URL}/api/v1/signing/keys/${KEY_ID}/public") || PK_STATUS="000"
-fi
+    "${BASE_URL}/debian/${REPO_KEY}/dists/${DISTRIBUTION}/gpg-key.asc") || PK_STATUS="000"
 
 if [ "$PK_STATUS" = "404" ] || [ "$PK_STATUS" = "501" ]; then
-  skip "no GPG public-key endpoint available (tried /key, /gpg-key.asc, /api/v1/signing/keys/.../public)"
+  skip_suite "OpenPGP public-key endpoint not available (HTTP ${PK_STATUS} at /debian/${REPO_KEY}/dists/${DISTRIBUTION}/gpg-key.asc); cannot exercise apt-secure trust chain"
 elif [ "$PK_STATUS" -ge 200 ] 2>/dev/null && [ "$PK_STATUS" -lt 300 ] 2>/dev/null \
      && [ -s "$PUBKEY_FILE" ]; then
-  if grep -q "BEGIN PGP PUBLIC KEY" "$PUBKEY_FILE" \
-     || grep -q "BEGIN PUBLIC KEY" "$PUBKEY_FILE"; then
+  # The route serves an OpenPGP public key. Accept ASCII-armored
+  # ("BEGIN PGP PUBLIC KEY") or a binary OpenPGP packet blob. Reject
+  # an X.509 PEM, which gpg --import will not accept.
+  if grep -q "BEGIN PUBLIC KEY" "$PUBKEY_FILE"; then
+    fail "gpg-key.asc returned an X.509 PEM ('BEGIN PUBLIC KEY'), not OpenPGP; gpg --import will reject it" \
+         "$(head -c 200 "$PUBKEY_FILE")"
+  elif grep -q "BEGIN PGP PUBLIC KEY" "$PUBKEY_FILE"; then
+    pass
+  elif [ "$(wc -c < "$PUBKEY_FILE")" -gt 100 ]; then
+    # Binary OpenPGP packets are valid; gpg --import will validate below.
     pass
   else
-    # Binary key blob is acceptable; gpg --import will validate it below.
-    if [ "$(wc -c < "$PUBKEY_FILE")" -gt 100 ]; then
-      pass
-    else
-      fail "public key body too small (${PK_STATUS}, $(wc -c < "$PUBKEY_FILE") bytes)"
-    fi
+    fail "public key body too small (${PK_STATUS}, $(wc -c < "$PUBKEY_FILE") bytes)"
   fi
 else
-  fail "GET repo public key returned HTTP ${PK_STATUS}"
+  fail "GET ${BASE_URL}/debian/${REPO_KEY}/dists/${DISTRIBUTION}/gpg-key.asc returned HTTP ${PK_STATUS}"
 fi
 
 # ---------------------------------------------------------------------------
