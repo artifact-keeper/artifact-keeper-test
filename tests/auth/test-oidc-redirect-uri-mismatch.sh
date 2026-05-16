@@ -10,20 +10,25 @@
 # the server-side value is authoritative.
 #
 # This test verifies AK's redirect-uri handling, not the IdP's:
-#   - /login emits a 307 with a Location header pointing at the IdP and a
-#     redirect_uri query param that points back at our own
-#     /auth/sso/oidc/{id}/callback path. We assert the emitted redirect_uri
-#     contains the configured provider id and the callback path -- so a
-#     compromised front-end cannot trick the IdP into redirecting to a
-#     third-party host.
-#   - Callback hits for an unknown provider id must 404 (per openapi line
-#     2258, oidc_login responds 404 for unknown provider id; callback has
-#     the same lookup so a forged id ends up as 4xx, never 2xx).
+#   - The redirect_uri inspection cases require a working OIDC discovery
+#     document. Against the `.invalid` fixture host, `sso.rs:101` raises
+#     `AppError::Internal` (HTTP 500) before any redirect is built, so the
+#     Location-header assertions never run. They are documented here and
+#     converted to skip-with-reason; running them needs a stub IdP (mock
+#     server, local httpd serving a real-shaped discovery doc, or
+#     httpbin-style fixture). Followup: track the discovery-stub plumbing.
+#   - Callback hits for an unknown provider id are NOT short-circuited by
+#     the path's UUID lookup. `oidc_callback` (sso.rs:165-174) calls
+#     `validate_sso_session(state)` BEFORE looking up the provider, and
+#     the state we send is never minted, so validate_sso_session raises
+#     `AppError::Authentication` -> HTTP 401 (error.rs:89). We assert 401.
 #
-# Backend reference:
-#   - sso/oidc.rs build_auth_url constructs redirect_uri from PUBLIC_BASE_URL
-#     + "/api/v1/auth/sso/oidc/{id}/callback". The provider id is path-bound
-#     so attackers cannot smuggle a different host.
+# Backend reference (read 2026-05-16):
+#   - `oidc_callback` validates state first via `AuthConfigService::
+#     validate_sso_session`, then delegates to `oidc_callback_inner`. The
+#     path-bound provider id is never compared against `session.provider_id`,
+#     so the response code for an unknown UUID is driven entirely by the
+#     state lookup.
 #
 # Requires: curl, jq
 source "$(dirname "$0")/../lib/common.sh"
@@ -93,99 +98,41 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 1. /login Location header must reference the server-computed callback
-#    for THIS provider id. If the redirect_uri is missing, points elsewhere,
-#    or is taken from a request parameter, an attacker could exfiltrate the
-#    authorization code by tricking the IdP into redirecting to evil.com.
+# 1. /login Location header redirect_uri inspection -- DEFERRED.
 #
-#    We don't follow the redirect: if discovery fails the server may 502 or
-#    redirect into the provider's authorize URL. Either way we want the
-#    Location header from the FIRST response (curl -i) without -L.
+# The intent here is to confirm the server-computed redirect_uri inside the
+# IdP authorize URL contains the configured provider id and the callback
+# path (so a compromised front-end cannot trick the IdP into redirecting to
+# a third-party host). Implementing it requires a working OIDC discovery
+# endpoint behind the configured issuer_url.
+#
+# Against an `.invalid` fixture issuer, `sso.rs` (see oidc_login, lines
+# 101-108) fails the discovery `reqwest::get(...)` and surfaces
+# AppError::Internal -> HTTP 500 before any Location header is built. The
+# previous version of this test silently skipped on non-307 status, which
+# meant the assertion never ran at all. Skipping explicitly is more honest.
+#
+# Followup: thread a stub IdP (mock server in tests/lib, local httpd serving
+# a fixture .well-known/openid-configuration, or a configured-but-unreachable
+# real-shaped issuer URL) before re-enabling these cases.
 # -------------------------------------------------------------------------
 
 begin_test "/login emits redirect_uri scoped to this provider id"
-if [ -z "${OIDC_CFG_ID:-}" ]; then
-  skip "no OIDC config"
-else
-  # Discovery against an .invalid host may fail before any redirect is built.
-  # Capture status and headers; only assert when /login actually returned 307.
-  hdr_file=$(mktemp)
-  status=$(curl -s -o /dev/null -D "$hdr_file" -w '%{http_code}' $CURL_TIMEOUT \
-    "${BASE_URL}/api/v1/auth/sso/oidc/${OIDC_CFG_ID}/login" 2>/dev/null) || true
-  status="${status:-000}"
-  if [ "$status" = "307" ] || [ "$status" = "302" ]; then
-    location=$(grep -i '^location:' "$hdr_file" | tr -d '\r' | head -1 | sed 's/^[Ll]ocation: //')
-    rm -f "$hdr_file"
-    # The Location header is the IdP authorize URL; the redirect_uri parameter
-    # inside it must reference our own callback for THIS provider id. URL-
-    # decoding %2F -> / and %3A -> : so a substring check is enough.
-    decoded_location=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' "$location" 2>/dev/null || echo "$location")
-    expected_path="/api/v1/auth/sso/oidc/${OIDC_CFG_ID}/callback"
-    if echo "$decoded_location" | grep -q "redirect_uri="; then
-      if echo "$decoded_location" | grep -q "${expected_path}"; then
-        pass
-      else
-        fail "Location redirect_uri does not point at ${expected_path}" "$decoded_location"
-      fi
-    else
-      fail "Location header has no redirect_uri parameter" "$decoded_location"
-    fi
-  else
-    rm -f "$hdr_file"
-    # Discovery against an .invalid issuer is expected to fail with 5xx/4xx;
-    # we can't make a strong assertion in that case. The follow-up test
-    # below (unknown provider id) is the deterministic redirect-uri check.
-    skip "/login returned HTTP ${status} (discovery against fixture host failed); see unknown-id test"
-  fi
-fi
-
-# -------------------------------------------------------------------------
-# 2. Tampering: /login must ignore any client-supplied redirect_uri query
-#    param. If the backend echoes a user-supplied value into the IdP request,
-#    an attacker can swap their host in. We assert by passing a tampered
-#    value and confirming the emitted Location either preserves the server's
-#    callback path or the request is rejected -- never that the attacker's
-#    URL ends up in the redirect_uri sent to the IdP.
-# -------------------------------------------------------------------------
+skip "requires OIDC discovery stub; see file header for followup"
 
 begin_test "/login ignores client-supplied redirect_uri tampering"
-if [ -z "${OIDC_CFG_ID:-}" ]; then
-  skip "no OIDC config"
-else
-  tampered="https://attacker-${RUN_ID}.invalid/steal"
-  encoded=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tampered" 2>/dev/null || echo "$tampered")
-  hdr_file=$(mktemp)
-  status=$(curl -s -o /dev/null -D "$hdr_file" -w '%{http_code}' $CURL_TIMEOUT \
-    "${BASE_URL}/api/v1/auth/sso/oidc/${OIDC_CFG_ID}/login?redirect_uri=${encoded}" 2>/dev/null) || true
-  status="${status:-000}"
-  if [ "$status" = "307" ] || [ "$status" = "302" ]; then
-    location=$(grep -i '^location:' "$hdr_file" | tr -d '\r' | head -1 | sed 's/^[Ll]ocation: //')
-    rm -f "$hdr_file"
-    decoded_location=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' "$location" 2>/dev/null || echo "$location")
-    if echo "$decoded_location" | grep -q "attacker-${RUN_ID}.invalid"; then
-      fail "tampered redirect_uri leaked into IdP authorize URL" "$decoded_location"
-    else
-      pass
-    fi
-  else
-    rm -f "$hdr_file"
-    # If /login outright rejects unknown query params, that is also acceptable
-    # behaviour as long as it is a non-2xx response.
-    if [ "$status" -ge 400 ] 2>/dev/null && [ "$status" -lt 600 ] 2>/dev/null; then
-      pass
-    else
-      fail "expected redirect or 4xx for tampered redirect_uri, got HTTP ${status}"
-    fi
-  fi
-fi
+skip "requires OIDC discovery stub; see file header for followup"
 
 # -------------------------------------------------------------------------
-# 3. Callback against an unknown provider id (random UUID) must 4xx. This
-#    is the structural protection: the provider id is path-bound, so an
-#    attacker who controls only the state cannot pivot to an unregistered
-#    provider. openapi line 2258 documents 404 for oidc_login on unknown id;
-#    the callback has the same lookup -- it must also reject (not crash, not
-#    silently accept).
+# 2. Callback against an unknown provider id (random UUID) is rejected on
+#    state validation, NOT on provider lookup. `oidc_callback`
+#    (sso.rs:165-174) validates the SSO session FIRST, and since the state
+#    we send was never minted, validate_sso_session raises
+#    AppError::Authentication -> HTTP 401 (error.rs:89). The path UUID is
+#    not compared against session.provider_id at all -- the practical
+#    consequence is that the state token itself is the authoritative bind,
+#    and any callback with a forged state lands on 401 regardless of the
+#    path UUID. 2xx or 5xx here would both be regressions.
 # -------------------------------------------------------------------------
 
 begin_test "Callback with unknown provider id is rejected"
@@ -198,17 +145,16 @@ else
     "${BASE_URL}/api/v1/auth/sso/oidc/${unknown_id}/callback?state=any-${RUN_ID}&code=bogus-${RUN_ID}" \
     2>/dev/null) || true
   status="${status:-000}"
-  # Per openapi: 400 (invalid params) is the documented response and 404 is
-  # plausible (unknown provider lookup). Both are acceptable; 2xx/5xx are not.
-  if [ "$status" = "400" ] || [ "$status" = "404" ]; then
+  # State is checked before provider lookup -> 401 from AppError::Authentication.
+  if [ "$status" = "401" ]; then
     pass
   else
-    fail "expected HTTP 400/404 for unknown provider id, got HTTP ${status}"
+    fail "expected HTTP 401 for unknown provider id (state validated first), got HTTP ${status}"
   fi
 fi
 
 # -------------------------------------------------------------------------
-# 4. Malformed provider id (not a UUID) must 4xx, never 5xx. The path
+# 3. Malformed provider id (not a UUID) must 4xx, never 5xx. The path
 #    extractor types `id` as Uuid, so a non-UUID string short-circuits with
 #    422 before any cache or DB lookup. A 500 here would mean the extractor
 #    or middleware panicked, which would be a regression worth catching.

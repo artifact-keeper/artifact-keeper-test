@@ -5,20 +5,22 @@
 # OIDC core sec 15.5.2 require the callback to bind the returned `state` to a
 # server-side single-use entry that was minted by the matching `/login` redirect.
 # A callback that arrives with:
-#   - a `state` value that was never minted (forged / replayed across providers)
-#   - the correct `state` shape but bound to a different OIDC config id
+#   - a `state` value that was never minted (forged)
 #   - the required `code` parameter omitted entirely
+#   - a state that has already been consumed (single-use replay)
 # must be rejected before any token exchange or session bootstrap fires.
 #
-# Per openapi.yaml (line 2207, /api/v1/auth/sso/oidc/{id}/callback), the
-# documented failure response is HTTP 400 with ErrorResponse. We assert the
-# specific 400 status code, not "any 4xx" -- the prior test-oidc-callback.sh
-# checks the route is registered but accepts any non-5xx, which lets a future
-# regression that silently 200s a forged callback slip through.
-#
-# Backend reference:
-#   - sso/oidc.rs callback handler; state is stored in OIDC_STATE_CACHE keyed
-#     by (state_token, provider_id) with a 10 minute TTL.
+# Backend reference (read 2026-05-16):
+#   - `AuthConfigService::validate_sso_session` (auth_config_service.rs:1235)
+#     issues `DELETE FROM sso_sessions WHERE state = $1 RETURNING ...`. The
+#     lookup ignores `provider_id`, so the only enforced defenses are:
+#       (a) the state must exist in the sso_sessions table
+#       (b) DELETE...RETURNING makes the row single-use
+#       (c) expires_at is checked after the delete
+#   - When state is missing/expired, the handler raises `AppError::Authentication`,
+#     which maps to HTTP 401 in `error.rs:89`. We assert the specific 401, not
+#     "any 4xx" -- the prior test-oidc-callback.sh accepts any non-5xx, which
+#     lets a future regression that silently 200s a forged callback slip through.
 #
 # Requires: curl, jq
 source "$(dirname "$0")/../lib/common.sh"
@@ -28,7 +30,6 @@ auth_admin
 setup_workdir
 
 OIDC_CFG_ID=""
-OIDC_CFG_ID_OTHER=""
 SSO_AVAILABLE="unknown"
 
 # Always-on cleanup: remove any OIDC configs we created even on early exit.
@@ -36,10 +37,6 @@ cleanup_oidc() {
   if [ -n "${OIDC_CFG_ID:-}" ] && [ "$OIDC_CFG_ID" != "null" ]; then
     curl -s -o /dev/null -X DELETE -H "$(auth_header)" \
       "${BASE_URL}/api/v1/admin/sso/oidc/${OIDC_CFG_ID}" >/dev/null 2>&1 || true
-  fi
-  if [ -n "${OIDC_CFG_ID_OTHER:-}" ] && [ "$OIDC_CFG_ID_OTHER" != "null" ]; then
-    curl -s -o /dev/null -X DELETE -H "$(auth_header)" \
-      "${BASE_URL}/api/v1/admin/sso/oidc/${OIDC_CFG_ID_OTHER}" >/dev/null 2>&1 || true
   fi
 }
 add_exit_handler 'cleanup_oidc'
@@ -73,7 +70,7 @@ fi
 # unique across parallel suites.
 # -------------------------------------------------------------------------
 
-begin_test "Create throwaway OIDC config (provider A)"
+begin_test "Create throwaway OIDC config"
 if [ "$SSO_AVAILABLE" != "true" ]; then
   skip "SSO not available"
 else
@@ -81,48 +78,27 @@ else
     -H "$(auth_header)" \
     -H "Content-Type: application/json" \
     -d "$(jq -nc \
-      --arg name "e2e-oidc-a-${RUN_ID}" \
-      --arg iss "https://fixture-a-${RUN_ID}.invalid" \
-      --arg cid "client-a-${RUN_ID}" \
-      --arg sec "secret-a-${RUN_ID}" \
+      --arg name "e2e-oidc-state-${RUN_ID}" \
+      --arg iss "https://fixture-state-${RUN_ID}.invalid" \
+      --arg cid "client-state-${RUN_ID}" \
+      --arg sec "secret-state-${RUN_ID}" \
       '{name:$name,issuer_url:$iss,client_id:$cid,client_secret:$sec,is_enabled:false}')" \
     "${BASE_URL}/api/v1/admin/sso/oidc" 2>/dev/null) || cfg_resp=""
   OIDC_CFG_ID=$(echo "$cfg_resp" | jq -r '.id // empty' 2>/dev/null)
   if [ -n "$OIDC_CFG_ID" ] && [ "$OIDC_CFG_ID" != "null" ]; then
     pass
   else
-    fail "could not create OIDC config A" "${cfg_resp:0:300}"
-  fi
-fi
-
-begin_test "Create throwaway OIDC config (provider B)"
-if [ "$SSO_AVAILABLE" != "true" ] || [ -z "${OIDC_CFG_ID:-}" ]; then
-  skip "provider A unavailable"
-else
-  cfg_resp=$(curl -s $CURL_TIMEOUT -X POST \
-    -H "$(auth_header)" \
-    -H "Content-Type: application/json" \
-    -d "$(jq -nc \
-      --arg name "e2e-oidc-b-${RUN_ID}" \
-      --arg iss "https://fixture-b-${RUN_ID}.invalid" \
-      --arg cid "client-b-${RUN_ID}" \
-      --arg sec "secret-b-${RUN_ID}" \
-      '{name:$name,issuer_url:$iss,client_id:$cid,client_secret:$sec,is_enabled:false}')" \
-    "${BASE_URL}/api/v1/admin/sso/oidc" 2>/dev/null) || cfg_resp=""
-  OIDC_CFG_ID_OTHER=$(echo "$cfg_resp" | jq -r '.id // empty' 2>/dev/null)
-  if [ -n "$OIDC_CFG_ID_OTHER" ] && [ "$OIDC_CFG_ID_OTHER" != "null" ]; then
-    pass
-  else
-    fail "could not create OIDC config B" "${cfg_resp:0:300}"
+    fail "could not create OIDC config" "${cfg_resp:0:300}"
   fi
 fi
 
 # -------------------------------------------------------------------------
 # 1. Forged state: a state value that was never minted by /login. Backend
-#    cannot look it up in OIDC_STATE_CACHE, so the callback must 400.
+#    cannot find it in the sso_sessions table, so validate_sso_session
+#    raises AppError::Authentication -> HTTP 401 (error.rs:89).
 # -------------------------------------------------------------------------
 
-begin_test "Callback with forged state returns 400"
+begin_test "Callback with forged state returns 401"
 if [ -z "${OIDC_CFG_ID:-}" ]; then
   skip "no OIDC config"
 else
@@ -131,11 +107,11 @@ else
     "${BASE_URL}/api/v1/auth/sso/oidc/${OIDC_CFG_ID}/callback?state=${forged_state}&code=bogus-${RUN_ID}" \
     2>/dev/null) || true
   status="${status:-000}"
-  # openapi.yaml documents 400 for invalid callback parameters.
-  if [ "$status" = "400" ]; then
+  # Backend maps "Invalid or expired SSO state" -> AppError::Authentication -> 401.
+  if [ "$status" = "401" ]; then
     pass
   else
-    fail "expected HTTP 400 for forged state, got HTTP ${status}"
+    fail "expected HTTP 401 for forged state, got HTTP ${status}"
   fi
 fi
 
@@ -182,36 +158,10 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 4. State bound to wrong provider: a forged state that *looks* the right
-#    shape but is delivered to a different provider id than the one that
-#    minted it. OIDC_STATE_CACHE keys by (state_token, provider_id) so the
-#    lookup must miss and the callback must 400. This is the canonical
-#    cross-provider state-fixation attack.
-# -------------------------------------------------------------------------
-
-begin_test "Callback with state bound to wrong provider returns 400"
-if [ -z "${OIDC_CFG_ID:-}" ] || [ -z "${OIDC_CFG_ID_OTHER:-}" ]; then
-  skip "two OIDC configs required"
-else
-  # Build a plausible-looking state and replay it against provider B. Even
-  # if a malicious /login somehow leaked a state intended for provider A,
-  # provider B's cache lookup keyed by (state, B) cannot match.
-  smuggled_state="cross-provider-${RUN_ID}-$(date +%s)"
-  status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-    "${BASE_URL}/api/v1/auth/sso/oidc/${OIDC_CFG_ID_OTHER}/callback?state=${smuggled_state}&code=bogus-${RUN_ID}" \
-    2>/dev/null) || true
-  status="${status:-000}"
-  if [ "$status" = "400" ]; then
-    pass
-  else
-    fail "expected HTTP 400 for cross-provider state, got HTTP ${status}"
-  fi
-fi
-
-# -------------------------------------------------------------------------
-# 5. Repeated forged state must remain rejected. A naive cache that key-
-#    misses on first lookup but caches the rejection result could later
-#    accept a replay; this asserts the rejection is stateless.
+# 4. Forged state replay is rejected on every attempt. validate_sso_session
+#    issues `DELETE...RETURNING` so a missing-state lookup deletes nothing
+#    but must still return 401 every time; a naive implementation that
+#    caches the negative result could regress to a stale 2xx.
 # -------------------------------------------------------------------------
 
 begin_test "Forged state stays rejected on replay"

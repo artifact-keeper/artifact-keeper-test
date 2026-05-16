@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # test-password-strength-validation.sh - Password validation boundaries (Epic 11.15, #76)
 #
+# Backend reference (read 2026-05-16):
+#   - `validate_password` in `backend/src/api/handlers/users.rs:67-107`
+#     enforces:
+#       len < 8    -> AppError::Validation -> HTTP 400 "at least 8 characters"
+#       len > 128  -> AppError::Validation -> HTTP 400 "at most 128 characters"
+#       common pw  -> AppError::Validation -> HTTP 400 "too common"
+#   - `AppError::Validation` maps to HTTP 400 with code VALIDATION_ERROR
+#     (error.rs:94). 422 is NOT used by this handler.
+#
 # Verifies password validation on user creation (POST /api/v1/users) for the
 # edge cases that bypass naive `len(s) < MIN` checks:
 #
-#   1. Unicode in a valid-length password is accepted -- non-ASCII bytes
-#      must not be rejected by a single-byte length check.
+#   1. Unicode (real multi-byte UTF-8 bytes on the wire) in a valid-length
+#      password is accepted -- the backend's char-count check must not over-
+#      count multi-byte UTF-8 sequences.
 #   2. NUL byte inside the password is rejected -- shell-injected null
 #      bytes truncate logs and PAM/LDAP downstream; never store them.
-#   3. Empty password ("") is rejected -- below any reasonable minimum.
-#   4. 1-character password is rejected -- below the documented minimum
-#      (openapi.yaml does not declare minLength on CreateUserRequest.password,
-#      but the backend enforces a non-empty / multi-char rule via
-#      services/auth/password_policy.rs; a one-char password is the canonical
-#      boundary check).
-#   5. Long-but-bounded password (256 chars) is accepted -- backend stores
-#      a bcrypt hash, not the raw password, so any reasonable length below
-#      bcrypt's 72-byte input limit is fine. Most policies cap at 256.
-#   6. Pathologically long password (4096 chars) is rejected -- exceeds any
-#      documented max and must not crash or hang the bcrypt cost function.
-#
-# The OpenAPI schema (lines 12324-12345, CreateUserRequest) does not encode
-# minLength/maxLength on the password property, so the assertions here are
-# behavioural: validation errors must surface as documented HTTP 422 (lines
-# 9444-9445) and successful creations must return 200 with a user object.
+#   3. Empty password ("") is rejected -- below the 8-char minimum.
+#   4. 1-character password is rejected -- below the 8-char minimum.
+#   5. 8-character acceptable password (the documented lower bound) is
+#      accepted.
+#   6. 128-character password (the documented upper bound) is accepted.
+#   7. 129-character password is rejected -- one over the upper bound.
+#   8. 256-character password is rejected -- well over the upper bound;
+#      also covers the bcrypt CPU-DoS protection envelope.
 #
 # All resources use RUN_ID for isolation. Created users are deleted at the
 # end so the run is idempotent.
@@ -114,10 +116,29 @@ create_user_with_raw_payload() {
 # -------------------------------------------------------------------------
 
 begin_test "Unicode password is accepted"
-# A comfortable length mixing ASCII letters, diacritics, and a numeric
-# suffix. A byte-count length check on UTF-8 would over-count, but the
-# backend should use char count.
-status=$(create_user_with_password "unicode" "Correct-Passwoerd-2026-Aeiou")
+# Serialize the payload in python3 so we actually put real multi-byte UTF-8
+# bytes (umlaut, accented chars, CJK) on the wire. A previous version of
+# this test used a pure-ASCII string like "Aeiou", which exercised nothing.
+# A byte-count length check on UTF-8 would over-count multi-byte sequences,
+# but the backend uses char count; this asserts the multi-byte payload is
+# accepted.
+unicode_payload="${WORK_DIR}/unicode-payload.json"
+python3 - "${RUN_ID}" "$unicode_payload" <<'PY'
+import json, sys
+run_id, out_path = sys.argv[1], sys.argv[2]
+# 27 chars total, all under the 128-char cap. Includes a German umlaut
+# (2-byte UTF-8), French accented vowels (2-byte each), and two CJK
+# ideographs (3-byte each). Char count = 27, byte count = 34.
+password = "Correct-Passwört-éè-中文-2026"
+body = {
+    "username": f"pwd-unicode-{run_id}",
+    "password": password,
+    "email":    f"pwd-unicode-{run_id}@test.local",
+}
+with open(out_path, "wb") as f:
+    f.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+PY
+status=$(create_user_with_raw_payload "$unicode_payload")
 if [ "$status" = "200" ] || [ "$status" = "201" ]; then
   pass
 else
@@ -155,9 +176,10 @@ with open(out_path, "wb") as f:
     f.write(encoded.encode("utf-8"))
 PY
 status=$(create_user_with_raw_payload "$nul_payload")
-# 422 (validation) is the documented response per openapi.yaml line 9444.
-# 400 is acceptable if the JSON parser rejects 0x00 outright.
-if [ "$status" = "422" ] || [ "$status" = "400" ]; then
+# Backend's validate_password raises AppError::Validation -> 400 (error.rs:94).
+# A 422 from the axum extractor is also acceptable if the JSON parser rejects
+# 0x00 before the handler sees it. Anything else is a regression.
+if [ "$status" = "400" ] || [ "$status" = "422" ]; then
   pass
 else
   fail "NUL-byte password got HTTP ${status} (expected 400/422)"
@@ -191,46 +213,76 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 5. Long-but-bounded (256 ASCII chars) password is accepted
+# 5. 8-character password (documented lower bound) is accepted
 # -------------------------------------------------------------------------
 
-begin_test "256-character password is accepted"
-# 256 mixed-case ASCII letters + digits. bcrypt truncates at 72 bytes so
-# this stays well within hash safety; the question is whether validation
-# itself rejects it. Repeat-then-trim so we land on exactly 256.
+begin_test "8-character password is accepted (lower bound)"
+# Exactly 8 chars; mixed case + digits + a symbol so the common-password
+# blocklist in users.rs (e.g. "12345678", "password") is not triggered.
+status=$(create_user_with_password "min8" "Ab1!def2")
+if [ "$status" = "200" ] || [ "$status" = "201" ]; then
+  pass
+else
+  fail "8-char password rejected with HTTP ${status} (expected 2xx)"
+fi
+
+# -------------------------------------------------------------------------
+# 6. 128-character password (documented upper bound) is accepted
+# -------------------------------------------------------------------------
+
+begin_test "128-character password is accepted (upper bound)"
+# Exactly 128 chars; the backend (users.rs:74-78) accepts <= 128.
+max_pw=$(python3 -c 'print("Ab1!" * 32, end="")' 2>/dev/null)
+max_len=${#max_pw}
+if [ "$max_len" != "128" ]; then
+  fail "fixture build error: max_pw is ${max_len} chars, expected 128"
+else
+  status=$(create_user_with_password "max128" "$max_pw")
+  if [ "$status" = "200" ] || [ "$status" = "201" ]; then
+    pass
+  else
+    fail "128-char password rejected with HTTP ${status} (expected 2xx)"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# 7. 129-character password is rejected (one over the cap)
+# -------------------------------------------------------------------------
+
+begin_test "129-character password is rejected (over upper bound)"
+# 129 chars: 128 (max accept) + 1 trailing char to cross the boundary.
+over_pw=$(python3 -c 'print("Ab1!" * 32 + "X", end="")' 2>/dev/null)
+over_len=${#over_pw}
+if [ "$over_len" != "129" ]; then
+  fail "fixture build error: over_pw is ${over_len} chars, expected 129"
+else
+  status=$(create_user_with_password "over129" "$over_pw")
+  if [ "$status" -ge 400 ] 2>/dev/null && [ "$status" -lt 500 ] 2>/dev/null; then
+    pass
+  else
+    fail "129-char password got HTTP ${status} (expected 4xx -- over 128-char cap)"
+  fi
+fi
+
+# -------------------------------------------------------------------------
+# 8. 256-character password is rejected (well over the cap; DoS envelope)
+# -------------------------------------------------------------------------
+
+begin_test "256-character password is rejected (DoS envelope)"
+# 256 chars is double the cap and also exercises the bcrypt CPU-DoS
+# protection envelope -- the upper-bound check in users.rs must fire
+# before any bcrypt cost work is done. A 5xx here would mean the cap
+# was bypassed.
 long_pw=$(python3 -c 'print("Ab1!" * 64, end="")' 2>/dev/null)
-# Defensive: confirm we built exactly 256 chars.
 long_len=${#long_pw}
 if [ "$long_len" != "256" ]; then
   fail "fixture build error: long_pw is ${long_len} chars, expected 256"
 else
   status=$(create_user_with_password "long256" "$long_pw")
-  if [ "$status" = "200" ] || [ "$status" = "201" ]; then
-    pass
-  else
-    fail "256-char password rejected with HTTP ${status} (expected 2xx)"
-  fi
-fi
-
-# -------------------------------------------------------------------------
-# 6. Excessively long (4096 chars) password is rejected
-# -------------------------------------------------------------------------
-
-begin_test "4096-character password is rejected"
-# 4096 chars is beyond any sane policy ceiling. Backend should 4xx before
-# touching bcrypt -- a >100KB password sent to bcrypt's spawn_blocking pool
-# is the classic CPU-DoS vector. A 5xx here would suggest no upper bound is
-# enforced, which is a regression worth catching.
-mega_pw=$(python3 -c 'print("A" * 4096, end="")' 2>/dev/null)
-mega_len=${#mega_pw}
-if [ "$mega_len" != "4096" ]; then
-  fail "fixture build error: mega_pw is ${mega_len} chars, expected 4096"
-else
-  status=$(create_user_with_password "mega4096" "$mega_pw")
   if [ "$status" -ge 400 ] 2>/dev/null && [ "$status" -lt 500 ] 2>/dev/null; then
     pass
   else
-    fail "4096-char password got HTTP ${status} (expected 4xx -- DoS risk)"
+    fail "256-char password got HTTP ${status} (expected 4xx -- over 128-char cap)"
   fi
 fi
 
