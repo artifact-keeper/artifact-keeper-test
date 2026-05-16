@@ -32,6 +32,7 @@ on:
           - mesh
           - security
           - compatibility
+          - pullthrough
         default: 'all'
       skip_teardown:
         description: Skip teardown (for debugging)
@@ -947,6 +948,12 @@ jobs:
       PROXY_MAX_CONCURRENT_FETCHES: '20'
       PROXY_QUEUE_TIMEOUT_SECS: '5'
       STAMPEDE_UPSTREAM_DELAY_MS: '2000'
+      # AK_BACKEND_BRANCH for the feature-flag layer (issue #65). The
+      # security suite hosts test-feature-flag-drift.sh which is the
+      # truth-side check that AK_FEATURES matches the deployed
+      # backend's reported version. See pullthrough-tests env for the
+      # rationale on how this maps from inputs.backend_tag.
+      AK_BACKEND_BRANCH: ${{ startsWith(inputs.backend_tag, '1.1.') && 'release/1.1.x' || (startsWith(inputs.backend_tag, '1.2.') && 'release/1.2.x' || 'main') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -999,6 +1006,67 @@ jobs:
           # JSON breadcrumbs (e.g. scan-completes-final-resp.json) reach
           # the operator. With *.xml glob the dump dies silently and the
           # gate's failure rendering is a one-line message attribute.
+          path: /tmp/test-results/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Pull-through cache reliability tests (epic #69 cluster D, v1.1.9).
+  #
+  # Lives in its own job (not merged into repo-tests or security-tests)
+  # for three reasons:
+  #
+  #   1. The cross-format shadowing-guard test takes ~60s on its own
+  #      because it cycles through six format handlers. Folding that
+  #      into repo-tests would dominate the suite's wall-clock.
+  #
+  #   2. The cache-ttl tests need stable TTL plumbing on the backend;
+  #      a regression in only this surface should fail this job
+  #      without blocking the other 20 jobs.
+  #
+  #   3. RELEASE_GATE=1 is set: silent skips here are the exact
+  #      silent-success class (#888) this cluster exists to catch.
+  # -------------------------------------------------------------------
+  pullthrough-tests:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'pullthrough'
+    runs-on: ak-e2e-runners
+    timeout-minutes: 15
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # A silently-skipped test in release-gate context is exactly the
+      # silent-success class (#870/#871/#888) the gate exists to catch.
+      RELEASE_GATE: '1'
+      # AK_BACKEND_BRANCH feeds the branch-aware feature flag layer
+      # in tests/lib/feature-flags.sh (issue #65). We derive the branch
+      # from the backend image tag: a tag like `1.1.9` or `1.1.10-rc.2`
+      # is release/1.1.x; `1.2.0` is release/1.2.x; `latest`, `main`,
+      # or anything else falls back to `main`. The mapping below is
+      # intentionally conservative -- if we can't tell, we use the
+      # most-restrictive 1.1.x flag set (see feature_flags_init for
+      # rationale). When that's wrong, test-feature-flag-drift.sh
+      # fails loudly with the actual /health version, surfacing the
+      # workflow-vs-deploy mismatch in ONE place.
+      AK_BACKEND_BRANCH: ${{ startsWith(inputs.backend_tag, '1.1.') && 'release/1.1.x' || (startsWith(inputs.backend_tag, '1.2.') && 'release/1.2.x' || 'main') }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run pull-through cache tests
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite pullthrough --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-pullthrough
           path: /tmp/test-results/
           if-no-files-found: ignore
 

@@ -147,6 +147,18 @@ AUTH_ADMIN_RETRY_DELAY="${AUTH_ADMIN_RETRY_DELAY:-5}"
 # Cached result of `GET /health` so we only hit the backend once per suite.
 BACKEND_VERSION=""
 
+# Source the branch-aware feature flag layer (issue #65). This must run
+# before the first require_feature call. The file is small and exports
+# AK_FEATURES via feature_flags_init; if the file is missing for any
+# reason (e.g. an old checkout), require_feature gracefully falls back
+# to the legacy backend-probe path because feature_enabled_via_env will
+# not be defined.
+# shellcheck source=feature-flags.sh
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/feature-flags.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$(dirname "${BASH_SOURCE[0]}")/feature-flags.sh"
+fi
+
 # Strip a leading 'v' if present and return the cleaned version string.
 _strip_v_prefix() {
   local v="$1"
@@ -259,6 +271,31 @@ _feature_min_version() {
 #   ... rest of the test ...
 require_feature() {
   local feature="$1"
+
+  # Fast path: branch-aware AK_FEATURES env (issue #65). The release-gate
+  # workflow sets AK_BACKEND_BRANCH once per matrix job; feature_flags_init
+  # (sourced below) derives AK_FEATURES from that. If we got an explicit
+  # answer here we use it and skip the backend probe entirely. Probe-only
+  # fallback runs when AK_FEATURES is unset (local dev path).
+  if declare -F feature_enabled_via_env >/dev/null 2>&1; then
+    feature_enabled_via_env "$feature"
+    case $? in
+      0)
+        # Env says enabled. No HTTP needed.
+        return 0
+        ;;
+      1)
+        # Env says explicitly disabled. Skip with a precise reason so a
+        # stale workflow mapping shows up loudly (not as a silent skip).
+        skip "feature '${feature}' not enabled on backend branch '${AK_BACKEND_BRANCH:-?}' (AK_FEATURES=${AK_FEATURES:-})"
+        return 1
+        ;;
+      2)
+        # No env hint. Fall through to backend probe (legacy path).
+        ;;
+    esac
+  fi
+
   local min_ver
   min_ver=$(_feature_min_version "$feature") || {
     fail "require_feature: unknown feature '$feature' (add to _feature_min_version map in tests/lib/common.sh)"
