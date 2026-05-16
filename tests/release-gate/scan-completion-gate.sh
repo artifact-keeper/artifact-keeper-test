@@ -47,10 +47,11 @@
 #   ALLOW_SCANNER_SKIP    forced to 0 here; release-gate must fail loud
 #
 # Exit codes (delegated to the embedded suite):
-#   0 - all assertions passed
-#   1 - any assertion failed
+#   0 - all assertions passed (or EXPECT_FAILURE=1 and at least one failed)
+#   1 - any assertion failed (or EXPECT_FAILURE=1 and every assertion passed,
+#       which means the gate has been weakened -- self-test detected it)
 #   2 - configuration error (unknown FIXTURE_FORMAT, etc.)
-#   4 - EXPECT_FAILURE=1 but gate passed (self-test detected weakening)
+#   5 - EXPECT_FAILURE=1 and ALLOW_SCANNER_SKIP=1 (mutually exclusive)
 
 set -uo pipefail
 
