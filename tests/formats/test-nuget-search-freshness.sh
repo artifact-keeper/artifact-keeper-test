@@ -27,7 +27,12 @@ NUGET_BASE="${BASE_URL}/nuget/${REPO_KEY}"
 # Unique enough that the search query can't match anything pre-existing.
 PACKAGE_ID="FreshSearch${RUN_ID//-/}"
 PACKAGE_ID_LOWER=$(echo "$PACKAGE_ID" | tr '[:upper:]' '[:lower:]')
-PACKAGE_VERSION="1.0.$(date +%s)"
+# Include RUN_ID in the version so concurrent PR runs cannot collide on a
+# shared backend. NuGet versions follow SemVer: the third numeric segment must
+# stay numeric, so RUN_ID is sanitized and placed in the prerelease tag after
+# a hyphen along with the wall-clock seconds.
+RUN_ID_SAFE=$(echo "$RUN_ID" | tr -c 'A-Za-z0-9' '-' | sed 's/^-*//;s/-*$//')
+PACKAGE_VERSION="1.0.$(date +%s)-${RUN_ID_SAFE}"
 
 # SLA budget in seconds. Override via env to tune for slow clusters.
 SLA_SECONDS="${NUGET_SEARCH_FRESHNESS_SLA:-60}"

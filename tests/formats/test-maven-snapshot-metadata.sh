@@ -8,9 +8,13 @@
 # from the virtual-repo regression in test-maven-virtual-snapshot.sh, which
 # uploads pre-built maven-metadata.xml by hand.
 #
-# This suite uploads two timestamped SNAPSHOT JARs and asserts that the
-# server-side version-level maven-metadata.xml contains both timestamps and
-# orders them by lastUpdated.
+# This suite uploads two SNAPSHOT artifacts that differ by classifier (the
+# first is the main JAR, the second carries the "tests" classifier) and
+# asserts that the server-side version-level maven-metadata.xml lists both
+# under <snapshotVersions>, each with its own timestamp. The backend dedupes
+# <snapshotVersion> by (classifier, extension) keeping only the latest entry
+# per key (maven.rs:567-582), so two artifacts with different classifiers is
+# the only way to verify multi-entry metadata.
 #
 # Covers issue #68 subtask 3.6.
 #
@@ -44,9 +48,14 @@ SNAP_VERSION_B="1.0.0-${TS_B}-2"
 
 put_snapshot_jar() {
   local snap_version="$1"
-  local body_file="${WORK_DIR}/${snap_version}.jar"
-  printf 'snap-jar-%s-%s' "$RUN_ID" "$snap_version" > "$body_file"
-  local url="${MAVEN_URL}/${SNAP_PATH}/${ARTIFACT_ID}-${snap_version}.jar"
+  local classifier="${2:-}"
+  local cls_suffix=""
+  if [ -n "$classifier" ]; then
+    cls_suffix="-${classifier}"
+  fi
+  local body_file="${WORK_DIR}/${snap_version}${cls_suffix}.jar"
+  printf 'snap-jar-%s-%s%s' "$RUN_ID" "$snap_version" "$cls_suffix" > "$body_file"
+  local url="${MAVEN_URL}/${SNAP_PATH}/${ARTIFACT_ID}-${snap_version}${cls_suffix}.jar"
   curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -X PUT \
     -u "${ADMIN_USER}:${ADMIN_PASS}" \
@@ -104,8 +113,15 @@ fi
 # Small gap so server-side timestamp ordering is unambiguous.
 sleep 1
 
-begin_test "Second SNAPSHOT deploy (${SNAP_VERSION_B})"
-jar_b=$(put_snapshot_jar "$SNAP_VERSION_B") || jar_b="000"
+# Second deploy uses a distinct classifier so that (classifier, extension) is
+# different from the first deploy. The backend (maven.rs:567-582) dedupes
+# <snapshotVersion> entries by (classifier, extension), so without a new
+# classifier the second deploy would just replace the first entry and the
+# "two snapshotVersion entries" assertion below could not be exercised.
+SNAPSHOT_CLASSIFIER_B="tests"
+
+begin_test "Second SNAPSHOT deploy (${SNAP_VERSION_B}, classifier=${SNAPSHOT_CLASSIFIER_B})"
+jar_b=$(put_snapshot_jar "$SNAP_VERSION_B" "$SNAPSHOT_CLASSIFIER_B") || jar_b="000"
 pom_b=$(put_snapshot_pom "$SNAP_VERSION_B") || pom_b="000"
 if assert_http_2xx "$jar_b" "second jar PUT not 2xx (HTTP ${jar_b})"; then
   if assert_http_2xx "$pom_b" "second pom PUT not 2xx (HTTP ${pom_b})"; then
@@ -139,7 +155,7 @@ fi
 # Assert the metadata contains both <snapshotVersion> entries
 # ---------------------------------------------------------------------------
 
-begin_test "Metadata contains both redeploy timestamps"
+begin_test "Metadata contains a distinct <snapshotVersion> entry per classifier"
 parsed=$(python3 - <<'PYEOF' "$META_FILE"
 import sys, re
 import xml.etree.ElementTree as ET
@@ -154,48 +170,99 @@ root = tree.getroot()
 for el in root.iter():
     el.tag = re.sub(r'^\{.*\}', '', el.tag)
 
-timestamps = [e.text for e in root.iter("timestamp") if e.text]
-values     = [e.text for e in root.iter("value") if e.text]
-build_nums = [e.text for e in root.iter("buildNumber") if e.text]
-updated    = [e.text for e in root.iter("updated") if e.text]
+# Maven 3.x version-level maven-metadata.xml structure:
+#   <metadata>
+#     <versioning>
+#       <snapshot><timestamp/><buildNumber/></snapshot>
+#       <snapshotVersions>
+#         <snapshotVersion>
+#           <classifier/>     (optional, empty for main artifact)
+#           <extension/>
+#           <value/>          (the timestamped version string)
+#           <updated/>        (the per-entry timestamp)
+#         </snapshotVersion>
+#         ...
+#       </snapshotVersions>
+#     </versioning>
+#   </metadata>
+entries = []
+for sv in root.iter("snapshotVersion"):
+    classifier = ""
+    extension = ""
+    value = ""
+    updated = ""
+    for child in sv:
+        if child.tag == "classifier" and child.text:
+            classifier = child.text.strip()
+        elif child.tag == "extension" and child.text:
+            extension = child.text.strip()
+        elif child.tag == "value" and child.text:
+            value = child.text.strip()
+        elif child.tag == "updated" and child.text:
+            updated = child.text.strip()
+    entries.append((classifier, extension, value, updated))
 
-print("TIMESTAMPS:" + ",".join(timestamps))
-print("VALUES:" + ",".join(values))
-print("BUILD_NUMBERS:" + ",".join(build_nums))
-print("UPDATED:" + ",".join(updated))
+# Also expose the top-level snapshot timestamp and global lists for the
+# downstream lastUpdated assertion.
+top_ts = ""
+for e in root.iter("timestamp"):
+    if e.text:
+        top_ts = e.text.strip()
+        break
+
+print(f"ENTRY_COUNT:{len(entries)}")
+for cls, ext, val, upd in entries:
+    print(f"ENTRY:{cls}|{ext}|{val}|{upd}")
+print(f"TOP_TS:{top_ts}")
 PYEOF
 ) || parsed=""
 
 if echo "$parsed" | grep -q '^PARSE_ERROR:'; then
   fail "maven-metadata.xml did not parse as XML" "$parsed"
 else
-  timestamps=$(echo "$parsed" | sed -n 's/^TIMESTAMPS://p')
-  values=$(echo "$parsed" | sed -n 's/^VALUES://p')
+  entry_count=$(echo "$parsed" | sed -n 's/^ENTRY_COUNT://p')
+  entries=$(echo "$parsed" | sed -n 's/^ENTRY://p')
 
-  # Per Maven 3.x, <snapshot><timestamp> is the single most-recent one, but
-  # <snapshotVersions> lists per-extension <value> entries for every
-  # redeployed timestamp+build combo. Accept either:
-  #   - two distinct values present, OR
-  #   - one timestamp matching the second deploy and value list referencing it.
-  saw_a=0
-  saw_b=0
-  case ",${values}," in
-    *"${SNAP_VERSION_A}"*) saw_a=1 ;;
-  esac
-  case ",${values}," in
-    *"${SNAP_VERSION_B}"*) saw_b=1 ;;
-  esac
+  # Bucket entries by classifier and capture each entry's <updated> stamp.
+  saw_main=0
+  saw_tests=0
+  main_updated=""
+  tests_updated=""
+  while IFS='|' read -r cls ext val upd; do
+    [ -z "$cls$ext$val$upd" ] && continue
+    case "$cls" in
+      "")
+        saw_main=1
+        main_updated="$upd"
+        ;;
+      "${SNAPSHOT_CLASSIFIER_B}")
+        saw_tests=1
+        tests_updated="$upd"
+        ;;
+    esac
+  done <<< "$entries"
 
-  if [ "$saw_a" -eq 1 ] && [ "$saw_b" -eq 1 ]; then
-    pass
-  elif [ "$saw_b" -eq 1 ] && [ -n "$timestamps" ]; then
-    # Some backends prune older redeploys but always reflect the latest.
-    # This is non-spec but common; document the partial-coverage outcome.
-    echo "  note: only latest redeploy (${SNAP_VERSION_B}) reflected; older pruned"
-    pass
+  if [ "$saw_main" -eq 1 ] && [ "$saw_tests" -eq 1 ]; then
+    # Both classifier buckets present. Each entry must have its own <updated>
+    # timestamp; the spec does not require them to differ in value (the
+    # generator may stamp both with the same wall clock), but each entry must
+    # carry one so consumers can resolve per-classifier freshness.
+    if [ -n "$main_updated" ] && [ -n "$tests_updated" ]; then
+      echo "  saw main classifier (updated=${main_updated}) and tests classifier (updated=${tests_updated})"
+      pass
+    else
+      fail "snapshotVersion entries are missing per-entry <updated> timestamps" \
+           "main_updated='${main_updated}' tests_updated='${tests_updated}' entries=${entries}"
+    fi
+  elif [ "$entry_count" = "1" ] && [ "$saw_tests" -eq 1 ]; then
+    # Backend dedupes (classifier, extension) keeping latest only and the
+    # second deploy used the tests classifier; this is the documented backend
+    # behavior in maven.rs:567-582 when only one classifier survives.
+    fail "only the tests-classifier entry survived; main jar entry was dropped" \
+         "entry_count=${entry_count} entries=${entries}"
   else
-    fail "maven-metadata.xml missing expected snapshotVersion entries" \
-         "expected to find ${SNAP_VERSION_A} and ${SNAP_VERSION_B} under <value>; got values=${values} timestamps=${timestamps}"
+    fail "maven-metadata.xml does not contain two distinct snapshotVersion entries (one per classifier)" \
+         "entry_count=${entry_count} saw_main=${saw_main} saw_tests=${saw_tests} entries=${entries}"
   fi
 fi
 

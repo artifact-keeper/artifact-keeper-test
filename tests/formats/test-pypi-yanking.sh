@@ -123,6 +123,10 @@ YANKED="false"
 YANK_DETAIL=""
 
 # 1. Twine-style :action=yank multipart POST
+# NOTE: The backend's PyPI handler (pypi.rs:1035-1038) returns HTTP 400 for
+# unknown :action values because the :action=yank route does not exist. Treat
+# 400 here as "yank not implemented" rather than a hard failure (see skip
+# lane below).
 yank_status=$(curl -s -o "${WORK_DIR}/yank1.out" -w '%{http_code}' $CURL_TIMEOUT \
   -X POST "${PYPI_URL}/" \
   -u "${ADMIN_USER}:${ADMIN_PASS}" \
@@ -163,6 +167,11 @@ fi
 
 if [ "$YANKED" = "true" ]; then
   pass
+elif echo "$YANK_DETAIL" | grep -qE '\b(400|404|501)\b'; then
+  # Backend returns 400 for :action=yank because the route is not implemented
+  # (pypi.rs:1035-1038 rejects unknown :action values). 404/501 are the
+  # equivalent "not implemented" responses from the other fallback endpoints.
+  skip "PyPI yank not implemented in backend; tried: ${YANK_DETAIL}"
 else
   skip "no yank endpoint available; tried: ${YANK_DETAIL}"
 fi
