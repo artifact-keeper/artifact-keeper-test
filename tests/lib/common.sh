@@ -7,6 +7,29 @@
 # Provides: configuration defaults, auth, HTTP helpers, repository helpers,
 # test framework (begin_suite/begin_test/pass/fail/end_suite with JUnit XML),
 # assertions, and utility functions.
+#
+# Stress-test knobs (consumed by tests/stress/*.sh, documented here so that
+# `grep -nE 'STEP_|SUSTAINED_' tests/lib/common.sh` is enough to find them):
+#
+#   STEP_MAX_RETRIES                attempts per step in test-concurrent-api-clients
+#                                   (default 3); retries only fire on transient-class
+#                                   HTTP statuses (000/401/429/503/5xx)
+#   STEP_RETRY_DELAY                seconds between attempts (default 1)
+#   SUSTAINED_DURATION              sustained-load workload duration in seconds
+#                                   (default 60)
+#   SUSTAINED_AUTH_USER             credential used by test-sustained-load.sh
+#                                   (default: $ADMIN_USER, falling back to "admin").
+#                                   Must be in the backend's
+#                                   RATE_LIMIT_EXEMPT_USERNAMES list for the
+#                                   default 55% threshold to apply.
+#   SUSTAINED_AUTH_PASS             password for SUSTAINED_AUTH_USER
+#                                   (default: $ADMIN_PASS)
+#   SUSTAINED_ERROR_PCT_THRESHOLD   pass/fail ceiling for sustained-load error rate
+#                                   (default 55; TODO #153 makes this baseline-relative)
+#
+# Other knobs already in common.sh: BASE_URL, ADMIN_USER, ADMIN_PASS, RUN_ID,
+# TEST_TIMEOUT, JUNIT_OUTPUT_DIR, STRESS_LOG_DIR, CREATE_REPO_MAX_ATTEMPTS,
+# CREATE_REPO_RETRY_DELAY.
 
 set -euo pipefail
 

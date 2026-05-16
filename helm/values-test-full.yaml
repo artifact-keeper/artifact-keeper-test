@@ -57,13 +57,32 @@ web:
 
 postgres:
   enabled: true
+  # CPU rebalanced for stress-tests: previous 500m backend vs 500m postgres
+  # produced no headroom for postgres under sustained load. The sqlx pool
+  # acquire histogram is not currently exported, so the connection between
+  # CPU contention and the observed 33-54% sustained-load error rate is
+  # inferential (worker timeouts but no client-side `000` codes, low
+  # postgres CPU% in `kubectl top` at peak). This rebalance is a working
+  # hypothesis; #154 tracks adding pg_stat_activity + acquire-time capture
+  # to confirm or refute it post-merge.
+  #
+  # New layout: postgres at 250m request / 2000m limit, backend at 500m /
+  # 2000m. Ratio is now ~1:1 at request and 1:1 at limit. The scheduler
+  # can place the burst alongside backend + trivy + meilisearch.
+  # Namespace request sum: 500m (backend) + 50m (web) + 250m (postgres) +
+  # 100m (trivy) + 100m (meilisearch) = 1000m, well under the 4 CPU
+  # quota. Limit sum is intentionally oversubscribed (5250m vs 4 CPU);
+  # ResourceQuota is NOT enabled on this namespace so the
+  # oversubscription is allowed by the scheduler. If a quota is added
+  # later, postgres' limit must drop or backend's must come down too.
+  # Refs: artifact-keeper-test#140, #154, artifact-keeper#1088, artifact-keeper#1176
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
+      cpu: 250m
+      memory: 128Mi
     limits:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 2000m
+      memory: 1Gi
   persistence:
     size: 2Gi
   # The chart's secrets.yaml validation expects auth.password (not a flat
