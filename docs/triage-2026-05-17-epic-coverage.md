@@ -13,10 +13,12 @@
 | Bucket | Count | % of 149 |
 |---|---|---|
 | **Covered** — load-bearing assertion present | 51 | 34% |
-| **Partial** — file exists, smoke-only or skips key assertion | 40 | 27% |
-| **Missing** — no relevant test | 51 | 34% |
-| **Manual-only** — needs external infra (LDAP/SAML server, multi-instance, hardware) | 4 | 3% |
+| **Partial** — file exists, smoke-only or skips key assertion | 42 | 28% |
+| **Missing** — no relevant test | 47 | 32% |
+| **Fixture-needed** — needs a containerized fixture (LDAP server, SAML IdP, mock migration source) that doesn't exist yet but is one-time work | 6 | 4% |
 | **Backend-blocked** — depends on an unmerged artifact-keeper PR | 3 | 2% |
+
+**On the fixture-needed bucket.** Earlier draft tagged these `manual-only`; that was over-conservative. LDAP, SAML, and migration-source flows are fully automatable with containerized identity providers (`osixia/openldap` or `lldap/lldap` for LDAP, `kristophjunge/test-saml-idp` or `mock-saml` for SAML, a slow-drip HTTP mock for migration source). One-time `docker-compose.test-fixtures.yml` overlay unlocks all 6 items.
 
 Plus **14 backend bug-fix commits** in the last 90 days that lack a regression test in this repo (5 critical, 8 high, 1 medium — see §4).
 
@@ -38,25 +40,30 @@ Per your earlier direction — one PR per logical group, 3-round 4-agent audit p
 
 | Order | PR | Scope | New tests | Hardening passes |
 |---|---|---|---|---|
+| **0** | `feat/test-fixtures-idp-and-migration-sources` | **Prereq for #5, #10, #11.** Add `docker-compose.test-fixtures.yml` overlay: OpenLDAP (seeded with users + groups), mock SAML IdP, mock migration HTTP source. Plus `tests/lib/fixtures.sh` helpers (wait-for-ldap, wait-for-saml-metadata, mint-saml-assertion). No new sub-task tests, just infra. | 0 | 0 |
 | 1 | `feat/epic-2-security-scanning-depth` | Epic 2 (#67) | 11 | 3 |
 | 2 | `feat/untested-fixes-batch-1` | §4 items 1-7 (CRITICAL + top-3 HIGH) | 7 | 0 |
 | 3 | `feat/epic-1-pullthrough-completeness` | Epic 1 (#69) | 2 | 3 |
 | 4 | `feat/epic-6-repo-lifecycle` | Epic 6 (#71) | 8 | 4 |
-| 5 | `feat/epic-7-webhooks-grpc` | Epic 7 (#75) | 4 | 2 |
-| 6 | `feat/epic-3-format-lifecycle` | Epic 3 (#68) | 3 | 5 |
-| 7 | `feat/epic-4-signing-verification` | Epic 4 (#72) | 1 | 4 |
-| 8 | `feat/epic-8-search-browse` | Epic 8 (#73) | 6 | 4 |
-| 9 | `feat/epic-10-admin-ops` | Epic 10 (#77) | 3 | 5 |
-| 10 | `feat/epic-11-auth-edge-cases-1` | Epic 11 (#76) covered+code-only items | 4 | 4 |
-| 11 | `feat/epic-12-federation-1` | Epic 12 (#78) items not requiring multi-instance | 5 | 2 |
-| 12 | `feat/untested-fixes-batch-2` | §4 items 8-14 (remaining HIGH + MEDIUM) | 7 | 0 |
+| 5 | `feat/epic-9-migrations` | Epic 9 (#74) — all 9 sub-tasks now coverable thanks to PR 0's mock source | 4 | 1 |
+| 6 | `feat/epic-7-webhooks-grpc` | Epic 7 (#75) | 4 | 2 |
+| 7 | `feat/epic-3-format-lifecycle` | Epic 3 (#68) | 3 | 5 |
+| 8 | `feat/epic-4-signing-verification` | Epic 4 (#72) | 1 | 4 |
+| 9 | `feat/epic-8-search-browse` | Epic 8 (#73) | 6 | 4 |
+| 10 | `feat/epic-10-admin-ops` | Epic 10 (#77) | 3 | 5 |
+| 11 | `feat/epic-11-auth-edge-cases` | Epic 11 (#76) — all 15 sub-tasks now coverable thanks to PR 0's LDAP + SAML fixtures | 7 | 5 |
+| 12 | `feat/epic-12-federation-1` | Epic 12 (#78) items not requiring multi-instance | 5 | 2 |
+| 13 | `feat/untested-fixes-batch-2` | §4 items 8-14 (remaining HIGH + MEDIUM) | 7 | 0 |
 
 **Deferred / split off:**
 
 - **Epic 5 (#70)** — all 6 formats already have test files. The Epic asks for a **backend audit** (handler-registry wiring), which is outside this repo. Recommend closing #70 after a one-paragraph comment confirming each test exists and pointing at the backend-side audit issue.
-- **Epic 9 (#74)** — three sub-tasks (9.4 SSE progress, 9.5 report, 9.6 assessment) are **manual-only** until source-system fixtures (Artifactory/Nexus/Harbor mocks) land. Recommend filing a separate fixture-infra issue and tackling 9.1-9.3, 9.7-9.8 in a small PR.
-- **Epic 11 manual-only items** — LDAP / SAML full login flows (11.1, 11.2). Need LDAP and SAML mock infrastructure. Tag `manual-only`, @brandonrc, defer.
-- **Epic 12 multi-instance items** — 12.6 (bidirectional conflicts), 12.7 (multi-peer partial failure), 12.9 (failover), 12.10 (cross-instance aggregation) need 3+ AK instances on the mesh harness. Gate behind `MAIN_URL`/`PEER1_URL`/`PEER2_URL` env vars and treat as a second-PR for Epic 12.
+- **Epic 12 multi-instance items** — 12.6 (bidirectional conflicts), 12.7 (multi-peer partial failure), 12.9 (failover), 12.10 (cross-instance aggregation) need 3+ AK instances on the mesh harness. Gate behind `MAIN_URL`/`PEER1_URL`/`PEER2_URL` env vars and treat as a second-PR for Epic 12. The mesh fixture already exists in `artifact-keeper/docker-compose.mesh-e2e.yml`, so this is env-var-gating, not fixture work.
+
+**Previously deferred, now unblocked by PR 0:**
+
+- Epic 9 SSE progress (9.4), migration report (9.5), pre-migration assessment (9.6) — mock migration source in PR 0 supplies the long-running-source behavior these need.
+- Epic 11 LDAP login (11.1), SAML login (11.2), LDAP group sync (11.6) — LDAP and SAML containers in PR 0 supply the identity providers these need.
 
 ---
 
@@ -215,9 +222,9 @@ All 6 formats already have test files in `tests/formats/`. The Epic asks for **h
 | 9.1 Create migration job | covered | `tests/lifecycle/test-migrations-lifecycle.sh:238` | required-field validation |
 | 9.2 List/query jobs | covered | `tests/lifecycle/test-migrations-lifecycle.sh` | filter by status/date |
 | 9.3 Job lifecycle (start/pause/resume/cancel) | partial | `tests/lifecycle/test-migrations-lifecycle.sh:296` (cancel only) | start/pause/resume after backend ready |
-| 9.4 SSE progress streaming | **manual-only** | — | needs long-running source fixture |
-| 9.5 Migration report | **manual-only** | — | needs completed job fixture |
-| 9.6 Pre-migration assessment | **manual-only** | — | needs reachable source instance |
+| 9.4 SSE progress streaming | **fixture-needed** | — | mock migration source from PR 0 |
+| 9.5 Migration report | **fixture-needed** | — | completed-job state from PR 0 mock source |
+| 9.6 Pre-migration assessment | **fixture-needed** | — | reachable mock source from PR 0 |
 | 9.7 Connection test | covered | `tests/lifecycle/test-migrations-lifecycle.sh:209` | succeed against mock |
 | 9.8 Connection CRUD | covered | `tests/lifecycle/test-migrations-lifecycle.sh:115/160/183/323` | add PUT update |
 | 9.9 Format-specific fixtures | **missing** (infra) | — | file separate fixture-infra issue |
@@ -244,12 +251,12 @@ All 6 formats already have test files in `tests/formats/`. The Epic asks for **h
 
 | Sub-task | Status | Evidence | Suggested action |
 |---|---|---|---|
-| 11.1 LDAP full login flow | **manual-only** | — | LDAP mock or env-gate; @brandonrc |
-| 11.2 SAML full login flow | **manual-only** | — | SAML IdP mock; @brandonrc |
+| 11.1 LDAP full login flow | **fixture-needed** | — | OpenLDAP container from PR 0; create `tests/auth/test-ldap-login.sh` |
+| 11.2 SAML full login flow | **fixture-needed** | — | SAML IdP container from PR 0; create `tests/auth/test-saml-login.sh` |
 | 11.3 OIDC state/nonce mismatch | partial | `tests/auth/test-oidc-callback.sh:61-77` | nonce-specific attacks |
 | 11.4 OIDC redirect URI mismatch | **missing** | — | create `tests/auth/test-oidc-redirect-uri.sh` |
 | 11.5 OIDC custom claim mapping | **missing** | — | create `tests/auth/test-oidc-custom-claims.sh` |
-| 11.6 LDAP group sync on federated auth | **missing** | — | needs LDAP fixture; @brandonrc |
+| 11.6 LDAP group sync on federated auth | **fixture-needed** | — | OpenLDAP container from PR 0; create `tests/auth/test-ldap-group-sync.sh` |
 | 11.7 Token exchange endpoint | **missing** | — | create `tests/auth/test-token-exchange.sh` |
 | 11.8 API token scope enforcement | covered | `tests/auth/test-api-token-scope.sh` | none |
 | 11.9 Download ticket lifecycle | partial | `tests/auth/test-download-ticket-lifecycle.sh:42-80` | single-use/expiry gated on backend |
@@ -316,7 +323,7 @@ These are behavioral bug fixes merged to `artifact-keeper` main between 2026-02-
 
 ## 5. Items needing your review
 
-### Manual-only (need fixture infra or hardware before automation)
+### Fixture-needed (one-time investment unblocks 6 sub-tasks across Epics 9 and 11)
 - 9.4 SSE migration progress streaming
 - 9.5 Migration report
 - 9.6 Pre-migration assessment
@@ -324,7 +331,7 @@ These are behavioral bug fixes merged to `artifact-keeper` main between 2026-02-
 - 11.2 SAML full login flow
 - 11.6 LDAP group sync
 
-Recommend tagging these issues `manual-only` and @-mentioning you for the call on whether to invest in fixture infra now or defer.
+All six are fully automatable with containerized fixtures. **Recommended:** PR 0 in the §2 roadmap (`feat/test-fixtures-idp-and-migration-sources`) lands the `docker-compose.test-fixtures.yml` overlay first, then Epics 9 and 11 land their tests against those fixtures. The previous draft tagged these `manual-only`; that classification was too conservative.
 
 ### Backend-blocked (depend on an unmerged artifact-keeper PR/issue)
 - 1.2 Cache poisoning full E2E — artifact-keeper#1224
@@ -356,7 +363,7 @@ When the code rounds start:
 
 ## Appendix — coverage counts per Epic
 
-| Epic | # | Total | Covered | Partial | Missing | Manual | Backend-blocked |
+| Epic | # | Total | Covered | Partial | Missing | Fixture-needed | Backend-blocked |
 |---|---|---|---|---|---|---|---|
 | 1 Pull-through cache | 69 | 10 | 4 | 3 | 2 | 0 | 1 |
 | 2 Security scanning | 67 | 16 | 2 | 3 | 11 | 0 | 0 |
@@ -368,8 +375,8 @@ When the code rounds start:
 | 8 Search + browse | 73 | 15 | 5 | 4 | 6 | 0 | 0 |
 | 9 Migrations | 74 | 9 | 4 | 1 | 1 | 3 | 0 |
 | 10 Admin operations | 77 | 13 | 5 | 8 | 0 | 0 | 0 |
-| 11 Auth edge cases | 76 | 15 | 2 | 5 | 6 | 2 | 0 |
+| 11 Auth edge cases | 76 | 15 | 2 | 5 | 5 | 3 | 0 |
 | 12 Federation | 78 | 10 | 0 | 2 | 6 | 0 | 2 |
-| **Total** |  | **149** | **51** | **42** | **48** | **5** | **3** |
+| **Total** |  | **149** | **51** | **42** | **47** | **6** | **3** |
 
 (Variance between sums and §1 percentages reflects rounding and the 14 untested-fixes set being scored separately.)
