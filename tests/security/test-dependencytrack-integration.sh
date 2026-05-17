@@ -31,9 +31,7 @@ DTRACK_URL="${DEPENDENCY_TRACK_URL:-}"
 DTRACK_KEY="${DEPENDENCY_TRACK_API_KEY:-}"
 
 if [ -z "$DTRACK_KEY" ] || [ -z "$DTRACK_URL" ]; then
-  begin_test "DependencyTrack env gate"
-  skip "DEPENDENCY_TRACK_API_KEY and/or DEPENDENCY_TRACK_URL not set; DTrack integration not exercised"
-  end_suite
+  skip_suite "DEPENDENCY_TRACK_API_KEY and/or DEPENDENCY_TRACK_URL not set; DTrack integration not exercised"
 fi
 
 auth_admin
@@ -80,13 +78,16 @@ cfg_status=$(curl -s -o "${WORK_DIR}/cfg.json" -w '%{http_code}' $CURL_TIMEOUT \
   -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
   -d "$payload" "${BASE_URL}/api/v1/integrations/dependency-track") || cfg_status="000"
 if [ "$cfg_status" = "404" ]; then
-  skip "/api/v1/integrations/dependency-track not mounted (HTTP 404); backend pre-dates DTrack wiring"
-  end_suite
+  skip_suite "/api/v1/integrations/dependency-track not mounted (HTTP 404); backend pre-dates DTrack wiring"
 elif [[ "$cfg_status" =~ ^2[0-9][0-9]$ ]]; then
   INTEGRATION_ID=$(jq -r '.id // empty' < "${WORK_DIR}/cfg.json" 2>/dev/null || echo "")
   pass
 else
-  fail "DTrack integration config returned HTTP ${cfg_status} (body: $(head -c 200 "${WORK_DIR}/cfg.json"))"
+  # Strip api_key (and common variants) from the body before echoing into JUnit.
+  # If the backend ever round-trips the credential in the response, this keeps
+  # it out of the 90-day-retained CI artifact.
+  cfg_redacted=$(jq -c 'del(.api_key, .apiKey, .credentials, .secret, .token)' < "${WORK_DIR}/cfg.json" 2>/dev/null | head -c 200 || echo "<unreadable>")
+  fail "DTrack integration config returned HTTP ${cfg_status}" "body=${cfg_redacted}"
 fi
 
 begin_test "Create repo and upload BOM"
@@ -149,10 +150,19 @@ else
   vis_resp=$(api_get "/api/v1/security/artifacts/${ARTIFACT_ID}/findings" 2>/dev/null || true)
   if [ -z "$vis_resp" ]; then
     skip "per-artifact findings endpoint returned empty (DTrack pull may be async; tracked in epic#67)"
-  elif echo "$vis_resp" | jq -e '.items | type == "array"' >/dev/null 2>&1; then
-    pass
-  else
+  elif ! echo "$vis_resp" | jq -e '.items | type == "array"' >/dev/null 2>&1; then
     fail "per-artifact findings response is not a valid envelope (got: $(echo "$vis_resp" | head -c 200))"
+  else
+    # Load-bearing: an empty items[] means DTrack accepted the BOM but propagated
+    # zero findings back, which is the exact silent-success class this test
+    # exists to catch. The seeded BOM (lodash 4.17.4) carries known CVEs; at
+    # least one MUST surface here.
+    vis_count=$(echo "$vis_resp" | jq -r '.items | length' 2>/dev/null || echo "0")
+    if [ "${vis_count:-0}" -ge 1 ]; then
+      pass
+    else
+      fail "DTrack integration returned empty findings for an artifact with known CVEs (silent-success class — items=[])"
+    fi
   fi
 fi
 

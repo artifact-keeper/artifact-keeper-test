@@ -68,9 +68,7 @@ fi
 if [ "$openscap_enabled" = "true" ]; then
   pass
 else
-  skip "openscap service not configured (system/config.scanners.openscap_enabled=false and OPENSCAP_URL unset)"
-  end_suite
-  exit 0
+  skip_suite "openscap service not configured (system/config.scanners.openscap_enabled=false and OPENSCAP_URL unset)"
 fi
 
 # Build a scannable OCI manifest. OpenSCAP only applies to container
@@ -148,15 +146,16 @@ else
   SCAN_ID=$(trigger_and_wait_scan "$ARTIFACT_ID" "$SCAN_TIMEOUT" "openscap") || rc=$?
   case "$rc" in
     0)
-      final_status=$(api_get "/api/v1/security/scans/${SCAN_ID}" 2>/dev/null | jq -r '.status // empty')
+      final_status=$(api_get "/api/v1/security/scans/${SCAN_ID}" 2>/dev/null | jq -r '.status // empty' 2>/dev/null || echo "")
       if [ "$final_status" = "completed" ]; then
         pass
       else
-        fail "openscap scan did not complete (status=${final_status:-unknown})" "scan_id=${SCAN_ID}"
+        fail "openscap scan reached terminal state but status=${final_status:-unknown}" "scan_id=${SCAN_ID}"
       fi
       ;;
     2) fail "no openscap scan_result row materialized within ${SCAN_TIMEOUT}s (scanner reports openscap_enabled=true but no scan_type=openscap row was created; orchestrator gating bug or applicability mismatch)" ;;
-    *) fail "scan trigger failed" ;;
+    3) fail "openscap scan accepted but stuck non-terminal after ${SCAN_TIMEOUT}s (silent-success class)" ;;
+    *) fail "scan trigger failed (rc=$rc)" ;;
   esac
 fi
 

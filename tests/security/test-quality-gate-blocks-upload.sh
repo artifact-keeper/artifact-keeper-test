@@ -166,8 +166,11 @@ else
   SCAN_ID=$(trigger_and_wait_scan "$ARTIFACT_ID" "$SCAN_TIMEOUT") || rc=$?
   case "$rc" in
     0) pass ;;
-    2) SCANNER_AVAILABLE=false; skip "scanner not configured or no scan record within ${SCAN_TIMEOUT}s" ;;
-    *) fail "scan trigger failed" ;;
+    2) SCANNER_AVAILABLE=false; skip "scanner unavailable (rc=2)" ;;
+
+    3) fail "scan accepted but did not reach a terminal state within ${SCAN_TIMEOUT}s (stuck running)" ;;
+
+    *) fail "scan trigger failed (rc=$rc)" ;;
   esac
 fi
 
@@ -190,16 +193,17 @@ else
   else
     body=$(cat "${WORK_DIR}/eval.json")
     is_passed=$(echo "$body" | jq -r '.passed // empty')
+    # Load-bearing: at least one violation row must be present. A body-wide
+    # grep for "critical|high" would also match echoed policy-threshold field
+    # names (e.g. "max_critical_issues":0) and pass on a backend that
+    # returned passed=false for an unrelated reason.
     viol_count=$(echo "$body" | jq -r '
       [ (.violations // .violated_rules // .failed_rules // .failures // [])[]? ]
-      | length')
-    body_lc=$(echo "$body" | tr "[:upper:]" "[:lower:]")
-    mentions_sev=0
-    echo "$body_lc" | grep -Eq 'critical|high' && mentions_sev=1
+      | length' 2>/dev/null || echo "0")
     if [ "$is_passed" != "false" ]; then
       fail "strict gate reported passed='${is_passed}', expected false" "body: $(echo "$body" | head -c 600)"
-    elif [ "$viol_count" -lt 1 ] && [ "$mentions_sev" = "0" ]; then
-      fail "strict gate passed=false but no violations recorded and severity not mentioned" "body: $(echo "$body" | head -c 600)"
+    elif [ "${viol_count:-0}" -lt 1 ]; then
+      fail "strict gate passed=false but no violations[] row recorded (correlative-not-causal failure mode)" "body: $(echo "$body" | head -c 600)"
     else
       pass
     fi
@@ -227,6 +231,7 @@ else
     -d "$promo_payload" \
     "${BASE_URL}/api/v1/promotion/repositories/${STAGING_KEY}/artifacts/${ARTIFACT_ID}/promote") \
     || promo_status="000"
+  STRICT_PROMO_LANDED=0
   case "$promo_status" in
     403|409|422)
       pass
@@ -241,6 +246,7 @@ else
         fail "promotion returned ${promo_status} with gate-related body; contract requires 403/409/422" \
 "body: $(head -c 400 "${WORK_DIR}/promo.json")"
       else
+        STRICT_PROMO_LANDED=1
         skip "promotion returned ${promo_status}; backend does not appear to wire promotion to quality-gate evaluation at this version"
       fi
       ;;
@@ -319,6 +325,19 @@ else
   case "$promo2_status" in
     2*) pass ;;
     404) skip "promotion endpoint not present on this backend" ;;
+    409|422)
+      # If the strict-gate promotion already landed (the backend doesn't wire
+      # promotion to gate enforcement), the artifact is already in RELEASE_KEY
+      # and a second promotion will conflict. That's not a regression of the
+      # loosened-gate assertion — it's the expected state given the skip
+      # branch above.
+      if [ "${STRICT_PROMO_LANDED:-0}" = "1" ]; then
+        skip "artifact already in release repo from strict-gate promotion (backend does not wire gate enforcement; HTTP ${promo2_status} is expected)"
+      else
+        fail "promotion after loosened gate returned HTTP ${promo2_status}; expected 2xx" \
+"body: $(head -c 400 "${WORK_DIR}/promo2.json")"
+      fi
+      ;;
     *)  fail "promotion after loosened gate returned HTTP ${promo2_status}; expected 2xx" \
 "body: $(head -c 400 "${WORK_DIR}/promo2.json")" ;;
   esac

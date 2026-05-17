@@ -79,8 +79,7 @@ case "$cfg_status" in
       "${BASE_URL}/api/v1/repositories/${REPO_KEY}/scan-config") || cfg_status="000"
     case "$cfg_status" in
       200|201|204) pass ;;
-      404)         skip "scan-config endpoint not mounted (HTTP 404); auto-scan-on-upload feature not shipped on this backend"
-                   end_suite ;;
+      404)         skip_suite "scan-config endpoint not mounted (HTTP 404); auto-scan-on-upload feature not shipped on this backend" ;;
       *)           fail "PUT scan-config returned HTTP ${cfg_status} (body: $(head -c 200 "${WORK_DIR}/cfg.json"))" ;;
     esac
     ;;
@@ -128,10 +127,15 @@ else
     resp=$(api_get "/api/v1/security/artifacts/${ARTIFACT_ID}/scans" 2>/dev/null || true)
     if [ -n "$resp" ]; then
       # Pick the newest row whose created_at (ISO8601) parses to >= TEST_START_EPOCH.
+      # ISO8601 normalisation: strip offset first (so the fractional-second
+      # match anchors at end-of-string), then collapse fractional seconds.
+      # Handles both "2026-01-01T00:00:00.123+00:00" and "2026-01-01T00:00:00Z".
       observed_id=$(echo "$resp" | jq -r --argjson cutoff "$TEST_START_EPOCH" '
         .items // [] | map(select(
           .created_at != null and
-          (.created_at | sub("\\.[0-9]+Z?$"; "Z") | sub("\\+[0-9:]+$"; "Z")
+          (.created_at
+            | sub("(\\+|-)[0-9]{2}:?[0-9]{2}$"; "Z")
+            | sub("\\.[0-9]+Z$"; "Z")
             | fromdateiso8601? // 0) >= $cutoff
         )) | .[0].id // empty' 2>/dev/null || echo "")
       observed_created=$(echo "$resp" | jq -r --arg id "$observed_id" '

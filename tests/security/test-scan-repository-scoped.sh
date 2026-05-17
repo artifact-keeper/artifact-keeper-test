@@ -150,8 +150,11 @@ else
   SCAN_ID_A=$(trigger_and_wait_scan "$ARTIFACT_ID_A" "$SCAN_TIMEOUT") || rc=$?
   case "$rc" in
     0) pass ;;
-    2) SCANNER_AVAILABLE=false; skip "scanner unavailable or no scan record produced" ;;
-    *) fail "scan-a did not complete" ;;
+    2) SCANNER_AVAILABLE=false; skip "scanner unavailable (rc=2)" ;;
+
+    3) fail "scan accepted but did not reach a terminal state within ${SCAN_TIMEOUT}s (stuck running)" ;;
+
+    *) fail "scan-a did not complete (rc=$rc)" ;;
   esac
 fi
 
@@ -165,8 +168,11 @@ else
   SCAN_ID_B=$(trigger_and_wait_scan "$ARTIFACT_ID_B" "$SCAN_TIMEOUT") || rc=$?
   case "$rc" in
     0) pass ;;
-    2) SCANNER_AVAILABLE=false; skip "scanner unavailable or no scan record produced" ;;
-    *) fail "scan-b did not complete" ;;
+    2) SCANNER_AVAILABLE=false; skip "scanner unavailable (rc=2)" ;;
+
+    3) fail "scan accepted but did not reach a terminal state within ${SCAN_TIMEOUT}s (stuck running)" ;;
+
+    *) fail "scan-b did not complete (rc=$rc)" ;;
   esac
 fi
 

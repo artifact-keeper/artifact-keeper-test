@@ -241,20 +241,28 @@ else
   if [ "$check_status" = "404" ] || [ -z "$check_resp" ]; then
     skip "no license-compliance check endpoint responded 2xx (last HTTP ${check_status})"
   else
-    # Load-bearing: the response must indicate the policy was violated
-    # AND mention GPL-3.0 somewhere (license name or violation row).
     has_violation=$(echo "$check_resp" | jq -r '
       (.passed == false)
       or (.compliant == false)
       or (((.violations // .violating_components // .findings // []) | length) > 0)
-      // false')
-    body_lc=$(echo "$check_resp" | tr "[:upper:]" "[:lower:]")
-    mentions_gpl=0
-    echo "$body_lc" | grep -q 'gpl-3.0' && mentions_gpl=1
-    if [ "$has_violation" = "true" ] && [ "$mentions_gpl" = "1" ]; then
+      ' 2>/dev/null || echo "false")
+    # Load-bearing: the violation row itself must name GPL-3.0. A body-wide
+    # grep would match echoed policy-config fields (`disallowed_licenses`:
+    # [`GPL-3.0`]) and pass even when the violation list is empty or refers to
+    # an unrelated license.
+    gpl_in_violation=$(echo "$check_resp" | jq -r --arg lic "$BANNED_LICENSE" '
+      [ (.violations // .violating_components // .findings // [])[]?
+        | (.license // .licenses // .license_id // .spdx_id // "") | tostring
+        | ascii_downcase ]
+      | any(. == ($lic | ascii_downcase) or contains($lic | ascii_downcase))
+      ' 2>/dev/null || echo "false")
+    if [ "$has_violation" = "true" ] && [ "$gpl_in_violation" = "true" ]; then
       pass
+    elif [ "$has_violation" = "true" ]; then
+      fail "compliance check returned a violation but no row named ${BANNED_LICENSE} (correlative-not-causal failure mode)" \
+"body (first 600 bytes): $(echo "$check_resp" | head -c 600)"
     else
-      fail "compliance check did not flag ${BANNED_LICENSE}: has_violation=${has_violation}, mentions_gpl=${mentions_gpl}" \
+      fail "compliance check did not flag ${BANNED_LICENSE}: passed/compliant non-false and no violations[] rows" \
 "body (first 600 bytes): $(echo "$check_resp" | head -c 600)"
     fi
   fi

@@ -137,15 +137,16 @@ else
   SCAN_ID=$(trigger_and_wait_scan "$ARTIFACT_ID" "$SCAN_TIMEOUT" "grype") || rc=$?
   case "$rc" in
     0)
-      final_status=$(api_get "/api/v1/security/scans/${SCAN_ID}" 2>/dev/null | jq -r '.status // empty')
+      final_status=$(api_get "/api/v1/security/scans/${SCAN_ID}" 2>/dev/null | jq -r '.status // empty' 2>/dev/null || echo "")
       if [ "$final_status" = "completed" ]; then
         pass
       else
-        fail "grype scan did not complete (status=${final_status:-unknown})" "scan_id=${SCAN_ID}"
+        fail "grype scan reached terminal state but status=${final_status:-unknown}" "scan_id=${SCAN_ID}"
       fi
       ;;
     2) fail "no scan_type=grype row materialized within ${SCAN_TIMEOUT}s; grype is bundled in the backend image (Dockerfile.backend) so this means the orchestrator did not register GrypeScanner" ;;
-    *) fail "scan trigger failed" ;;
+    3) fail "grype scan accepted but stuck non-terminal after ${SCAN_TIMEOUT}s (silent-success class)" ;;
+    *) fail "scan trigger failed (rc=$rc)" ;;
   esac
 fi
 
@@ -165,8 +166,8 @@ else
       fail "grype completed scan but findings_count=0 on known-vulnerable fixture (lodash ${EXPECTED_VULN_VERSION} / ${EXPECTED_CVE}); scanner did not inspect the bytes" \
         "scan_id=${SCAN_ID}"
     else
-      has_cve=$(echo "$findings_resp" | jq -r --arg c "$EXPECTED_CVE" '[.items[] | select((.cve_id // "") == $c)] | length')
-      if [ "$has_cve" -ge 1 ] 2>/dev/null; then
+      has_cve=$(echo "$findings_resp" | jq -r --arg c "$EXPECTED_CVE" '[.items[] | select((.cve_id // "") == $c)] | length' 2>/dev/null || echo "0")
+      if [ "${has_cve:-0}" -ge 1 ]; then
         pass
       else
         # Capture what we DID find for triage. Don't accept "any CVE" --
@@ -215,7 +216,7 @@ else
   ver=$(echo "$scan_resp" | jq -r '.scanner_version // empty')
   if [ -z "$ver" ]; then
     skip "scan completed but scanner_version is null (CLI version probe returned None; not a finding-correctness issue)"
-  elif [[ "$ver" == grype* || "$ver" == *grype* ]]; then
+  elif [[ "$ver" == *grype* ]]; then
     pass
   else
     fail "scanner_version='${ver}' does not contain 'grype'; format_grype_version regression?"

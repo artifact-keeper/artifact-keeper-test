@@ -224,8 +224,11 @@ else
   SCAN_ID=$(trigger_and_wait_scan "$ARTIFACT_ID" "$SCAN_TIMEOUT") || rc=$?
   case "$rc" in
     0) pass ;;
-    2) SCANNER_AVAILABLE=false; skip "scanner not configured or no scan record within ${SCAN_TIMEOUT}s" ;;
-    *) fail "scan trigger failed" ;;
+    2) SCANNER_AVAILABLE=false; skip "scanner unavailable (rc=2)" ;;
+
+    3) fail "scan accepted but did not reach a terminal state within ${SCAN_TIMEOUT}s (stuck running)" ;;
+
+    *) fail "scan trigger failed (rc=$rc)" ;;
   esac
 fi
 

@@ -119,7 +119,9 @@ else
           fresh=$(echo "$resp" | jq -r --argjson cutoff "$trigger_start" '
             (.items // []) | map(select(
               .created_at != null and
-              (.created_at | sub("\\.[0-9]+Z?$"; "Z") | sub("\\+[0-9:]+$"; "Z")
+              (.created_at
+                | sub("(\\+|-)[0-9]{2}:?[0-9]{2}$"; "Z")
+                | sub("\\.[0-9]+Z$"; "Z")
                 | fromdateiso8601? // 0) >= $cutoff
             )) | length' 2>/dev/null || echo "0")
           if [ "$fresh" != "0" ] && [ -n "$fresh" ]; then
@@ -141,14 +143,19 @@ else
         # for cron "* * * * *" to fire. Manual / nightly only.
         echo "  force-trigger not mounted; SCHEDULED_SCAN_WAIT_FOR_CRON=1 -> waiting for cron tick"
         elapsed=0
-        wait_max="${TEST_TIMEOUT:-120}"
+        # Cap wait below TEST_TIMEOUT so cleanup + end_suite still get a budget
+        # before the run-suite.sh outer `timeout` SIGKILLs us.
+        wait_max=$(( ${TEST_TIMEOUT:-120} - 20 ))
+        if [ "$wait_max" -lt 30 ]; then wait_max=30; fi
         observed=0
         while [ "$elapsed" -lt "$wait_max" ]; do
           resp=$(api_get "/api/v1/repositories/${REPO_KEY}/security/scans" 2>/dev/null || true)
           fresh=$(echo "$resp" | jq -r --argjson cutoff "$trigger_start" '
             (.items // []) | map(select(
               .created_at != null and
-              (.created_at | sub("\\.[0-9]+Z?$"; "Z") | sub("\\+[0-9:]+$"; "Z")
+              (.created_at
+                | sub("(\\+|-)[0-9]{2}:?[0-9]{2}$"; "Z")
+                | sub("\\.[0-9]+Z$"; "Z")
                 | fromdateiso8601? // 0) >= $cutoff
             )) | length' 2>/dev/null || echo "0")
           if [ "$fresh" != "0" ] && [ -n "$fresh" ]; then
