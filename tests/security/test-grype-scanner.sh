@@ -24,6 +24,7 @@
 # pattern from test-scan-completes.sh. Grype's package-lock.json matcher
 # detects this deterministically against the seeded DB.
 
+set -euo pipefail
 source "$(dirname "$0")/../lib/common.sh"
 require_cmd jq
 
@@ -31,7 +32,7 @@ begin_suite "grype-scanner"
 auth_admin
 setup_workdir
 
-REPO_KEY="repo-${RUN_ID}-grype"
+REPO_KEY="test-grype-${RUN_ID}"
 ARTIFACT_PATH="grype-fixture-${RUN_ID}.tgz"
 EXPECTED_CVE="CVE-2019-10744"
 EXPECTED_VULN_VERSION="4.17.4"
@@ -132,35 +133,20 @@ begin_test "Grype scan_result row materializes after trigger (proves grype is re
 if [ -z "$ARTIFACT_ID" ]; then
   fail "no artifact_id, cannot trigger scan"
 else
-  trigger_status=$(curl -s -o "${WORK_DIR}/trigger.json" -w '%{http_code}' \
-    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
-    -d "{\"artifact_id\":\"${ARTIFACT_ID}\"}" \
-    "${BASE_URL}/api/v1/security/scan") || trigger_status=000
-  if [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
-    fail "POST /security/scan returned HTTP ${trigger_status}" "$(head -c 300 "${WORK_DIR}/trigger.json")"
-  else
-    elapsed=0
-    final_status=""
-    while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
-      scans_resp=$(api_get "/api/v1/security/scans?artifact_id=${ARTIFACT_ID}&per_page=20" 2>/dev/null) || true
-      if [ -n "$scans_resp" ]; then
-        SCAN_ID=$(echo "$scans_resp" | jq -r '[.items[] | select(.scan_type=="grype")] | .[0].id // empty')
-        final_status=$(echo "$scans_resp" | jq -r '[.items[] | select(.scan_type=="grype")] | .[0].status // empty')
-        case "$final_status" in
-          completed|failed|error|cancelled) break ;;
-        esac
+  rc=0
+  SCAN_ID=$(trigger_and_wait_scan "$ARTIFACT_ID" "$SCAN_TIMEOUT" "grype") || rc=$?
+  case "$rc" in
+    0)
+      final_status=$(api_get "/api/v1/security/scans/${SCAN_ID}" 2>/dev/null | jq -r '.status // empty')
+      if [ "$final_status" = "completed" ]; then
+        pass
+      else
+        fail "grype scan did not complete (status=${final_status:-unknown})" "scan_id=${SCAN_ID}"
       fi
-      sleep 5
-      elapsed=$((elapsed + 5))
-    done
-    if [ -z "$SCAN_ID" ]; then
-      fail "no scan_type=grype row materialized within ${SCAN_TIMEOUT}s; grype is bundled in the backend image (Dockerfile.backend) so this means the orchestrator did not register GrypeScanner"
-    elif [ "$final_status" = "completed" ]; then
-      pass
-    else
-      fail "grype scan did not complete (status=${final_status:-unknown})" "scan_id=${SCAN_ID}"
-    fi
-  fi
+      ;;
+    2) fail "no scan_type=grype row materialized within ${SCAN_TIMEOUT}s; grype is bundled in the backend image (Dockerfile.backend) so this means the orchestrator did not register GrypeScanner" ;;
+    *) fail "scan trigger failed" ;;
+  esac
 fi
 
 # Load-bearing CVE assertion. 0 findings on this fixture = scanner ran

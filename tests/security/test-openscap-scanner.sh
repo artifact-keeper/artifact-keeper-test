@@ -23,13 +23,14 @@
 # scanners.openscap_enabled=false. Release-gate against minimal stacks
 # without the sidecar must not hard-fail here.
 
+set -euo pipefail
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "openscap-scanner"
 auth_admin
 setup_workdir
 
-REPO_KEY="repo-${RUN_ID}-oscap"
+REPO_KEY="test-oscap-${RUN_ID}"
 IMAGE_NAME="oscap-target"
 UNIQUE_TAG="1.0.${RUN_ID}"
 SCAN_TIMEOUT="${SCAN_TIMEOUT:-90}"
@@ -143,37 +144,20 @@ begin_test "Trigger scan and wait for openscap scan_result to complete"
 if [ -z "$ARTIFACT_ID" ]; then
   skip "no artifact_id, cannot trigger scan"
 else
-  trigger_status=$(curl -s -o "$WORK_DIR/trigger.json" -w '%{http_code}' \
-    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
-    -d "{\"artifact_id\":\"${ARTIFACT_ID}\"}" \
-    "${BASE_URL}/api/v1/security/scan") || trigger_status=000
-
-  if [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
-    fail "POST /security/scan returned HTTP ${trigger_status}" "$(head -c 300 "$WORK_DIR/trigger.json")"
-  else
-    elapsed=0
-    final_status=""
-    while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
-      scans_resp=$(api_get "/api/v1/security/scans?artifact_id=${ARTIFACT_ID}&per_page=20" 2>/dev/null) || true
-      if [ -n "$scans_resp" ]; then
-        # Pick the most recent openscap-typed scan for this artifact.
-        SCAN_ID=$(echo "$scans_resp" | jq -r '[.items[] | select(.scan_type=="openscap")] | .[0].id // empty')
-        final_status=$(echo "$scans_resp" | jq -r '[.items[] | select(.scan_type=="openscap")] | .[0].status // empty')
-        case "$final_status" in
-          completed|failed|error|cancelled) break ;;
-        esac
+  rc=0
+  SCAN_ID=$(trigger_and_wait_scan "$ARTIFACT_ID" "$SCAN_TIMEOUT" "openscap") || rc=$?
+  case "$rc" in
+    0)
+      final_status=$(api_get "/api/v1/security/scans/${SCAN_ID}" 2>/dev/null | jq -r '.status // empty')
+      if [ "$final_status" = "completed" ]; then
+        pass
+      else
+        fail "openscap scan did not complete (status=${final_status:-unknown})" "scan_id=${SCAN_ID}"
       fi
-      sleep 5
-      elapsed=$((elapsed + 5))
-    done
-    if [ -z "$SCAN_ID" ]; then
-      fail "no openscap scan_result row materialized within ${SCAN_TIMEOUT}s (scanner reports openscap_enabled=true but no scan_type=openscap row was created; orchestrator gating bug or applicability mismatch)"
-    elif [ "$final_status" = "completed" ]; then
-      pass
-    else
-      fail "openscap scan did not complete (status=${final_status:-unknown})" "scan_id=${SCAN_ID}"
-    fi
-  fi
+      ;;
+    2) fail "no openscap scan_result row materialized within ${SCAN_TIMEOUT}s (scanner reports openscap_enabled=true but no scan_type=openscap row was created; orchestrator gating bug or applicability mismatch)" ;;
+    *) fail "scan trigger failed" ;;
+  esac
 fi
 
 # Findings-shape assertions per openscap_scanner.rs convert_findings:

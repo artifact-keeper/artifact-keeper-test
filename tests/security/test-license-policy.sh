@@ -25,6 +25,7 @@
 # assertion is marked skip with a precise reason. Cleanup runs via
 # add_exit_handler.
 
+set -euo pipefail
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "license-policy"

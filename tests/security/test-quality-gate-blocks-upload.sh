@@ -30,6 +30,7 @@
 #   evaluate-says-violation assertion is the primary contract and runs
 #   unconditionally.
 
+set -euo pipefail
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "quality-gate-blocks-upload"
@@ -161,37 +162,13 @@ begin_test "Trigger scan and wait for completion"
 if [ -z "$ARTIFACT_ID" ]; then
   skip "no artifact_id"
 else
-  trigger_status=$(curl -s -o "${WORK_DIR}/trig.json" -w '%{http_code}' $CURL_TIMEOUT \
-    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
-    -d "$(jq -n --arg id "$ARTIFACT_ID" '{artifact_id:$id}')" \
-    "${BASE_URL}/api/v1/security/scan") || trigger_status="000"
-  if [ "$trigger_status" = "501" ] || [ "$trigger_status" = "503" ]; then
-    SCANNER_AVAILABLE=false
-    skip "scanner not configured (HTTP ${trigger_status})"
-  elif [ "$trigger_status" = "500" ] && grep -qi "scanner.*not.*configured" "${WORK_DIR}/trig.json" 2>/dev/null; then
-    SCANNER_AVAILABLE=false
-    skip "scanner not configured (HTTP 500)"
-  else
-    elapsed=0
-    final_status=""
-    while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
-      scans_resp=$(api_get "/api/v1/security/scans?artifact_id=${ARTIFACT_ID}&per_page=10" 2>/dev/null) || true
-      if [ -n "$scans_resp" ]; then
-        SCAN_ID=$(echo "$scans_resp" | jq -r '.items[0].id // empty')
-        final_status=$(echo "$scans_resp" | jq -r '.items[0].status // empty')
-        case "$final_status" in
-          completed|failed|error|cancelled) break ;;
-        esac
-      fi
-      sleep 5; elapsed=$((elapsed + 5))
-    done
-    if [ -z "$SCAN_ID" ]; then
-      SCANNER_AVAILABLE=false
-      skip "no scan record within ${SCAN_TIMEOUT}s"
-    else
-      pass
-    fi
-  fi
+  rc=0
+  SCAN_ID=$(trigger_and_wait_scan "$ARTIFACT_ID" "$SCAN_TIMEOUT") || rc=$?
+  case "$rc" in
+    0) pass ;;
+    2) SCANNER_AVAILABLE=false; skip "scanner not configured or no scan record within ${SCAN_TIMEOUT}s" ;;
+    *) fail "scan trigger failed" ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------

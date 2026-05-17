@@ -125,40 +125,6 @@ EOFM
   echo "$artifact_id"
 }
 
-# trigger_and_wait ARTIFACT_ID -> echoes SCAN_ID once terminal; empty on skip
-trigger_and_wait() {
-  local artifact_id="$1"
-  local trigger_status final_status scan_id="" scans_resp elapsed=0
-  trigger_status=$(curl -s -o "$WORK_DIR/trigger-${artifact_id}.json" -w '%{http_code}' \
-    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
-    -d "{\"artifact_id\":\"${artifact_id}\"}" \
-    "${BASE_URL}/api/v1/security/scan") || trigger_status=000
-  if [ "$trigger_status" = "501" ] || [ "$trigger_status" = "503" ]; then
-    return 2
-  fi
-  if [ "$trigger_status" = "500" ] && grep -qi "scanner.*not.*configured" "$WORK_DIR/trigger-${artifact_id}.json"; then
-    return 2
-  fi
-  if [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
-    echo "POST /security/scan returned HTTP ${trigger_status}" >&2
-    return 1
-  fi
-  while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
-    scans_resp=$(api_get "/api/v1/security/scans?artifact_id=${artifact_id}&per_page=10" 2>/dev/null) || true
-    if [ -n "$scans_resp" ]; then
-      scan_id=$(echo "$scans_resp" | jq -r '.items[0].id // empty')
-      final_status=$(echo "$scans_resp" | jq -r '.items[0].status // empty')
-      case "$final_status" in
-        completed|failed|error|cancelled) break ;;
-      esac
-    fi
-    sleep 5
-    elapsed=$((elapsed + 5))
-  done
-  if [ -z "$scan_id" ]; then return 2; fi
-  echo "$scan_id"
-}
-
 # ---------------------------------------------------------------------------
 # Set up scope-a and scope-b
 # ---------------------------------------------------------------------------
@@ -180,15 +146,13 @@ begin_test "Trigger scan on scope-a artifact"
 if [ -z "$ARTIFACT_ID_A" ]; then
   skip "no artifact id for scope-a"
 else
-  rc=0; SCAN_ID_A=$(trigger_and_wait "$ARTIFACT_ID_A") || rc=$?
-  if [ "$rc" = "2" ]; then
-    SCANNER_AVAILABLE=false
-    skip "scanner unavailable or no scan record produced"
-  elif [ "$rc" != "0" ] || [ -z "$SCAN_ID_A" ]; then
-    fail "scan-a did not complete"
-  else
-    pass
-  fi
+  rc=0
+  SCAN_ID_A=$(trigger_and_wait_scan "$ARTIFACT_ID_A" "$SCAN_TIMEOUT") || rc=$?
+  case "$rc" in
+    0) pass ;;
+    2) SCANNER_AVAILABLE=false; skip "scanner unavailable or no scan record produced" ;;
+    *) fail "scan-a did not complete" ;;
+  esac
 fi
 
 begin_test "Trigger scan on scope-b artifact"
@@ -197,15 +161,13 @@ if ! $SCANNER_AVAILABLE; then
 elif [ -z "$ARTIFACT_ID_B" ]; then
   skip "no artifact id for scope-b"
 else
-  rc=0; SCAN_ID_B=$(trigger_and_wait "$ARTIFACT_ID_B") || rc=$?
-  if [ "$rc" = "2" ]; then
-    SCANNER_AVAILABLE=false
-    skip "scanner unavailable or no scan record produced"
-  elif [ "$rc" != "0" ] || [ -z "$SCAN_ID_B" ]; then
-    fail "scan-b did not complete"
-  else
-    pass
-  fi
+  rc=0
+  SCAN_ID_B=$(trigger_and_wait_scan "$ARTIFACT_ID_B" "$SCAN_TIMEOUT") || rc=$?
+  case "$rc" in
+    0) pass ;;
+    2) SCANNER_AVAILABLE=false; skip "scanner unavailable or no scan record produced" ;;
+    *) fail "scan-b did not complete" ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------
