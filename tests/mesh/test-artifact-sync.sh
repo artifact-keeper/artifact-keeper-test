@@ -118,7 +118,13 @@ elapsed=0
 synced=false
 while [ "$elapsed" -lt "$SYNC_TIMEOUT" ]; do
   if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
-    if [[ "$resp" == *"payload.bin"* ]]; then
+    # jq -e predicate: stricter than substring match on raw JSON.
+    if printf '%s' "$resp" | jq -e '
+        [ (if type == "array" then .[] else .items[]? end)
+          | (.path // .name // "")
+          | test("payload\\.bin$") ]
+        | any
+      ' > /dev/null 2>&1; then
       synced=true
       break
     fi
