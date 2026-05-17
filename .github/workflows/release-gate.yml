@@ -1509,6 +1509,15 @@ jobs:
       # aggregate error counts alone (artifact-keeper-test#138 /
       # artifact-keeper#1088).
       STRESS_LOG_DIR: /tmp/stress-logs
+      # Postgres + pod-resource snapshot directory. The Collect postgres
+      # stats step below runs tests/stress/collect-pg-stats.sh after the
+      # stress run and ships this directory as the stress-pg-stats
+      # artifact. Captures the direct measurement that PR #148's
+      # Fresh-Eyes review (artifact-keeper-test#154) asked for: pg
+      # connection saturation + kubectl top, so the postgres-CPU
+      # narrative behind PR #140 is backed by evidence on every run.
+      PG_STATS_DIR: /tmp/pg-stats
+      NAMESPACE: ${{ needs.deploy.outputs.namespace }}
       # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
       # A silently-skipped test in release-gate context is exactly the
       # silent-success class (#870/#871/#888) the gate exists to catch.
@@ -1564,6 +1573,26 @@ jobs:
               | sort | uniq -c | sort -rn | head -n 10 \
               | sed 's/^/    /'
           done
+
+      - name: Collect postgres stats
+        # Snapshot pg_stat_activity, pg_stat_statements, connection-count
+        # vs max_connections, and kubectl top for the backend + postgres
+        # pods. Runs after the stress workload and before teardown so the
+        # capture reflects steady-state load. if: always() ensures the
+        # snapshot still ships on a failed run, which is exactly when
+        # the data is most useful (artifact-keeper-test#154; rationale
+        # in PR #148 Fresh-Eyes review, Finding 2).
+        if: always()
+        run: |
+          bash tests/stress/collect-pg-stats.sh
+
+      - name: Upload pg-stats snapshot
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stress-pg-stats-${{ github.run_attempt }}
+          path: /tmp/pg-stats/
+          if-no-files-found: ignore
 
       - name: Upload test results
         if: always()
