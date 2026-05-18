@@ -1575,6 +1575,91 @@ assert_scan_has_findings() {
   return 0
 }
 
+# trigger_and_wait_scan ARTIFACT_ID [TIMEOUT_SECS] [SCAN_TYPE]
+#
+# Triggers POST /api/v1/security/scan for the given artifact_id and polls
+# GET /api/v1/security/scans?artifact_id=X until the most-recent matching row
+# (optionally filtered by scan_type=SCAN_TYPE) reaches a terminal state, then
+# echoes its scan_id on stdout.
+#
+# Return codes:
+#   0 -- scan reached a terminal state (completed|failed|error|cancelled);
+#        scan_id echoed on stdout
+#   2 -- scanner not available: HTTP 501/502/503/504 from trigger, or HTTP 500
+#        with body matching /scanner.*not.*configured/. Caller should skip.
+#   3 -- trigger succeeded but the scan did not reach a terminal state within
+#        timeout (stuck running/pending). Caller should fail with a timeout
+#        message rather than skip — this is the exact bug class the suite
+#        exists to catch.
+#   1 -- any other non-2xx trigger response. Caller should fail.
+#
+# WORK_DIR must be set (callers should invoke setup_workdir first); response
+# bodies are written under WORK_DIR/ for diagnostic capture. artifact_id is
+# sanitized into the filename so a backend-returned id containing path
+# separators cannot escape WORK_DIR.
+trigger_and_wait_scan() {
+  local artifact_id="$1"
+  local timeout="${2:-180}"
+  local scan_type="${3:-}"
+  local trigger_status final_status="" scan_id="" elapsed=0
+  local safe_id="${artifact_id//[^a-zA-Z0-9._-]/_}"
+  local trig_body="${WORK_DIR}/trig-${safe_id}.json"
+
+  trigger_status=$(curl -s -o "$trig_body" -w '%{http_code}' \
+    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d "{\"artifact_id\":\"${artifact_id}\"}" \
+    "${BASE_URL}/api/v1/security/scan") || trigger_status="000"
+
+  case "$trigger_status" in
+    501|502|503|504) return 2 ;;
+    500)
+      if grep -qi "scanner.*not.*configured" "$trig_body" 2>/dev/null; then
+        return 2
+      fi
+      echo "POST /security/scan returned HTTP 500" >&2
+      return 1
+      ;;
+  esac
+  if [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
+    echo "POST /security/scan returned HTTP ${trigger_status}" >&2
+    return 1
+  fi
+
+  # jq selector: optionally filter items by scan_type before picking the first row.
+  # Accept both envelope shapes ({items:[...]} and bare array) since the
+  # backend's response shape differs between the per-artifact and the global
+  # scans endpoint.
+  local jq_pick
+  if [ -n "$scan_type" ]; then
+    jq_pick="[(.items // .)[]? | select(.scan_type==\"${scan_type}\")] | .[0]"
+  else
+    jq_pick="(.items // .)[0]"
+  fi
+
+  while [ "$elapsed" -lt "$timeout" ]; do
+    local scans_resp
+    scans_resp=$(api_get "/api/v1/security/scans?artifact_id=${artifact_id}&per_page=20" 2>/dev/null) || true
+    if [ -n "$scans_resp" ]; then
+      scan_id=$(echo "$scans_resp" | jq -r "${jq_pick}.id // empty" 2>/dev/null || echo "")
+      final_status=$(echo "$scans_resp" | jq -r "${jq_pick}.status // empty" 2>/dev/null || echo "")
+      case "$final_status" in
+        completed|failed|error|cancelled) break ;;
+      esac
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+
+  echo "$scan_id"
+  case "$final_status" in
+    completed|failed|error|cancelled) return 0 ;;
+  esac
+  # Did not reach a terminal state. Distinguish "no row at all" (likely skip-
+  # worthy; backend never accepted the scan) from "stuck running" (must fail).
+  if [ -z "$scan_id" ]; then return 2; fi
+  return 3
+}
+
 # ---------------------------------------------------------------------------
 # SBOM helpers
 # ---------------------------------------------------------------------------

@@ -933,7 +933,7 @@ jobs:
     continue-on-error: true
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security'
     runs-on: ak-e2e-runners
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
@@ -943,6 +943,13 @@ jobs:
       # A silently-skipped test in release-gate context is exactly the
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
+      # Per-script timeout for run-suite.sh. Several Epic 2 tests
+      # (cve-history, license-policy, scan-policy, quality-gate-blocks-upload,
+      # scan-dedup-checksum) poll for scan completion with default
+      # SCAN_TIMEOUT=180. The default 120s wrapper would SIGKILL them before
+      # they could write JUnit XML. 300s gives 120s headroom over SCAN_TIMEOUT
+      # for fixture build, upload, and cleanup.
+      TEST_TIMEOUT: '300'
       # Stampede / poisoning test knobs. Must match the values the chart
       # rendered for the backend Deployment (see helm values-test.yaml).
       PROXY_MAX_CONCURRENT_FETCHES: '20'
