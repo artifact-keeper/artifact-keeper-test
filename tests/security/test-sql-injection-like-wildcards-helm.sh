@@ -83,6 +83,12 @@ WILDCARD_PROBES=(
 
 begin_test "Create helm local repo"
 if create_local_repo "$REPO_KEY" "helm"; then
+  # Register server-side cleanup via add_exit_handler so the repo is
+  # removed even if the script aborts mid-way (set -e tripping on
+  # `helm package` failure, an unexpected `curl` exit, etc.). Linear
+  # cleanup at end-of-file would leak the repo on the backend in
+  # those cases.
+  add_exit_handler "api_delete /api/v1/repositories/${REPO_KEY} >/dev/null 2>&1 || true"
   pass
 else
   fail "could not create helm repo (${REPO_KEY})"
@@ -90,6 +96,10 @@ fi
 
 # Build two minimal but distinct charts so wildcard matching has
 # something to potentially-incorrectly resolve to.
+#
+# Returns 0 on success, 1 on failure. We avoid letting `set -e` rip
+# the script down on `helm package` failure because the test framework
+# wants a structured `fail` row in the JUnit output, not a bare exit.
 build_chart() {
   local chart_name="$1"
   local version="$2"
@@ -116,7 +126,10 @@ metadata:
 data:
   sigil: {{ .Chart.Description | quote }}
 EOF
-  helm package "${chart_dir}" -d "${WORK_DIR}" >/dev/null
+  if ! helm package "${chart_dir}" -d "${WORK_DIR}" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
 }
 
 upload_chart() {
@@ -131,35 +144,37 @@ upload_chart() {
 }
 
 begin_test "Package + upload planted chart"
-build_chart "$PLANT_NAME" "$PLANT_VERSION" "$PLANT_BODY_SIGIL"
 PLANT_FILE="${WORK_DIR}/${PLANT_NAME}-${PLANT_VERSION}.tgz"
-if [ ! -f "$PLANT_FILE" ]; then
+if ! build_chart "$PLANT_NAME" "$PLANT_VERSION" "$PLANT_BODY_SIGIL"; then
+  fail "helm package failed for planted chart"
+elif [ ! -f "$PLANT_FILE" ]; then
   fail "helm package did not produce ${PLANT_FILE}"
 else
-  status=$(upload_chart "$PLANT_FILE")
-  case "$status" in
+  upload_status=$(upload_chart "$PLANT_FILE")
+  case "$upload_status" in
     200 | 201)
       pass
       ;;
     *)
-      fail "upload of planted chart returned ${status}; cannot exercise the LIKE-wildcard surface"
+      fail "upload of planted chart returned ${upload_status}; cannot exercise the LIKE-wildcard surface"
       ;;
   esac
 fi
 
 begin_test "Package + upload decoy chart"
-build_chart "$DECOY_NAME" "$DECOY_VERSION" "$DECOY_BODY_SIGIL"
 DECOY_FILE="${WORK_DIR}/${DECOY_NAME}-${DECOY_VERSION}.tgz"
-if [ ! -f "$DECOY_FILE" ]; then
+if ! build_chart "$DECOY_NAME" "$DECOY_VERSION" "$DECOY_BODY_SIGIL"; then
+  fail "helm package failed for decoy chart"
+elif [ ! -f "$DECOY_FILE" ]; then
   fail "helm package did not produce ${DECOY_FILE}"
 else
-  status=$(upload_chart "$DECOY_FILE")
-  case "$status" in
+  upload_status=$(upload_chart "$DECOY_FILE")
+  case "$upload_status" in
     200 | 201)
       pass
       ;;
     *)
-      fail "upload of decoy chart returned ${status}"
+      fail "upload of decoy chart returned ${upload_status}"
       ;;
   esac
 fi
@@ -172,7 +187,7 @@ PLANT_FILENAME="${PLANT_NAME}-${PLANT_VERSION}.tgz"
 PLANT_URL="${BASE_URL}/helm/${REPO_KEY}/charts/${PLANT_FILENAME}"
 
 begin_test "Sanity: exact-match GET returns planted chart"
-fetched_file=$(mktemp -t plant-fetch.XXXXXXXX)
+fetched_file=$(mktemp -p "$WORK_DIR" plant-fetch.XXXXXXXX)
 status=$(curl -s -o "$fetched_file" -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(format_auth_header)" \
   "${PLANT_URL}") || status=000
@@ -223,7 +238,7 @@ for probe_spec in "${WILDCARD_PROBES[@]}"; do
   IFS='|' read -r encoded_filename desc <<<"$probe_spec"
   begin_test "Wildcard probe (${desc}): must NOT return planted chart bytes"
 
-  fetched_file=$(mktemp -t wild-fetch.XXXXXXXX)
+  fetched_file=$(mktemp -p "$WORK_DIR" wild-fetch.XXXXXXXX)
   status=$(curl -s -o "$fetched_file" -w '%{http_code}' $CURL_TIMEOUT --path-as-is \
     -H "$(format_auth_header)" \
     "${BASE_URL}/helm/${REPO_KEY}/charts/${encoded_filename}") || status=000
@@ -245,8 +260,10 @@ done
 
 # ---------------------------------------------------------------------------
 # Cleanup
+#
+# The server-side repo delete is registered via add_exit_handler at
+# suite start so it runs even on mid-script abort. Nothing further to
+# do here.
 # ---------------------------------------------------------------------------
-
-api_delete "/api/v1/repositories/${REPO_KEY}" >/dev/null 2>&1 || true
 
 end_suite
