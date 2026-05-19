@@ -1047,6 +1047,14 @@ jobs:
       # A silently-skipped test in release-gate context is exactly the
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
+      # Per-script timeout for run-suite.sh. SCAN_TIMEOUT defaults to
+      # 180s in test-stuck-scan-janitor.sh and the scan-depth scripts;
+      # virtual-shadowing-guard.sh walks 6 formats serially. The default
+      # 120s budget will SIGTERM polls mid-flight on a slightly slow
+      # backend, masking real signal with timeout failures. 300s gives
+      # ~2x headroom over the worst per-script case and matches the
+      # security-tests / webhook-tests jobs.
+      TEST_TIMEOUT: '300'
       # AK_BACKEND_BRANCH feeds the branch-aware feature flag layer
       # in tests/lib/feature-flags.sh (issue #65). We derive the branch
       # from the backend image tag: a tag like `1.1.9` or `1.1.10-rc.2`

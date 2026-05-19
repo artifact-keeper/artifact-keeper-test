@@ -151,10 +151,15 @@ feature_flags_init() {
     main|master)
       raw="$AK_BACKEND_BRANCH_MAIN"
       ;;
-    release/1.1.x|release/1.1*|v1.1.*|1.1.*)
+    release/1.1.x|release/1.1.*|v1.1.*|1.1.*)
+      # Anchored on the third `.` to avoid the moment-1.10-ships footgun:
+      # the looser `release/1.1*` form also matches `release/1.10.x` /
+      # `release/1.11.x` lexically, so a future 1.10 branch would map to
+      # the 1.1.x flag set instead of either main or its own bundle.
       raw="$AK_BACKEND_BRANCH_1_1_X"
       ;;
-    release/1.2.x|release/1.2*|v1.2.*|1.2.*)
+    release/1.2.x|release/1.2.*|v1.2.*|1.2.*)
+      # Same anchoring as 1.1.x above: `release/1.2.*` not `release/1.2*`.
       raw="$AK_BACKEND_BRANCH_1_2_X"
       ;;
     *)
