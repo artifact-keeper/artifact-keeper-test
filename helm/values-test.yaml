@@ -41,11 +41,17 @@ backend:
     # 127.0.0.1:18772 in the test pod and register webhooks pointing at
     # that address. The backend's opt-in private-IP SSRF allowlist (from
     # artifact-keeper#1201) rejects 127.0.0.1 by default, which fails
-    # tests/webhooks/test-webhook-* in release-gate (see triage doc
-    # /tmp/ak-goal/v1.2.0-gate-triage.md row 11). Enabling here scopes
-    # the relaxation to the test deploy only; production deploys keep
-    # the default deny-private behavior.
-    WEBHOOK_ALLOW_PRIVATE_IPS: "1"
+    # tests/webhooks/test-webhook-* in release-gate. The relevant backend
+    # env var is `UPSTREAM_ALLOW_PRIVATE_IPS` (read by
+    # `validation::upstream_allow_private_ips_enabled`); the
+    # `validate_webhook_url` helper routes through the same
+    # `validate_outbound_url` gate. Enabling here scopes the relaxation
+    # to the test deploy only; production deploys keep the default
+    # deny-private behavior. (PR #187 originally used a placeholder
+    # `WEBHOOK_ALLOW_PRIVATE_IPS` env name that the backend does not
+    # read; rc.1 release-gate run 26116464151 confirmed the flag had no
+    # effect because of the rename.)
+    UPSTREAM_ALLOW_PRIVATE_IPS: "1"
   persistence:
     size: 2Gi
 
