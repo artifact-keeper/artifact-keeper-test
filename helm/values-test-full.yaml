@@ -31,6 +31,11 @@ backend:
     # See values-test.yaml for rationale (iac#97). Parallel test pods exhaust
     # the default 120/min auth rate-limit on shared admin bootstrap.
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+    # Allow private-IP webhook URLs in the test deploy. See values-test.yaml
+    # for the full rationale -- webhook tests run a mock receiver on
+    # 127.0.0.1 in the test pod, which the artifact-keeper#1201 opt-in
+    # SSRF allowlist rejects by default.
+    WEBHOOK_ALLOW_PRIVATE_IPS: "1"
     # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys

@@ -102,6 +102,7 @@ CREATE_PAYLOAD=$(jq -nc \
     name: $name,
     source_type: "artifactory",
     url: "https://example.invalid/artifactory",
+    auth_type: "basic_auth",
     credentials: { type: "basic", username: "test", password: "test" }
   }')
 
