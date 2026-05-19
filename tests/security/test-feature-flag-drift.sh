@@ -43,16 +43,22 @@ fi
 # Fetch /health. We bypass auth_admin because /health is unauth and
 # the drift check runs before any other suite logic; if /health is
 # broken we want a precise reason in the failure message.
+#
+# Use mktemp so two concurrent invocations of this script on the same
+# runner pod cannot race on a shared /tmp path. The previous form
+# (/tmp/.health-resp.$$) was unique per PID but not per concurrent
+# invocation when run-suite.sh fans out (CLAUDE.md /tmp hygiene rule).
 begin_test "Fetch /health"
 health_resp=""
-http_status=$(curl -s -o /tmp/.health-resp.$$ -w '%{http_code}' --max-time 5 \
+health_resp_file=$(mktemp -t health-resp.XXXXXXXX)
+http_status=$(curl -s -o "${health_resp_file}" -w '%{http_code}' --max-time 5 \
     "${BASE_URL}/health" 2>/dev/null) || http_status="000"
 if [ "$http_status" = "200" ]; then
-  health_resp=$(cat /tmp/.health-resp.$$ 2>/dev/null || echo "")
-  rm -f /tmp/.health-resp.$$
+  health_resp=$(cat "${health_resp_file}" 2>/dev/null || echo "")
+  rm -f "${health_resp_file}"
   pass
 else
-  rm -f /tmp/.health-resp.$$
+  rm -f "${health_resp_file}"
   fail "GET ${BASE_URL}/health returned HTTP ${http_status}; cannot drift-check"
 fi
 
@@ -104,9 +110,9 @@ case "$AK_BACKEND_BRANCH" in
     # last-released minor we know about".
     allow_main_markers=1
     ;;
-  release/1.1.x|release/1.1*|v1.1.*|1.1.*)
+  release/1.1.x|release/1.1.*|v1.1.*|1.1.*)
     expected_major=1; expected_minor=1 ;;
-  release/1.2.x|release/1.2*|v1.2.*|1.2.*)
+  release/1.2.x|release/1.2.*|v1.2.*|1.2.*)
     expected_major=1; expected_minor=2 ;;
   *)
     # Already warned by feature_flags_init; let the assertion still

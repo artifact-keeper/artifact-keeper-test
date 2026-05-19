@@ -286,7 +286,17 @@ run_native_block() {
     # path, not a refusal.
     case "$http_status" in
       4*)
+        # The guard correctly refused to serve. We count this as an
+        # observation toward the floor assertion: the suite verified
+        # that for this format the virtual either served the trusted
+        # bytes (success branch below) OR refused outright. If we did
+        # NOT count refusals, a backend that 404s on every native
+        # format (e.g. handler routing regression) would skip all 6
+        # native blocks and trip the MIN_FORMATS_OBSERVED floor for
+        # the wrong reason, drowning the real signal in a misleading
+        # failure mode.
         skip "format ${format} virtual returned HTTP ${http_status}; guard may refuse to serve until both members agree (acceptable refuse-class)"
+        _record_observed
         return 0
         ;;
       5*|000)
