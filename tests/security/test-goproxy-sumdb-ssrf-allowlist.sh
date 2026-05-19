@@ -72,6 +72,10 @@ probe_blocked() {
   local probe_path="${3:-lookup/golang.org/x/text@v0.14.0}"
   local url="${BASE_URL}/go/${REPO_KEY}/sumdb/${host}/${probe_path}"
 
+  # $CURL_TIMEOUT is intentionally unquoted: common.sh:491 sets it to a
+  # multi-arg string ("--max-time 60 --connect-timeout 10") that must
+  # word-split into separate curl flags. Quoting collapses it into a
+  # single literal arg and curl rejects it.
   local status
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT --path-as-is \
     -H "$(format_auth_header)" \
@@ -95,6 +99,11 @@ probe_blocked() {
 # ---------------------------------------------------------------------------
 
 begin_test "Reject IMDS 169.254.169.254 (original #879 repro)"
+# The path component (latest/meta-data/iam/security-credentials/) is
+# the original repro string from #879. It is NOT load-bearing for
+# this assertion -- the allowlist gate fires on the host alone before
+# the path even matters. Kept here so a grep for the original repro
+# leads to this regression guard.
 probe_blocked "AWS/GCP IMDS" "169.254.169.254" "latest/meta-data/iam/security-credentials/"
 
 # ---------------------------------------------------------------------------
@@ -112,8 +121,13 @@ begin_test "Reject loopback localhost"
 probe_blocked "loopback by name" "localhost"
 
 begin_test "Reject IPv6 loopback [::1]"
-# IPv6 literal — URL-encoded brackets to ensure the path
-# parser sees them. --path-as-is so curl does not normalise.
+# IPv6 literal: URL-encoded brackets so curl accepts the URL as
+# parseable (raw `[::1]` is rejected by curl as an invalid host
+# component when it appears inside a path segment, not authority).
+# Axum/Tower percent-decodes path segments before the handler runs,
+# so `is_sumdb_host_allowed` actually receives `[::1]` and rejects
+# it via string-match against the allowlist. --path-as-is prevents
+# curl from re-normalising the encoded path.
 probe_blocked "loopback IPv6" "%5B::1%5D"
 
 # ---------------------------------------------------------------------------
