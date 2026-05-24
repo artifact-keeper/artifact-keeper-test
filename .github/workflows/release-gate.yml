@@ -564,7 +564,11 @@ jobs:
           mkdir -p /tmp/test-logs
           kubectl -n "$NS" logs -l app.kubernetes.io/component=scanner \
             --tail=2000 > /tmp/test-logs/scanner-${{ matrix.format }}.log 2>&1 || true
-          kubectl -n "$NS" logs -l app.kubernetes.io/name=trivy \
+          # #1379: chart labels Trivy pods with app.kubernetes.io/component=trivy
+          # (app.kubernetes.io/name is the chart name "artifact-keeper", not the
+          # component). Use the component label so the log capture actually finds
+          # the pod when the gate is failing and the operator most needs the logs.
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=trivy \
             --tail=2000 > /tmp/test-logs/trivy-${{ matrix.format }}.log 2>&1 || true
           kubectl -n "$NS" logs -l app=artifact-keeper-backend \
             --tail=1000 > /tmp/test-logs/backend-${{ matrix.format }}.log 2>&1 || true
@@ -718,11 +722,25 @@ jobs:
           # Locate the Trivy pod. The Helm chart names the deployment
           # artifact-keeper-trivy; we kubectl-exec into the first ready
           # pod backed by that deployment.
+          #
+          # Label selector note (#1379): the chart's _helpers.tpl labels
+          # every component with app.kubernetes.io/name=artifact-keeper
+          # (the chart name) and distinguishes components via
+          # app.kubernetes.io/component=<name>. Earlier revisions of this
+          # pre-flight queried `app.kubernetes.io/name=trivy`, which
+          # never matched, producing the misleading "Trivy pod not
+          # found" error even though the deploy job's
+          # `kubectl rollout status deployment/artifact-keeper-trivy`
+          # had already succeeded. The correct selector is
+          # `app.kubernetes.io/component=trivy`.
           POD=$(kubectl -n "$NS" get pods \
-            -l app.kubernetes.io/name=trivy \
+            -l app.kubernetes.io/component=trivy \
             -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
           if [ -z "$POD" ]; then
             echo "::error::Trivy pod not found in namespace ${NS} (pre-flight cannot run)"
+            echo "::error::Checked selector: app.kubernetes.io/component=trivy"
+            echo "::error::Deploy job should have installed Trivy via values-test-full.yaml (trivy.enabled=true)."
+            kubectl -n "$NS" get pods --show-labels 2>&1 | head -40 || true
             exit 43
           fi
 
