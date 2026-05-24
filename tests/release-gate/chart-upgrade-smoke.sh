@@ -14,10 +14,21 @@
 #       --previous-tag <tag> \
 #       --backend-tag <tag> \
 #       [--web-tag <tag>] \
+#       [--previous-web-tag <tag>] \
 #       [--iac-ref <ref>] \
 #       [--previous-iac-ref <ref>] \
 #       [--same-chart] \
 #       [--timeout <seconds>]
+#
+# Note on web tags: the backend repo cuts versioned releases on every
+# bugfix bump, but the artifact-keeper-web repo cuts its own release
+# cadence and does NOT mirror backend tags. As of v1.2.0, the web
+# registry only publishes `dev`, `main`, `latest`, and SHA tags for
+# every push, plus rare release tags (e.g. `1.1.3`). Passing the
+# backend's previous-tag (e.g. `1.1.9`) to web.image.tag will fail
+# with ImagePullBackOff because no such web tag exists. The script
+# therefore tracks PREVIOUS_WEB_TAG separately from PREVIOUS_TAG and
+# defaults it to `main`, which is always pullable.
 #
 # By default the script clones TWO copies of the iac repo: one at
 # `previous-iac-ref` (default `artifact-keeper-1.1.9`) and one at
@@ -43,6 +54,10 @@ RUN_ID=""
 PREVIOUS_TAG=""
 BACKEND_TAG=""
 WEB_TAG="dev"
+# previous-web-tag tracks the web image to install on the previous-tag
+# side. Defaults to `main` because the web registry does NOT publish
+# tags aligned with backend release numbers (closes artifact-keeper#1378).
+PREVIOUS_WEB_TAG="main"
 IAC_REF="main"
 # previous-iac-ref tracks the chart that shipped with the previous
 # release. Default matches PREVIOUS_TAG default in release-gate.yml.
@@ -61,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --previous-tag)      PREVIOUS_TAG="${2:-}"; shift 2 ;;
     --backend-tag)       BACKEND_TAG="${2:-}"; shift 2 ;;
     --web-tag)           WEB_TAG="${2:-}"; shift 2 ;;
+    --previous-web-tag)  PREVIOUS_WEB_TAG="${2:-}"; shift 2 ;;
     --iac-ref)           IAC_REF="${2:-}"; shift 2 ;;
     --previous-iac-ref)  PREVIOUS_IAC_REF="${2:-}"; shift 2 ;;
     --same-chart)        SAME_CHART=true; shift ;;
@@ -93,7 +109,8 @@ echo "  Namespace:           ${NAMESPACE}"
 echo "  Release:             ${RELEASE_NAME}"
 echo "  Previous tag:        ${PREVIOUS_TAG}"
 echo "  Current tag:         ${BACKEND_TAG}"
-echo "  Web tag:             ${WEB_TAG}"
+echo "  Web tag (upgrade):   ${WEB_TAG}"
+echo "  Web tag (previous):  ${PREVIOUS_WEB_TAG}"
 echo "  Timeout:             ${TIMEOUT_SECONDS}s"
 echo "  iac ref (current):   ${IAC_REF}"
 if [ "$SAME_CHART" = "true" ]; then
@@ -252,7 +269,7 @@ helm upgrade --install "$RELEASE_NAME" "$PREVIOUS_CHART_DIR" \
   --namespace "$NAMESPACE" \
   --values "$PREVIOUS_PROD_VALUES" \
   --set backend.image.tag="$PREVIOUS_TAG" \
-  --set web.image.tag="$PREVIOUS_TAG" \
+  --set web.image.tag="$PREVIOUS_WEB_TAG" \
   "${HELM_BASE_OVERRIDES[@]}" \
   --wait=false || {
     echo "ERROR: helm install (previous tag) failed" >&2

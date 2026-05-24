@@ -336,6 +336,15 @@ jobs:
           # stable"). The script accepts the unprefixed semver form
           # because docker tags drop the leading 'v' (see CLAUDE.md).
           PREVIOUS_TAG: '1.1.9'
+          # PREVIOUS_WEB_TAG: the web image tag for the previous-tag side
+          # of the upgrade. The web repo cuts its own release cadence and
+          # does NOT mirror backend version tags, so the backend's
+          # PREVIOUS_TAG (e.g. "1.1.9") is NOT a valid web image tag and
+          # causes ImagePullBackOff (closes artifact-keeper#1378). `main`
+          # is published on every push to artifact-keeper-web main and is
+          # always pullable. If a future release wants stricter pinning,
+          # bump this to a specific SHA tag (e.g. `sha-ea664a1`).
+          PREVIOUS_WEB_TAG: 'main'
         run: |
           chmod +x tests/release-gate/chart-upgrade-smoke.sh
           RUN_ID="${{ github.run_id }}-${{ github.run_attempt }}-upgrade"
@@ -349,6 +358,7 @@ jobs:
             --previous-tag "${PREVIOUS_TAG}" \
             --backend-tag "${BACKEND_TAG}" \
             --web-tag "${WEB_TAG}" \
+            --previous-web-tag "${PREVIOUS_WEB_TAG}" \
             --iac-ref "${IAC_REF}" \
             --previous-iac-ref "${PREVIOUS_IAC_REF}" \
             --timeout 600
