@@ -754,6 +754,21 @@ jobs:
             exit 43
           fi
 
+          # Warm up the Trivy vulnerability DB before reading its
+          # UpdatedAt. Trivy 0.62 downloads the DB lazily on first scan,
+          # not at pod startup, so `trivy --version` immediately after
+          # rollout returns only `Version: <x>` with no `UpdatedAt:`
+          # line, which the parser below cannot handle (#197). Using
+          # `image --download-db-only` is idempotent: it no-ops if the
+          # DB is already present and within the upstream
+          # download-interval window.
+          echo "Warming up Trivy vulnerability DB..."
+          kubectl -n "$NS" exec "$POD" -c trivy -- \
+            trivy image --download-db-only --quiet >/dev/null 2>&1 \
+            || kubectl -n "$NS" exec "$POD" -- \
+                 trivy image --download-db-only --quiet >/dev/null 2>&1 \
+            || echo "::warning::trivy image --download-db-only returned non-zero; will inspect --version anyway"
+
           # trivy --version emits "Vulnerability DB: ... UpdatedAt: 2026-04-30 ..."
           # in older versions and a YAML-ish block in newer versions.
           # Parse both shapes.
@@ -771,11 +786,20 @@ jobs:
           # Extract UpdatedAt timestamp. Format varies:
           #   "  UpdatedAt: 2026-04-30 12:34:56.789 +0000 UTC"
           #   "    UpdatedAt 2026-04-30 12:34:56.789 +0000 UTC"
-          DB_DATE=$(echo "$VER_OUT" | grep -iE 'UpdatedAt' | head -n1 \
+          #
+          # Pipeline hardening (#197): grep's no-match exit code (1)
+          # used to propagate via `set -o pipefail` and the workflow
+          # shell's implicit `set -e`, killing the script before the
+          # `if [ -z "$DB_DATE" ]` guard below could surface a clean
+          # exit 43. The `|| true` here keeps `DB_DATE` empty on
+          # no-match so the guard does its job.
+          DB_DATE=$( { echo "$VER_OUT" | grep -iE 'UpdatedAt' || true; } | head -n1 \
             | sed -E 's/.*UpdatedAt[: ]+([0-9-]+ [0-9:.]+).*/\1/' \
             | awk '{print $1" "$2}')
           if [ -z "$DB_DATE" ] || ! date -d "$DB_DATE" +%s >/dev/null 2>&1; then
-            echo "::error::Could not parse Trivy DB UpdatedAt from --version output"
+            echo "::error::Could not parse Trivy DB UpdatedAt from --version output."
+            echo "::error::Likely cause: Trivy DB download failed during warmup, or trivy --version output format changed."
+            echo "::error::Raw version output above for diagnosis."
             exit 43
           fi
 
