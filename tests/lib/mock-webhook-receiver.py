@@ -6,7 +6,10 @@ Used by tests/webhooks/test-webhook-retry-recover.sh and friends to capture
 the headers and body of webhook deliveries from the artifact-keeper backend.
 
 Behaviour:
-  * Listens on 127.0.0.1:$WEBHOOK_RECEIVER_PORT (default 18765).
+  * Listens on $WEBHOOK_RECEIVER_BIND:$WEBHOOK_RECEIVER_PORT.
+    Bind defaults to 0.0.0.0 so the backend in another pod can reach
+    the receiver via the runner pod's RFC1918 IP. Local health checks
+    inside the test pod still work via 127.0.0.1 (#199).
   * Records every POST as a JSON object appended to $WEBHOOK_RECEIVER_LOG
     (default /tmp/mock-webhook-receiver.log). Each line is one delivery.
   * Returns 500 for the first $WEBHOOK_FAIL_FIRST_N requests then 200 for the
@@ -91,8 +94,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def main():
     open(LOG_PATH, "w").close()
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"mock-webhook-receiver: listening on 127.0.0.1:{PORT}", file=sys.stderr)
+    BIND = os.environ.get("WEBHOOK_RECEIVER_BIND", "0.0.0.0")
+    server = http.server.ThreadingHTTPServer((BIND, PORT), Handler)
+    print(f"mock-webhook-receiver: listening on {BIND}:{PORT}", file=sys.stderr)
     print(f"mock-webhook-receiver: log -> {LOG_PATH}", file=sys.stderr)
     print(f"mock-webhook-receiver: failing first {FAIL_FIRST_N} requests", file=sys.stderr)
     try:

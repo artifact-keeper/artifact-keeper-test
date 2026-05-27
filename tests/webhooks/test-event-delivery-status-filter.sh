@@ -42,7 +42,7 @@ begin_suite "event-delivery-status-filter"
 # from common reserved ports and inside an unprivileged range. Callers
 # can still override with WEBHOOK_RECEIVER_PORT.
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-$(( 18000 + $$ % 1000 ))}"
-WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
+WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://${WEBHOOK_RECEIVER_HOST:-127.0.0.1}:${WEBHOOK_RECEIVER_PORT}/hook}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-statusfilter-${RUN_ID}.log}"
 RECEIVER_PID=""
 WEBHOOK_ID=""
