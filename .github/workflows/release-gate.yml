@@ -1207,6 +1207,70 @@ jobs:
           echo "Runner pod IP: ${POD_IP}"
           echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
 
+      - name: Install kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+
+      - name: Wait for Dependency-Track bootstrap and extract API key
+        # The DTrack subsuite asserts on real BOM upload + findings sync.
+        # values-test-full.yaml enables DTrack (#200); the chart's
+        # bootstrap init container performs the admin force-password-
+        # change + team API key provisioning and writes the key to
+        # /shared/dtrack-api-key on the backend pod. We extract via
+        # `kubectl exec` and export the env vars the suite reads at
+        # tests/security/test-dependencytrack-integration.sh:31.
+        run: |
+          set -uo pipefail
+          NS="test-${RUN_ID}"
+
+          # Step 1: wait for DTrack deployment to become Available.
+          # DTrack JVM startup is slow (~60-120s on first boot).
+          echo "Waiting for Dependency-Track rollout in ${NS}..."
+          if ! kubectl -n "${NS}" rollout status \
+                 deployment/artifact-keeper-dtrack --timeout=300s; then
+            echo "::warning::Dependency-Track did not become Ready within 300s; suite will skip DTrack subsuite."
+            exit 0
+          fi
+          kubectl -n "${NS}" wait --for=condition=Available \
+            deployment/artifact-keeper-dtrack --timeout=60s || true
+
+          # Step 2: wait for the bootstrap init container to write the
+          # API key. The dtrack-init ConfigMap script (rendered by
+          # artifact-keeper-iac dtrack-deployment.yaml lines 189-244)
+          # writes /shared/dtrack-api-key on the backend pod once the
+          # admin login + team-key flow succeeds. Poll up to 3 minutes
+          # for the file to appear.
+          BACKEND_POD=$(kubectl -n "${NS}" get pods \
+            -l app.kubernetes.io/component=backend \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          if [ -z "${BACKEND_POD}" ]; then
+            echo "::warning::Backend pod not found in ${NS}; cannot extract DTrack API key"
+            exit 0
+          fi
+
+          echo "Polling backend pod ${BACKEND_POD} for /shared/dtrack-api-key..."
+          API_KEY=""
+          for _ in $(seq 1 36); do
+            API_KEY=$(kubectl -n "${NS}" exec "${BACKEND_POD}" -c backend -- \
+                       sh -c 'cat /shared/dtrack-api-key 2>/dev/null' \
+                     2>/dev/null | tr -d '\n[:space:]' || true)
+            if [ -n "${API_KEY}" ]; then
+              echo "DTrack API key acquired (length=${#API_KEY})"
+              break
+            fi
+            sleep 5
+          done
+
+          if [ -z "${API_KEY}" ]; then
+            echo "::warning::DTrack API key not provisioned within 180s; suite will skip DTrack subsuite."
+            exit 0
+          fi
+
+          # Mask the API key in logs BEFORE it can appear anywhere else.
+          echo "::add-mask::${API_KEY}"
+          DTRACK_URL="http://artifact-keeper-dtrack.${NS}.svc.cluster.local:8080"
+          echo "DEPENDENCY_TRACK_URL=${DTRACK_URL}" >> "$GITHUB_ENV"
+          echo "DEPENDENCY_TRACK_API_KEY=${API_KEY}" >> "$GITHUB_ENV"
+
       - name: Run security tests (blocking; waivered Grype scan excluded)
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
