@@ -1337,6 +1337,32 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Resolve runner pod address for backend dial-back
+        id: receiver-host
+        run: |
+          # Webhook tests spin up a mock receiver in this runner pod and
+          # pass the URL to the backend, which lives in a DIFFERENT pod.
+          # 127.0.0.1 from the backend's perspective is the backend pod
+          # itself, not the runner, so the mock would never be reached.
+          # Loopback is also a hard block in the backend's SSRF guard
+          # (#199, artifact-keeper validation.rs:203-212), so we MUST
+          # use the runner pod's RFC1918 IP.
+          POD_IP="${POD_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
+          if [ -z "$POD_IP" ]; then
+            echo "ERROR: could not determine runner pod IP" >&2
+            exit 1
+          fi
+          if ! echo "$POD_IP" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: POD_IP '${POD_IP}' is not an IPv4 address" >&2
+            exit 1
+          fi
+          if echo "$POD_IP" | grep -Eq '^127\.'; then
+            echo "ERROR: POD_IP '${POD_IP}' is loopback; backend pod cannot reach this" >&2
+            exit 1
+          fi
+          echo "Runner pod IP: ${POD_IP}"
+          echo "WEBHOOK_RECEIVER_HOST=${POD_IP}" >> "$GITHUB_ENV"
+
       - name: Run webhook tests
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"

@@ -23,7 +23,7 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "webhook-event-versioning"
 
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-18771}"
-WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
+WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://${WEBHOOK_RECEIVER_HOST:-127.0.0.1}:${WEBHOOK_RECEIVER_PORT}/hook}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-ver-${RUN_ID}.log}"
 RECEIVER_PID=""
 
