@@ -31,13 +31,17 @@ backend:
     # See values-test.yaml for rationale (iac#97). Parallel test pods exhaust
     # the default 120/min auth rate-limit on shared admin bootstrap.
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
-    # Allow private-IP webhook URLs in the test deploy. See values-test.yaml
-    # for the full rationale -- webhook tests run a mock receiver on
-    # 127.0.0.1 in the test pod, which the artifact-keeper#1201 opt-in
-    # SSRF allowlist rejects by default. The backend env var is
-    # UPSTREAM_ALLOW_PRIVATE_IPS, not WEBHOOK_ALLOW_PRIVATE_IPS (the latter
-    # was the placeholder name PR #187 used and the backend never read).
-    UPSTREAM_ALLOW_PRIVATE_IPS: "1"
+    # Allow private-IP webhook URLs in the test deploy. Webhook tests now
+    # bind a mock receiver on 0.0.0.0:PORT inside the test pod and POST the
+    # runner pod's RFC1918 IP as the webhook target (artifact-keeper-test
+    # #199, PR #201). Backend artifact-keeper#1435 split the SSRF env vars
+    # so this toggle scopes ONLY to webhook URL validation; remote-proxy
+    # upstream validation stays default-deny so the security suite's SSRF
+    # tests continue to assert RFC1918 is rejected for remote proxies.
+    # The old name UPSTREAM_ALLOW_PRIVATE_IPS still relaxes remote-proxy
+    # validation -- DO NOT set it here or security-tests SSRF assertions
+    # will silently pass.
+    WEBHOOK_ALLOW_PRIVATE_IPS: "1"
     # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys
