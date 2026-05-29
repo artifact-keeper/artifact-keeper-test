@@ -876,6 +876,78 @@ skip() {
   echo "  SKIP: ${reason} (${duration}s)"
 }
 
+## ---------------------------------------------------------------------------
+## Capability-exemption allowlist (RELEASE_GATE only)
+## ---------------------------------------------------------------------------
+##
+## `skip_suite` under RELEASE_GATE=1 is a HARD FAIL by design: a silently
+## skipped suite is the silent-success class (#870/#871/#888) we want to
+## catch loudly. That default stays in force for everything NOT listed here.
+##
+## A handful of suites, however, skip because a capability is genuinely NOT
+## provisioned / NOT shipped in the gate deploy. That is an environment fact,
+## not a backend defect, so hard-failing the gate on it is wrong. Each entry
+## below is a capability that has been verified to be a not-provisioned /
+## not-shipped condition (NOT a real bug), with the tracking issue that owns
+## the provisioning (or shipping) work.
+##
+## Format of each row: "<capability_key>|<match_substring>|<tracking_issue>"
+##   - capability_key:  stable identifier emitted in the EXEMPT line and logs
+##   - match_substring: matched (substring, case-sensitive) against the exact
+##                      skip_suite REASON the suite passes. Keep it distinctive
+##                      enough that it cannot accidentally match an unrelated
+##                      skip that might hide a real bug.
+##   - tracking_issue:  the GitHub issue (this repo) tracking the exemption /
+##                      provisioning. #211 owns the allowlist itself.
+##
+## CRITICAL: only add a row here for a capability that is genuinely
+## not-provisioned or not-shipped. Never add a row to silence a skip that
+## could mask a real backend bug. When in doubt, leave it hard-failing.
+##
+## Deliberately NOT exempted:
+##   - formats/test-pypi-native-client.sh twine 401: the test already sends
+##     valid Basic credentials (byte-identical to the curl -u upload that
+##     PASSES in the same gate run). A 401 there is not a not-provisioned
+##     capability, so it stays a hard failure pending backend triage.
+_CAPABILITY_EXEMPTIONS=(
+  # security: per-repo scan-config (auto-scan-on-upload) endpoint not shipped
+  "scan_config_autoscan|scan-config endpoint not mounted (HTTP 404); auto-scan-on-upload feature not shipped|211"
+  # security: scan-schedules (scheduled-scan) endpoint not shipped
+  "scan_schedules|scan-schedules endpoint not mounted (HTTP 404); scheduled-scan feature not shipped|211"
+  # security: Dependency-Track not deployed in gate namespace (see #200)
+  "dependency_track|DEPENDENCY_TRACK_API_KEY and/or DEPENDENCY_TRACK_URL not set|200"
+  "dependency_track|/api/v1/integrations/dependency-track not mounted (HTTP 404); backend pre-dates DTrack wiring|200"
+  # security: OpenSCAP sidecar not provisioned in gate deploy
+  "openscap|openscap service not configured|211"
+  # platform: no WASM plugin fixture loaded against the gate backend
+  "wasm_plugin_fixture|plugin list is empty; no plugin loaded against this backend deploy|211"
+  "wasm_plugin_fixture|no plugin list endpoint responded; backend deploy may not include the plugin overlay|211"
+  # mesh: run-now sync trigger endpoint not shipped (sync worker, TODO #78.4)
+  "mesh_run_now|sync run-now endpoint not shipped (HTTP 404)|211"
+)
+
+## _match_capability_exemption REASON
+##
+## If REASON matches an allowlisted capability, echo "<key> <issue>" and
+## return 0. Otherwise return 1. Matching is a plain substring test against
+## the exact reason string, so the match_substring must appear verbatim.
+_match_capability_exemption() {
+  local reason="$1"
+  local row key sub issue
+  for row in "${_CAPABILITY_EXEMPTIONS[@]}"; do
+    key="${row%%|*}"
+    sub="${row#*|}"; sub="${sub%|*}"
+    issue="${row##*|}"
+    case "$reason" in
+      *"$sub"*)
+        echo "${key} ${issue}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 ## skip_suite REASON
 ##
 ## Emit a JUnit testcase with <skipped/> for the SUITE itself, then exit
@@ -888,6 +960,13 @@ skip() {
 ## into a hard FAIL: a skipped gate is a silent-success class
 ## (#870/#871/#888) we want to catch loudly. Local-dev runs that don't
 ## set RELEASE_GATE keep the graceful skip.
+##
+## Exception: if the reason matches the documented capability-exemption
+## allowlist (_CAPABILITY_EXEMPTIONS above), the suite is a known
+## not-provisioned/not-shipped capability rather than a code defect. It is
+## reported as EXEMPT (a JUnit <skipped/>, exit 0) instead of hard-failing.
+## Any reason that does NOT match the allowlist still hard-fails, preserving
+## the silent-success protection.
 skip_suite() {
   local reason="${1:-suite skipped}"
   local duration=0
@@ -896,6 +975,29 @@ skip_suite() {
   fi
 
   if [ "${RELEASE_GATE:-0}" = "1" ]; then
+    local _exempt_match
+    if _exempt_match=$(_match_capability_exemption "$reason"); then
+      local cap="${_exempt_match%% *}"
+      local issue="${_exempt_match##* }"
+      echo "  EXEMPT: ${cap} (tracked by #${issue})"
+      echo "          capability not provisioned/shipped in gate deploy; not a backend defect (reason: ${reason})"
+      local xml_name
+      xml_name=$(_xml_escape "preflight")
+      local xml_suite
+      xml_suite=$(_xml_escape "$_SUITE_NAME")
+      local xml_reason
+      xml_reason=$(_xml_escape "EXEMPT ${cap} (tracked by #${issue}): ${reason}")
+      cat > "${JUNIT_OUTPUT_DIR}/${_SUITE_NAME}.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="${xml_suite}" tests="1" failures="0" skipped="1" time="${duration}">
+  <testcase name="${xml_name}" classname="${xml_suite}" time="${duration}">
+    <skipped message="${xml_reason}"/>
+  </testcase>
+</testsuite>
+EOF
+      exit 0
+    fi
+
     echo "  FAIL: skip_suite called with RELEASE_GATE=1 (reason: ${reason})"
     echo "        a skipped suite in release-gate is silent-success; failing the gate"
     local xml_name
