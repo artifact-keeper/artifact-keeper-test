@@ -48,7 +48,9 @@ begin_suite "migrations-lifecycle"
 auth_admin
 
 CONNECTION_NAME="mig-conn-${RUN_ID}"
-JOB_NAME="mig-job-${RUN_ID}"
+# Note: migration jobs no longer carry a `name` field in the backend
+# contract (migration.rs CreateMigrationRequest / MigrationJobResponse),
+# so there is no JOB_NAME to set or assert on.
 CONNECTIONS_BASE="/api/v1/migrations/connections"
 JOBS_BASE="/api/v1/migrations"
 
@@ -252,14 +254,19 @@ esac
 # ---------------------------------------------------------------------------
 
 begin_test "Create migration job"
+# Backend contract (artifact-keeper backend/src/api/handlers/migration.rs
+# `CreateMigrationRequest`, authoritative): the request body requires
+# `source_connection_id` (the created connection's UUID), an optional
+# `job_type` (one of full|incremental|assessment, default "full"), and a
+# `config` object (`MigrationConfig`, every field defaults, so `{}` is
+# valid). The old {name, connection_id, source_path, target_repo} shape
+# was removed and now returns HTTP 422 "missing field source_connection_id".
 JOB_PAYLOAD=$(jq -nc \
-  --arg name "$JOB_NAME" \
   --arg cid "$CONN_ID" \
   '{
-    name: $name,
-    connection_id: $cid,
-    source_path: "example-repo",
-    target_repo: "migration-target"
+    source_connection_id: $cid,
+    job_type: "full",
+    config: {}
   }')
 
 RESP=$(migrations_request POST "$JOBS_BASE" "$JOB_PAYLOAD")
@@ -284,16 +291,21 @@ fi
 # ---------------------------------------------------------------------------
 
 if [ -n "$JOB_ID" ]; then
-  begin_test "GET migration job by id"
+  begin_test "GET migration job by id round-trips connection + type"
   RESP=$(migrations_request GET "${JOBS_BASE}/${JOB_ID}")
   STATUS=$(echo "$RESP" | head -1)
   BODY=$(echo "$RESP" | tail -n +2)
   if [ "$STATUS" = "200" ]; then
-    GOT_NAME=$(echo "$BODY" | jq -r '.name // .job.name // empty')
-    if [ "$GOT_NAME" = "$JOB_NAME" ]; then
+    # The MigrationJobResponse (migration.rs) does NOT carry a `name`
+    # field; it returns `source_connection_id` and `job_type`. Assert on
+    # those: the job must reference the connection we created and report
+    # the job type we requested.
+    GOT_CID=$(echo "$BODY" | jq -r '.source_connection_id // .job.source_connection_id // empty')
+    GOT_TYPE=$(echo "$BODY" | jq -r '.job_type // .job.job_type // empty')
+    if [ "$GOT_CID" = "$CONN_ID" ] && [ "$GOT_TYPE" = "full" ]; then
       pass
     else
-      fail "GET job name mismatch: expected '${JOB_NAME}', got '${GOT_NAME}'"
+      fail "GET job mismatch: expected source_connection_id='${CONN_ID}' job_type='full', got source_connection_id='${GOT_CID}' job_type='${GOT_TYPE}'"
     fi
   else
     fail "GET job expected 200, got ${STATUS}"

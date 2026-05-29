@@ -49,7 +49,9 @@ begin_suite "migrations-assess"
 auth_admin
 
 CONNECTION_NAME="mig-conn-ass-${RUN_ID}"
-JOB_NAME="mig-job-ass-${RUN_ID}"
+# Note: migration jobs no longer carry a `name` field in the backend
+# contract (migration.rs CreateMigrationRequest / MigrationJobResponse),
+# so there is no JOB_NAME to set or assert on.
 CONNECTIONS_BASE="/api/v1/migrations/connections"
 JOBS_BASE="/api/v1/migrations"
 
@@ -146,14 +148,18 @@ fi
 CONN_ID="${CONNECTION_IDS[0]}"
 
 begin_test "Create migration job to assess"
+# Backend contract (migration.rs `CreateMigrationRequest`, authoritative):
+# {source_connection_id, job_type?, config}. The old
+# {name, connection_id, source_path, target_repo} shape now 422s with
+# "missing field source_connection_id". The job is created with the
+# default job_type "full" (status pending); POST /{id}/assess then flips
+# it to job_type "assessment" / status "assessing" on the backend side.
 JOB_PAYLOAD=$(jq -nc \
-  --arg name "$JOB_NAME" \
   --arg cid "$CONN_ID" \
   '{
-    name: $name,
-    connection_id: $cid,
-    source_path: "example-repo",
-    target_repo: "migration-target"
+    source_connection_id: $cid,
+    job_type: "full",
+    config: {}
   }')
 
 RESP=$(migrations_request POST "$JOBS_BASE" "$JOB_PAYLOAD")
