@@ -54,9 +54,18 @@ mkdir -p "$RESULTS_DIR"
 # saturation (the (B) candidate).
 _probe_exempt_header() {
   local hdr
+  # Harness-crash fix: this runs under `set -euo pipefail`. When the backend
+  # does not emit an X-RateLimit-Exempt header (it is absent on this test
+  # cluster), `grep` exits 1, pipefail propagates that to the pipeline, and
+  # because `hdr=$(...)` is a standalone assignment, `set -e` aborted the
+  # whole script here, BEFORE the first begin_test ran. The suite then logged
+  # only its header and exited 1 with zero assertions executed. The empty-hdr
+  # branch below already handles "header not present" gracefully, so we just
+  # need the pipeline to not be fatal: `|| true` keeps a no-match grep from
+  # killing the run.
   hdr=$(curl -sI --max-time 5 -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     "${BASE_URL}/api/v1/repositories" 2>/dev/null \
-    | grep -i '^x-ratelimit-exempt:' | tr -d '\r')
+    | grep -i '^x-ratelimit-exempt:' | tr -d '\r' || true)
   if [ -n "$hdr" ]; then
     echo "  rate-limit exemption: ${hdr}"
   else

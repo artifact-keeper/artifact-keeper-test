@@ -32,6 +32,15 @@ backend:
     # See values-test.yaml for rationale (iac#97). Parallel test pods exhaust
     # the default 120/min auth rate-limit on shared admin bootstrap.
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+    # Mesh failover-detection tuning for the test cluster.
+    # The sync worker's worst-case failover-detection deadline is
+    #   (PEER_STALE_CHECK_INTERVAL_TICKS * 10s) + (PEER_STALE_THRESHOLD_MINUTES * 60s).
+    # Production defaults (6 ticks, 5 min) give 360s, far above the 90s gate
+    # budget used by mesh-tests test-peer-failover. These knobs were made
+    # env-overridable in the backend so e2e clusters can compress the deadline:
+    #   (2 * 10s) + (1 * 60s) = 80s worst case, under the 90s budget.
+    PEER_STALE_THRESHOLD_MINUTES: "1"
+    PEER_STALE_CHECK_INTERVAL_TICKS: "2"
   persistence:
     size: 2Gi
 

@@ -78,9 +78,16 @@ CASES=(
 # auth_admin is best-effort. The bug fired regardless of auth state,
 # so we want this suite to still surface the regression even if admin
 # login is degraded on a given runner.
+#
+# Harness bug fix: auth_admin (tests/lib/common.sh) exports the admin
+# JWT as ADMIN_TOKEN, not ACCESS_TOKEN. Under `set -euo pipefail` (set in
+# common.sh), referencing the never-set $ACCESS_TOKEN aborted the whole
+# script with "ACCESS_TOKEN: unbound variable" before any assertion ran.
+# We seed ADMIN_TOKEN empty first so the unauth path still runs even if
+# login fails, then capture the real exported ADMIN_TOKEN on success.
 ADMIN_TOKEN=""
 if auth_admin >/dev/null 2>&1; then
-  ADMIN_TOKEN="$ACCESS_TOKEN"
+  ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 fi
 
 # Bounded poll: a cold ARC runner pod can transiently 503 during DB
