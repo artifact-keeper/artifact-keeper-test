@@ -115,6 +115,13 @@ else
     pass
   elif [ "$status" = "503" ] || [ "$status" = "501" ]; then
     skip "sync worker not running in this env (artifact-keeper-fzj)"
+  elif [ "$status" = "404" ]; then
+    # The run-now sync trigger is the unshipped sync worker (TODO #78.4,
+    # artifact-keeper-fzj). A 404 means the endpoint is not shipped on this
+    # backend, which is a not-provisioned capability rather than a defect.
+    # Route through skip_suite so the capability-exemption allowlist
+    # (mesh_run_now, tracked by #211) handles it under RELEASE_GATE.
+    skip_suite "sync run-now endpoint not shipped (HTTP 404); sync worker (TODO #78.4, artifact-keeper-fzj) not present on this backend"
   else
     fail "expected 200/202 from run-now, got ${status}"
   fi

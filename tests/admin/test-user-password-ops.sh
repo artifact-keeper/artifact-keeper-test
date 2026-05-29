@@ -35,7 +35,25 @@ TEST_EMAIL="${TEST_USERNAME}@e2e.local"
 # than embedding string literals. Each must satisfy the backend's
 # documented min-length/complexity policy (>=12 chars + mixed case +
 # digit + symbol).
-_rand_alnum() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12; }
+# Broken-pipe-safe random alnum generator.
+#
+# The previous form `tr -dc ... </dev/urandom | head -c 12` aborts this script
+# under `set -euo pipefail`: head closes the pipe after 12 bytes, tr keeps
+# reading the infinite /dev/urandom and dies with SIGPIPE ("tr: write error:
+# Broken pipe", exit 141). pipefail propagates that 141 and set -e exits the
+# whole script BEFORE any assertion runs.
+#
+# Fix: read a bounded chunk of random bytes first, then run tr to completion
+# (no reader closes the pipe early), and slice the first 12 alnum chars with
+# bash parameter expansion. 256 raw bytes yield ~60 alnum chars on average, so
+# 12 is always available; the while-loop is a belt-and-suspenders guard.
+_rand_alnum() {
+  local out=""
+  while [ "${#out}" -lt 12 ]; do
+    out="${out}$(LC_ALL=C tr -dc 'A-Za-z0-9' < <(head -c 256 /dev/urandom))"
+  done
+  printf '%s' "${out:0:12}"
+}
 PASS_INITIAL="$(_rand_alnum)_${RUN_ID:0:8}_Aa1!"
 PASS_CHANGED="$(_rand_alnum)_${RUN_ID:0:8}_Bb2!"
 TEST_USER_ID=""
