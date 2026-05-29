@@ -269,11 +269,24 @@ while [ "$iter" -le "$RACE_ITERATIONS" ]; do
     continue
   fi
 
-  # Hold the FIFO open for writing on fd 8 in the parent. Without this,
-  # whichever child opens the FIFO for reading first would see EOF
-  # immediately (no writer attached) and proceed alone, defeating the
-  # barrier.
-  exec 8>"$BARRIER_FIFO"
+  # Hold the FIFO open on fd 8 in the parent. We MUST open it read-write
+  # (`<>`), not write-only (`>`).
+  #
+  # A write-only open of a FIFO blocks until a reader attaches (POSIX
+  # O_WRONLY semantics, observed on both Linux ARC runners and macOS). The
+  # two reader children are forked AFTER this line, so a write-only open
+  # here deadlocks: the parent waits for a reader that can never be created
+  # because the parent never reaches the fork. That is the exit-124 hang
+  # this suite was tripping in release-gate (cycle-1's backend advisory lock
+  # did not and could not fix it; the hang is entirely client-side -- no
+  # PUT is ever issued, the backend sees zero traffic for the iteration).
+  #
+  # Opening read-write never blocks (there is always a reader: ourselves),
+  # so the parent proceeds to fork the writers immediately. Because fd 8
+  # keeps a read end open, closing the write end does NOT produce EOF, so
+  # we release the writers by WRITING one byte per writer instead of
+  # relying on EOF.
+  exec 8<>"$BARRIER_FIFO"
 
   run_writer "$PAYLOAD_1" "$OUT_1" "$STATUS_1_FILE" "$BARRIER_FIFO" &
   PID_1=$!
@@ -285,9 +298,10 @@ while [ "$iter" -le "$RACE_ITERATIONS" ]; do
   # typically ~5ms.
   sleep 0.05
 
-  # Release the barrier by closing our writer end of the FIFO. Both
-  # blocked `read`s in the children see EOF near-simultaneously and
-  # proceed to issue their PUT.
+  # Release the barrier: write exactly one byte per blocked reader. Both
+  # children's `read` return near-simultaneously and proceed to issue their
+  # PUT. Then close fd 8 (drops both the read and write ends we hold).
+  printf 'g\ng\n' >&8
   exec 8>&-
 
   wait "$PID_1"; rc_1=$?

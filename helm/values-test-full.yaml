@@ -42,6 +42,18 @@ backend:
     # validation -- DO NOT set it here or security-tests SSRF assertions
     # will silently pass.
     WEBHOOK_ALLOW_PRIVATE_IPS: "1"
+    # Enable the Webhooks v2 EventBus producer. It is OFF by default in the
+    # backend (WEBHOOKS_V2_PRODUCER_ENABLED defaults to false) so a fresh
+    # cluster does not double-deliver while System B notifications are still
+    # in their deprecation window. Without it, no code path inserts into
+    # webhook_deliveries from a real domain event, so the delivery-producer
+    # suites (webhook-delivery, event-delivery-status-filter) hard-fail with
+    # "no delivery row appeared within 30s; producer may not be running" even
+    # though the webhook was created and the event fired. The suite comments
+    # already assume "the harness sets it to 1"; this is where the harness
+    # actually does so. (Release-gate run 26616763325: webhook-delivery 4
+    # failures, all rooted at the producer never starting.)
+    WEBHOOKS_V2_PRODUCER_ENABLED: "true"
     # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys

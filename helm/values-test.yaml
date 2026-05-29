@@ -52,6 +52,18 @@ backend:
     # read; rc.1 release-gate run 26116464151 confirmed the flag had no
     # effect because of the rename.)
     UPSTREAM_ALLOW_PRIVATE_IPS: "1"
+    # Enable the Webhooks v2 EventBus producer (OFF by default in the backend).
+    # Without it, no code path enqueues webhook_deliveries rows from a real
+    # domain event, so the delivery-producer suites fail with "no delivery row
+    # appeared; producer may not be running". The webhook suites' comments
+    # assume "the harness sets it to 1"; this is the harness doing so.
+    WEBHOOKS_V2_PRODUCER_ENABLED: "true"
+    # NOTE: this non-full-stack overlay sets WEBHOOK_ALLOW_PRIVATE_IPS too so
+    # webhook tests run here also allow the RFC1918 receiver. Backend #1435
+    # split UPSTREAM_ vs WEBHOOK_; the webhook validator reads the WEBHOOK_
+    # one. Without it, webhook create toward the runner pod's RFC1918 IP is
+    # rejected (default-deny) and the webhook suites fail at create time.
+    WEBHOOK_ALLOW_PRIVATE_IPS: "1"
   persistence:
     size: 2Gi
 
