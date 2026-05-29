@@ -244,10 +244,11 @@ if [ -n "$OOO_SESSION" ]; then
       "${BASE_URL}/api/v1/uploads/${OOO_SESSION}/complete") || OOO_FIN_HTTP="000"
 
     if [ "$OOO_FIN_HTTP" = "200" ]; then
-      # Download and verify
+      # Download and verify. The /artifacts/*path GET returns metadata JSON;
+      # the raw file bytes are served by /download/*path.
       OOO_DL_HTTP=$(curl -s -o "${WORK_DIR}/ooo_dl.bin" -w '%{http_code}' \
         $CURL_TIMEOUT -H "$(auth_header)" \
-        "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/test/ooo-file.bin") || OOO_DL_HTTP="000"
+        "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/test/ooo-file.bin") || OOO_DL_HTTP="000"
 
       if [ "$OOO_DL_HTTP" = "200" ]; then
         OOO_DL_SHA=$(compute_sha256 "${WORK_DIR}/ooo_dl.bin")
@@ -645,7 +646,7 @@ if [ -n "$CONC_A_SESSION" ] && [ -n "$CONC_B_SESSION" ]; then
     # Download and verify B's content won (last to finalize)
     CONC_DL_HTTP=$(curl -s -o "${WORK_DIR}/conc_dl.bin" -w '%{http_code}' \
       $CURL_TIMEOUT -H "$(auth_header)" \
-      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/test/concurrent.bin") || CONC_DL_HTTP="000"
+      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/test/concurrent.bin") || CONC_DL_HTTP="000"
 
     if [ "$CONC_DL_HTTP" = "200" ]; then
       CONC_DL_SHA=$(compute_sha256 "${WORK_DIR}/conc_dl.bin")
