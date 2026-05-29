@@ -43,15 +43,26 @@ LOCAL_A="test-vmr-a-${RUN_ID}"
 LOCAL_B="test-vmr-b-${RUN_ID}"
 VIRTUAL_KEY="test-vmr-virt-${RUN_ID}"
 
-# Echo "<METHOD> <PATH> [body]" -> HTTP status. Captures the body to a temp
-# file so a failing assertion can surface a snippet via fail()'s CDATA arg.
+# Deterministic path for the most recent response body. verb_status is always
+# called via command substitution (`status=$(verb_status ...)`), which runs in
+# a SUBSHELL: any variable verb_status assigns (the old `RESP_BODY_FILE=$out`
+# with a per-call mktemp) is lost when the subshell exits, so the parent shell
+# never saw the body file and, under `set -u`, `$RESP_BODY_FILE` was unbound on
+# read. The final "reflects removal" assertion then read an empty file via a
+# failed redirection, parsed count=0, and failed even though the backend
+# returned the correct single-member list. Pin the body file to a fixed path
+# both the subshell (writer) and the parent (reader) can compute from the same
+# constant string so the handoff survives the subshell boundary.
+RESP_BODY_FILE="${WORK_DIR:-/tmp}/vmr-resp-body-${RUN_ID}.json"
+
+# Echo "<METHOD> <PATH> [body]" -> HTTP status. Captures the body to
+# $RESP_BODY_FILE so a failing assertion can surface a snippet via fail()'s
+# CDATA arg or parse the JSON after the call returns.
 verb_status() {
   local method="$1"
   local path="$2"
   local body="${3:-}"
-  local out
-  out=$(mktemp)
-  local args=(-s -o "$out" -w '%{http_code}' --max-time 60 --connect-timeout 10
+  local args=(-s -o "$RESP_BODY_FILE" -w '%{http_code}' --max-time 60 --connect-timeout 10
               -X "$method"
               -H "$(auth_header)"
               -H "Content-Type: application/json")
@@ -61,8 +72,6 @@ verb_status() {
   args+=("${BASE_URL}${path}")
   local code
   code=$(curl "${args[@]}") || code="000"
-  # Caller can read the body via $RESP_BODY_FILE; expose deterministically.
-  RESP_BODY_FILE="$out"
   echo "$code"
 }
 

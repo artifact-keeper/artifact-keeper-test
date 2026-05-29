@@ -224,16 +224,37 @@ body: ${body:0:300}"
       fi
       ;;
     200)
-      # If the promotion succeeded, the gate did not block. This is acceptable
-      # ONLY if the gate evaluation produced no violations (e.g. the artifact
-      # never accumulated health-score data so the gate had nothing to
-      # evaluate, which maps to GateOutcome::NotEvaluated). In that case the
-      # rest of the promotion flow ran and would have hit the staging-shape
-      # check -- so a 200 here means the handler order is also wrong.
-      fail "promotion returned 200 but source is non-staging; staging-shape check should still apply when gate does not block" \
-"body: ${body:0:300}
-Either the gate evaluation is missing entirely, or the staging-shape
-check is also being skipped. Both forms are regressions."
+      # The promotion succeeded, which means the gate did not block. This is
+      # the CORRECT outcome here, not a regression.
+      #
+      # Two facts drive this (artifact-keeper#1376 / #1382 / B12):
+      #   1. A Local repository IS a valid promotion source. The source only
+      #      needs to be a *hosted* repo (Local or Staging) so its bytes can
+      #      be copied into the release repo; only Remote/Virtual sources are
+      #      rejected (they own no bytes). The earlier "source must be a
+      #      staging repository" restriction was removed precisely because it
+      #      400'd legitimate Local-source promotions before the gate could
+      #      run. See validate_promotion_source_is_staging in
+      #      backend/src/api/handlers/promotion.rs.
+      #   2. This fixture uploads a plain artifact with no scanner findings,
+      #      so the quality gate evaluates as passed=true (GateOutcome maps a
+      #      no-violation evaluation to "not blocked"). A passing gate on a
+      #      hosted source correctly yields a 200 promotion.
+      #
+      # The load-bearing #1376 contract -- "gate evaluation precedes the
+      # source-shape check, so a gate-violating promotion never gets masked by
+      # a staging-shape 400" -- is fully exercised by the 409/422/403 and 400
+      # branches above. A 200 here only tells us the gate did not block this
+      # particular (finding-free) artifact, which is expected. We still guard
+      # against the inverse regression: the body must NOT claim a staging-shape
+      # rejection while reporting success.
+      if echo "$body" | grep -qi "staging repository"; then
+        fail "promotion returned 200 but body references 'staging repository'; inconsistent response" \
+"body: ${body:0:300}"
+      else
+        echo "  promotion succeeded (gate passed on a finding-free artifact from a hosted Local source); #1376 order contract not violated"
+        pass
+      fi
       ;;
     000)
       fail "promotion request failed at the network layer (curl exit non-zero)"

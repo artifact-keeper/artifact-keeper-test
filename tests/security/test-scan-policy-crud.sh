@@ -200,7 +200,12 @@ else
     fail "PUT returned HTTP ${u_status} (body: $(head -c 200 "$WORK_DIR/upd.json"))"
   else
     upd_sev=$(jq -r '.max_severity // empty' "$WORK_DIR/upd.json")
-    upd_en=$(jq -r '.is_enabled // empty' "$WORK_DIR/upd.json")
+    # NOTE: do NOT use `.is_enabled // empty` here. jq's `//` operator treats
+    # a literal `false` as "absent" and falls through to the alternative, so
+    # `false // empty` yields "" -- which made this assertion fail even though
+    # the backend correctly returned is_enabled=false. Extract the boolean
+    # directly. (#1374 / B11)
+    upd_en=$(jq -r '.is_enabled' "$WORK_DIR/upd.json")
     upd_stag=$(jq -r '.min_staging_hours // empty' "$WORK_DIR/upd.json")
     upd_age=$(jq -r '.max_artifact_age_days // empty' "$WORK_DIR/upd.json")
     if [ "$upd_sev" != "critical" ]; then
@@ -232,7 +237,9 @@ else
     fail "GET-after-PUT returned HTTP ${g2_status}"
   else
     sev=$(jq -r '.max_severity // empty' "$WORK_DIR/g2.json")
-    en=$(jq -r '.is_enabled // empty' "$WORK_DIR/g2.json")
+    # `.is_enabled // empty` would coerce a real `false` to "" (jq treats
+    # false as absent for `//`); read the boolean directly. (#1374 / B11)
+    en=$(jq -r '.is_enabled' "$WORK_DIR/g2.json")
     stag=$(jq -r '.min_staging_hours // empty' "$WORK_DIR/g2.json")
     age=$(jq -r '.max_artifact_age_days // empty' "$WORK_DIR/g2.json")
     # Assert the NEW values from PUT, not the create-row values: the
