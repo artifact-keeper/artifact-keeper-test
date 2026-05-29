@@ -199,9 +199,14 @@ case "$ASSESS_STATUS" in
     if [ "$ASSESS_STATUS" = "404" ] || [ "$ASSESS_STATUS" = "501" ]; then
       skip "assess endpoint not implemented (HTTP ${ASSESS_STATUS})"
       end_suite
+      exit 0
     fi
     pass
     end_suite
+    # end_suite only exits on failure; on an all-pass suite it returns, so we
+    # must exit explicitly here to avoid falling through to the unconditional
+    # silent-success `fail` at the end of the script.
+    exit 0
     ;;
   200|201|202) : ;;
   *)
@@ -210,14 +215,30 @@ case "$ASSESS_STATUS" in
     ;;
 esac
 
-# Path B: async accepted. Poll GET /assessment for a result. The poll
-# budget (~30s) is well within --max-time for a release-gate test.
+# Path B: async accepted. Poll GET /assessment for a *terminal* result.
+#
+# Stale-assertion fix: the previous loop broke as soon as `.status` was
+# non-empty. But the assessment endpoint reports the live job status, and an
+# async assessment sits in a non-terminal `assessing` state for several
+# seconds while the worker tries (and fails) to reach the source. The old
+# break-on-any-status logic therefore broke on the FIRST poll with
+# status="assessing", then fell through to the "unknown status" branch and
+# failed loudly even though the backend was about to mark the job failed.
+#
+# An unreachable source (example.invalid) fails closed only after the source
+# client exhausts its connect timeout + retry backoff, so we must keep polling
+# through the in-progress window and only break on a TERMINAL status (or when
+# blockers appear). The budget (~40s) stays well within --max-time for a
+# release-gate test and comfortably covers the worker's retry backoff.
 ATTEMPTS=0
-MAX_ATTEMPTS=15
+MAX_ATTEMPTS=20
 GOT_STATUS=""
 GOT_BLOCKERS=""
 GOT_BODY=""
 GET_HTTP=""
+# Statuses that mean "assessment still running" -- we must NOT treat these as
+# a final result; keep polling.
+IN_PROGRESS_RE='^(assessing|pending|running|in_progress|queued|started)$'
 while [ "$ATTEMPTS" -lt "$MAX_ATTEMPTS" ]; do
   RESP=$(migrations_request GET "${JOBS_BASE}/${JOB_ID}/assessment")
   GET_HTTP=$(echo "$RESP" | head -1)
@@ -225,15 +246,28 @@ while [ "$ATTEMPTS" -lt "$MAX_ATTEMPTS" ]; do
   if [ "$GET_HTTP" = "200" ]; then
     GOT_STATUS=$(echo "$GOT_BODY" | jq -r '.status // empty' 2>/dev/null)
     GOT_BLOCKERS=$(echo "$GOT_BODY" | jq -r '.blockers // [] | length' 2>/dev/null)
-    if [ -n "$GOT_STATUS" ] || [ "${GOT_BLOCKERS:-0}" -gt 0 ] 2>/dev/null; then
+    # Blockers present -> a definitive result regardless of status.
+    if [ "${GOT_BLOCKERS:-0}" -gt 0 ] 2>/dev/null; then
       break
     fi
+    # A non-empty, non-in-progress status is terminal -> stop polling.
+    if [ -n "$GOT_STATUS" ] && ! echo "$GOT_STATUS" | grep -Eq "$IN_PROGRESS_RE"; then
+      break
+    fi
+    # else: status is empty or still in-progress -> keep polling.
   elif [ "$GET_HTTP" = "404" ] || [ "$GET_HTTP" = "202" ]; then
     : # still in progress
   fi
   sleep 2
   ATTEMPTS=$(( ATTEMPTS + 1 ))
 done
+
+# If we exited the loop while the assessment was still in-progress, treat the
+# transient status as "no result yet" so the inconclusive branch below skips
+# rather than misclassifying an unfinished assessment as a silent success.
+if [ -n "$GOT_STATUS" ] && echo "$GOT_STATUS" | grep -Eq "$IN_PROGRESS_RE"; then
+  GOT_STATUS=""
+fi
 
 # Path B.1: never got a populated result. Inconclusive -> skip (not pass).
 if [ -z "$GOT_STATUS" ] && [ "${GOT_BLOCKERS:-0}" = "0" ]; then
@@ -242,16 +276,23 @@ if [ -z "$GOT_STATUS" ] && [ "${GOT_BLOCKERS:-0}" = "0" ]; then
 fi
 
 # Path B.2: explicit failure or blockers present -> pass.
+# NOTE: end_suite() only calls `exit` when at least one test failed; on an
+# all-pass suite it prints the summary and RETURNS. So after a definitive
+# pass we must `exit 0` explicitly, otherwise control falls through to the
+# unconditional silent-success `fail` at the end of the script and emits a
+# spurious second (failing) summary.
 case "$GOT_STATUS" in
   failed|error|errored|unreachable)
     pass
     end_suite
+    exit 0
     ;;
 esac
 
 if [ "${GOT_BLOCKERS:-0}" -gt 0 ] 2>/dev/null; then
   pass
   end_suite
+  exit 0
 fi
 
 # Path B.3 (refused): green status against an unreachable source.
