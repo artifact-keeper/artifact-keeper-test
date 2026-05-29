@@ -120,9 +120,10 @@ else
     THIS_CHUNK=$(( REMAINING < CHUNK_SIZE ? REMAINING : CHUNK_SIZE ))
     RANGE_END=$(( RANGE_START + THIS_CHUNK - 1 ))
 
-    # Extract chunk from test file
+    # Extract chunk from test file. skip is measured in bs-sized (1 MB)
+    # blocks, so chunk i begins at block i*CHUNK_SIZE_MB, not block i.
     dd if="${WORK_DIR}/testfile.bin" of="${WORK_DIR}/chunks/chunk_${i}" \
-      bs=1048576 skip="$i" count="$CHUNK_SIZE_MB" 2>/dev/null
+      bs=1048576 skip="$(( i * CHUNK_SIZE_MB ))" count="$CHUNK_SIZE_MB" 2>/dev/null
     # Truncate last chunk to exact remaining bytes if needed
     if [ "$THIS_CHUNK" -lt "$CHUNK_SIZE" ]; then
       truncate -s "$THIS_CHUNK" "${WORK_DIR}/chunks/chunk_${i}" 2>/dev/null || \
@@ -207,10 +208,12 @@ begin_test "Download artifact and verify SHA256"
 if [ -z "$ARTIFACT_ID" ] && [ -z "$SESSION_ID" ]; then
   skip "no artifact to download"
 else
+  # /artifacts/*path GET returns metadata JSON; the raw bytes are served by
+  # /download/*path.
   DL_HTTP=$(curl -s -o "${WORK_DIR}/downloaded.bin" -w '%{http_code}' \
     $CURL_TIMEOUT \
     -H "$(auth_header)" \
-    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/test/chunked-file.bin" 2>/dev/null) || DL_HTTP="000"
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/test/chunked-file.bin" 2>/dev/null) || DL_HTTP="000"
 
   if [ "$DL_HTTP" = "200" ]; then
     DL_SHA256=$(compute_sha256 "${WORK_DIR}/downloaded.bin")
