@@ -256,41 +256,53 @@ status=$(call_with_token "$SA_READ_TOKEN" POST \
 assert_403_with_scope_msg "oci blob upload" "$status"
 
 # -------------------------------------------------------------------------
-# Positive control: read+write SA token MUST succeed (2xx) on the same
-# admin endpoints. If this fails the GHSA fix has over-rotated and broken
-# legitimate write tokens.
+# Authorization-layer control: a write-scope SA token passes the GHSA scope
+# check but is STILL rejected (403) on permission/group creation, because
+# those are admin-only operations in the backend authorization model.
+#
+# Granting fine-grained permissions and creating groups are privileged
+# operations: create_permission calls require_admin() and create_group
+# requires admin (or fine-grained "admin" on the system sentinel) AFTER the
+# scope check. A plain write-scope service account is neither, so it must get
+# 403 -- "Admin access required" / "Insufficient permissions to create
+# groups" -- NOT a 2xx. This pins that the GHSA scope fix layers on top of
+# the existing admin gate rather than replacing it.
+#
+# (Earlier revisions of this suite expected a 2xx here and sent a
+# {name, description} body. That body never matched the permissions API,
+# which requires {principal_type, principal_id, target_type, target_id,
+# actions}; and write-scope alone was never sufficient for these admin-only
+# endpoints. See artifact-keeper#1438 / GHSA-vvc3-h39c-mrq5.)
 # -------------------------------------------------------------------------
 
 CREATED_PERM_ID=""
 CREATED_GROUP_ID=""
 
-begin_test "Read+write SA token can POST /api/v1/permissions"
+begin_test "Write-scope SA token is rejected (403, admin required) on POST /api/v1/permissions"
 if [ -z "${SA_WRITE_TOKEN:-}" ]; then
   skip "no write SA token"
 else
   status=$(call_with_token "$SA_WRITE_TOKEN" POST "/api/v1/permissions" \
     "application/json" \
     "{\"name\":\"ghsa-ok-perm-${RUN_ID}\",\"description\":\"created by write SA\"}")
-  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
-    CREATED_PERM_ID=$(jq -r '.id // empty' < "${WORK_DIR}/last-body" 2>/dev/null || true)
+  if [ "$status" = "403" ]; then
     pass
   else
-    fail "expected 2xx for write SA on POST /permissions, got ${status}: $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
+    fail "expected 403 (admin required) for write SA on POST /permissions, got ${status}: $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
   fi
 fi
 
-begin_test "Read+write SA token can POST /api/v1/groups"
+begin_test "Write-scope SA token is rejected (403, admin required) on POST /api/v1/groups"
 if [ -z "${SA_WRITE_TOKEN:-}" ]; then
   skip "no write SA token"
 else
   status=$(call_with_token "$SA_WRITE_TOKEN" POST "/api/v1/groups" \
     "application/json" \
     "{\"name\":\"ghsa-ok-group-${RUN_ID}\",\"description\":\"created by write SA\"}")
-  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
-    CREATED_GROUP_ID=$(jq -r '.id // empty' < "${WORK_DIR}/last-body" 2>/dev/null || true)
+  if [ "$status" = "403" ]; then
     pass
   else
-    fail "expected 2xx for write SA on POST /groups, got ${status}: $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
+    fail "expected 403 (admin required) for write SA on POST /groups, got ${status}: $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
   fi
 fi
 
@@ -302,14 +314,29 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Admin JWT passes write-scope check on POST /api/v1/permissions"
-status=$(call_with_token "$ADMIN_TOKEN" POST "/api/v1/permissions" \
-  "application/json" \
-  "{\"name\":\"ghsa-jwt-perm-${RUN_ID}\",\"description\":\"created by admin JWT\"}")
-if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
-  JWT_PERM_ID=$(jq -r '.id // empty' < "${WORK_DIR}/last-body" 2>/dev/null || true)
-  pass
+# The permissions API requires a real {principal_type, principal_id,
+# target_type, target_id, actions} body -- NOT {name, description}. Resolve
+# the admin user id (principal) and one of the repos created above (target)
+# so the admin JWT exercises the genuine create path. A malformed body would
+# 400 AFTER the scope/admin gate, which would not prove the JWT passed the
+# write-scope check.
+PERM_PRINCIPAL_ID=$(resolve_user_id_by_username "$ADMIN_USER" 2>/dev/null || true)
+PERM_TARGET_ID=$(api_get "/api/v1/repositories/${NPM_REPO}" 2>/dev/null | jq -r '.id // empty')
+if [ -z "$PERM_PRINCIPAL_ID" ] || [ -z "$PERM_TARGET_ID" ]; then
+  fail "could not resolve principal (admin user) or target (repo) id for permission body"
 else
-  fail "admin JWT rejected on write path (expected 2xx, got ${status}): $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
+  perm_body=$(jq -n \
+    --arg pid "$PERM_PRINCIPAL_ID" \
+    --arg tid "$PERM_TARGET_ID" \
+    '{principal_type:"user", principal_id:$pid, target_type:"repository", target_id:$tid, actions:["read"]}')
+  status=$(call_with_token "$ADMIN_TOKEN" POST "/api/v1/permissions" \
+    "application/json" "$perm_body")
+  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+    JWT_PERM_ID=$(jq -r '.id // empty' < "${WORK_DIR}/last-body" 2>/dev/null || true)
+    pass
+  else
+    fail "admin JWT rejected on write path (expected 2xx, got ${status}): $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
+  fi
 fi
 
 begin_test "Admin JWT passes write-scope check on POST /api/v1/groups"
