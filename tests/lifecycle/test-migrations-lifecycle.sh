@@ -214,11 +214,26 @@ BODY=$(echo "$RESP" | tail -n +2)
 
 # Acceptable: non-2xx (4xx/5xx/timeout-shaped).
 # Also acceptable: 2xx with explicit failure body.
+#
+# The connection-test endpoint (backend migration.rs `test_connection`)
+# correctly returns HTTP 200 with a ConnectionTestResult body of
+# {"success": false, "message": "Connection failed: ...", ...} when the
+# source URL is unreachable. The fail-closed contract this test pins is
+# satisfied by that body, not by a non-2xx status.
+#
+# Stale-assertion fix: the previous check read `.ok // .success`. jq's `//`
+# operator treats BOTH null AND false as "empty", so when the real body
+# carries `"success": false`, `.ok` (absent -> null) falls through to
+# `.success` (false), which `//` also skips, yielding an empty string. The
+# guard then saw REPORTED_OK="" (not "false") and failed loudly even though
+# the backend had reported the failure exactly as intended. We now read the
+# `success` boolean directly (the field the backend actually emits) instead
+# of coalescing it away.
 case "$STATUS" in
   200|201|202)
-    REPORTED_OK=$(echo "$BODY" | jq -r '.ok // .success // empty' 2>/dev/null)
+    REPORTED_SUCCESS=$(echo "$BODY" | jq -r 'if has("success") then (.success | tostring) else "" end' 2>/dev/null)
     REPORTED_STATUS=$(echo "$BODY" | jq -r '.status // empty' 2>/dev/null)
-    if [ "$REPORTED_OK" = "false" ] || [ "$REPORTED_STATUS" = "failed" ] || [ "$REPORTED_STATUS" = "error" ]; then
+    if [ "$REPORTED_SUCCESS" = "false" ] || [ "$REPORTED_STATUS" = "failed" ] || [ "$REPORTED_STATUS" = "error" ]; then
       pass
     else
       fail "test-endpoint returned 2xx without an explicit failure marker on an unreachable URL; body=${BODY:0:200}"
