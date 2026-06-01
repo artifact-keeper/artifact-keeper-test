@@ -96,6 +96,7 @@ AK_BACKEND_BRANCH_1_2_X="\
   virtual_member_strict_contract \
   webhook_event_producer \
   proxy_ttl_eviction_correctness \
+  sbom_declared_dependencies \
 "
 
 # main: everything 1.2.x has, plus anything in-flight on main.
