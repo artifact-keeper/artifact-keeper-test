@@ -210,6 +210,14 @@ _feature_min_version() {
     "maven_virtual_snapshot")         echo "1.2.0" ;;
     "guest_access_toggle")            echo "1.2.0" ;;
     "opensearch_indexing")            echo "1.2.0" ;;
+    # sbom_declared_dependencies: SBOM generation merges the artifact's own
+    # declared dependencies (Maven POM, npm package.json, Helm Chart.yaml) with
+    # scanner output, so an artifact a scanner cannot enumerate (a bare Maven
+    # jar with no lockfile) no longer produces an authoritative empty SBOM, and
+    # the document carries a completeness signal (complete/declared/partial/
+    # none). artifact-keeper#870, lands in v1.2.0. Pre-1.2.0 backends return an
+    # empty SBOM for the declared-only case, so the gate skips there.
+    "sbom_declared_dependencies")     echo "1.2.0" ;;
     # proxy_stampede_protection: ProxyService gains a per-(repo,path) semaphore
     # capping concurrent upstream fetches at proxy_max_concurrent_fetches and
     # emitting 503 when proxy_queue_timeout_secs fires. Tracked by backend
