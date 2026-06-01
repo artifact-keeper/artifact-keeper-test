@@ -924,6 +924,13 @@ _CAPABILITY_EXEMPTIONS=(
   "wasm_plugin_fixture|no plugin list endpoint responded; backend deploy may not include the plugin overlay|211"
   # mesh: run-now sync trigger endpoint not shipped (sync worker, TODO #78.4)
   "mesh_run_now|sync run-now endpoint not shipped (HTTP 404)|211"
+  # security: auto-scan-on-native-upload not yet wired (artifact-keeper#870,
+  # deferred to v1.2.1). spawn_scan_on_upload only fires for the incus
+  # handler, so npm/maven/pypi/cargo native publishes leave scan_packages
+  # empty and the SBOM read path returns content.components: []. When the
+  # backend fix ships, the test passes on its own and this row gets
+  # deleted in the same PR. Test: tests/security/test-sbom-components-populated.sh
+  "sbom_components_native_upload|native-protocol upload did not trigger scan; SBOM components empty (deferred to v1.2.1 per #870|220"
 )
 
 ## _match_capability_exemption REASON
