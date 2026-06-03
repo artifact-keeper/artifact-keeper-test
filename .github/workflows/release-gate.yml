@@ -105,7 +105,7 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -168,7 +168,7 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -254,7 +254,7 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -314,7 +314,7 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -387,7 +387,7 @@ jobs:
       namespace: ${{ steps.setup.outputs.namespace }}
       backend_url: ${{ steps.deploy.outputs.backend_url }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -475,7 +475,7 @@ jobs:
       # class (#870/#871/#888) this gate was added to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -550,7 +550,7 @@ jobs:
       ALLOW_SCANNER_SKIP: '0'
       FIXTURE_FORMAT: ${{ matrix.format }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -643,7 +643,7 @@ jobs:
       JUNIT_OUTPUT_DIR: /tmp/test-results
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -704,7 +704,7 @@ jobs:
       # TRIVY_DB_MAX_AGE_DAYS if needed.
       TRIVY_DB_MAX_AGE_DAYS: ${{ vars.TRIVY_DB_MAX_AGE_DAYS || '14' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -870,7 +870,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1014,7 +1014,7 @@ jobs:
       # rationale on how this maps from inputs.backend_tag.
       AK_BACKEND_BRANCH: ${{ startsWith(inputs.backend_tag, '1.1.') && 'release/1.1.x' || (startsWith(inputs.backend_tag, '1.2.') && 'release/1.2.x' || 'main') }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1119,7 +1119,7 @@ jobs:
       # workflow-vs-deploy mismatch in ONE place.
       AK_BACKEND_BRANCH: ${{ startsWith(inputs.backend_tag, '1.1.') && 'release/1.1.x' || (startsWith(inputs.backend_tag, '1.2.') && 'release/1.2.x' || 'main') }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1154,7 +1154,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1189,7 +1189,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1224,7 +1224,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1259,7 +1259,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1294,7 +1294,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1333,7 +1333,7 @@ jobs:
       # (WEBHOOK_RETRY_TIMEOUT) so the wrapping timeout must exceed that.
       TEST_TIMEOUT: '300'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1394,7 +1394,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1442,7 +1442,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1477,7 +1477,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1523,7 +1523,7 @@ jobs:
       JUNIT_OUTPUT_DIR: /tmp/test-results
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1616,7 +1616,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1736,7 +1736,7 @@ jobs:
       NAMESPACE: ${{ needs.deploy.outputs.namespace }}
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1788,7 +1788,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1998,7 +1998,7 @@ jobs:
     if: always() && inputs.skip_teardown != true
     runs-on: ak-e2e-runners
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: artifact-keeper/artifact-keeper-test
 
