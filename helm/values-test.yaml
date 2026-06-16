@@ -37,6 +37,12 @@ backend:
     # bootstrap flow doesn't compete with itself across parallel pods. Per-test
     # users that the suites create are still rate-limited normally.
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+    # Release-gate runs 20+ suites against ONE shared backend; per-user/IP and
+    # global auth/API windows trip 429 across a full suite run (e.g. the totp
+    # backup-code single-use test gets 429 instead of 401/consume). The gate tests
+    # functional correctness, not rate-limiting (the rate-limit suite skips here),
+    # so disable the limiter for the test deploy.
+    RATE_LIMIT_ENABLED: "false"
     # Allow private-IP webhook URLs. Webhook tests run a mock receiver on
     # 127.0.0.1:18772 in the test pod and register webhooks pointing at
     # that address. The backend's opt-in private-IP SSRF allowlist (from

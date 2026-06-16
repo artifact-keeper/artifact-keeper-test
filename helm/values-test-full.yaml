@@ -31,6 +31,12 @@ backend:
     # See values-test.yaml for rationale (iac#97). Parallel test pods exhaust
     # the default 120/min auth rate-limit on shared admin bootstrap.
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+    # Release-gate runs 20+ suites against ONE shared backend; per-user/IP and
+    # global auth/API windows trip 429 across a full suite run (e.g. the totp
+    # backup-code single-use test gets 429 instead of 401/consume). The gate tests
+    # functional correctness, not rate-limiting (the rate-limit suite skips here),
+    # so disable the limiter for the test deploy.
+    RATE_LIMIT_ENABLED: "false"
     # Allow private-IP webhook URLs in the test deploy. Webhook tests now
     # bind a mock receiver on 0.0.0.0:PORT inside the test pod and POST the
     # runner pod's RFC1918 IP as the webhook target (artifact-keeper-test
