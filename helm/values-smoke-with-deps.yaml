@@ -198,7 +198,7 @@ ingress:
     secretName: smoke-tls-unused
 
 secrets:
-  jwtSecret: "test-jwt-secret-not-for-production"
+  jwtSecret: "ak-ci-nonprod-q7z6wharZXoYYW3BI1ZPSdbMDyXrXS6DiCajP8IPCHg4Bjgb"
 
 # Disabled subsystems: keep these off for now even in the "with-deps"
 # variant. NetworkPolicy default-deny would block the in-cluster

@@ -137,7 +137,7 @@ opensearch:
     size: 1Gi
 
 secrets:
-  jwtSecret: "test-jwt-secret-not-for-production"
+  jwtSecret: "ak-ci-nonprod-q7z6wharZXoYYW3BI1ZPSdbMDyXrXS6DiCajP8IPCHg4Bjgb"
 
 # Disabled services: not needed for basic test runs
 trivy:
