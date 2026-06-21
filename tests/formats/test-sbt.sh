@@ -220,7 +220,14 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "List artifacts via management API"
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
+# Use the retry-with-backoff helper instead of bare api_get: this GET is
+# idempotent and, when the gate runs ~25 format suites in parallel, the backend
+# tokio runtime can be momentarily saturated (worker-starvation / availability
+# issue), returning a transient 503/502/000 that the very next attempt serves
+# fine. api_get_with_retry retries ONLY that transient class (5xx/000), never
+# 4xx or wrong-content, so the assertion below stays meaningful. (ak-test flake:
+# "GET .../artifacts returned error" in format-tests (jvm).)
+if resp=$(api_get_with_retry "/api/v1/repositories/${REPO_KEY}/artifacts"); then
   if assert_contains "$resp" "$MODULE_NAME" "artifact list should contain module name"; then
     pass
   fi
