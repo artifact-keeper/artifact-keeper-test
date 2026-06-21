@@ -58,11 +58,15 @@ upload_resp=$(curl -s -w "\n%{http_code}" -X PUT \
 http_code=$(echo "$upload_resp" | tail -1)
 upload_body=$(echo "$upload_resp" | sed '$d')
 
-if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
+# 202 Accepted is the current contract: upload_image() records a finalizing
+# session and pushes to storage on a background task to avoid L7 gateway
+# timeouts on multi-GiB uploads (#1471/#1494). The body still carries .sha256,
+# so the downstream catalog/download assertions remain valid. Accept 200/201/202.
+if [ "$http_code" = "201" ] || [ "$http_code" = "200" ] || [ "$http_code" = "202" ]; then
   UNIFIED_SHA256=$(echo "$upload_body" | jq -r '.sha256 // empty' 2>/dev/null) || true
   pass
 else
-  fail "unified tarball upload returned ${http_code}, expected 201"
+  fail "unified tarball upload returned ${http_code}, expected 201 or 202"
 fi
 
 # -----------------------------------------------------------------------

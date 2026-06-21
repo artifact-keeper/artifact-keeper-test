@@ -20,12 +20,18 @@
 # actual delivery verdict.
 #
 # Strategy:
-#   1. Drive a SUCCESS delivery via /test against a 200-always receiver.
+#   1. Drive a SUCCESS delivery via a REAL EventBus event (repository.created)
+#      against a 200-always receiver. NOTE: POST /webhooks/{id}/test does NOT
+#      insert a webhook_deliveries row -- it mints a throwaway delivery id and
+#      does a single synchronous POST (webhooks.rs test_webhook). The ONLY
+#      path that inserts into webhook_deliveries is the v2 producer on a real
+#      domain event. So we subscribe to repository_created and create a repo,
+#      mirroring the passing test-webhook-delivery.sh.
 #   2. Read the unfiltered deliveries list. At least one row's .success
 #      must be true.
 #   3. Filter status=success. The returned set MUST be non-empty AND
 #      every row's .success MUST be true.
-#   4. Filter status=failure. Our /test row (success=true) MUST NOT be
+#   4. Filter status=failure. Our success row (success=true) MUST NOT be
 #      in the filtered set, and every returned row's .success MUST be
 #      false. This is the load-bearing assertion: if the backend
 #      ignores the param, this query returns the full list including
@@ -47,11 +53,14 @@ WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-statusf
 RECEIVER_PID=""
 WEBHOOK_ID=""
 
+REPO_KEY="statusfilter-repo-${RUN_ID}"
+
 cleanup_and_finalize() {
   local code=$?
   if [ -n "${WEBHOOK_ID}" ] && [ "${WEBHOOK_ID}" != "null" ]; then
     api_delete "/api/v1/webhooks/${WEBHOOK_ID}" >/dev/null 2>&1 || true
   fi
+  api_delete "/api/v1/repositories/${REPO_KEY}" >/dev/null 2>&1 || true
   if [ -n "${RECEIVER_PID}" ] && kill -0 "${RECEIVER_PID}" 2>/dev/null; then
     kill "${RECEIVER_PID}" 2>/dev/null || true
     wait "${RECEIVER_PID}" 2>/dev/null || true
@@ -140,7 +149,7 @@ else
   PAYLOAD=$(jq -n \
     --arg name "$WEBHOOK_NAME" \
     --arg url "$WEBHOOK_RECEIVER_URL" \
-    '{name: $name, url: $url, events: ["artifact_uploaded"]}')
+    '{name: $name, url: $url, events: ["repository_created"]}')
   if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
     WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
     if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then
@@ -155,21 +164,24 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Drive at least one delivery and wait until it shows up in the list.
-# Use /test because it shares the producer pipeline with real events
-# (proven by test-webhook-dry-run.sh) and is the fastest way to get a
-# deterministic row inserted.
+# Drive at least one delivery via a REAL event and wait until it shows up
+# in the list. We create a repository, which emits repository.created; the
+# v2 producer maps it to "repository_created", inserts a webhook_deliveries
+# row, and the delivery worker POSTs to our always-200 receiver -> the row
+# settles as success=true. (POST /webhooks/{id}/test does NOT insert a row,
+# so it cannot seed this suite -- see header.)
 # -------------------------------------------------------------------------
 
-begin_test "Trigger a delivery via /test"
+begin_test "Trigger a delivery via repository.created event"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
-  if api_post "/api/v1/webhooks/${WEBHOOK_ID}/test" "" >/dev/null 2>&1; then
+  REPO_CREATE_PAYLOAD="{\"key\":\"${REPO_KEY}\",\"name\":\"${REPO_KEY}\",\"format\":\"generic\",\"repo_type\":\"local\",\"is_public\":true}"
+  if api_post "/api/v1/repositories" "$REPO_CREATE_PAYLOAD" >/dev/null 2>&1; then
     pass
   else
     SUITE_BLOCKED=true
-    skip "/test endpoint unavailable"
+    skip "repo create (event trigger) failed"
   fi
 fi
 
@@ -199,10 +211,10 @@ else
   if [ "$SUCCESS_ROW_COUNT" -gt 0 ]; then
     pass
   elif [ "$UNFILTERED_COUNT" -gt 0 ]; then
-    # Rows landed but none of them succeeded. /test against our local
-    # always-200 receiver should produce success=true; if it did not,
-    # the suite's premise is broken and downstream assertions cannot
-    # tell "filter ignored" from "no success rows to filter for".
+    # Rows landed but none of them succeeded. The real-event delivery to
+    # our local always-200 receiver should settle as success=true; if it
+    # did not, the suite's premise is broken and downstream assertions
+    # cannot tell "filter ignored" from "no success rows to filter for".
     SUITE_BLOCKED=true
     skip "delivery rows exist but none have .success=true; cannot exercise success-vs-failure filter"
   else

@@ -77,7 +77,10 @@ post_verb() {
 # read_enabled   ->   echoes "true" | "false" | ""
 read_enabled() {
   if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}" 2>/dev/null); then
-    echo "$resp" | jq -r '.is_enabled // empty' 2>/dev/null || echo ""
+    # Do NOT use `.is_enabled // empty`: jq's `//` treats boolean `false`
+    # as absent and collapses it to "", so a correctly-disabled webhook
+    # would read as empty. Preserve false explicitly.
+    echo "$resp" | jq -r 'if has("is_enabled") then (.is_enabled|tostring) else "" end' 2>/dev/null || echo ""
   else
     echo ""
   fi

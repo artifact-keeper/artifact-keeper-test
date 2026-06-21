@@ -83,18 +83,30 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Authenticated non-admin CAN access private repo
+# Authenticated, UNGRANTED non-admin CANNOT see a private repo
+#
+# Private repos are members-only (private-repo authorization hardening,
+# v1.2.0->1.2.1). user_can_access_repo() requires a role_assignment scoped
+# to the repo (direct or global); a freshly-created user with no grant has
+# neither. The backend deliberately returns 404 (deny-by-hide) rather than
+# 403, to avoid leaking the existence of repos the caller may not see
+# (backend require_visible(), repositories.rs). Asserting 404 here matches
+# the intended hardened contract; the positive "grant restores access" path
+# is covered by the backend's own unit regression
+# (test_user_can_access_repo_private_grant_enforced) and by the creator
+# auto-grant, since there is no public API to grant a repo-scoped role to an
+# arbitrary existing user.
 # -------------------------------------------------------------------------
 
-begin_test "Authenticated non-admin can access private repo"
+begin_test "Ungranted non-admin cannot see private repo (404 deny-by-hide)"
 if [ -n "$USER_TOKEN" ]; then
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${USER_TOKEN}" \
     "${BASE_URL}/api/v1/repositories/${PRIVATE_REPO}" 2>/dev/null) || true
-  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+  if [ "$status" = "404" ]; then
     pass
   else
-    fail "expected 2xx for authenticated non-admin, got ${status}"
+    fail "expected 404 for ungranted non-admin on private repo, got ${status}"
   fi
 else
   skip "no user token"
