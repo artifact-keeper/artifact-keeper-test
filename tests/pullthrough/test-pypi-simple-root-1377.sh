@@ -17,13 +17,24 @@
 # What this test asserts:
 #   1. /pypi/<remote-key>/simple/ returns HTTP 200 against a real
 #      pypi.org-backed Remote repo (reachability gate first).
-#   2. The body contains at least one <a ...>...</a> anchor entry,
-#      proving simple_root proxied + parsed the upstream rather than
+#   2. After at least one project has been served through the proxy, the
+#      root body contains at least one <a ...>...</a> anchor entry,
+#      proving simple_root lists served/known projects rather than
 #      returning the previously-empty local-only result.
 #   3. A second fetch of /simple/ also returns HTTP 200 with the same
 #      shape, exercising the cache_path="simple/" proxy cache the fix
 #      wired up (no upstream re-fetch is required for the assertion to
 #      pass, but a working cache roundtrip would also satisfy it).
+#
+# IMPORTANT (#1377 cap interaction): simple_root populates the root index
+# from BOTH an upstream /simple/ root parse AND the proxy cache of projects
+# already served. The upstream parse is capped at 10 MiB
+# (MAX_SIMPLE_ROOT_BODY_BYTES) and is SKIPPED for pypi.org's real ~40+ MiB
+# root -- by design. So a Remote repo fronting pypi.org directly gets its
+# root anchors from the proxy-cache path, which is empty until a project is
+# served. This test therefore primes one project before asserting; relying
+# on the upstream-merge alone produces a (correct) empty root and a false
+# failure.
 #
 # Companion #1377 assertion (b) -- PyPI simple-root XSS sanitisation
 # against a hostile upstream -- is NOT covered here. It is covered by
@@ -93,10 +104,49 @@ fi
 sleep 2
 
 # -------------------------------------------------------------------------
+# Prime the proxy with one real project before checking the root index.
+#
+# The root index is populated from two sources (backend pypi.rs::simple_root):
+#   1. an upstream /simple/ root fetch + PEP 503 parse, and
+#   2. the proxy cache of projects already served (list_cached_pypi_packages).
+#
+# Source (1) is intentionally bounded: simple_root caps the upstream root body
+# at MAX_SIMPLE_ROOT_BODY_BYTES (10 MiB) and skips the parse above it
+# (backend #1377 DoS guard). pypi.org's real /simple/ root is ~40+ MiB, so a
+# Remote repo fronting pypi.org directly never gets anchors from the upstream
+# merge -- by design (a higher opt-in cap for full-mirror remotes is a tracked
+# follow-up). Relying solely on the upstream-merge path therefore yields a
+# 200 with an empty <h1>Simple Index</h1> and zero anchors against real
+# pypi.org. We prime a small, stable project through the proxy so the cache
+# (source 2) lists it. This is exactly how a real proxy root gets populated:
+# clients pull projects, and the root reflects what has been served.
+begin_test "Prime proxy cache with one project (flake8) for the root index"
+if [ "$UPSTREAM_REACHABLE" != "true" ]; then
+  skip "upstream unreachable"
+else
+  PRIME_TMP="${WORK_DIR}/prime-flake8.html"
+  PRIME_STATUS=$(curl -s -o "$PRIME_TMP" -w '%{http_code}' \
+    $CURL_TIMEOUT \
+    -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${REMOTE_KEY}/simple/flake8/" 2>/dev/null) || PRIME_STATUS="000"
+  if [ "$PRIME_STATUS" = "200" ]; then
+    pass
+  else
+    fail "could not prime project 'flake8' through the proxy, got ${PRIME_STATUS}" \
+      "$(head -c 300 "$PRIME_TMP" 2>/dev/null)"
+  fi
+fi
+
+# Brief settle so the proxy cache write for the primed project is visible to
+# the subsequent root-index list.
+sleep 2
+
+# -------------------------------------------------------------------------
 # Assertion (a) part 1: /simple/ returns 200 with non-empty HTML.
 #
 # Before #1391, this returned an empty <body></body>. After #1391,
-# simple_root proxies the upstream and merges with any local artifacts.
+# simple_root merges the (capped) upstream root with the proxy cache of
+# projects already served; the primed project above guarantees >=1 entry.
 # -------------------------------------------------------------------------
 
 FIRST_BODY=""
