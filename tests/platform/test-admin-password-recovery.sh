@@ -7,8 +7,22 @@
 # recover. The fix added pg_advisory_xact_lock and write-before-DB ordering.
 #
 # Since E2E tests cannot directly verify filesystem operations, this suite
-# validates the observable behavior: admin auth works, password can be
-# changed and restored, and the system stays stable under rapid auth load.
+# validates the observable behavior: an admin user's auth works, the password
+# can be changed and restored, the old password is rejected, and the system
+# stays stable under rapid auth load.
+#
+# RELEASE-GATE SAFETY (shared-admin credential poisoning fix):
+#   This suite used to mutate the SHARED global admin (ADMIN_USER) -- resolve
+#   its user id, change its password, then reset it. Under the gate's ~25-way
+#   concurrency that poisons every other suite: changing the shared admin's
+#   password trips the backend credential-invalidation map and invalidates the
+#   global admin JWT process-wide, so all concurrent suites' ADMIN_TOKEN start
+#   returning 401. The "intent" of this regression test is the password
+#   change -> rapid-login -> reset cycle on an *admin* identity, not on the
+#   *shared* one. So we now mint a DEDICATED throwaway admin
+#   (create_dedicated_admin) and run the entire cycle against it. The global
+#   admin token is used only to create/delete the throwaway user and is never
+#   mutated, so concurrent suites are unaffected.
 #
 # Requires: curl, jq
 source "$(dirname "$0")/../lib/common.sh"
@@ -16,36 +30,46 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "admin-password-recovery"
 auth_admin
 
-ORIGINAL_PASS="$ADMIN_PASS"
-TEST_PASS="N3wP@ssw0rd!Zxq"
+# -------------------------------------------------------------------------
+# Mint a dedicated throwaway admin. ALL password mutations below target THIS
+# user, never the shared ADMIN_USER. Credentials are unique per run.
+# -------------------------------------------------------------------------
+
+DED_USER="e2e-pwrec-${RUN_ID}-$$"
+ORIGINAL_PASS="DedPwRec_${RUN_ID:0:8}_Aa1!"
+TEST_PASS="DedPwRec_${RUN_ID:0:8}_Bb2!"
+ADMIN_ID=""
 PASSWORD_MUTATED=false
 
-# Best-effort restore of the admin password if the suite is interrupted or
-# any test fails between the password change and the explicit reset step.
-# Without this, a partial run leaves the admin user locked to TEST_PASS,
-# which breaks every subsequent suite's auth_admin call in the namespace.
-restore_admin_password() {
+# Cleanup: delete the throwaway admin. add_exit_handler re-auths as the global
+# admin first, so cleanup works even though we rotate the dedicated admin's
+# password mid-suite. The global admin token is never touched here.
+add_exit_handler "cleanup_dedicated_admin \"\${ADMIN_ID:-}\""
+
+# Best-effort restore of the DEDICATED admin's password if the suite is
+# interrupted between the password change and the explicit reset step. This is
+# now purely cosmetic (the user is deleted on exit anyway), but it keeps the
+# dedicated admin loginable with ORIGINAL_PASS for any in-suite
+# assertions. It NEVER touches the shared admin.
+restore_dedicated_password() {
   if [ "$PASSWORD_MUTATED" != "true" ]; then
     return 0
   fi
   if [ -z "${ADMIN_ID:-}" ] || [ "$ADMIN_ID" = "null" ]; then
     return 0
   fi
-  # Re-login with whatever password is currently active (TEST_PASS first).
   local _tok=""
   for _candidate in "$TEST_PASS" "$ORIGINAL_PASS"; do
     local _login
     _login=$(curl -sf --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
       -H "Content-Type: application/json" \
-      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${_candidate}\"}" 2>/dev/null) || true
+      -d "{\"username\":\"${DED_USER}\",\"password\":\"${_candidate}\"}" 2>/dev/null) || true
     if [ -n "$_login" ]; then
       _tok=$(echo "$_login" | jq -r '.token // .access_token // empty' 2>/dev/null) || true
       if [ -n "$_tok" ] && [ "$_tok" != "null" ]; then
-        # If we got in with the original, nothing to restore.
         if [ "$_candidate" = "$ORIGINAL_PASS" ]; then
           return 0
         fi
-        # Got in with TEST_PASS, push original back.
         curl -sf --max-time 10 -X POST \
           -H "Authorization: Bearer ${_tok}" \
           -H "Content-Type: application/json" \
@@ -56,60 +80,43 @@ restore_admin_password() {
     fi
   done
 }
-trap restore_admin_password EXIT
+add_exit_handler restore_dedicated_password
 
 # -------------------------------------------------------------------------
-# Resolve admin user ID (needed for password change endpoint)
+# Create the dedicated admin (needed for the password-change endpoint, which
+# is keyed on user id).
 # -------------------------------------------------------------------------
 
-ADMIN_ID=""
-resolve_admin_id() {
-  local resp
-  resp=$(api_get "/api/v1/users?username=${ADMIN_USER}" 2>/dev/null) || true
-  if [ -n "$resp" ]; then
-    ADMIN_ID=$(echo "$resp" | jq -r '
-      if type == "array" then .[0].id
-      elif .items then .items[0].id
-      elif .users then .users[0].id
-      elif .id then .id
-      else empty
-      end // empty
-    ')
-  fi
-  # Fallback: list all users and find admin by username
-  if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ]; then
-    resp=$(api_get "/api/v1/users" 2>/dev/null) || true
-    if [ -n "$resp" ]; then
-      ADMIN_ID=$(echo "$resp" | jq -r --arg u "$ADMIN_USER" '
-        if type == "array" then (.[] | select(.username == $u) | .id)
-        elif .items then (.items[] | select(.username == $u) | .id)
-        elif .users then (.users[] | select(.username == $u) | .id)
-        else empty
-        end // empty
-      ')
-    fi
-  fi
-}
-
-resolve_admin_id
-
-# -------------------------------------------------------------------------
-# 1. Admin login works (basic health check for auth)
-# -------------------------------------------------------------------------
-
-begin_test "Admin login works"
-login_resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ORIGINAL_PASS}\"}" 2>/dev/null) || true
-if [ -n "$login_resp" ]; then
-  token=$(echo "$login_resp" | jq -r '.token // .access_token // empty')
-  if [ -n "$token" ] && [ "$token" != "null" ]; then
-    pass
-  else
-    fail "login response did not contain a token"
-  fi
+begin_test "Create dedicated admin user"
+ADMIN_ID=$(create_dedicated_admin "$DED_USER" "$ORIGINAL_PASS") || ADMIN_ID=""
+if [ -n "$ADMIN_ID" ] && [ "$ADMIN_ID" != "null" ]; then
+  pass
 else
-  fail "login request returned empty response"
+  fail "could not create dedicated admin user"
+fi
+
+# -------------------------------------------------------------------------
+# 1. Dedicated admin login works (basic health check for auth)
+# -------------------------------------------------------------------------
+
+begin_test "Dedicated admin login works"
+if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ]; then
+  skip "dedicated admin not created"
+else
+  login_resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"${DED_USER}\",\"password\":\"${ORIGINAL_PASS}\"}" 2>/dev/null) || true
+  if [ -n "$login_resp" ]; then
+    token=$(echo "$login_resp" | jq -r '.token // .access_token // empty')
+    if [ -n "$token" ] && [ "$token" != "null" ]; then
+      DED_TOKEN="$token"
+      pass
+    else
+      fail "login response did not contain a token"
+    fi
+  else
+    fail "login request returned empty response"
+  fi
 fi
 
 # -------------------------------------------------------------------------
@@ -131,19 +138,20 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 3. Admin can change password
+# 3. Dedicated admin can change its own password
 # -------------------------------------------------------------------------
 
-begin_test "Admin can change password"
-if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ]; then
-  skip "could not resolve admin user ID"
+begin_test "Dedicated admin can change password"
+if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ] || [ -z "${DED_TOKEN:-}" ]; then
+  skip "dedicated admin not available"
 else
   # Send exactly one request. The change_password handler invalidates the
   # caller's existing JWT after a successful change (backend
   # auth_service::invalidate_user_tokens), so a second call with the same
-  # ADMIN_TOKEN would get 401 and look like a backend failure.
+  # DED_TOKEN would get 401 and look like a backend failure. Crucially this
+  # is the DEDICATED admin's token -- the GLOBAL admin token is untouched.
   change_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X POST \
-    -H "$(auth_header)" \
+    -H "Authorization: Bearer ${DED_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"current_password\":\"${ORIGINAL_PASS}\",\"new_password\":\"${TEST_PASS}\"}" \
     "${BASE_URL}/api/v1/users/${ADMIN_ID}/password") || true
@@ -161,18 +169,16 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Login with new password works"
-if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ]; then
-  skip "admin ID not resolved, password was not changed"
+if [ "$PASSWORD_MUTATED" != "true" ]; then
+  skip "password was not changed"
 else
   new_login_resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
     -H "Content-Type: application/json" \
-    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${TEST_PASS}\"}" 2>/dev/null) || true
+    -d "{\"username\":\"${DED_USER}\",\"password\":\"${TEST_PASS}\"}" 2>/dev/null) || true
   if [ -n "$new_login_resp" ]; then
     new_token=$(echo "$new_login_resp" | jq -r '.token // .access_token // empty')
     if [ -n "$new_token" ] && [ "$new_token" != "null" ]; then
-      # Update the token for subsequent API calls
-      ADMIN_TOKEN="$new_token"
-      export ADMIN_TOKEN
+      DED_TOKEN="$new_token"
       pass
     else
       fail "login with new password did not return a token"
@@ -187,13 +193,13 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Login with old password fails"
-if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ]; then
-  skip "admin ID not resolved, password was not changed"
+if [ "$PASSWORD_MUTATED" != "true" ]; then
+  skip "password was not changed"
 else
   old_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X POST \
     "${BASE_URL}/api/v1/auth/login" \
     -H "Content-Type: application/json" \
-    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ORIGINAL_PASS}\"}" 2>/dev/null) || true
+    -d "{\"username\":\"${DED_USER}\",\"password\":\"${ORIGINAL_PASS}\"}" 2>/dev/null) || true
   if [ "$old_status" = "401" ]; then
     pass
   else
@@ -206,11 +212,11 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Reset back to original password"
-if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ]; then
-  skip "admin ID not resolved, nothing to reset"
+if [ "$PASSWORD_MUTATED" != "true" ] || [ -z "${DED_TOKEN:-}" ]; then
+  skip "nothing to reset"
 else
   reset_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X POST \
-    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Authorization: Bearer ${DED_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"current_password\":\"${TEST_PASS}\",\"new_password\":\"${ORIGINAL_PASS}\"}" \
     "${BASE_URL}/api/v1/users/${ADMIN_ID}/password") || true
@@ -219,12 +225,11 @@ else
     # Verify we can log in with the original password again
     verify_resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
       -H "Content-Type: application/json" \
-      -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ORIGINAL_PASS}\"}" 2>/dev/null) || true
+      -d "{\"username\":\"${DED_USER}\",\"password\":\"${ORIGINAL_PASS}\"}" 2>/dev/null) || true
     if [ -n "$verify_resp" ]; then
       restored_token=$(echo "$verify_resp" | jq -r '.token // .access_token // empty')
       if [ -n "$restored_token" ] && [ "$restored_token" != "null" ]; then
-        ADMIN_TOKEN="$restored_token"
-        export ADMIN_TOKEN
+        DED_TOKEN="$restored_token"
         PASSWORD_MUTATED=false
         pass
       else
@@ -261,33 +266,37 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 8. Multiple rapid login attempts do not cause errors
+# 8. Multiple rapid login attempts (for the dedicated admin) do not error
 # -------------------------------------------------------------------------
 
 begin_test "Rapid sequential login attempts stay stable"
-success_count=0
-error_count=0
-for i in $(seq 1 10); do
-  rapid_resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ORIGINAL_PASS}\"}" 2>/dev/null) || true
-  if [ -n "$rapid_resp" ]; then
-    rapid_token=$(echo "$rapid_resp" | jq -r '.token // .access_token // empty')
-    if [ -n "$rapid_token" ] && [ "$rapid_token" != "null" ]; then
-      success_count=$(( success_count + 1 ))
+if [ -z "$ADMIN_ID" ] || [ "$ADMIN_ID" = "null" ]; then
+  skip "dedicated admin not available"
+else
+  success_count=0
+  error_count=0
+  for i in $(seq 1 10); do
+    rapid_resp=$(curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"username\":\"${DED_USER}\",\"password\":\"${ORIGINAL_PASS}\"}" 2>/dev/null) || true
+    if [ -n "$rapid_resp" ]; then
+      rapid_token=$(echo "$rapid_resp" | jq -r '.token // .access_token // empty')
+      if [ -n "$rapid_token" ] && [ "$rapid_token" != "null" ]; then
+        success_count=$(( success_count + 1 ))
+      else
+        error_count=$(( error_count + 1 ))
+      fi
     else
       error_count=$(( error_count + 1 ))
     fi
+  done
+  echo "  ${success_count}/10 logins succeeded, ${error_count}/10 failed"
+  # Allow up to 2 failures (rate limiting may kick in) but most should succeed
+  if [ "$success_count" -ge 8 ]; then
+    pass
   else
-    error_count=$(( error_count + 1 ))
+    fail "only ${success_count}/10 rapid login attempts succeeded"
   fi
-done
-echo "  ${success_count}/10 logins succeeded, ${error_count}/10 failed"
-# Allow up to 2 failures (rate limiting may kick in) but most should succeed
-if [ "$success_count" -ge 8 ]; then
-  pass
-else
-  fail "only ${success_count}/10 rapid login attempts succeeded"
 fi
 
 end_suite
