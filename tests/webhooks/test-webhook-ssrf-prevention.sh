@@ -288,26 +288,31 @@ begin_test "Reject 'localhost' hostname"
 attempt_ssrf "localhost-name" "http://localhost:8080/"
 
 # -------------------------------------------------------------------------
-# RFC1918 private space. One representative per block. On the WEBHOOK
-# surface these are INTENTIONALLY ALLOWED in the release-gate test cluster
-# (WEBHOOK_ALLOW_PRIVATE_IPS=1 in helm/values-test-full.yaml, because the
-# webhook mock receiver binds the runner pod's own RFC1918 IP), so we
-# assert the create SUCCEEDS rather than 4xx-rejects. Backend issue #1435
-# scoped this toggle to the webhook validator only; the remote-proxy SSRF
-# suite still rejects RFC1918 (UPSTREAM_ALLOW_PRIVATE_IPS unset). Backend
-# #1478 (B4) made the secret-less create return a clean 2xx instead of an
-# ambiguous 500. We keep one representative per block so a partial
-# regression (e.g. 172.16/12 wired but 10/8 not) is still visible per-row.
+# RFC1918 private space. One representative per block. These arbitrary
+# RFC1918 IPs are SSRF targets and must be REJECTED.
+#
+# The release-gate deploy uses a CIDR-SCOPED allowlist
+# (AK_SSRF_ALLOW_PRIVATE_CIDRS=10.96.0.0/12,10.244.0.0/16 in
+# helm/values-test-full.yaml, backend #1224) instead of the blanket
+# WEBHOOK_ALLOW_PRIVATE_IPS toggle. The named-CIDR list, once set, governs
+# BOTH the upstream and webhook contexts and overrides the blanket toggles
+# (backend validation.rs). Only the cluster Service/Pod CIDR is permitted,
+# so legitimate in-cluster webhook delivery to the mock receiver (a pod IP
+# inside 10.244.0.0/16) still works -- covered by test-webhook-delivery.sh --
+# while these arbitrary RFC1918 addresses (10.0.0.1 / 172.16.0.1 /
+# 192.168.1.1, all OUTSIDE the allowed CIDRs) are correctly blocked. This is
+# a strictly stronger SSRF posture than the old all-RFC1918 allow. One
+# representative per block so a partial regression stays visible per-row.
 # -------------------------------------------------------------------------
 
-begin_test "Allow RFC1918 10.0.0.0/8 (10.0.0.1) on webhook surface (WEBHOOK_ALLOW_PRIVATE_IPS)"
-expect_webhook_allowed "rfc1918-10" "http://10.0.0.1/"
+begin_test "Reject RFC1918 10.0.0.0/8 (10.0.0.1) outside cluster-CIDR allowlist"
+attempt_ssrf "rfc1918-10" "http://10.0.0.1/"
 
-begin_test "Allow RFC1918 172.16.0.0/12 (172.16.0.1) on webhook surface (WEBHOOK_ALLOW_PRIVATE_IPS)"
-expect_webhook_allowed "rfc1918-172" "http://172.16.0.1/"
+begin_test "Reject RFC1918 172.16.0.0/12 (172.16.0.1) outside cluster-CIDR allowlist"
+attempt_ssrf "rfc1918-172" "http://172.16.0.1/"
 
-begin_test "Allow RFC1918 192.168.0.0/16 (192.168.1.1) on webhook surface (WEBHOOK_ALLOW_PRIVATE_IPS)"
-expect_webhook_allowed "rfc1918-192" "http://192.168.1.1/"
+begin_test "Reject RFC1918 192.168.0.0/16 (192.168.1.1) outside cluster-CIDR allowlist"
+attempt_ssrf "rfc1918-192" "http://192.168.1.1/"
 
 # -------------------------------------------------------------------------
 # 0.0.0.0. Treated as "all addresses on the local host" by most network
