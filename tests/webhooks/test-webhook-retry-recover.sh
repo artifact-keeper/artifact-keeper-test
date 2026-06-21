@@ -45,8 +45,15 @@ WEBHOOK_RETRY_TIMEOUT="${WEBHOOK_RETRY_TIMEOUT:-360}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-${RUN_ID}.log}"
 RECEIVER_PID=""
 
+REPO_KEY="retry-recover-repo-${RUN_ID}"
+WEBHOOK_ID=""
+
 cleanup_and_finalize() {
   local code=$?
+  if [ -n "${WEBHOOK_ID}" ] && [ "${WEBHOOK_ID}" != "null" ]; then
+    api_delete "/api/v1/webhooks/${WEBHOOK_ID}" >/dev/null 2>&1 || true
+  fi
+  api_delete "/api/v1/repositories/${REPO_KEY}" >/dev/null 2>&1 || true
   if [ -n "${RECEIVER_PID}" ] && kill -0 "${RECEIVER_PID}" 2>/dev/null; then
     kill "${RECEIVER_PID}" 2>/dev/null || true
     wait "${RECEIVER_PID}" 2>/dev/null || true
@@ -93,7 +100,6 @@ fi
 # -------------------------------------------------------------------------
 
 WEBHOOK_NAME="retry-recover-${RUN_ID}"
-WEBHOOK_ID=""
 SUITE_BLOCKED=false
 
 begin_test "Create webhook targeting mock receiver"
@@ -103,7 +109,7 @@ else
   PAYLOAD=$(jq -n \
     --arg name "$WEBHOOK_NAME" \
     --arg url "$WEBHOOK_RECEIVER_URL" \
-    '{name: $name, url: $url, events: ["artifact.uploaded"], enabled: true}')
+    '{name: $name, url: $url, events: ["repository_created"], enabled: true}')
   if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
     WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
     if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then
@@ -118,27 +124,37 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Trigger the initial delivery.
+# Trigger the initial delivery via a REAL event. POST /webhooks/{id}/test
+# does NOT insert a webhook_deliveries row (it does a single synchronous
+# POST and mints a throwaway id), so the retry scheduler would have nothing
+# to retry. The retry engine only acts on real producer-enqueued rows, so we
+# create a repository (-> repository.created -> producer inserts a delivery
+# row). The mock rejects the first WEBHOOK_FAIL_FIRST_N POSTs with 500, which
+# drives the retry-then-recover path we assert on below.
 # -------------------------------------------------------------------------
 
-begin_test "Trigger /test delivery and observe initial POST at receiver"
+begin_test "Trigger delivery via repository.created and observe initial POST at receiver"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
-  if api_post "/api/v1/webhooks/${WEBHOOK_ID}/test" "" >/dev/null 2>&1; then
+  REPO_CREATE_PAYLOAD="{\"key\":\"${REPO_KEY}\",\"name\":\"${REPO_KEY}\",\"format\":\"generic\",\"repo_type\":\"local\",\"is_public\":true}"
+  if api_post "/api/v1/repositories" "$REPO_CREATE_PAYLOAD" >/dev/null 2>&1; then
     seen=0
-    for _ in $(seq 1 10); do
+    # First attempt is rejected (500) by the mock but still lands as a POST;
+    # allow generous headroom for the producer's async enqueue + first dial.
+    for _ in $(seq 1 30); do
       seen=$(curl -sf --max-time 2 "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/__count" 2>/dev/null || echo 0)
       [ "$seen" -gt 0 ] && break
-      sleep 0.5
+      sleep 1
     done
     if [ "$seen" -ge 1 ]; then
       pass
     else
-      fail "receiver saw 0 POSTs after /test"
+      fail "receiver saw 0 POSTs after repository.created event"
     fi
   else
-    skip "/test endpoint unavailable"
+    SUITE_BLOCKED=true
+    skip "repo create (event trigger) failed"
   fi
 fi
 

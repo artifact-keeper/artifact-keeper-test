@@ -81,7 +81,7 @@ if [ -z "${POLICY_ID:-}" ]; then
 else
   if initial_resp=$(api_get "/api/v1/security/policies/${POLICY_ID}" 2>/dev/null); then
     initial_max_severity=$(echo "$initial_resp" | jq -r '.max_severity // empty')
-    initial_is_enabled=$(echo "$initial_resp" | jq -r '.is_enabled // empty')
+    initial_is_enabled=$(echo "$initial_resp" | jq -r 'if .is_enabled == null then "" else (.is_enabled|tostring) end')
     # is_enabled must be a real JSON boolean -- not absent, not "" -- in the
     # GET response. Pin the contract here so a regression on the *response*
     # shape fails loudly rather than silently breaking the assertion below.
@@ -153,7 +153,7 @@ if [ -z "${POLICY_ID:-}" ] || [ -z "${target_is_enabled:-}" ]; then
 else
   if after_resp=$(api_get "/api/v1/security/policies/${POLICY_ID}" 2>/dev/null); then
     after_max_severity=$(echo "$after_resp" | jq -r '.max_severity // empty')
-    after_is_enabled=$(echo "$after_resp" | jq -r '.is_enabled // empty')
+    after_is_enabled=$(echo "$after_resp" | jq -r 'if .is_enabled == null then "" else (.is_enabled|tostring) end')
 
     # Two predicates must both hold:
     #   (a) max_severity is "critical" (the first patched field).
@@ -217,7 +217,7 @@ else
   if [[ "$second_status" =~ ^2[0-9][0-9]$ ]]; then
     if final_resp=$(api_get "/api/v1/security/policies/${POLICY_ID}" 2>/dev/null); then
       final_max_severity=$(echo "$final_resp" | jq -r '.max_severity // empty')
-      final_is_enabled=$(echo "$final_resp" | jq -r '.is_enabled // empty')
+      final_is_enabled=$(echo "$final_resp" | jq -r 'if .is_enabled == null then "" else (.is_enabled|tostring) end')
       if [ "$final_max_severity" = "critical" ] && \
          [ "$final_is_enabled" = "$second_target" ]; then
         pass
