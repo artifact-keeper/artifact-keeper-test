@@ -687,6 +687,129 @@ create_test_user_with_retry() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# create_dedicated_admin / cleanup_dedicated_admin
+#
+# Release-gate flake fix (shared-admin credential poisoning):
+#   The gate runs ~25 suites in parallel, ALL authenticating as the same
+#   global admin (ADMIN_USER/ADMIN_PASS). Any suite that mutates the shared
+#   admin's own auth state -- changes its password, flips its roles,
+#   deactivates it, or revokes its tokens -- trips the backend's credential
+#   invalidation (services/auth/credential_invalidations.rs). That
+#   invalidates the admin's JWT process-wide, so EVERY other concurrently
+#   running suite's ADMIN_TOKEN starts returning "401 Invalid or expired
+#   token" -> non-deterministic 401 cascades across the whole gate.
+#
+#   A suite that needs to exercise admin-self mutations (password recovery,
+#   role flip, self-deactivation) must do so on a THROWAWAY admin identity,
+#   never on the shared one. create_dedicated_admin mints such a user using
+#   the global admin token (which it does NOT mutate), and echoes the new
+#   admin's UUID on stdout. The throwaway admin is created with
+#   is_admin:true so it has the same admin authority as the shared admin and
+#   can hit admin-only routes / be used wherever the shared admin was.
+#
+#   The caller's global ADMIN_TOKEN is unaffected throughout: we only POST
+#   /users (create) and never touch /users/{global_admin_id}.
+#
+# Output / contract (mirrors create_test_user_with_retry):
+#   - echoes the new admin's UUID on stdout, returns 0 on success
+#   - echoes "" and a diagnostic to stderr, returns 1 on failure
+#   - retries ONLY the transient class (network 000 / HTTP 5xx); real 4xx
+#     (e.g. 409 duplicate, 403 authz) are surfaced immediately
+#
+# The username/password/email are derived from RUN_ID + $$ so they are
+# unique per suite invocation and cannot collide across parallel suites.
+#
+# Usage:
+#   ADMIN2_USER="e2e-dedadmin-${RUN_ID}-$$"
+#   ADMIN2_PASS="DedAdmin_${RUN_ID:0:8}_Aa1!"
+#   ADMIN2_ID=$(create_dedicated_admin "$ADMIN2_USER" "$ADMIN2_PASS") || fail ...
+#   add_exit_handler "cleanup_dedicated_admin $ADMIN2_ID"
+#
+# Or let it generate the credentials for you and read them back via the
+# convenience globals it exports (DEDICATED_ADMIN_USER / _PASS / _ID):
+#   create_dedicated_admin >/dev/null || fail "could not create dedicated admin"
+#   add_exit_handler "cleanup_dedicated_admin ${DEDICATED_ADMIN_ID}"
+create_dedicated_admin() {
+  # Generate unique, policy-compliant credentials when not supplied. The
+  # backend password policy wants >=12 chars + mixed case + digit + symbol;
+  # the suffix guarantees all four classes regardless of RUN_ID contents.
+  local label="${3:-dedadmin}"
+  local username="${1:-e2e-${label}-${RUN_ID}-$$}"
+  local password="${2:-Ded_${RUN_ID:0:8}_$$_Aa1!}"
+  local email="${username}@e2e.local"
+
+  # Export the resolved identity so callers that did not pass explicit args
+  # can still recover the credentials (and so the cleanup handler can be
+  # registered without recomputing them).
+  DEDICATED_ADMIN_USER="$username"
+  DEDICATED_ADMIN_PASS="$password"
+  export DEDICATED_ADMIN_USER DEDICATED_ADMIN_PASS
+
+  local body
+  body="{\"username\":\"${username}\",\"password\":\"${password}\",\"email\":\"${email}\",\"display_name\":\"E2E Dedicated Admin\",\"is_admin\":true}"
+
+  local _max="${CREATE_USER_MAX_ATTEMPTS:-4}"
+  local _delay="${CREATE_USER_RETRY_DELAY:-1}"
+  local _attempt _status _tmp _resp uid=""
+  for _attempt in $(seq 1 "$_max"); do
+    _tmp=$(mktemp)
+    # Uses the GLOBAL admin token via auth_header(); creating a user does not
+    # mutate the global admin, so its JWT stays valid for concurrent suites.
+    _status=$(curl -s $CURL_TIMEOUT -o "$_tmp" -w '%{http_code}' \
+      -X POST -H "$(auth_header)" -H 'Content-Type: application/json' \
+      -d "$body" "${BASE_URL}/api/v1/users" 2>/dev/null) || _status="000"
+    _resp=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      uid=$(echo "$_resp" | jq -r '.user.id // .id // .user_id // empty' 2>/dev/null) || uid=""
+      if [ -n "$uid" ] && [ "$uid" != "null" ]; then
+        DEDICATED_ADMIN_ID="$uid"
+        export DEDICATED_ADMIN_ID
+        echo "$uid"
+        return 0
+      fi
+      echo "create_dedicated_admin: ${username} got HTTP ${_status} but no id: ${_resp:0:200}" >&2
+      echo ""
+      return 1
+    fi
+
+    # Retry ONLY transient class: network 000 or any 5xx.
+    if [ "$_status" != "000" ] && { [ "$_status" -lt 500 ] 2>/dev/null || [ "$_status" -ge 600 ] 2>/dev/null; }; then
+      echo "create_dedicated_admin: ${username} non-transient HTTP ${_status}: ${_resp:0:200}" >&2
+      echo ""
+      return 1
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      echo "  create-dedicated-admin ${username} attempt ${_attempt}/${_max} transient HTTP ${_status}, retrying in ${_delay}s..." >&2
+      sleep "$_delay"
+      _delay=$(( _delay * 2 ))
+    fi
+  done
+  echo "create_dedicated_admin: ${username} failed after ${_max} attempts (last HTTP ${_status})" >&2
+  echo ""
+  return 1
+}
+
+# Delete a throwaway admin created by create_dedicated_admin. Best-effort:
+# re-authenticates as the global admin first (in case the suite rotated its
+# own ADMIN_TOKEN while testing), then DELETEs the user. Safe to call with an
+# empty/invalid id (no-op). Intended for use with add_exit_handler so an
+# interrupted run leaves no dangling admin users.
+#
+# Usage:
+#   add_exit_handler "cleanup_dedicated_admin $ADMIN2_ID"
+cleanup_dedicated_admin() {
+  local uid="${1:-${DEDICATED_ADMIN_ID:-}}"
+  if [ -z "$uid" ] || [ "$uid" = "null" ]; then
+    return 0
+  fi
+  auth_admin > /dev/null 2>&1 || true
+  api_delete "/api/v1/users/${uid}" > /dev/null 2>&1 || true
+}
+
 # Log in as the named user and echo the access_token on stdout.
 # On failure, echoes empty string and the response body to stderr.
 #
