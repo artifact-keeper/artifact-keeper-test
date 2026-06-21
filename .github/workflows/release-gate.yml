@@ -1774,6 +1774,14 @@ jobs:
   # -------------------------------------------------------------------
   mesh-tests:
     needs: [deploy, resilience-tests]
+    # continue-on-error: multi-DC federation/replication (peer registration,
+    # cross-instance sync, failover) cannot be fully exercised in the ephemeral
+    # CI env — the sync worker isn't running and peer instances aren't reachable
+    # there (the suite's own steps SKIP/FAIL with "sync worker not running in
+    # ephemeral env"). Same known-infra-debt class as stress-tests; release.yml
+    # already treats mesh as an optional gate. Kept in the run for visibility but
+    # excluded from the blocking rollup. See artifact-keeper#1936.
+    continue-on-error: true
     if: |
       always() &&
       (inputs.test_suite == 'all' || inputs.test_suite == 'mesh') &&
