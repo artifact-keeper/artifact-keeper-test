@@ -31,16 +31,15 @@ USER_ID_592=""
 TOKEN_ID_592=""
 
 begin_test "Bug #592: Create test user for token revocation listing"
-if resp=$(api_post "/api/v1/users" \
-    "{\"username\":\"${TEST_USER_592}\",\"password\":\"${TEST_PASS_592}\",\"email\":\"${TEST_EMAIL_592}\",\"display_name\":\"Bug 592 Test\"}" 2>/dev/null); then
-  USER_ID_592=$(echo "$resp" | jq -r '.user.id // .id // .user_id // empty') || true
-  if [ -n "$USER_ID_592" ] && [ "$USER_ID_592" != "null" ]; then
-    pass
-  else
-    fail "user created but no ID returned"
-  fi
+# Setup-step create: retry-with-backoff on transient 5xx/000 (fleet load can
+# briefly starve the bcrypt blocking pool). 4xx (e.g. duplicate username) is
+# surfaced immediately and never masked. See create_test_user_with_retry.
+USER_ID_592=$(create_test_user_with_retry "$TEST_USER_592" "$TEST_PASS_592" "$TEST_EMAIL_592" \
+  "{\"username\":\"${TEST_USER_592}\",\"password\":\"${TEST_PASS_592}\",\"email\":\"${TEST_EMAIL_592}\",\"display_name\":\"Bug 592 Test\"}") || true
+if [ -n "$USER_ID_592" ] && [ "$USER_ID_592" != "null" ]; then
+  pass
 else
-  fail "could not create test user for bug #592"
+  fail "could not create test user for bug #592 (transient retries exhausted)"
 fi
 
 begin_test "Bug #592: Create API token"
@@ -352,16 +351,13 @@ LOCKOUT_EMAIL="e2e-lockout-${RUN_ID}@test.local"
 LOCKOUT_USER_ID=""
 
 begin_test "Account lockout: Create test user"
-if resp=$(api_post "/api/v1/users" \
-    "{\"username\":\"${LOCKOUT_USER}\",\"password\":\"${LOCKOUT_PASS}\",\"email\":\"${LOCKOUT_EMAIL}\",\"display_name\":\"Lockout Test\"}" 2>/dev/null); then
-  LOCKOUT_USER_ID=$(echo "$resp" | jq -r '.user.id // .id // .user_id // empty') || true
-  if [ -n "$LOCKOUT_USER_ID" ] && [ "$LOCKOUT_USER_ID" != "null" ]; then
-    pass
-  else
-    fail "user created but no ID returned"
-  fi
+# Setup-step create: retry transient 5xx/000 only (see create_test_user_with_retry).
+LOCKOUT_USER_ID=$(create_test_user_with_retry "$LOCKOUT_USER" "$LOCKOUT_PASS" "$LOCKOUT_EMAIL" \
+  "{\"username\":\"${LOCKOUT_USER}\",\"password\":\"${LOCKOUT_PASS}\",\"email\":\"${LOCKOUT_EMAIL}\",\"display_name\":\"Lockout Test\"}") || true
+if [ -n "$LOCKOUT_USER_ID" ] && [ "$LOCKOUT_USER_ID" != "null" ]; then
+  pass
 else
-  fail "could not create lockout test user"
+  fail "could not create lockout test user (transient retries exhausted)"
 fi
 
 begin_test "Account lockout: Detect lockout threshold"
@@ -569,16 +565,15 @@ FPC_EMAIL="e2e-fpc-${RUN_ID}@test.local"
 FPC_USER_ID=""
 
 begin_test "Force password change: Create test user"
-if resp=$(api_post "/api/v1/users" \
-    "{\"username\":\"${FPC_USER}\",\"password\":\"${FPC_PASS}\",\"email\":\"${FPC_EMAIL}\",\"display_name\":\"Force PC Test\"}" 2>/dev/null); then
-  FPC_USER_ID=$(echo "$resp" | jq -r '.user.id // .id // .user_id // empty') || true
-  if [ -n "$FPC_USER_ID" ] && [ "$FPC_USER_ID" != "null" ]; then
-    pass
-  else
-    fail "user created but no ID returned"
-  fi
+# Setup-step create: retry transient 5xx/000 only (see create_test_user_with_retry).
+# This is the exact step that flaked ("could not create force-password-change
+# test user") when a fleet-concurrent run starved the bcrypt blocking pool.
+FPC_USER_ID=$(create_test_user_with_retry "$FPC_USER" "$FPC_PASS" "$FPC_EMAIL" \
+  "{\"username\":\"${FPC_USER}\",\"password\":\"${FPC_PASS}\",\"email\":\"${FPC_EMAIL}\",\"display_name\":\"Force PC Test\"}") || true
+if [ -n "$FPC_USER_ID" ] && [ "$FPC_USER_ID" != "null" ]; then
+  pass
 else
-  fail "could not create force-password-change test user"
+  fail "could not create force-password-change test user (transient retries exhausted)"
 fi
 
 begin_test "Force password change: Call force-password-change endpoint"

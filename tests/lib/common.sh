@@ -503,6 +503,86 @@ api_get() {
   curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"
 }
 
+# api_get_with_retry - GET an idempotent management-API endpoint with a bounded
+# retry-with-backoff on TRANSIENT failures only. On success it echoes the
+# response body on stdout and returns 0, so it is a drop-in replacement for
+# `api_get` in `if resp=$(...); then`-style call sites.
+#
+# Why this exists (the test-sbt.sh "List artifacts" flake, ak-test):
+#   The plain `api_get` uses `curl -sf`, which exits non-zero on ANY >=400 and
+#   discards the response body. When ~25 format suites run in parallel in the
+#   `format-tests (jvm)` gate job they saturate the backend's tokio runtime
+#   (the known worker-starvation / availability issue: uncapped CPU work such
+#   as bcrypt(cost=12) on basic-auth format calls bypasses the auth semaphore).
+#   A GET that races peak saturation can transiently come back 503/502 (pool
+#   exhausted / shed) or 000 (request exceeded its time budget) even though the
+#   data is fine -- the very next attempt succeeds. With bare `api_get` that one
+#   transient blip hard-fails the suite ("GET .../artifacts returned error"),
+#   which is a retry-hope flake, not a real defect: the GET is idempotent and
+#   SHOULD be retried, exactly as format_get_with_retry / create_repo / login_as
+#   already do for their transient classes.
+#
+# Retry policy (deliberately narrow so we never mask a real bug):
+#   - Retry ONLY on transient-class statuses: 000 (network/timeout) and the 5xx
+#     range (500-599: 502/503/504 plus any residual 5xx).
+#   - DO NOT retry on 2xx (success) or 4xx (real client/auth/not-found errors):
+#     those are deterministic and a retry would just hide a genuine failure. A
+#     404/403/wrong-content surfaces immediately.
+#   - On a non-2xx final outcome, return 1 AND emit a precise diagnostic to
+#     stderr (final HTTP status + body snippet) so the failure is never opaque
+#     the way bare `curl -sf` made it.
+#
+# Knobs: API_GET_MAX_ATTEMPTS (default 4), API_GET_RETRY_DELAY (default 2s,
+# applied with linear backoff: delay * attempt).
+#
+# Usage:
+#   if resp=$(api_get_with_retry "/api/v1/repositories/${KEY}/artifacts"); then
+#     assert_contains "$resp" "$MODULE_NAME" "..."
+#   else
+#     fail "GET .../artifacts returned error"
+#   fi
+api_get_with_retry() {
+  local path="$1"; shift
+  local _max="${API_GET_MAX_ATTEMPTS:-4}"
+  local _delay="${API_GET_RETRY_DELAY:-2}"
+  local _attempt _status="000" _body_file _body=""
+  _body_file=$(mktemp)
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s $CURL_TIMEOUT -o "$_body_file" -w '%{http_code}' \
+      -H "$(auth_header)" "$@" "${BASE_URL}${path}" 2>/dev/null) || _status="000"
+
+    # Success: 2xx -> emit body, return 0.
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      cat "$_body_file"
+      rm -f "$_body_file"
+      return 0
+    fi
+
+    # Transient class -> retry. Everything else (4xx, other non-5xx) is a real,
+    # deterministic failure: stop immediately so we don't mask a bug.
+    local _transient=false
+    if [ "$_status" = "000" ] || \
+       { [ "$_status" -ge 500 ] 2>/dev/null && [ "$_status" -le 599 ] 2>/dev/null; }; then
+      _transient=true
+    fi
+    if [ "$_transient" != true ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$(( _delay * _attempt ))"
+    fi
+  done
+
+  _body=$(head -c 400 "$_body_file" 2>/dev/null || true)
+  rm -f "$_body_file"
+  # _attempt holds the loop index of the last attempt made. A deterministic
+  # (non-transient) status breaks the loop early, so this reports the real
+  # number of requests issued rather than the configured ceiling.
+  echo "api_get_with_retry ${path} failed after ${_attempt} attempt(s) (max ${_max}): HTTP ${_status} body=${_body}" >&2
+  return 1
+}
+
 # Create a test user (admin auth) and echo the new user's UUID on stdout.
 # On failure, echoes empty string and the response body to stderr.
 #
@@ -523,6 +603,88 @@ create_test_user() {
     return 1
   fi
   echo "$uid"
+}
+
+# Create a test user (admin auth) with bounded retry-on-transient, echoing
+# the new user's UUID on stdout. Returns 0 on success, 1 after retries.
+#
+# Why this exists (release-gate flake #1):
+#   Several security suites create a throwaway user as a SETUP step
+#   (token-revocation, lockout, force-password-change). User creation hashes
+#   the password with bcrypt in spawn_blocking. Under fleet-concurrent load
+#   the backend's blocking pool / worker runtime can be momentarily starved
+#   (the known availability worker-starvation issue: uncapped CPU-bound auth
+#   work on the tokio runtime), so an otherwise-valid admin POST
+#   /api/v1/users can transiently return 5xx or drop the connection
+#   (curl exit -> 000). The plain api_post helper uses `curl -sf`, which
+#   collapses any non-2xx into a bare non-zero exit with no body and NO
+#   retry, so a single transient blip fails the whole suite at setup time
+#   ("could not create force-password-change test user").
+#
+#   This helper retries ONLY the transient class (HTTP 5xx and network 000).
+#   Real client errors (400 invalid payload, 409 username taken, 401/403
+#   auth) are returned immediately and NOT masked -- a duplicate-username or
+#   a malformed request is a genuine test bug, not a flake.
+#
+# Accepts EITHER the 3-arg short form (username password email) or a 4th arg
+# giving a full JSON body (so callers that also set display_name reuse the
+# same retry logic). The body, if given, must be a complete JSON object.
+#
+# Tunables (shared budget feel with create_repo / login_as):
+#   CREATE_USER_MAX_ATTEMPTS  default 4
+#   CREATE_USER_RETRY_DELAY   default 1 (seconds; doubled each attempt)
+#
+# Usage:
+#   USER_ID=$(create_test_user_with_retry "$USER" "$PASS" "$EMAIL") || fail ...
+#   USER_ID=$(create_test_user_with_retry "$USER" "$PASS" "$EMAIL" "$JSON") || fail ...
+create_test_user_with_retry() {
+  local username="$1"
+  local password="$2"
+  local email="$3"
+  local body="${4:-}"
+  if [ -z "$body" ]; then
+    body="{\"username\":\"${username}\",\"password\":\"${password}\",\"email\":\"${email}\"}"
+  fi
+  local _max="${CREATE_USER_MAX_ATTEMPTS:-4}"
+  local _delay="${CREATE_USER_RETRY_DELAY:-1}"
+  local _attempt _status _tmp _resp uid=""
+  for _attempt in $(seq 1 "$_max"); do
+    _tmp=$(mktemp)
+    _status=$(curl -s $CURL_TIMEOUT -o "$_tmp" -w '%{http_code}' \
+      -X POST -H "$(auth_header)" -H 'Content-Type: application/json' \
+      -d "$body" "${BASE_URL}/api/v1/users" 2>/dev/null) || _status="000"
+    _resp=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      uid=$(echo "$_resp" | jq -r '.user.id // .id // .user_id // empty' 2>/dev/null) || uid=""
+      if [ -n "$uid" ] && [ "$uid" != "null" ]; then
+        echo "$uid"
+        return 0
+      fi
+      # 2xx but no id: a contract break, not a transient blip. Don't retry.
+      echo "create_test_user_with_retry: ${username} got HTTP ${_status} but no id: ${_resp:0:200}" >&2
+      echo ""
+      return 1
+    fi
+
+    # Retry ONLY transient class: network 000 or any 5xx. Everything else
+    # (4xx) is a real failure surfaced immediately.
+    if [ "$_status" != "000" ] && { [ "$_status" -lt 500 ] 2>/dev/null || [ "$_status" -ge 600 ] 2>/dev/null; }; then
+      echo "create_test_user_with_retry: ${username} non-transient HTTP ${_status}: ${_resp:0:200}" >&2
+      echo ""
+      return 1
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      echo "  create-user ${username} attempt ${_attempt}/${_max} transient HTTP ${_status}, retrying in ${_delay}s..." >&2
+      sleep "$_delay"
+      _delay=$(( _delay * 2 ))
+    fi
+  done
+  echo "create_test_user_with_retry: ${username} failed after ${_max} attempts (last HTTP ${_status})" >&2
+  echo ""
+  return 1
 }
 
 # Log in as the named user and echo the access_token on stdout.

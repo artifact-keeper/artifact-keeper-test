@@ -198,13 +198,38 @@ esac
 
 # Wait for the first scan to be completed so trigger #2 will exercise the
 # short-circuit branch (not the race-recovery branch).
-begin_test "Wait for scan #1 to reach completed"
+#
+# IMPORTANT (scan_type scoping): the backend registers MORE THAN ONE scanner
+# (e.g. `dependency` + `grype`), and each one writes its OWN scan_results row
+# per artifact. The #1373 dedup contract is therefore per-scan_type: every
+# configured scanner that ran must end with EXACTLY ONE completed row for the
+# artifact, and re-triggering must not add a second row for any scan_type.
+# The original test asserted "exactly 1 completed row TOTAL", which only ever
+# held when a single scanner happened to run -- with two applicable scanners
+# a correctly-deduped artifact has two completed rows (one each), so the old
+# assertion failed even on the sequential happy path. We scope the wait and
+# both assertions per scan_type so the real dedup invariant is checked
+# without weakening it.
+#
+# We also wait for ALL scan_types to reach a terminal state (no row left in
+# `running`/`pending`) before triggering #2, so trigger #2 always exercises
+# the completed-scan short-circuit rather than the race-recovery branch.
+begin_test "Wait for scan #1 to reach completed (all scan_types terminal)"
 SCAN_LIST_PATH="/api/v1/security/artifacts/${ARTIFACT_ID}/scans"
 elapsed=0
 poll_interval=5
-first_scan_id=""
-first_state=""
+all_terminal="no"
 network_fail_count=0
+
+# Terminal statuses for a scan row. `completed` is the dedup-eligible one;
+# `not_applicable`/`failed` are terminal too (a scanner that didn't apply or
+# errored should not block the wait forever).
+is_all_terminal_jq='
+  (.items | length) > 0
+  and ([.items[] | (.status | ascii_downcase)
+        | select(. != "completed" and . != "not_applicable" and . != "failed")]
+       | length) == 0
+'
 
 while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
   http_status=$(curl -s -o "${WORK_DIR}/scans1.json" -w '%{http_code}' $CURL_TIMEOUT \
@@ -214,10 +239,8 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
 
   if [ "$http_status" = "200" ]; then
     network_fail_count=0
-    state=$(jq -er '.items[0].status // empty | ascii_downcase' < "${WORK_DIR}/scans1.json" 2>/dev/null || echo "")
-    if [ "$state" = "completed" ]; then
-      first_state="$state"
-      first_scan_id=$(jq -er '.items[0].id // empty' < "${WORK_DIR}/scans1.json" 2>/dev/null || echo "")
+    if jq -e "$is_all_terminal_jq" < "${WORK_DIR}/scans1.json" >/dev/null 2>&1; then
+      all_terminal="yes"
       break
     fi
   elif [ "$http_status" = "000" ] || [ "$http_status" = "502" ] || \
@@ -232,10 +255,30 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
   elapsed=$(( elapsed + poll_interval ))
 done
 
-if [ "$first_state" = "completed" ] && [ -n "$first_scan_id" ]; then
+# Snapshot the per-scan_type completed-row map after trigger #1. Shape:
+#   { "dependency": "<uuid>", "grype": "<uuid>", ... }
+# Only `completed` rows are recorded (the dedup-eligible state). At least one
+# scan_type must have completed for the short-circuit to be testable.
+first_completed_by_type='{}'
+first_completed_count=0
+if [ "$all_terminal" = "yes" ]; then
+  first_completed_by_type=$(jq -c '
+    [.items[] | select((.status|ascii_downcase) == "completed")]
+    | group_by(.scan_type)
+    | map({(.[0].scan_type): (.[0].id)})
+    | add // {}
+  ' < "${WORK_DIR}/scans1.json" 2>/dev/null || echo '{}')
+  first_completed_count=$(jq -r '[.items[] | select((.status|ascii_downcase)=="completed")] | length' \
+                          < "${WORK_DIR}/scans1.json" 2>/dev/null || echo 0)
+fi
+
+if [ "$all_terminal" = "yes" ] && [ "${first_completed_count:-0}" -ge 1 ] 2>/dev/null; then
   pass
 else
-  fail "scan #1 did not reach 'completed' within ${SCAN_TIMEOUT}s (last state: '${first_state:-none}')"
+  last_states=$(jq -c '[.items[] | {scan_type, status}]' < "${WORK_DIR}/scans1.json" 2>/dev/null | cut -c1-300)
+  fail "scan #1 did not reach a terminal state with >=1 completed row within ${SCAN_TIMEOUT}s" \
+"all_terminal=${all_terminal} completed_rows=${first_completed_count}
+states: ${last_states}"
 fi
 
 # -------------------------------------------------------------------------
@@ -269,60 +312,100 @@ fi
 # second trigger because the placeholder insert is synchronous.
 sleep 3
 
-# -------------------------------------------------------------------------
-# Load-bearing assertion #1: per-artifact list shows exactly 1 completed row.
-#
-# This is the symptom the customer saw: a second `completed` row appearing
-# for what should have been a single logical scan. Pin the count to exactly 1.
-# -------------------------------------------------------------------------
-
-begin_test "Per-artifact scans list has exactly 1 completed row (#1373 regression)"
+# Snapshot scan state after trigger #2 settles, then run the two assertions.
 list_status=$(curl -s -o "${WORK_DIR}/scans2.json" -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(auth_header)" \
   -H "Accept: application/json" \
   "${BASE_URL}${SCAN_LIST_PATH}") || list_status="000"
 
+# -------------------------------------------------------------------------
+# Load-bearing assertion #1: EXACTLY ONE completed row PER scan_type.
+#
+# This is the precise #1373 dedup contract. The backend runs >=1 scanner and
+# each writes its own row, so "one completed row total" is wrong; the real
+# invariant is that no single scan_type accumulates a second completed row.
+# We assert the max completed-count across scan_types is exactly 1 (and that
+# at least one scan_type completed). A duplicate placeholder promoted to
+# 'completed' for ANY scan_type makes that scan_type's count >= 2 and fails
+# here -- which is exactly the symptom we must keep catching. We do NOT
+# loosen this to "<= N"; per-scan_type the bound stays hard at 1.
+# -------------------------------------------------------------------------
+begin_test "Each scan_type has exactly 1 completed row (#1373 regression)"
 if [ "$list_status" != "200" ]; then
   fail "scan-list returned HTTP ${list_status}"
 else
-  completed_count=$(jq '[.items[] | select((.status | ascii_downcase) == "completed")] | length' \
-                    < "${WORK_DIR}/scans2.json" 2>/dev/null || echo "0")
-  total_count=$(jq '.items | length // 0' < "${WORK_DIR}/scans2.json" 2>/dev/null || echo "0")
-  if [ "$completed_count" = "1" ]; then
+  # Per-scan_type completed counts, e.g. [{"scan_type":"grype","completed":1},...]
+  per_type=$(jq -c '
+    [.items[] | select((.status|ascii_downcase) == "completed")]
+    | group_by(.scan_type)
+    | map({scan_type: .[0].scan_type, completed: length})
+  ' < "${WORK_DIR}/scans2.json" 2>/dev/null || echo '[]')
+  num_types=$(echo "$per_type" | jq 'length' 2>/dev/null || echo 0)
+  max_per_type=$(echo "$per_type" | jq '[.[].completed] | max // 0' 2>/dev/null || echo 0)
+
+  if [ "${num_types:-0}" -ge 1 ] 2>/dev/null && [ "${max_per_type:-0}" = "1" ]; then
     pass
   else
-    snippet=$(jq -c '[.items[] | {id, status}]' < "${WORK_DIR}/scans2.json" 2>/dev/null | cut -c 1-500)
-    fail "expected exactly 1 completed scan for artifact ${ARTIFACT_ID}, got ${completed_count} (total rows: ${total_count})" \
-"This is the #1373 symptom: the second trigger_scan call inserted a new
-placeholder row that the worker promoted to 'completed', leaving 2+
-completed rows where the short-circuit should have returned the existing
+    snippet=$(jq -c '[.items[] | {id, scan_type, status, is_reused}]' < "${WORK_DIR}/scans2.json" 2>/dev/null | cut -c 1-700)
+    fail "dedup contract broken: a scan_type has >1 completed row for artifact ${ARTIFACT_ID} (scan_types=${num_types}, max completed/type=${max_per_type})" \
+"This is the #1373 symptom: a trigger_scan call inserted a new placeholder
+row that the worker promoted to 'completed', leaving 2+ completed rows for
+one scan_type where the short-circuit should have returned the existing
 scan_id.
 
+per-scan_type completed counts: ${per_type}
 scans (projected): ${snippet}
 endpoint: GET ${BASE_URL}${SCAN_LIST_PATH}
-first scan_id: ${first_scan_id}"
+completed-by-type after trigger #1: ${first_completed_by_type}
+
+NOTE: if this fails ONLY under concurrent load (and passes sequentially),
+the cause is the known check-then-act race in
+ScannerService::prepare_artifact_scan: find_existing_scan_for_artifact
+(SELECT) and create_scan_result_with_checksum (INSERT) are not atomic and
+there is no unique constraint on (artifact_id, scan_type, checksum_sha256),
+so concurrent triggers each insert a fresh placeholder. That is a REAL
+backend defect, not a test bug -- do NOT mask it by loosening this bound."
   fi
 fi
 
 # -------------------------------------------------------------------------
-# Load-bearing assertion #2: the second-most-recent (if present) is the
-# same scan_id as the first. Asserting this on top of the count-of-1
-# assertion catches a regression where a placeholder is inserted then
-# garbage-collected (count=1 again, but with a different id than expected).
-#
-# If the list has only one row, the id check trivially holds.
+# Load-bearing assertion #2: the completed scan_id for each scan_type is
+# UNCHANGED from the post-trigger-#1 snapshot. The short-circuit must return
+# the EXISTING id; a different id for any scan_type means a fresh placeholder
+# was inserted and promoted to 'completed' (the regression #1388 fixes), even
+# if some janitor later collapsed the count back to 1.
 # -------------------------------------------------------------------------
-
-begin_test "Latest completed scan_id equals first scan_id (no duplicate placeholder)"
-latest_completed_id=$(jq -er '[.items[] | select((.status | ascii_downcase) == "completed")][0].id // empty' \
-                      < "${WORK_DIR}/scans2.json" 2>/dev/null || echo "")
-if [ -n "$latest_completed_id" ] && [ "$latest_completed_id" = "$first_scan_id" ]; then
-  pass
+begin_test "Completed scan_id per scan_type unchanged after re-trigger (no dup placeholder)"
+if [ "$list_status" != "200" ]; then
+  fail "scan-list returned HTTP ${list_status}"
 else
-  fail "latest completed scan_id (${latest_completed_id:-<empty>}) does not match first scan_id (${first_scan_id})" \
-"The short-circuit must return the existing scan_id; a different id here
-means a fresh placeholder was inserted and promoted to 'completed' (the
-exact regression #1388 fixes)."
+  second_completed_by_type=$(jq -c '
+    [.items[] | select((.status|ascii_downcase) == "completed")]
+    | group_by(.scan_type)
+    | map({(.[0].scan_type): (.[0].id)})
+    | add // {}
+  ' < "${WORK_DIR}/scans2.json" 2>/dev/null || echo '{}')
+
+  # Every scan_type present in the trigger-#1 snapshot must map to the SAME
+  # completed id after trigger #2. New scan_types appearing is also a dup
+  # signal, so require the two maps to be equal.
+  if [ "$first_completed_by_type" = "$second_completed_by_type" ] && [ "$first_completed_by_type" != "{}" ]; then
+    pass
+  elif echo "$first_completed_by_type" | jq -e \
+        --argjson after "$second_completed_by_type" \
+        'to_entries | all(.value == ($after[.key])) and (length > 0) and (($after | length) == length)' \
+        >/dev/null 2>&1; then
+    # Robust equality independent of key ordering.
+    pass
+  else
+    fail "completed scan_id changed for some scan_type after re-trigger" \
+"The short-circuit must return the existing scan_id per scan_type; a changed
+or added id means a fresh placeholder was inserted and promoted to
+'completed' (the exact regression #1388 fixes).
+
+after trigger #1: ${first_completed_by_type}
+after trigger #2: ${second_completed_by_type}"
+  fi
 fi
 
 end_suite
