@@ -14,6 +14,22 @@ setup_workdir
 STAGING_KEY="test-approval-staging-${RUN_ID}"
 RELEASE_KEY="test-approval-release-${RUN_ID}"
 
+# Separation of duties (four-eyes): the backend now rejects approving a
+# promotion you requested (approval_separation_of_duties_ok: requester !=
+# approver; admin-only approve). The shared admin requests below, so the
+# approver must be a DIFFERENT admin. Mint a dedicated admin to do the
+# approving; the shared admin's own auth state is never touched.
+# NOTE: create_dedicated_admin runs in a command-substitution subshell, so the
+# DEDICATED_ADMIN_* globals it exports do not survive into this shell. We pass
+# the credentials in explicitly and reuse those local values to log in.
+APPROVER_USER="e2e-approval-approver-${RUN_ID}-$$"
+APPROVER_PASS="Appr_${RUN_ID:0:8}_$$_Aa1!"
+APPROVER_TOKEN=""
+if APPROVER_ID=$(create_dedicated_admin "$APPROVER_USER" "$APPROVER_PASS"); then
+  add_exit_handler "cleanup_dedicated_admin ${APPROVER_ID}"
+  APPROVER_TOKEN=$(login_as "$APPROVER_USER" "$APPROVER_PASS") || APPROVER_TOKEN=""
+fi
+
 begin_test "Create staging and release repos"
 if create_repo "$STAGING_KEY" "generic" "staging" && \
    create_repo "$RELEASE_KEY" "generic" "local"; then
@@ -80,15 +96,24 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Approve promotion request"
-if [ -n "${APPROVAL_ID:-}" ] && [ "$APPROVAL_ID" != "null" ]; then
+if [ -z "${APPROVAL_ID:-}" ] || [ "$APPROVAL_ID" = "null" ]; then
+  skip "no approval ID available"
+elif [ -z "$APPROVER_TOKEN" ]; then
+  skip "could not establish a separate approver admin"
+else
+  # Four-eyes: approve as the dedicated admin, who is distinct from the
+  # requester (the shared admin). Temporarily swap the bearer token used by
+  # api_post; restore it afterwards so later calls use the shared admin.
+  _saved_token="$ADMIN_TOKEN"
+  ADMIN_TOKEN="$APPROVER_TOKEN"
   if api_post "/api/v1/approval/${APPROVAL_ID}/approve" \
-      '{"notes":"Approved by E2E test"}' > /dev/null 2>&1; then
+      '{"notes":"Approved by E2E test (separate reviewer for four-eyes SoD)"}' > /dev/null 2>&1; then
+    ADMIN_TOKEN="$_saved_token"
     pass
   else
+    ADMIN_TOKEN="$_saved_token"
     fail "could not approve"
   fi
-else
-  skip "no approval ID available"
 fi
 
 end_suite
