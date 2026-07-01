@@ -834,6 +834,88 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
+  # Pinned-CVE IMAGE efficacy gate, PER SCANNER (#237, v1.2.4).
+  #
+  # Closes the blind spot that let artifact-keeper#2088 ship: container-
+  # image Trivy scans silently returned 0 findings (false-clean) after the
+  # trivy CLI was removed in #2059, while Grype still found CVEs in the same
+  # image. The existing pinned-cve-gate uploads an npm tarball (filesystem
+  # scanner) and asserts findings in AGGREGATE, so a dead image scanner
+  # hiding behind a healthy peer was invisible.
+  #
+  # This gate pushes a digest-pinned, known-vulnerable container image
+  # (alpine:3.4) into an AK OCI repo via the /v2/ distribution API (curl,
+  # no docker daemon on the runner) and asserts PER SCANNER that each wired
+  # image scanner (Trivy `image` + Grype) reached `completed` AND surfaced
+  # findings_count >= FINDINGS_FLOOR. A scanner that completes with ~0
+  # findings on the canary is a HARD FAIL.
+  #
+  # BLOCKING (not in the flaky tier): it must be reliable, so it gates the
+  # rollout at exactly the point #2088 should have been stopped. Wired into
+  # the collect-results rollup with the STRICTER `result != 'success'`
+  # predicate alongside the other silent-success gates.
+  # -------------------------------------------------------------------
+  pinned-cve-image-gate:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 10
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # ALLOW_SCANNER_SKIP=0 is enforced inside the gate too -- a scanner-
+      # down skip in release-gate context is the #888/#2088 silent-success
+      # / false-clean class this gate exists to catch.
+      RELEASE_GATE: '1'
+      ALLOW_SCANNER_SKIP: '0'
+      # Per-scanner floor. alpine:3.4 yields >100 findings via a healthy
+      # scanner, so 10 is a generous, drift-proof lower bound. Override via
+      # the repo variable if a future canary is swapped.
+      FINDINGS_FLOOR: ${{ vars.IMAGE_SCAN_FINDINGS_FLOOR || '10' }}
+      # The wired image scanners that MUST independently find the floor.
+      # scan_type values on the scan rows: `image` = Trivy image scan
+      # (the #2088 target), `grype` = Grype.
+      REQUIRED_IMAGE_SCANNERS: 'image grype'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+
+      - name: Run pinned-CVE image efficacy gate (per scanner)
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/test-pinned-cve-image.sh
+          ./tests/release-gate/test-pinned-cve-image.sh
+
+      - name: Capture scanner pod logs on failure
+        if: failure()
+        run: |
+          NS="test-${{ needs.deploy.outputs.run_id }}"
+          mkdir -p /tmp/test-logs
+          # #1379: Trivy pods are labelled app.kubernetes.io/component=trivy.
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=trivy \
+            --tail=2000 > /tmp/test-logs/pinned-cve-image-trivy.log 2>&1 || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=scanner \
+            --tail=2000 > /tmp/test-logs/pinned-cve-image-scanner.log 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=1000 > /tmp/test-logs/pinned-cve-image-backend.log 2>&1 || true
+
+      - name: Upload pinned-CVE image gate results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-pinned-cve-image
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
   # Format tests (8 parallel batches)
   # -------------------------------------------------------------------
   format-tests:
@@ -1871,7 +1953,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
     runs-on: ak-e2e-runners
     steps:
@@ -1890,7 +1972,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -1901,6 +1983,7 @@ jobs:
               scan-completion-gate) status="${{ needs.scan-completion-gate.result }}" ;;
               sbom-correctness-gate) status="${{ needs.sbom-correctness-gate.result }}" ;;
               pinned-cve-gate) status="${{ needs.pinned-cve-gate.result }}" ;;
+              pinned-cve-image-gate) status="${{ needs.pinned-cve-image-gate.result }}" ;;
               format-tests) status="${{ needs.format-tests.result }}" ;;
               repo-tests) status="${{ needs.repo-tests.result }}" ;;
               promotion-tests) status="${{ needs.promotion-tests.result }}" ;;
@@ -1978,6 +2061,7 @@ jobs:
           needs.scan-completion-gate.result != 'success' ||
           needs.sbom-correctness-gate.result != 'success' ||
           needs.pinned-cve-gate.result != 'success' ||
+          needs.pinned-cve-image-gate.result != 'success' ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
           needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||
