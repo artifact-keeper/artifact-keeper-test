@@ -937,9 +937,9 @@ jobs:
           - name: system-packages
             scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-opkg.sh"
           - name: containers
-            scripts: "test-oci.sh test-oci-remote.sh test-docker-native-client.sh test-helm.sh test-incus.sh"
+            scripts: "test-oci.sh test-oci-remote.sh test-docker-native-client.sh test-helm.sh test-incus.sh test-streaming-blob-fallback.sh"
           - name: misc-native
-            scripts: "test-terraform.sh test-composer.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
+            scripts: "test-terraform.sh test-composer.sh test-composer-dist-cache.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
             scripts: "test-generic.sh test-generic-native-client.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
     env:

@@ -200,6 +200,31 @@ _feature_min_version() {
   case "$1" in
     "conan_remote_search_forward")    echo "1.3.0" ;;
     "conan_virtual_search_aggregate") echo "1.3.0" ;;
+    # v1.3.0 release-gate additions (see rig FixSpec v130-test-gates-plan.md).
+    # metrics_unmatched_path: the metrics middleware collapses requests that
+    # match no route to a single path="unmatched" series instead of echoing
+    # the raw request path, closing the per-path label-cardinality DoS
+    # (artifact-keeper#2217). Pre-1.3.0 backends emit one series per junk path.
+    "metrics_unmatched_path")         echo "1.3.0" ;;
+    # streaming_large_artifact: artifacts larger than the 16 MiB in-memory
+    # buffer cap are streamed to/from storage rather than buffered, so a
+    # >16 MiB upload/download returns 2xx instead of 502/OOM (the #1608
+    # streaming-invariant trilogy). Pre-1.3.0 backends buffer and 502/OOM.
+    "streaming_large_artifact")       echo "1.3.0" ;;
+    # composer_dist_cache: a warm composer dist fetch is served from the
+    # pull-through cache without re-dialing upstream (artifact-keeper#2204).
+    # Pre-1.3.0 backends re-fetch upstream on every dist request.
+    "composer_dist_cache")            echo "1.3.0" ;;
+    # npm_packument_swr: npm packument responses are served stale-while-
+    # revalidate from cache within the TTL window (no upstream re-hit) and
+    # refreshed after a new version lands (artifact-keeper#2166).
+    "npm_packument_swr")              echo "1.3.0" ;;
+    # oci_gc_two_phase: the OCI/storage GC sweep reclaims a genuinely
+    # unreferenced blob (manifest deleted, grace elapsed) and leaves no
+    # dangling manifest reference behind (artifact-keeper#1660). Pre-1.3.0
+    # backends do not maintain the manifest->blob reference table the sweep
+    # needs, so the reclaim assertion cannot be driven there.
+    "oci_gc_two_phase")               echo "1.3.0" ;;
     # recipe_latest / recipe_revisions filter by user/channel rather than
     # collapsing variants to _/_/latest. Backported via artifact-keeper#869.
     # v1.1.x backend lacks this scoping; tracked for v1.1.10 backport in #986.
