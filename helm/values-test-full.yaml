@@ -88,6 +88,14 @@ backend:
     # actually does so. (Release-gate run 26616763325: webhook-delivery 4
     # failures, all rooted at the producer never starting.)
     WEBHOOKS_V2_PRODUCER_ENABLED: "true"
+    # Blob GC is opt-in (BLOB_GC_ENABLED defaults false → the admin
+    # storage-gc endpoint dry-runs and never reclaims). Enable it so the
+    # v1.3.0 OCI GC reclaim gate (test-oci-gc-mark-sweep.sh, #1660) can prove
+    # an unreferenced blob is actually deleted. The admin-triggered orchestrator
+    # runs mark+sweep at grace 0 (immediate), so a short sweep grace only
+    # affects the scheduler path; keep it short for determinism.
+    BLOB_GC_ENABLED: "true"
+    BLOB_GC_SWEEP_GRACE_SECS: "5"
     # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys
