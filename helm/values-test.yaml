@@ -18,13 +18,20 @@ backend:
   # the 4 CPU quota: 750m (backend) + 50m (web) + 50m (postgres) +
   # 100m (opensearch) = 950m requested, with limits totaling 4250m
   # (oversubscribed at the limit, fine for CI smoke).
+  # Memory raised 2Gi -> 6Gi (request 384Mi -> 1Gi) to match
+  # values-test-full.yaml: under the concurrent release-gate matrix the
+  # backend's peak RSS exceeded 2Gi and the pod was OOMKilled, which
+  # cascaded into the whole gate matrix failing "backend not ready after
+  # 30s". No ResourceQuota is applied to the test namespace (the
+  # TEST_NAMESPACE_*/TEST_MAX_* repo vars are not consumed anywhere), so
+  # the only memory ceiling is this pod limit; rocky has ample headroom.
   resources:
     requests:
       cpu: 750m
-      memory: 384Mi
+      memory: 1Gi
     limits:
       cpu: 2500m
-      memory: 2Gi
+      memory: 6Gi
   env:
     ENVIRONMENT: test
     RUST_LOG: info
