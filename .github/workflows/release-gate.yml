@@ -100,6 +100,13 @@ jobs:
   # exists at that tag." Failing here is a release-blocker that should
   # NEVER be soft-failed: a missing tag is a publish-pipeline regression,
   # not a flake.
+  #
+  # Also enforces the release-documentation policy: when backend_tag is
+  # a final release version (X.Y.Z), artifact-keeper's CHANGELOG.md must
+  # contain a non-empty `## [X.Y.Z]` section for that version (promote
+  # [Unreleased] before tagging; see artifact-keeper RELEASING.md).
+  # Non-release tags (dev, sha-*, prereleases) skip that sub-check, so
+  # routine gate runs against non-release builds are unaffected.
   # -------------------------------------------------------------------
   version-set-integrity:
     runs-on: ak-e2e-runners
@@ -125,7 +132,7 @@ jobs:
             https://github.com/artifact-keeper/artifact-keeper-iac.git \
             "${RUNNER_TEMP}/iac"
 
-      - name: Verify backend / web / openscap image tags exist on ghcr.io
+      - name: Verify image tags exist on ghcr.io and CHANGELOG documents the release
         env:
           BACKEND_TAG: ${{ inputs.backend_tag }}
           WEB_TAG: ${{ inputs.web_tag }}
