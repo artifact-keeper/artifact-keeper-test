@@ -4,6 +4,12 @@
 #
 # Release gate for:
 #   artifact-keeper#2204 - composer dist cache (warm-hit after cold-miss)
+#   artifact-keeper#2383 - fetch the dist URL the metadata actually emits
+#     (the previous hardcoded dist path omitted the :reference segment the
+#     5-segment download route requires, so the cold fetch 404'd and every
+#     later assertion cascaded)
+#   artifact-keeper#2370 - regression gate: the metadata-emitted dist.url of
+#     a remote/proxied repo must be ABSOLUTE (BASE_URL-prefixed + AK-routed)
 #
 # Strategy: AK-to-AK upstream (see tests/pullthrough/test-cache-hit-no-refetch.sh
 # for the full rationale -- the Python mock binds an RFC1918 addr that the
@@ -54,7 +60,12 @@ VERSION="1.0.0"
 # Long TTL so the warm window never slips on a loaded runner.
 TTL_SECS=300
 
-DIST_PATH="dist/${VENDOR}/${PACKAGE}/${VERSION}.zip"
+# The dist URL is resolved from R's own p2 metadata after setup (see the
+# "metadata emits absolute dist.url" test below), exactly like the composer
+# client would. Never hardcode the dist path: the download route is the
+# 5-segment /:repo_key/dist/:vendor/:package/:version/:reference and the
+# reference (content sha256) is only knowable from the metadata (#2383).
+DIST_URL=""
 
 cleanup_repos() {
   api_delete "/api/v1/repositories/${REMOTE_KEY}" >/dev/null 2>&1 || true
@@ -64,9 +75,10 @@ add_exit_handler "cleanup_repos"
 
 fetch_dist() {
   local out="$1"
+  # DIST_URL is the absolute URL the metadata emitted (already BASE_URL-rooted).
   curl -s -o "$out" -w '%{http_code}' $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
-    "${BASE_URL}/composer/${REMOTE_KEY}/${DIST_PATH}" 2>/dev/null || echo "000"
+    "${DIST_URL}" 2>/dev/null || echo "000"
 }
 
 # ---------------------------------------------------------------------------
@@ -110,6 +122,58 @@ else
 fi
 api_put "/api/v1/repositories/${REMOTE_KEY}/cache-ttl" \
   "{\"cache_ttl_seconds\": ${TTL_SECS}}" >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+# 0. Resolve the dist URL from R's p2 metadata, exactly like composer would.
+#    Doubles as the #2370 regression gate: the rewritten dist.url of a
+#    remote/proxied repo must be ABSOLUTE and AK-routed, otherwise composer
+#    cannot resolve it and falls back to a source clone (bypassing the cache).
+# ---------------------------------------------------------------------------
+
+begin_test "R's p2 metadata emits an absolute AK-routed dist.url (#2370)"
+META_JSON="${WORK_DIR}/meta.json"
+meta_status=$(curl -s -o "$META_JSON" -w '%{http_code}' $CURL_TIMEOUT \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/composer/${REMOTE_KEY}/p2/${VENDOR}/${PACKAGE}.json" 2>/dev/null) || meta_status="000"
+if assert_http_2xx "$meta_status" "p2 metadata fetch through R should be 2xx"; then
+  DIST_URL=$(jq -r --arg name "${VENDOR}/${PACKAGE}" --arg ver "${VERSION}" '
+    .packages[$name]
+    | (if type == "array" then .
+       else [to_entries[] | (.value + {version: (.value.version // .key)})] end)
+    | map(select(.version == $ver))
+    | (.[0].dist.url // empty)' "$META_JSON" 2>/dev/null) || DIST_URL=""
+  if [ -z "$DIST_URL" ]; then
+    # Fallback: construct the 5-segment download URL from dist.reference.
+    REFERENCE=$(jq -r --arg name "${VENDOR}/${PACKAGE}" --arg ver "${VERSION}" '
+      .packages[$name]
+      | (if type == "array" then .
+         else [to_entries[] | (.value + {version: (.value.version // .key)})] end)
+      | map(select(.version == $ver))
+      | (.[0].dist.reference // empty)' "$META_JSON" 2>/dev/null) || REFERENCE=""
+    if [ -n "$REFERENCE" ]; then
+      DIST_URL="${BASE_URL}/composer/${REMOTE_KEY}/dist/${VENDOR}/${PACKAGE}/${VERSION}/${REFERENCE}.zip"
+    fi
+  fi
+  if [ -z "$DIST_URL" ]; then
+    fail "could not resolve dist.url (or dist.reference) for ${VENDOR}/${PACKAGE} ${VERSION} from R's p2 metadata" \
+      "$(head -c 2000 "$META_JSON" 2>/dev/null)"
+    end_suite
+    exit 1
+  fi
+  case "$DIST_URL" in
+    "${BASE_URL}"/composer/"${REMOTE_KEY}"/*)
+      pass
+      ;;
+    *)
+      fail "dist.url is not absolute + AK-routed (#2370 regression): got '${DIST_URL}', expected prefix '${BASE_URL}/composer/${REMOTE_KEY}/'"
+      end_suite
+      exit 1
+      ;;
+  esac
+else
+  end_suite
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Cold dist fetch (cache miss -> proxied -> cached)
