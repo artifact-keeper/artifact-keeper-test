@@ -14,13 +14,24 @@
 #       - 403 on npm publish (PUT /npm/{repo}/{pkg})
 #       - 403 on pypi upload (POST /pypi/{repo}/)
 #       - 403 on oci blob upload (POST /v2/{repo}/{name}/blobs/uploads/)
+#       - 403 on the eight previously-deferred format publish handlers
+#         (ansible, chef, cocoapods, jetbrains, pub, puppet, sbt, vscode)
+#         now that #2417 completes the GHSA-vvc3 rollout
 #       - 403 body contains "Token does not have required scope: write"
 #   - SA token with scope=["read","write"]:
 #       - succeeds (2xx) on the same write endpoints
 #   - JWT user-session token (admin):
 #       - succeeds regardless of declared scope; JWTs are NOT scoped
+#   - #2430 token-exchange laundering: a read-only API token exchanged into a
+#       JWT/bearer (Conan users/authenticate, OCI /v2/token docker-login) must
+#       inherit the token's action-scope ceiling -> 403 on a subsequent write;
+#       a read+write token exchanges into a credential that CAN write (2xx).
 #
-# Pairs with: artifact-keeper PR #1219, GHSA-vvc3-h39c-mrq5
+# Pairs with: artifact-keeper PR #1219 + #2417 + #2430, GHSA-vvc3-h39c-mrq5.
+# The eight deferred handlers previously lived in the companion
+# test-ghsa-vvc3-deferred-handlers.sh (which pinned the still-vulnerable
+# state); #2417 fixes them, so that file is removed and its formats are
+# folded into the protected assertions below.
 # Issue: artifact-keeper-test#76 (Epic 11)
 #
 # Requires: curl, jq
@@ -41,6 +52,27 @@ SA_WRITE_ID=""
 SA_READ_TOKEN=""
 SA_WRITE_TOKEN=""
 SCOPE_ERROR_MSG="Token does not have required scope: write"
+
+# Eight previously-deferred format publish handlers now gated by #2417.
+# Each row: <label>|<repo_format>|<method>|<path-after-BASE_URL>|<mode>
+#   mode = multipart -> curl -F (handlers using the axum Multipart extractor
+#          reject a non-multipart content-type BEFORE the scope check runs, so
+#          a valid boundary is required to reach the scope gate)
+#          binary    -> --data-binary with the format's content-type
+# The {REPO} placeholder is substituted with each format's per-run repo key.
+# NOTE: sbt is nested at /ivy (not /sbt) and its write verb is PUT.
+DEFERRED_REPO_PREFIX="ghsa-def"
+declare -a DEFERRED_ROWS=(
+  "ansible|ansible|POST|/ansible/{REPO}/api/v3/artifacts/collections/|multipart|"
+  "chef|chef|POST|/chef/{REPO}/api/v1/cookbooks|multipart|"
+  "cocoapods|cocoapods|POST|/cocoapods/{REPO}/pods|binary|application/octet-stream"
+  "jetbrains|jetbrains|POST|/jetbrains/{REPO}/plugin/uploadPlugin|binary|application/zip"
+  "pub|pub|POST|/pub/{REPO}/api/packages/versions/newUpload|multipart|"
+  "puppet|puppet|POST|/puppet/{REPO}/v3/releases|multipart|"
+  "sbt|sbt|PUT|/ivy/{REPO}/com/example/test_2.13/1.0.0/test_2.13-1.0.0.jar|binary|application/java-archive"
+  "vscode|vscode|POST|/vscode/{REPO}/api/extensions|binary|application/octet-stream"
+)
+declare -A DEFERRED_REPO_KEY=()
 
 # -------------------------------------------------------------------------
 # Setup: create format-typed repos so push endpoints route correctly.
@@ -68,6 +100,22 @@ if create_local_repo "$OCI_REPO" "docker"; then
 else
   fail "could not create oci repo"
 fi
+
+# One repo per previously-deferred format (#2417). create_local_repo sets
+# is_public:true, so the read-scope SA can resolve the repo and reach the
+# handler's scope gate (a private repo would 404 before the gate and mask
+# the assertion).
+for row in "${DEFERRED_ROWS[@]}"; do
+  IFS='|' read -r d_label d_fmt _ _ _ _ <<< "$row"
+  d_key="${DEFERRED_REPO_PREFIX}-${d_label}-${RUN_ID}"
+  DEFERRED_REPO_KEY[$d_label]="$d_key"
+  begin_test "Create ${d_label} repo"
+  if create_local_repo "$d_key" "$d_fmt"; then
+    pass
+  else
+    fail "could not create ${d_label} repo"
+  fi
+done
 
 # -------------------------------------------------------------------------
 # Create the two service accounts: one read-only, one read+write.
@@ -256,6 +304,158 @@ status=$(call_with_token "$SA_READ_TOKEN" POST \
 assert_403_with_scope_msg "oci blob upload" "$status"
 
 # -------------------------------------------------------------------------
+# Previously-deferred format publish handlers (#2417). These eight formats
+# used to be pinned as still-vulnerable in test-ghsa-vvc3-deferred-handlers.sh;
+# with #2417 each swaps require_auth_basic -> require_auth_basic_scope(...,
+# "write"), so a read-scope SA token must now be rejected identically to
+# npm/pypi/oci above. The scope gate fires before the format's body parser,
+# so a minimal body suffices; multipart-extractor handlers still need a valid
+# multipart boundary (curl -F) to reach the gate rather than 400ing first.
+# -------------------------------------------------------------------------
+
+publish_scope_status() {
+  # $1 method  $2 path  $3 mode(multipart|binary)  $4 content-type(binary only)
+  local method="$1" path="$2" mode="$3" ctype="${4:-application/octet-stream}"
+  local body_file="${WORK_DIR}/last-body"
+  # shellcheck disable=SC2206 # CURL_TIMEOUT is intentionally word-split
+  local args=(-s -o "$body_file" -w '%{http_code}' $CURL_TIMEOUT
+    -X "$method" -H "Authorization: Bearer ${SA_READ_TOKEN}")
+  if [ "$mode" = "multipart" ]; then
+    args+=(-F "file=@/dev/null")
+  else
+    args+=(-H "Content-Type: ${ctype}" --data-binary "x")
+  fi
+  args+=("${BASE_URL}${path}")
+  curl "${args[@]}" 2>/dev/null || echo "000"
+}
+
+for row in "${DEFERRED_ROWS[@]}"; do
+  IFS='|' read -r d_label _ d_method d_path_tpl d_mode d_ctype <<< "$row"
+  d_key="${DEFERRED_REPO_KEY[$d_label]}"
+  d_path="${d_path_tpl//\{REPO\}/$d_key}"
+  begin_test "Read-scope SA token rejected on ${d_label} publish (${d_method} ${d_path_tpl})"
+  status=$(publish_scope_status "$d_method" "$d_path" "$d_mode" "$d_ctype")
+  assert_403_with_scope_msg "${d_label} publish" "$status"
+done
+
+# pub_registry also gates the upload-URL preflight (#2417 D2): a read token
+# must not be able to obtain an upload URL.
+begin_test "Read-scope SA token rejected on pub upload-URL preflight (GET .../versions/new)"
+status=$(call_with_token "$SA_READ_TOKEN" GET \
+  "/pub/${DEFERRED_REPO_KEY[pub]}/api/packages/versions/new" \
+  "application/json" "")
+assert_403_with_scope_msg "pub upload-URL preflight" "$status"
+
+# -------------------------------------------------------------------------
+# #2430: token-exchange action-scope laundering.
+#
+# A read-only API token must not be exchangeable into a JWT/bearer that can
+# WRITE. Two exchange surfaces mint a fresh credential in return for an API
+# token; both must copy the presenting token's action-scope ceiling onto the
+# minted credential:
+#   - Conan  : POST /conan/{repo}/v2/users/authenticate  -> body is a JWT
+#   - Docker : GET  /v2/token  (Basic API-token)         -> JSON {.token}
+#
+# We then present the exchanged credential as a Bearer on an OCI blob-upload
+# init (a write) and assert:
+#   - read-only  -> 403 "Token does not have required scope: write"  (was 201/202)
+#   - read+write -> 202 Accepted  (positive control: exchange still works)
+#
+# The OCI repo is public, so require_oci_repo_write_access does not 404/deny
+# the request before the scope gate; the action-scope ceiling is the only
+# thing standing between the read-only exchanged credential and a write.
+# -------------------------------------------------------------------------
+
+CONAN_REPO="ghsa-conan-${RUN_ID}"
+
+begin_test "Create conan repo (exchange source)"
+if create_local_repo "$CONAN_REPO" "conan"; then
+  pass
+else
+  fail "could not create conan repo"
+fi
+
+# Mint a JWT via the Conan exchange endpoint by presenting the API token in the
+# Basic password slot (the username is ignored when the password is an API
+# token). Echoes the raw JWT body.
+conan_exchange_jwt() {
+  local token="$1"
+  curl -s $CURL_TIMEOUT -u "svc:${token}" -X POST \
+    "${BASE_URL}/conan/${CONAN_REPO}/v2/users/authenticate" 2>/dev/null || true
+}
+
+# Mint an OCI bearer via the docker-login /v2/token exchange. Echoes .token.
+# The API-token grant path returns the exchanged bearer without a `service=`
+# query parameter (a mismatched `service` is rejected by the #1175 validation
+# before the mint); the token still carries the presenting token's scopes.
+oci_login_bearer() {
+  local token="$1"
+  curl -s $CURL_TIMEOUT -u "svc:${token}" \
+    "${BASE_URL}/v2/token" 2>/dev/null \
+    | jq -r '.token // empty'
+}
+
+# Present a bearer on an OCI blob-upload init (a write) and echo the status.
+oci_push_status() {
+  call_with_token "$1" POST "/v2/${OCI_REPO}/img/blobs/uploads/" "application/octet-stream" ""
+}
+
+# --- Conan exchange: read-only must NOT launder up to write ---
+begin_test "Conan-exchanged RO JWT is rejected on OCI write (#2430)"
+RO_CONAN_JWT=$(conan_exchange_jwt "$SA_READ_TOKEN")
+if [ -z "$RO_CONAN_JWT" ] || ! printf '%s' "$RO_CONAN_JWT" | grep -q '\.'; then
+  fail "conan exchange did not return a JWT for the read-only token: ${RO_CONAN_JWT:0:120}"
+else
+  status=$(oci_push_status "$RO_CONAN_JWT")
+  assert_403_with_scope_msg "conan-exchanged RO JWT on OCI write" "$status"
+fi
+
+# --- Docker /v2/token exchange: read-only must NOT launder up to write ---
+begin_test "Docker-login-exchanged RO bearer is rejected on OCI write (#2430)"
+RO_OCI_BEARER=$(oci_login_bearer "$SA_READ_TOKEN")
+if [ -z "$RO_OCI_BEARER" ]; then
+  fail "docker-login exchange did not return a bearer for the read-only token"
+else
+  status=$(oci_push_status "$RO_OCI_BEARER")
+  assert_403_with_scope_msg "docker-login-exchanged RO bearer on OCI write" "$status"
+fi
+
+# --- Positive controls: read+write exchanges still WORK on the write path ---
+begin_test "Conan-exchanged RW JWT is accepted on OCI write (#2430 positive control)"
+if [ -z "${SA_WRITE_TOKEN:-}" ]; then
+  skip "no write SA token"
+else
+  RW_CONAN_JWT=$(conan_exchange_jwt "$SA_WRITE_TOKEN")
+  if [ -z "$RW_CONAN_JWT" ] || ! printf '%s' "$RW_CONAN_JWT" | grep -q '\.'; then
+    fail "conan exchange did not return a JWT for the read+write token"
+  else
+    status=$(oci_push_status "$RW_CONAN_JWT")
+    if [ "$status" = "202" ] || [ "$status" = "201" ]; then
+      pass
+    else
+      fail "expected 202/201 for RW conan-exchanged JWT on OCI write, got ${status}: $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
+    fi
+  fi
+fi
+
+begin_test "Docker-login-exchanged RW bearer is accepted on OCI write (#2430 positive control)"
+if [ -z "${SA_WRITE_TOKEN:-}" ]; then
+  skip "no write SA token"
+else
+  RW_OCI_BEARER=$(oci_login_bearer "$SA_WRITE_TOKEN")
+  if [ -z "$RW_OCI_BEARER" ]; then
+    fail "docker-login exchange did not return a bearer for the read+write token"
+  else
+    status=$(oci_push_status "$RW_OCI_BEARER")
+    if [ "$status" = "202" ] || [ "$status" = "201" ]; then
+      pass
+    else
+      fail "expected 202/201 for RW docker-login-exchanged bearer on OCI write, got ${status}: $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
+    fi
+  fi
+fi
+
+# -------------------------------------------------------------------------
 # Authorization-layer control: a write-scope SA token passes the GHSA scope
 # check but is STILL rejected (403) on permission/group creation, because
 # those are admin-only operations in the backend authorization model.
@@ -377,5 +577,9 @@ fi
 api_delete "/api/v1/repositories/${NPM_REPO}" > /dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${PYPI_REPO}" > /dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${OCI_REPO}" > /dev/null 2>&1 || true
+api_delete "/api/v1/repositories/${CONAN_REPO}" > /dev/null 2>&1 || true
+for d_label in "${!DEFERRED_REPO_KEY[@]}"; do
+  api_delete "/api/v1/repositories/${DEFERRED_REPO_KEY[$d_label]}" > /dev/null 2>&1 || true
+done
 
 end_suite
