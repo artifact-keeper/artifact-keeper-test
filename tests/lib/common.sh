@@ -198,6 +198,13 @@ get_backend_version() {
 # Add entries here in the same PR that ships the feature.
 _feature_min_version() {
   case "$1" in
+    # quality_checks_admin_list: the admin quality-checks list-all endpoint
+    # GET /api/v1/admin/quality-checks (#2419) — a repository-scoped (or
+    # unscoped) paginated `{items,total,page,per_page}` view that backs the web
+    # admin quality-checks page. The artifact-scoped GET /api/v1/quality/checks
+    # keeps its #2334 contract (400 without artifact_id). Pre-1.6.0 backends
+    # have no list-all endpoint (the page 400s), so the gate skips there.
+    "quality_checks_admin_list")      echo "1.6.0" ;;
     "conan_remote_search_forward")    echo "1.3.0" ;;
     "conan_virtual_search_aggregate") echo "1.3.0" ;;
     # v1.3.0 release-gate additions (see rig FixSpec v130-test-gates-plan.md).
