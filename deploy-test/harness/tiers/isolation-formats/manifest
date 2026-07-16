@@ -1,0 +1,46 @@
+# DTF tier manifest: isolation-formats
+# =============================================================================
+# The thread x format SECURITY tier for Thread 1 (cloud row-less cross-tenant
+# isolation, #2504/#2574/#2584 class). ONE shared S3 (MinIO) object store — the
+# only topology on which the flat repo-less key classes can manifest — plus, for
+# every enabled isolation plugin that needs a native publish client, its client
+# overlay. Each format runs the generalized prove.sh A-F cross-tenant gate
+# (harness/lib/sec_isolation.sh) against its OWN victim/attacker repo pair.
+#
+# PROFILES is COMPUTED from the plugin registry exactly like format-conformance:
+# the storage backend is storage.s3 (NOT filesystem — the whole point), plus for
+# every SEC_ENABLED plugin its SEC_PROFILE client overlay (empty for pure-curl
+# plants like Maven). Adding a format therefore never edits this file.
+# SEC_ONLY (env, comma/space list of formats) narrows BOTH the compose
+# profile-set here AND the oracle loop, so a single-format dev iteration stands
+# up only backend+postgres+minio (+that one client, if any).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo create + many
+# back-to-back PUT/GET across two principals per format; the base default (ON)
+# would throttle them (same rationale as the isolation and format-conformance
+# manifests). The base default stays ON.
+# =============================================================================
+
+_sf_dir="$(dirname "${BASH_SOURCE[0]}")"
+_sf_plugins="${_sf_dir}/plugins"
+
+PROFILES="storage.s3"
+if [ -d "$_sf_plugins" ]; then
+  for _p in "$_sf_plugins"/*.sh; do
+    [ -e "$_p" ] || continue
+    _fmt="$(grep -m1 '^# SEC_FORMAT:'  "$_p" | awk '{print $3}')"
+    _en="$(grep -m1 '^# SEC_ENABLED:' "$_p" | awk '{print $3}')"
+    _prof="$(grep -m1 '^# SEC_PROFILE:' "$_p" | awk '{print $3}')"
+    [ "${_en:-1}" = "1" ] || continue
+    if [ -n "${SEC_ONLY:-}" ]; then
+      case " ${SEC_ONLY//,/ } " in
+        *" ${_fmt} "*) : ;;
+        *) continue ;;
+      esac
+    fi
+    [ -n "$_prof" ] && PROFILES="$PROFILES $_prof"
+  done
+fi
+
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
