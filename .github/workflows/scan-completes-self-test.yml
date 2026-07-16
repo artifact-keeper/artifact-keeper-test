@@ -1,44 +1,60 @@
 name: Scan-Completes Self-Test
 
-# Meta-test for the scan-completion gate per the #883 contract.
+# Meta-test for the per-scanner IMAGE-scan efficacy gate per the #883 contract.
 #
-# Covers artifact-keeper-test#61.
+# Covers artifact-keeper-test#61 and #237.
 #
 # Why this exists
 # ---------------
-# The lite scan-completion gate at tests/security/test-scan-completes.sh
-# (and the release-gate wrapper at tests/release-gate/scan-completion-gate.sh)
-# is the load-bearing assertion against the #871 (stuck queued) and #888
-# (silent completed-but-not-scanned) regression classes.
+# The load-bearing release gate for the scanner-efficacy silent-success class
+# is tests/release-gate/test-pinned-cve-image.sh -- the PER-SCANNER container-
+# image efficacy canary (#237). It closes the blind spot that let
+# artifact-keeper#2088 ship: after the trivy CLI was removed from the backend
+# image (#2059), container-image Trivy scans silently returned 0 findings and
+# were recorded as `completed` (a false-clean), while Grype still found real
+# CVEs in the same image. Any AGGREGATE ("total findings > 0") check PASSED --
+# Grype covered for the dead Trivy.
 #
-# Without a paired pass/fail meta-test, a future PR can silently weaken
-# the gate -- drop the findings_count >= 1 check, raise the timeout
-# until SCAN_TIMEOUT is useless, swallow the assertion in a tolerant
-# ALLOW_SCANNER_SKIP path -- and the gate goes green forever on a
-# broken backend. That is the same silent-success failure class the
-# gate exists to prevent. The #883 contract requires explicit paired
-# evidence.
+# Without a paired pass/fail meta-test, a future PR can silently weaken the
+# gate -- drop the per-scanner floor, stop requiring a scanner to be PRESENT,
+# swallow the assertion in a tolerant ALLOW_SCANNER_SKIP path -- and the gate
+# goes green forever on a broken backend. That is the same silent-success
+# failure class the gate exists to prevent. The #883 contract requires explicit
+# paired evidence.
 #
-# We pin TWO distinct failure shapes because each exercises a different
-# code path in the gate:
+# We pin TWO distinct failure shapes because each exercises a different arm of
+# the gate's required-scanner invariant:
 #
 #   A. Trivy scaled to zero (scanner pod unreachable).
-#      The lite gate's scanner_unavailable() helper MUST fail loud
-#      (RELEASE_GATE=1 + ALLOW_SCANNER_SKIP=0). If a refactor accidentally
-#      makes scanner-down silently exit 0, this fixture catches it.
+#      With no Trivy pod, the backend produces NO scan_type=image row at all
+#      (adapter down -> fail-closed / absent) -- only Grype's row exists, and
+#      Grype finds CVEs. A findings-on-present-scanners check would PASS. The
+#      gate's REQUIRED-SCANNER PRESENCE assertion MUST fail: a required scanner
+#      that produced no completed row is a hard fail. This is the exact #2088
+#      sibling (Trivy entirely absent, vs. Trivy-returns-0).
 #
-#   B. Findings forgery (backend stub completes scans with findings_count=0).
-#      The lite gate's findings_count >= 1 assertion is the only
-#      thing standing between "scan ran" and "scan ran AND inspected
-#      the bytes". If a refactor removes that check (or replaces it
-#      with `>= 0`), this fixture catches it.
+#   B. A required scanner completes BELOW the CVE floor.
+#      Trivy's `dependency` (language-dependency) scan legitimately finds zero
+#      on an OS-only base image, while Grype clears the ground-truth floor on
+#      the same image. Requiring `grype dependency` therefore leaves `grype`
+#      passing (ground truth intact) and `dependency` completing below the
+#      floor. The gate's per-scanner floor assertion -- the analog of the old
+#      lite gate's `findings_count >= 1` -- MUST bite. If a refactor drops it
+#      (or replaces it with `>= 0`), this fixture catches it. This arm is
+#      independent of the #2088 backend state (dependency stays 0 whether or
+#      not the Trivy image adapter is fixed), so it does not go stale when
+#      artifact-keeper#2088 lands.
+#
+# Both fixtures run the gate with EXPECT_FAILURE=1: common.sh's end_suite
+# inverts the exit code, so the gate correctly REJECTING the broken state
+# becomes a green self-test, and the gate going soft (every assertion passing)
+# becomes a red self-test.
 #
 # Triggers
 # --------
-# Run on every PR that touches the gate primitive, the wrapper, the
-# common library, the release-gate workflow, or this self-test.
-# Without this, a PR could weaken the gate and the self-test would
-# not run, defeating the meta-test entirely.
+# Run on every PR that touches the gate primitive, the common library, the
+# release-gate workflow, or this self-test. Without this, a PR could weaken the
+# gate and the self-test would not run, defeating the meta-test entirely.
 
 on:
   # Path filter is intentionally broad. The self-test must re-run on any
@@ -73,20 +89,22 @@ concurrency:
 
 jobs:
   # -------------------------------------------------------------------
-  # Fixture A: Trivy scaled to zero.
+  # Fixture A: Trivy scaled to zero -> the required image scanner is ABSENT.
   #
-  # Deploy a test stack with `trivy.replicaCount=0` (or the chart's
-  # equivalent). With no scanner pod reachable, every scan trigger
-  # surfaces as 503 from the backend's scanner-service stub, OR the
-  # scan transitions to `failed` with error_message set. Either way
-  # the gate primitive MUST fail (RELEASE_GATE=1 + ALLOW_SCANNER_SKIP=0).
-  # EXPECT_FAILURE=1 inverts the exit code so this job reports green
-  # when the gate correctly rejects the broken backend.
+  # Deploy the full stack (Trivy + Grype) but override trivy.replicaCount=0 so
+  # the Trivy pod is unschedulable. A scan of the vulnerable canary then fans
+  # out to Grype only: the scan_type=image (Trivy) row is never produced.
+  #
+  # The gate's REQUIRED-SCANNER PRESENCE assertion (default REQUIRED_IMAGE_
+  # SCANNERS="image grype") MUST fail because `image` produced no completed
+  # row -- even though Grype found dozens of CVEs. EXPECT_FAILURE=1 inverts the
+  # exit code so this job reports green when the gate correctly rejects the
+  # broken backend, and red if the gate went soft on an absent scanner.
   # -------------------------------------------------------------------
   pin-gate-fails-on-trivy-zero:
     name: Gate must reject Trivy scaled to zero (fixture A)
     runs-on: ak-e2e-runners
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
@@ -96,14 +114,17 @@ jobs:
       # (the gate working correctly on a broken backend) becomes exit 0;
       # a pass (the gate weakened to a no-op) becomes exit 1.
       EXPECT_FAILURE: '1'
+      # Default required set. `image` (Trivy) is absent with Trivy scaled to
+      # zero, so the presence assertion fires on it while grype passes.
+      REQUIRED_IMAGE_SCANNERS: 'image grype'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Deploy backend with trivy.replicaCount=0
         id: deploy
@@ -114,7 +135,7 @@ jobs:
           # --full-stack normally enables Trivy. Override the replica
           # count to zero via a fixture-only values file so the chart
           # still installs but the scanner pod is unschedulable. The
-          # backend's scan-trigger path then surfaces scanner-unavailable.
+          # backend's scan then never produces a scan_type=image row.
           #
           # The values file path is relative-to-repo-root because
           # create-test-namespace.sh prepends REPO_ROOT to --values.
@@ -143,19 +164,19 @@ jobs:
           chmod +x tests/lib/wait-for-ready.sh
           ./tests/lib/wait-for-ready.sh "${{ steps.deploy.outputs.backend_url }}" 300
 
-      - name: Run gate against Trivy-zero fixture; expect failure
+      - name: Run image efficacy gate against Trivy-zero fixture; expect failure
         env:
           BASE_URL: ${{ steps.deploy.outputs.backend_url }}
           RUN_ID: ${{ steps.deploy.outputs.run_id }}
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
-          chmod +x tests/release-gate/scan-completion-gate.sh
-          # EXPECT_FAILURE=1 in env. end_suite() reads it and inverts
-          # the exit code. If the gate's findings_count assertion or
-          # the scanner_unavailable hard-fail is intact, this script
-          # exits 0 (because the gate exited 1 -- expected). If the
-          # gate has been weakened, the script exits 1 here.
-          ./tests/release-gate/scan-completion-gate.sh
+          chmod +x tests/release-gate/test-pinned-cve-image.sh
+          # EXPECT_FAILURE=1 in env. end_suite() reads it and inverts the
+          # exit code. With Trivy scaled to zero the scan_type=image row is
+          # absent, so the gate's required-scanner PRESENCE assertion fails
+          # and this script exits 0 (gate rejected the broken backend, as
+          # expected). If the gate went soft on an absent scanner, it exits 1.
+          ./tests/release-gate/test-pinned-cve-image.sh
 
       - name: Capture scanner diagnostics
         if: always()
@@ -184,61 +205,61 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
-  # Fixture B: Non-vulnerable fixture must trip the findings_count check.
+  # Fixture B: a required scanner completes BELOW the CVE floor.
   #
-  # The lite gate's load-bearing assertion is `findings_count >= 1` on
-  # a known-vulnerable lodash fixture. If a refactor weakens that check
-  # (drops it, replaces it with `>= 0`, swallows it in a tolerant
-  # branch), the gate goes green forever on a broken backend. Fixture A
-  # covers the scanner_unavailable half; Fixture B covers the
-  # findings-emitted half.
+  # The gate's load-bearing per-scanner assertion is `findings_count >= FLOOR`
+  # for every required scanner on the known-vulnerable canary. If a refactor
+  # weakens that (drops it, replaces it with `>= 0`, swallows it in a tolerant
+  # branch), the gate goes green forever on a false-clean scanner. Fixture A
+  # covers the absent-scanner arm; Fixture B covers the below-floor arm.
   #
   # Approach (no backend debug knob required):
-  #   - Override FIXTURE_LODASH_VERSION=4.17.21 (a non-vulnerable
-  #     release of lodash). Trivy's npm parser still parses the
-  #     lockfile but emits zero findings because the version carries
-  #     no published CVE.
-  #   - findings_count=0 on a non-vulnerable fixture is the CORRECT
-  #     scanner behavior. The gate's `findings_count >= 1` assertion
-  #     must therefore FAIL (the fixture proves the assertion is
-  #     load-bearing). EXPECT_FAILURE=1 inverts the exit code so a
-  #     gate failure becomes a self-test pass.
+  #   - Deploy the full stack with Trivy ENABLED, so every scanner is healthy.
+  #   - Require `grype dependency`. On the alpine OS-base canary, Grype clears
+  #     the ground-truth + per-scanner floor (dozens of OS-package CVEs), while
+  #     Trivy's `dependency` (language-dependency) scan legitimately completes
+  #     with zero findings -- there are no application dependency manifests in a
+  #     bare OS image. `dependency` therefore sits BELOW the floor while ground
+  #     truth stays intact via Grype.
+  #   - A required scanner completing below the floor is the exact false-clean
+  #     the gate must reject. The per-scanner floor assertion fires, end_suite
+  #     exits non-zero, and EXPECT_FAILURE=1 inverts it to a self-test pass.
   #
-  # This fixture pairs with Fixture A to provide the full #883
-  # paired-evidence contract: A proves scanner-unavailable fails loud,
-  # B proves the findings_count >= 1 assertion bites.
+  # This arm is independent of the #2088 backend state (dependency stays 0
+  # whether or not the Trivy image adapter is fixed), so the fixture does not
+  # go stale when artifact-keeper#2088 lands.
   # -------------------------------------------------------------------
-  pin-gate-fails-on-non-vulnerable-fixture:
-    name: Gate must reject non-vulnerable fixture (fixture B)
+  pin-gate-fails-on-below-floor-scanner:
+    name: Gate must reject a required scanner below the CVE floor (fixture B)
     runs-on: ak-e2e-runners
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
       RELEASE_GATE: '1'
       ALLOW_SCANNER_SKIP: '0'
       # EXPECT_FAILURE inverts common.sh's end_suite exit code: the gate
-      # must fail on the non-vulnerable fixture (correct scanner
-      # behavior: zero findings on a clean lockfile), and that failure
-      # becomes exit 0 here.
+      # must fail because a required scanner is below the floor, and that
+      # failure becomes exit 0 here.
       EXPECT_FAILURE: '1'
-      # Override the fixture to a clean lodash version. test-scan-completes.sh
-      # reads FIXTURE_LODASH_VERSION and builds the lockfile from it.
-      # 4.17.21 is the latest patch; no CVE rows for it.
-      FIXTURE_LODASH_VERSION: '4.17.21'
+      # Require a scanner that legitimately finds nothing on an OS-only image
+      # (`dependency`) alongside one that finds dozens (`grype`). Grype keeps
+      # the ground-truth check satisfied; `dependency` trips the per-scanner
+      # floor -- proving that assertion is load-bearing.
+      REQUIRED_IMAGE_SCANNERS: 'grype dependency'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Deploy backend with Trivy enabled (full stack)
         id: deploy
         run: |
-          RUN_ID="self-clean-fixture-${{ github.run_id }}-${{ github.run_attempt }}"
+          RUN_ID="self-below-floor-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
           chmod +x scripts/create-test-namespace.sh
           ./scripts/create-test-namespace.sh \
@@ -253,35 +274,37 @@ jobs:
         run: |
           chmod +x tests/lib/wait-for-ready.sh
           ./tests/lib/wait-for-ready.sh "${{ steps.deploy.outputs.backend_url }}" 300
-          # Confirm Trivy is up; if it is not, fixture A's failure mode
-          # would mask fixture B's signal.
+          # Confirm Trivy is up; a Trivy-down here would collapse fixture B
+          # into fixture A (absent image scanner) and mask the below-floor
+          # signal we are trying to exercise.
           kubectl -n "${{ steps.deploy.outputs.namespace }}" wait \
             --for=condition=Available deployment/artifact-keeper-trivy \
             --timeout=120s
 
-      - name: Run gate against clean-lodash fixture; expect failure
+      - name: Run image efficacy gate against below-floor fixture; expect failure
         env:
           BASE_URL: ${{ steps.deploy.outputs.backend_url }}
           RUN_ID: ${{ steps.deploy.outputs.run_id }}
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
-          chmod +x tests/release-gate/scan-completion-gate.sh
-          # FIXTURE_LODASH_VERSION=4.17.21 (set at job env). The fixture
-          # builds a clean lockfile, Trivy scans it, findings_count=0,
-          # the gate's `findings_count >= 1` assertion fires, end_suite
-          # exits non-zero. EXPECT_FAILURE=1 inverts to exit 0.
-          ./tests/release-gate/scan-completion-gate.sh
+          chmod +x tests/release-gate/test-pinned-cve-image.sh
+          # REQUIRED_IMAGE_SCANNERS='grype dependency' (job env). Grype clears
+          # the ground-truth + per-scanner floor on the vulnerable canary;
+          # Trivy's dependency scan completes below the floor (no lang deps in
+          # an OS image). The gate's per-scanner floor assertion fires,
+          # end_suite exits non-zero, EXPECT_FAILURE=1 inverts to exit 0.
+          ./tests/release-gate/test-pinned-cve-image.sh
 
       - name: Capture scanner diagnostics
         if: always()
         run: |
           NS="${{ steps.deploy.outputs.namespace }}"
           mkdir -p /tmp/test-logs
-          kubectl -n "$NS" get pods > /tmp/test-logs/pods-clean-fixture.txt 2>&1 || true
+          kubectl -n "$NS" get pods > /tmp/test-logs/pods-below-floor.txt 2>&1 || true
           kubectl -n "$NS" logs -l app.kubernetes.io/name=trivy \
-            --tail=2000 > /tmp/test-logs/trivy-clean-fixture.log 2>&1 || true
+            --tail=2000 > /tmp/test-logs/trivy-below-floor.log 2>&1 || true
           kubectl -n "$NS" logs -l app=artifact-keeper-backend \
-            --tail=500 > /tmp/test-logs/backend-clean-fixture.log 2>&1 || true
+            --tail=500 > /tmp/test-logs/backend-below-floor.log 2>&1 || true
 
       - name: Teardown
         if: always()
@@ -293,7 +316,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: scan-self-test-clean-fixture-${{ github.run_attempt }}
+          name: scan-self-test-below-floor-${{ github.run_attempt }}
           path: |
             /tmp/test-results/
             /tmp/test-logs/

@@ -1,0 +1,35 @@
+# =============================================================================
+# profiles/client.pub.yml — client dimension = pub (a real Dart pub client)
+# =============================================================================
+# Adds a Dart client container that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The format-conformance tier's
+# pub plugin `docker exec`s into it to build a package with the REAL tool and
+# `dart pub publish --force` it through the hosted upload flow
+# (GET versions/new -> POST newUpload -> GET newUploadFinish — the #1997
+# regression probe), then run a REAL `dart pub get` on a consumer whose only
+# source is a `hosted` dependency pointing at AK. `dart pub get` reads
+# `/api/packages/<name>`, FOLLOWS the advertised `archive_url`, and VERIFIES the
+# advertised `archive_sha256` against the fetched bytes (Dart >= 2.19 enforces
+# this — a mismatch fails `pub get`). That is the #2580 path plus a built-in
+# integrity oracle.
+#
+# arm64: `dart:stable` publishes an arm64/v8 manifest (verified with
+# `docker manifest inspect`), so it runs natively — no amd64-only surprise.
+#
+# The container runs `sleep infinity` with no healthcheck (ready once running,
+# same discipline as client.dnf.yml) and waits on backend health via
+# depends_on. dart:stable runs as root, so $HOME (/root, incl. ~/.pub-cache and
+# ~/.config/dart) + the project dir under /work are writable with no
+# FC_EXEC_USER override.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-pub:
+    image: dart:stable
+    container_name: ak-dtf${DTF_SLOT}-client-pub
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

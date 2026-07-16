@@ -96,14 +96,42 @@ AK_BACKEND_BRANCH_1_2_X="\
   virtual_member_strict_contract \
   webhook_event_producer \
   proxy_ttl_eviction_correctness \
+  sbom_declared_dependencies \
 "
 
 # main: everything 1.2.x has, plus anything in-flight on main.
+#
+# v1.3.0 release-gate feature tokens (see rig FixSpec
+# v130-test-gates-plan.md). Each guards one new gate suite so the same
+# main-branch test tree auto-skips it on a 1.2.x backend instead of
+# hard-failing on an unshipped feature:
+#   metrics_unmatched_path  -> tests/platform/test-metrics-unmatched-cardinality.sh (G7, #2217)
+#   streaming_large_artifact-> tests/platform/test-streaming-large-artifact.sh    (G1, #1608)
+#                              tests/formats/test-streaming-blob-fallback.sh       (G1, #1608)
+#   composer_dist_cache     -> tests/formats/test-composer-dist-cache.sh           (G1, #2204)
+#   npm_packument_swr       -> tests/pullthrough/test-npm-packument-swr.sh         (G6, #2166)
+#   oci_gc_two_phase        -> tests/lifecycle/test-oci-gc-mark-sweep.sh           (G3, #1660)
+#
+# Deferred v1.3.0 gates (NOT registered until their infra/endpoints land,
+# see v130-test-gates-plan.md Part 2):
+#   G2 access_scope_authz  -- no REST endpoint sets an arbitrary AccessScope
+#      (repository_scopes list / empty / user-level); the AccessScope enum is
+#      covered by backend lib unit tests. Register when a scope-write endpoint ships.
+#   G4 sso_oidc_v13        -- happy-path OIDC/SAML login needs a mock IdP (backend
+#      e2e #2210/#2214); negative/forged-assertion cases already covered by
+#      tests/auth/test-oidc-*.sh + tests/security/test-saml-signature.sh.
+#   G5 cross_replica_cache_invalidation -- needs a new 2-replica shared-DB
+#      helm/values-test-ha.yaml overlay + deploy job (#2169); no such overlay today.
 AK_BACKEND_BRANCH_MAIN="\
   $AK_BACKEND_BRANCH_1_2_X \
   conan_remote_search_forward \
   conan_virtual_search_aggregate \
   conan_error_correctness \
+  metrics_unmatched_path \
+  streaming_large_artifact \
+  composer_dist_cache \
+  npm_packument_swr \
+  oci_gc_two_phase \
 "
 
 # -----------------------------------------------------------------------------

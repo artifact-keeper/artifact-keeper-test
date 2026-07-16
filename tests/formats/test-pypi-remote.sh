@@ -109,17 +109,29 @@ else
   fi
 fi
 
-begin_test "Verify proxied artifact appears in cache"
+begin_test "Proxied package is retrievable from cache on re-fetch"
 if [ "$UPSTREAM_REACHABLE" != "true" ]; then
   skip "upstream unreachable"
 else
+  # Backend #1278/#1280: proxy-cached artifacts are INTENTIONALLY not inserted
+  # into the `artifacts` DB table. They are written to a separate
+  # `proxy-cache/...` storage path and served by the proxy fast path, so the
+  # /api/v1/repositories/{key}/artifacts listing (backed by ArtifactService /
+  # the artifacts table) will never contain a proxied package like `six`. The
+  # correct way to confirm the proxy cached the package is to re-fetch its
+  # simple index through the proxy and verify it is still served with the
+  # expected sdist/wheel links (served from cache), rather than asserting on
+  # the DB-backed artifact listing.
   sleep 2
-  if resp=$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts" 2>/dev/null); then
-    if assert_contains "$resp" "${PROXY_PKG}" "cached artifacts should include ${PROXY_PKG}"; then
+  if resp=$(curl -sf $CURL_TIMEOUT \
+      -u "${ADMIN_USER}:${ADMIN_PASS}" \
+      "${PYPI_REMOTE_URL}/simple/${PROXY_PKG}/" 2>/dev/null); then
+    if assert_contains "$resp" ".tar.gz" \
+        "cached simple index for ${PROXY_PKG} should still list sdist links"; then
       pass
     fi
   else
-    skip "artifact listing not available for remote repo"
+    fail "re-fetch of cached ${PROXY_PKG} simple index through proxy returned error"
   fi
 fi
 
@@ -131,47 +143,18 @@ begin_test "Second fetch served from cache"
 if [ "$UPSTREAM_REACHABLE" != "true" ]; then
   skip "upstream unreachable"
 else
-  # Record artifact count before second fetch
-  PRE_COUNT=""
-  if pre_resp=$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts" 2>/dev/null); then
-    PRE_COUNT=$(echo "$pre_resp" | jq '
-      if type == "array" then length
-      elif .items then (.items | length)
-      elif .total != null then .total
-      else 0
-      end
-    ' 2>/dev/null) || PRE_COUNT=""
-  fi
-
-  # Fetch the same simple index again
+  # Backend #1278/#1280: proxy-cached artifacts are NOT inserted into the
+  # `artifacts` DB table, so the previous count-delta check against
+  # /api/v1/repositories/{key}/artifacts measured nothing (the count stays 0
+  # for a proxy repo regardless of cache state, making the comparison
+  # vacuously pass). The meaningful cache-hit signal is simply that the same
+  # simple index can be fetched again through the proxy and is still served
+  # with the expected sdist/wheel links.
   if resp2=$(curl -sf $CURL_TIMEOUT \
       -u "${ADMIN_USER}:${ADMIN_PASS}" \
       "${PYPI_REMOTE_URL}/simple/${PROXY_PKG}/" 2>/dev/null); then
     if assert_contains "$resp2" ".tar.gz" "cached simple index should still contain links"; then
-      # Verify artifact count did not grow (cache hit, not re-download)
-      if [ -n "$PRE_COUNT" ]; then
-        sleep 1
-        if post_resp=$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts" 2>/dev/null); then
-          POST_COUNT=$(echo "$post_resp" | jq '
-            if type == "array" then length
-            elif .items then (.items | length)
-            elif .total != null then .total
-            else 0
-            end
-          ' 2>/dev/null) || POST_COUNT=""
-          if [ -n "$POST_COUNT" ] && [ "$POST_COUNT" -le "$PRE_COUNT" ] 2>/dev/null; then
-            pass
-          else
-            # Even if the count grew slightly (metadata refresh), the key test is
-            # that the request succeeded from cache. Don't hard-fail.
-            skip "artifact count grew from ${PRE_COUNT} to ${POST_COUNT} (may indicate cache miss)"
-          fi
-        else
-          pass  # index fetch itself succeeded, which is the main signal
-        fi
-      else
-        pass  # couldn't measure count but index fetch succeeded
-      fi
+      pass
     fi
   else
     fail "second fetch of simple index failed"

@@ -14,9 +14,22 @@ setup_workdir
 # Helper: test that a webhook with a given URL is rejected
 # ---------------------------------------------------------------------------
 
+# test_webhook_ssrf DESCRIPTION URL [ALLOWLIST_EXEMPTABLE]
+#
+# Asserts a webhook with an SSRF URL is rejected (400/422). The optional
+# third argument marks an RFC1918-private target that the test deploy MAY
+# intentionally allowlist for the in-cluster webhook mock receiver
+# (WEBHOOK_ALLOW_PRIVATE_IPS / AK_SSRF_ALLOW_PRIVATE_CIDRS; see
+# helm/values-test-full.yaml and the cache-poisoning sibling). For those
+# targets an "accepted" (200/201) result is SKIPPED, not failed, because it
+# reflects the deploy's documented private-CIDR allowlist rather than a
+# vulnerability. Cloud-metadata and loopback targets are NEVER marked
+# exemptable: the backend hard-blocks them under every allowlist, so they
+# stay strict fail-on-accept here.
 test_webhook_ssrf() {
   local description="$1"
   local url="$2"
+  local allowlist_exemptable="${3:-0}"
   local webhook_name="sec-ssrf-wh-${RUN_ID}-$(echo "$description" | tr ' /' '-' | head -c 20)"
 
   local status
@@ -38,7 +51,11 @@ test_webhook_ssrf() {
       curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" \
         "${BASE_URL}/api/v1/webhooks/${webhook_id}" >/dev/null 2>&1 || true
     fi
-    fail "webhook with SSRF URL was accepted (${description}, HTTP ${status})"
+    if [ "$allowlist_exemptable" = "1" ]; then
+      skip "private-CIDR webhook allowlist active in this deploy (${description}, HTTP ${status}); RFC1918 target intentionally permitted (artifact-keeper#1224 / artifact-keeper-test#122)"
+    else
+      fail "webhook with SSRF URL was accepted (${description}, HTTP ${status})"
+    fi
   elif [ "$status" = "404" ]; then
     skip "webhook endpoint not available (HTTP 404)"
   else
@@ -92,14 +109,20 @@ test_webhook_ssrf "ipv6-loopback" "http://[::1]:80/"
 begin_test "Webhook SSRF: localhost"
 test_webhook_ssrf "localhost" "http://localhost:8080/callback"
 
+# RFC1918 webhook targets: allowlist-exemptable. The test deploy may permit
+# the in-cluster pod/service CIDR for the webhook mock receiver
+# (helm/values-test-full.yaml). These probe IPs (10.0.0.1 / 172.16.0.1 /
+# 192.168.1.1) are OUTSIDE that CIDR, so under the current deploy they are
+# still BLOCKED (400) and these cases PASS; the skip path only fires if a
+# broader blanket private-IP toggle is in effect.
 begin_test "Webhook SSRF: private 10.x range"
-test_webhook_ssrf "private-10x" "http://10.0.0.1/callback"
+test_webhook_ssrf "private-10x" "http://10.0.0.1/callback" 1
 
 begin_test "Webhook SSRF: private 172.16.x range"
-test_webhook_ssrf "private-172" "http://172.16.0.1/callback"
+test_webhook_ssrf "private-172" "http://172.16.0.1/callback" 1
 
 begin_test "Webhook SSRF: private 192.168.x range"
-test_webhook_ssrf "private-192" "http://192.168.1.1/callback"
+test_webhook_ssrf "private-192" "http://192.168.1.1/callback" 1
 
 # ---------------------------------------------------------------------------
 # Remote repo upstream SSRF tests

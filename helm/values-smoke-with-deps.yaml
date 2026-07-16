@@ -72,6 +72,12 @@ backend:
     ADMIN_PASSWORD: TestRunner!2026secure
     ACCOUNT_LOCKOUT_THRESHOLD: "0"
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+    # Release-gate runs 20+ suites against ONE shared backend; per-user/IP and
+    # global auth/API windows trip 429 across a full suite run (e.g. the totp
+    # backup-code single-use test gets 429 instead of 401/consume). The gate tests
+    # functional correctness, not rate-limiting (the rate-limit suite skips here),
+    # so disable the limiter for the test deploy.
+    RATE_LIMIT_ENABLED: "false"
   persistence:
     size: 2Gi
   scanWorkspace:
@@ -198,7 +204,7 @@ ingress:
     secretName: smoke-tls-unused
 
 secrets:
-  jwtSecret: "test-jwt-secret-not-for-production"
+  jwtSecret: "ak-ci-nonprod-q7z6wharZXoYYW3BI1ZPSdbMDyXrXS6DiCajP8IPCHg4Bjgb"
 
 # Disabled subsystems: keep these off for now even in the "with-deps"
 # variant. NetworkPolicy default-deny would block the in-cluster

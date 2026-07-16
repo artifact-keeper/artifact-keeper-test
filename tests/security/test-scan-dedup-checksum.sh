@@ -64,17 +64,50 @@ trigger_and_wait() {
       fi
       ;;
   esac
-  local elapsed=0 final="" state=""
+  # Wait for a COMPLETED scan and return ITS id, not `.items[0].id`.
+  #
+  # A trigger fans out to every applicable scanner. Some scanners can reach a
+  # `failed` terminal state independently of the dedup-bearing scanner (e.g.
+  # grype failing on a deploy where its binary/DB is unavailable, while the
+  # always-present `dependency` scanner completes and IS deduped). A
+  # `failed` row is not deduped, so picking `.items[0]` blindly can return a
+  # non-deduped failed row whose id differs between two byte-identical
+  # artifacts -- a false "dedup bypassed" failure that depends only on which
+  # scanner happens to sort first. We instead key on a completed/clean row,
+  # which is the row the dedup short-circuit actually targets. If only
+  # non-completed terminal states exist after the timeout, fall back to the
+  # first terminal row so the caller still gets a deterministic signal.
+  local elapsed=0 final="" any_terminal=""
   while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
-    local resp
+    local resp completed_id
     resp=$(api_get "/api/v1/security/artifacts/${art_id}/scans" 2>/dev/null || true)
-    state=$(echo "$resp" | jq -r '.items[0].status // "" | ascii_downcase' 2>/dev/null || echo "")
-    case "$state" in
-      completed|clean|failed|error|cancelled|timeout)
-        final=$(echo "$resp" | jq -r '.items[0].id // empty' 2>/dev/null || echo "")
-        break
-        ;;
-    esac
+    # Prefer a completed/clean row (the deduped one). jq: lowercase status.
+    completed_id=$(echo "$resp" | jq -r '
+      [ .items[]? | select((.status // "" | ascii_downcase) as $s
+        | $s == "completed" or $s == "clean") ] | .[0].id // empty' \
+      2>/dev/null || echo "")
+    if [ -n "$completed_id" ]; then
+      final="$completed_id"
+      break
+    fi
+    # Track whether every scanner has reached SOME terminal state, so we can
+    # stop waiting (and fall back) instead of spinning the full timeout when
+    # no completed row will ever appear (e.g. all scanners failed).
+    any_terminal=$(echo "$resp" | jq -r '
+      [ .items[]? | select((.status // "" | ascii_downcase) as $s
+        | $s == "failed" or $s == "error" or $s == "cancelled" or $s == "timeout") ]
+      | (.[0].id // empty)' 2>/dev/null || echo "")
+    local pending
+    pending=$(echo "$resp" | jq -r '
+      [ .items[]? | select((.status // "" | ascii_downcase) as $s
+        | ($s == "pending" or $s == "running" or $s == "queued")) ] | length' \
+      2>/dev/null || echo "0")
+    if [ -n "$any_terminal" ] && [ "${pending:-0}" = "0" ]; then
+      # No completed row and nothing still pending: fall back to a terminal
+      # (failed/error/...) row id so the caller isn't left empty-handed.
+      final="$any_terminal"
+      break
+    fi
     sleep 5
     elapsed=$(( elapsed + 5 ))
   done
@@ -86,10 +119,16 @@ mkdir -p "${WORK_DIR}/pkg"
 cat > "${WORK_DIR}/pkg/package.json" <<'EOF'
 {"name":"dedup-fixture","version":"1.0.0","dependencies":{"lodash":"4.17.4"}}
 EOF
-# Use --mtime + --owner/--group to make tarball bytes deterministic across runs
-# so the content hash is identical between the two upload paths.
+# Use --mtime + --owner/--group to make tarball bytes deterministic across
+# runs. These flags are GNU-tar specific; BSD/macOS tar rejects them. The
+# dedup contract only needs the SAME bytes uploaded to both paths (which is
+# guaranteed because both uploads read the same ${TARBALL_NAME} file), so
+# fall back to a plain `tar -czf` when the GNU flags are unavailable. This
+# keeps the suite runnable on non-Linux dev machines while still producing
+# byte-identical content for the two upload paths.
 if tar --sort=name --mtime='2024-01-01 00:00:00 UTC' --owner=0 --group=0 \
-    -czf "${WORK_DIR}/${TARBALL_NAME}" -C "${WORK_DIR}" pkg 2>/dev/null; then
+    -czf "${WORK_DIR}/${TARBALL_NAME}" -C "${WORK_DIR}" pkg 2>/dev/null \
+   || tar -czf "${WORK_DIR}/${TARBALL_NAME}" -C "${WORK_DIR}" pkg 2>/dev/null; then
   pass
 else
   fail "could not build deterministic fixture tarball"
@@ -186,26 +225,53 @@ else
   fi
 fi
 
-# Secondary assertion: the per-artifact scan list for B must contain only one
-# completed row, not a duplicate. Guards against a backend that returns the
-# right id from the trigger but still writes a second scan_results row.
-begin_test "Per-artifact scan list for B contains exactly one completed scan"
+# Secondary assertion: the per-artifact scan list for B must contain no
+# DUPLICATE completed row for any single scan_type. Guards against a backend
+# that returns the right id from the trigger but still writes a second
+# scan_results row for the same (artifact, scan_type) pair.
+#
+# IMPORTANT (#1373 / B13): the dedup contract is "one completed row per
+# (artifact, scan_type)", NOT "one completed row total". The orchestrator
+# fans a trigger out to every APPLICABLE scanner (dependency, grype, and
+# trivy-fs on a generic tarball when Trivy is wired), so a correctly-deduped
+# artifact legitimately has one completed row per scanner type -- e.g. 3
+# completed rows when 3 scanners apply. Counting all completed rows and
+# expecting 1 (the previous assertion) mis-counts a healthy multi-scanner
+# deploy as a dedup duplicate. We instead group by scan_type and fail only
+# if any scan_type has more than one completed row.
+begin_test "Per-artifact scan list for B has no duplicate completed row per scan_type"
 if ! $SCANNER_AVAILABLE; then
   skip "scanner unavailable"
 elif [ -z "$ARTIFACT_B_ID" ]; then
   skip "no artifact_id B"
 else
   resp=$(api_get "/api/v1/security/artifacts/${ARTIFACT_B_ID}/scans" 2>/dev/null || true)
+  # Total completed rows (across all scan_types) -- must be >= 1.
   completed_count=$(echo "$resp" | jq -r '
     (.items // []) | map(select(
       .status == "completed" or .status == "clean"
     )) | length' 2>/dev/null || echo "0")
-  if [ "$completed_count" = "1" ]; then
-    pass
-  elif [ "$completed_count" = "0" ]; then
+  # Max number of completed rows for any single scan_type -- must be <= 1.
+  max_per_type=$(echo "$resp" | jq -r '
+    (.items // [])
+    | map(select(.status == "completed" or .status == "clean"))
+    | group_by(.scan_type)
+    | map(length)
+    | (max // 0)' 2>/dev/null || echo "0")
+  # List any scan_type that has a duplicate, for triage.
+  dup_types=$(echo "$resp" | jq -r '
+    (.items // [])
+    | map(select(.status == "completed" or .status == "clean"))
+    | group_by(.scan_type)
+    | map(select(length > 1) | .[0].scan_type)
+    | join(",")' 2>/dev/null || echo "")
+  if [ "$completed_count" = "0" ]; then
     fail "artifact B has no completed scan row (dedup link broken)"
+  elif [ "${max_per_type:-0}" -gt 1 ] 2>/dev/null; then
+    fail "artifact B has a duplicate completed row for scan_type(s) [${dup_types}]; expected at most 1 per scan_type (dedup wrote a duplicate)" \
+      "$(echo "$resp" | jq -c '(.items // []) | map({id,scan_type,status,is_reused,source_scan_id})')"
   else
-    fail "artifact B has ${completed_count} completed scan rows; expected 1 (dedup wrote a duplicate)"
+    pass
   fi
 fi
 

@@ -1,0 +1,34 @@
+[package]
+name = "dtf-saml-xsw-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# DTF brick 5 (sso) SAML XSW payload generator.
+#
+# This is a STATELESS payload generator: it mints an ephemeral RSA IdP keypair
+# (+ self-signed cert) and emits base64 `SAMLResponse` documents — the
+# legitimate signed positive controls AND every XML-Signature-Wrapping (XSW)
+# attack variant from #2449 / #2453. The bergshamra signing is the one piece
+# that MUST be Rust so the produced signature is byte-compatible with the
+# backend's own verifier (`SamlService::validate_response`, same crate). All
+# HTTP orchestration and DB assertions live in the bash oracle (oracle.sh),
+# exactly as the isolation tier's prove.sh does.
+#
+# Deps are pinned to the versions already in the backend's Cargo.lock so the
+# build resolves against the local crates.io cache (offline-friendly).
+
+[[bin]]
+name = "dtf-saml-xsw-probe"
+path = "src/main.rs"
+
+[dependencies]
+bergshamra = "=0.5.1"
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = 1

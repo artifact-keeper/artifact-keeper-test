@@ -28,7 +28,7 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "webhook-deadletter"
 
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-18766}"
-WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
+WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://${WEBHOOK_RECEIVER_HOST:-127.0.0.1}:${WEBHOOK_RECEIVER_PORT}/hook}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-dl-${RUN_ID}.log}"
 DEADLETTER_TIMEOUT="${DEADLETTER_TIMEOUT:-60}"
 RECEIVER_PID=""
@@ -133,7 +133,13 @@ if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
   if test_resp=$(api_post "/api/v1/webhooks/${WEBHOOK_ID}/test" "" 2>/dev/null); then
-    success_field=$(echo "$test_resp" | jq -r '.success // "missing"')
+    # NOTE: do not use `.success // "missing"`. jq's `//` operator treats a
+    # boolean `false` as an absent value, so `.success // "missing"` returns
+    # "missing" for a correct `{"success": false}` response. The backend
+    # returns the right payload (TestWebhookResponse { success: false,
+    # status_code: 500, ... }); the old jq path mis-extracted it. Branch on
+    # has("success") so a genuine false is read as "false".
+    success_field=$(echo "$test_resp" | jq -r 'if has("success") then (.success | tostring) else "missing" end')
     status_field=$(echo "$test_resp" | jq -r '.status_code // empty')
     if [ "$success_field" = "false" ] && [ "$status_field" = "500" ]; then
       pass

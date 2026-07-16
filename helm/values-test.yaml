@@ -18,13 +18,20 @@ backend:
   # the 4 CPU quota: 750m (backend) + 50m (web) + 50m (postgres) +
   # 100m (opensearch) = 950m requested, with limits totaling 4250m
   # (oversubscribed at the limit, fine for CI smoke).
+  # Memory raised 2Gi -> 6Gi (request 384Mi -> 1Gi) to match
+  # values-test-full.yaml: under the concurrent release-gate matrix the
+  # backend's peak RSS exceeded 2Gi and the pod was OOMKilled, which
+  # cascaded into the whole gate matrix failing "backend not ready after
+  # 30s". No ResourceQuota is applied to the test namespace (the
+  # TEST_NAMESPACE_*/TEST_MAX_* repo vars are not consumed anywhere), so
+  # the only memory ceiling is this pod limit; rocky has ample headroom.
   resources:
     requests:
       cpu: 750m
-      memory: 384Mi
+      memory: 1Gi
     limits:
       cpu: 2500m
-      memory: 2Gi
+      memory: 6Gi
   env:
     ENVIRONMENT: test
     RUST_LOG: info
@@ -37,6 +44,39 @@ backend:
     # bootstrap flow doesn't compete with itself across parallel pods. Per-test
     # users that the suites create are still rate-limited normally.
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+    # Release-gate runs 20+ suites against ONE shared backend; per-user/IP and
+    # global auth/API windows trip 429 across a full suite run (e.g. the totp
+    # backup-code single-use test gets 429 instead of 401/consume). The gate tests
+    # functional correctness, not rate-limiting (the rate-limit suite skips here),
+    # so disable the limiter for the test deploy.
+    RATE_LIMIT_ENABLED: "false"
+    # Allow private-IP webhook URLs. Webhook tests run a mock receiver on
+    # 127.0.0.1:18772 in the test pod and register webhooks pointing at
+    # that address. The backend's opt-in private-IP SSRF allowlist (from
+    # artifact-keeper#1201) rejects 127.0.0.1 by default, which fails
+    # tests/webhooks/test-webhook-* in release-gate. The relevant backend
+    # env var is `UPSTREAM_ALLOW_PRIVATE_IPS` (read by
+    # `validation::upstream_allow_private_ips_enabled`); the
+    # `validate_webhook_url` helper routes through the same
+    # `validate_outbound_url` gate. Enabling here scopes the relaxation
+    # to the test deploy only; production deploys keep the default
+    # deny-private behavior. (PR #187 originally used a placeholder
+    # `WEBHOOK_ALLOW_PRIVATE_IPS` env name that the backend does not
+    # read; rc.1 release-gate run 26116464151 confirmed the flag had no
+    # effect because of the rename.)
+    UPSTREAM_ALLOW_PRIVATE_IPS: "1"
+    # Enable the Webhooks v2 EventBus producer (OFF by default in the backend).
+    # Without it, no code path enqueues webhook_deliveries rows from a real
+    # domain event, so the delivery-producer suites fail with "no delivery row
+    # appeared; producer may not be running". The webhook suites' comments
+    # assume "the harness sets it to 1"; this is the harness doing so.
+    WEBHOOKS_V2_PRODUCER_ENABLED: "true"
+    # NOTE: this non-full-stack overlay sets WEBHOOK_ALLOW_PRIVATE_IPS too so
+    # webhook tests run here also allow the RFC1918 receiver. Backend #1435
+    # split UPSTREAM_ vs WEBHOOK_; the webhook validator reads the WEBHOOK_
+    # one. Without it, webhook create toward the runner pod's RFC1918 IP is
+    # rejected (default-deny) and the webhook suites fail at create time.
+    WEBHOOK_ALLOW_PRIVATE_IPS: "1"
   persistence:
     size: 2Gi
 
@@ -110,7 +150,7 @@ opensearch:
     size: 1Gi
 
 secrets:
-  jwtSecret: "test-jwt-secret-not-for-production"
+  jwtSecret: "ak-ci-nonprod-q7z6wharZXoYYW3BI1ZPSdbMDyXrXS6DiCajP8IPCHg4Bjgb"
 
 # Disabled services: not needed for basic test runs
 trivy:

@@ -1,0 +1,47 @@
+# =============================================================================
+# profiles/client.go.yml — client dimension = go (a real `go mod download` client)
+# =============================================================================
+# Adds a Go toolchain container that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The format-conformance tier's
+# go plugin `docker exec`s into it to run a REAL `GOPROXY=<url> go mod download`
+# that fetches `<module>/@v/<version>.info` -> `.mod` -> `.zip`, FOLLOWS the
+# advertised zip location, verifies + extracts the `<module>@<version>/`
+# layout, and then `go build`s a consumer that imports the module (the #2580
+# path — the client following the advertised location and enforcing the
+# protocol, not the native upload route that already works).
+#
+# WHY THIS MATTERS: the corpus test-go.sh SKIPS `go mod download` when the zip
+# layout is not exactly conformant. With a real `go` client and a correctly
+# prefixed zip (fixtures/go/build.sh), the consume is GATING — a bad zip prefix
+# or a wrong advertised path fails the suite instead of being silently skipped.
+#
+# arm64: the rig is aarch64. `golang:1.24` publishes an arm64/v8 manifest
+# (verified with `docker manifest inspect`), so it runs natively — no amd64-only
+# surprise (the brick-4 trap).
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats it
+# ready once running (same discipline as client.dnf.yml). It waits on backend
+# health via depends_on. `go` runs as root in this image, so no FC_EXEC_USER is
+# needed — GOPATH (/root/go) and /work are writable.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-go:
+    image: golang:1.24
+    container_name: ak-dtf${DTF_SLOT}-client-go
+    command: ["sleep", "infinity"]
+    # Keep the toolchain fully offline w.r.t. the public internet: the only
+    # module source is the AK GOPROXY the plugin sets per-invocation, and
+    # checksum-db verification is disabled (GOSUMDB=off) so the consume can
+    # succeed ONLY via the AK proxy (the discriminator).
+    environment:
+      GOTOOLCHAIN: "local"
+      GOFLAGS: "-mod=mod"
+      GOSUMDB: "off"
+      GONOSUMCHECK: "1"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

@@ -1,0 +1,43 @@
+# =============================================================================
+# profiles/client.cargo.yml — client dimension = cargo (a real cargo client)
+# =============================================================================
+# Adds a Rust toolchain container that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The format-conformance tier's
+# cargo plugin `docker exec`s into it to run a REAL `cargo publish` and then a
+# REAL `cargo fetch`/`cargo build` that reads the sparse registry `config.json`,
+# resolves the index file (`dt/f-/dtf-marker`), FOLLOWS the `dl` template to
+# download the `.crate`, and links it into a consumer crate (the #2580 path —
+# the client following the advertised `dl` location, not the native upload route
+# that already works).
+#
+# WHY THIS MATTERS: the corpus test-cargo.sh curl-checks `config.json` has a
+# `dl` field but never makes a real client FOLLOW it. This closes that consume
+# half — the exact #2580 analogue (advertised `dl` != servable download route).
+#
+# arm64: the rig is aarch64. `rust:1.85-slim` publishes an arm64/v8 manifest
+# (verified with `docker manifest inspect`), so it runs natively — no amd64-only
+# surprise (the brick-4 trap).
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats it
+# ready once running (same discipline as client.dnf.yml). It waits on backend
+# health via depends_on. `cargo` runs as root in this image, so no FC_EXEC_USER
+# is needed — CARGO_HOME (/root/.cargo) and /work are writable.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-cargo:
+    image: rust:1.85-slim
+    container_name: ak-dtf${DTF_SLOT}-client-cargo
+    command: ["sleep", "infinity"]
+    # Cargo talks only to the AK sparse index over the compose network; no
+    # crates.io access is configured or needed (the consumer's config.toml
+    # points ONLY at the AK registry — the discriminator).
+    environment:
+      CARGO_NET_RETRY: "2"
+      CARGO_HTTP_MULTIPLEXING: "false"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

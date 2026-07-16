@@ -219,7 +219,14 @@ else
     404) skip "no license policy configured for this scope (HTTP 404 documented)" ;;
     501) skip "check-compliance endpoint not available" ;;
     200)
-      compliant=$(jq -r '.compliant // empty' "$WORK_DIR/bad.json")
+      # Stale-assertion fix: the backend LicenseCheckResult.compliant is a
+      # bool, and a denied license correctly returns {"compliant": false}.
+      # The previous read `.compliant // empty` was wrong: jq's `//` operator
+      # treats `false` (not just null) as "empty", so a legitimate
+      # compliant=false was coalesced to an empty string, making the
+      # assertion fail ("returned compliant='' (expected false)"). Read the
+      # boolean directly so a real `false` is preserved.
+      compliant=$(jq -r 'if has("compliant") then (.compliant | tostring) else "" end' "$WORK_DIR/bad.json")
       viol_type=$(jq -r '.violations | type' "$WORK_DIR/bad.json")
       warn_type=$(jq -r '.warnings | type' "$WORK_DIR/bad.json")
       if [ "$compliant" != "false" ]; then
@@ -246,7 +253,10 @@ else
   case "$o_status" in
     404|501) skip "endpoint/policy not available (HTTP ${o_status})" ;;
     200)
-      compliant=$(jq -r '.compliant // empty' "$WORK_DIR/ok.json")
+      # Same jq `//`-on-false pitfall as the denied case above: read the
+      # boolean directly so the assertion stays correct if the backend ever
+      # returns compliant=false here too.
+      compliant=$(jq -r 'if has("compliant") then (.compliant | tostring) else "" end' "$WORK_DIR/ok.json")
       if [ "$compliant" != "true" ]; then
         fail "allowed license MIT returned compliant='${compliant}' (expected true). body: $(head -c 200 "$WORK_DIR/ok.json")"
       else

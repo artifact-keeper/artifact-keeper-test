@@ -20,6 +20,17 @@
 # database row; with the receiver wired we can also assert the wire
 # headers on the actual delivery.
 #
+# Also serves as the E2E reproducer for artifact-keeper#1367 ("Webhook
+# subsystem broken in release-gate deploy"). Closing PR
+# artifact-keeper-test#188 fixed the env-var rename
+# (WEBHOOK_ALLOW_PRIVATE_IPS -> UPSTREAM_ALLOW_PRIVATE_IPS) that this
+# test depends on; without that rename the mock receiver at 127.0.0.1
+# is rejected at create time and the steps below all fail at "Create
+# webhook subscribed to repository_created". With the rename in place,
+# the suite proves the producer task is alive, EventBus is wired, and
+# the delivery worker POSTs to a real receiver within 30s of the
+# triggering repo creation, which is the regression bar for #1367.
+#
 # Requires: curl, jq, python3
 
 source "$(dirname "$0")/../lib/common.sh"
@@ -29,7 +40,7 @@ auth_admin
 setup_workdir
 
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-18768}"
-WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
+WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://${WEBHOOK_RECEIVER_HOST:-127.0.0.1}:${WEBHOOK_RECEIVER_PORT}/hook}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-delivery-${RUN_ID}.log}"
 RECEIVER_PID=""
 

@@ -33,7 +33,7 @@ begin_suite "webhook-hmac-tamper"
 # on the same listen socket. Callers can still override with
 # WEBHOOK_RECEIVER_PORT.
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-$(( 18000 + $$ % 1000 ))}"
-WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/hook}"
+WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://${WEBHOOK_RECEIVER_HOST:-127.0.0.1}:${WEBHOOK_RECEIVER_PORT}/hook}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-tamper-${RUN_ID}.log}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-tamper-secret-${RUN_ID}}"
 WRONG_SECRET="not-the-real-secret-${RUN_ID}"

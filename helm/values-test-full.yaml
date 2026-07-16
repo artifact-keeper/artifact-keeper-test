@@ -16,13 +16,31 @@ backend:
     tag: dev
     pullPolicy: Always
   replicaCount: 1
+  # Release-gate runs the full gate matrix (20+ test pods: lifecycle,
+  # platform, format-containers, format-native, pinned-cve, security, ...)
+  # concurrently against this ONE shared backend. Under that fan-out the
+  # backend's peak RSS (Rust workers + upload buffers + OpenSearch/Meili
+  # index round-trips + Trivy scan orchestration in the same critical path)
+  # blew past the old 2Gi limit and the pod was OOMKilled. Because every
+  # gate's auth_admin() re-checks readiness with only a 30s budget
+  # (tests/lib/common.sh), a single OOM-restart window during the run
+  # cascades into the whole matrix failing "backend not ready after 30s"
+  # (release-gate run 28901902700 / 2026-07-07: all gates down; the runs
+  # where the pod happened to survive instead surfaced real per-test bugs).
+  #
+  # NOTE: the "namespace quota" the older comments blame is a red herring:
+  # create-test-namespace.sh never creates a ResourceQuota and the
+  # TEST_NAMESPACE_*/TEST_MAX_* repo vars are not consumed anywhere, so the
+  # only memory ceiling in effect is this pod limit. rocky (the ARC node)
+  # has ~157Gi and sits at ~15% used, so we can size the backend generously.
+  # Raised memory 2Gi -> 6Gi (request 256Mi -> 1Gi) and CPU limit 2 -> 3.
   resources:
     requests:
       cpu: 500m
-      memory: 256Mi
+      memory: 1Gi
     limits:
-      cpu: "2"
-      memory: 2Gi
+      cpu: "3"
+      memory: 6Gi
   env:
     ENVIRONMENT: test
     RUST_LOG: info
@@ -31,6 +49,71 @@ backend:
     # See values-test.yaml for rationale (iac#97). Parallel test pods exhaust
     # the default 120/min auth rate-limit on shared admin bootstrap.
     RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+    # Release-gate runs 20+ suites against ONE shared backend; per-user/IP and
+    # global auth/API windows trip 429 across a full suite run (e.g. the totp
+    # backup-code single-use test gets 429 instead of 401/consume). The gate tests
+    # functional correctness, not rate-limiting (the rate-limit suite skips here),
+    # so disable the limiter for the test deploy.
+    RATE_LIMIT_ENABLED: "false"
+    # SSRF private-IP allowlist for the test deploy.
+    #
+    # The gate runs INSIDE the cluster on ARC runner pods. Two suites need
+    # the backend to reach a private (RFC1918) target:
+    #   - webhook tests bind a mock receiver on the runner pod and POST the
+    #     runner pod's RFC1918 IP (10.244.x) as the webhook target
+    #     (artifact-keeper-test #199, PR #201);
+    #   - repo-proxy / pull-through tests create remote repos whose upstream
+    #     is the in-cluster backend Service DNS, which resolves to a ClusterIP
+    #     (10.96.x) (artifact-keeper-test #122, backend #1224).
+    #
+    # We DELIBERATELY use the narrow, CIDR-scoped allowlist
+    # (AK_SSRF_ALLOW_PRIVATE_CIDRS, backend #1224) rather than the blanket
+    # UPSTREAM_ALLOW_PRIVATE_IPS / WEBHOOK_ALLOW_PRIVATE_IPS toggles. The CIDR
+    # list applies to BOTH the upstream and webhook contexts and, when set,
+    # OVERRIDES the blanket toggles (backend validation.rs private_ip_allowed).
+    # It exempts ONLY this cluster's networks:
+    #   - 10.96.0.0/12  -> Service ClusterIP range (backend svc upstreams)
+    #   - 10.244.0.0/16 -> Pod CIDR (runner-pod webhook mock receiver)
+    #
+    # Security note (DO NOT widen): every IP the security SSRF suites probe
+    # stays BLOCKED because it is outside both CIDRs (and metadata/loopback
+    # are hard-blocked regardless of any allowlist):
+    #   - cloud metadata 169.254.169.254 / 192.0.0.192 / 100.100.100.200 -- hard-blocked
+    #   - loopback 127.0.0.1 / ::1 / link-local -- hard-blocked
+    #   - RFC1918 probes 10.0.0.1 (< 10.96), 172.16.0.1, 192.168.1.1 -- outside both CIDRs
+    # so tests/security/test-ssrf-prevention.sh (RFC1918 webhook cases, made
+    # allowlist-aware) and tests/pullthrough/test-oci-remote-upstream-ssrf.sh
+    # (RFC1918/metadata/loopback upstream rejection) still pass.
+    #
+    # Do NOT set UPSTREAM_ALLOW_PRIVATE_IPS=1 here: that blanket toggle would
+    # allow ALL RFC1918 upstreams (incl. the security suite's 10.0.0.1 /
+    # 192.168.1.1 probes), silently passing the upstream SSRF assertions.
+    AK_SSRF_ALLOW_PRIVATE_CIDRS: "10.96.0.0/12,10.244.0.0/16"
+    # Retained for documentation/back-compat. While AK_SSRF_ALLOW_PRIVATE_CIDRS
+    # is set it is IGNORED (the CIDR list governs the webhook context too), but
+    # the webhook mock's pod IP is inside 10.244.0.0/16 so webhook delivery
+    # still works.
+    WEBHOOK_ALLOW_PRIVATE_IPS: "1"
+    # Enable the Webhooks v2 EventBus producer. It is OFF by default in the
+    # backend (WEBHOOKS_V2_PRODUCER_ENABLED defaults to false) so a fresh
+    # cluster does not double-deliver while System B notifications are still
+    # in their deprecation window. Without it, no code path inserts into
+    # webhook_deliveries from a real domain event, so the delivery-producer
+    # suites (webhook-delivery, event-delivery-status-filter) hard-fail with
+    # "no delivery row appeared within 30s; producer may not be running" even
+    # though the webhook was created and the event fired. The suite comments
+    # already assume "the harness sets it to 1"; this is where the harness
+    # actually does so. (Release-gate run 26616763325: webhook-delivery 4
+    # failures, all rooted at the producer never starting.)
+    WEBHOOKS_V2_PRODUCER_ENABLED: "true"
+    # Blob GC is opt-in (BLOB_GC_ENABLED defaults false → the admin
+    # storage-gc endpoint dry-runs and never reclaims). Enable it so the
+    # v1.3.0 OCI GC reclaim gate (test-oci-gc-mark-sweep.sh, #1660) can prove
+    # an unreferenced blob is actually deleted. The admin-triggered orchestrator
+    # runs mark+sweep at grace 0 (immediate), so a short sweep grace only
+    # affects the scheduler path; keep it short for determinism.
+    BLOB_GC_ENABLED: "true"
+    BLOB_GC_SWEEP_GRACE_SECS: "5"
     # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys
@@ -121,7 +204,7 @@ trivy:
       memory: 2Gi
 
 secrets:
-  jwtSecret: "test-jwt-secret-not-for-production"
+  jwtSecret: "ak-ci-nonprod-q7z6wharZXoYYW3BI1ZPSdbMDyXrXS6DiCajP8IPCHg4Bjgb"
 
 # Disabled services: not needed for scanning test runs
 dependencyTrack:

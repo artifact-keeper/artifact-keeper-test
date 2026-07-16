@@ -9,12 +9,43 @@
 # data, scan internal services, or steal IAM credentials from the
 # instance metadata service.
 #
-# The load-bearing assertion of this suite is therefore:
+# The load-bearing assertions of this suite split into two groups:
 #
-#   POST /api/v1/webhooks with a private / loopback / metadata URL must
-#   be rejected with a 4xx response. Anything in 2xx is a critical
-#   security regression: the webhook is now stored and the backend will
-#   happily fan out events to internal targets at delivery time.
+#   1. HARD-BLOCKED classes -- cloud metadata (169.254.169.254 and the
+#      well-known metadata hostnames), loopback (127.0.0.0/8, ::1,
+#      localhost), link-local 169.254.0.0/16, the unspecified address
+#      0.0.0.0, and non-http(s) schemes (file://, gopher://). POST
+#      /api/v1/webhooks with any of these must be rejected with a 4xx.
+#      These are never unblocked by any toggle (backend
+#      validation::is_hard_blocked_ipv4 / BLOCKED_HOSTS / scheme check),
+#      so a 2xx here is a critical security regression: the webhook is
+#      stored and the backend will fan out events to an internal target
+#      at delivery time.
+#
+#   2. RFC1918 private space (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+#      Whether these are rejected is configuration-dependent. Backend
+#      issue #1435 split the single SSRF toggle into per-surface env
+#      vars: WEBHOOK_ALLOW_PRIVATE_IPS gates RFC1918 for the webhook
+#      delivery path, UPSTREAM_ALLOW_PRIVATE_IPS gates it for the
+#      remote-proxy path. The release-gate test cluster sets
+#      WEBHOOK_ALLOW_PRIVATE_IPS=1 (helm/values-test-full.yaml, renamed
+#      from the older single-var name in test-repo #204) BECAUSE the
+#      webhook mock receiver binds inside the runner pod and the webhook
+#      target is the pod's own RFC1918 IP. On the webhook surface in this
+#      cluster, RFC1918 is therefore INTENTIONALLY ALLOWED, so a correct
+#      create returns 2xx, not 4xx. We assert success for these three.
+#
+#      This is a test-side calibration only: it does NOT weaken SSRF
+#      protection. The remote-proxy SSRF suite still asserts RFC1918 is
+#      rejected (UPSTREAM_ALLOW_PRIVATE_IPS is deliberately NOT set), and
+#      metadata / loopback / link-local stay hard-blocked on the webhook
+#      surface regardless of WEBHOOK_ALLOW_PRIVATE_IPS.
+#
+#      Note (backend #1478, "B4"): before that fix, an RFC1918 webhook
+#      create returned an ambiguous 500 when AK_WEBHOOK_SECRET_KEY was
+#      unset. It now returns a clean 2xx (the URL passes SSRF validation
+#      and the secret-less create succeeds), so "expect 2xx" is the
+#      correct, unambiguous post-#1478 assertion.
 #
 # We test each address class separately so a regression on only one class
 # (say, cloud-metadata 169.254.x but not RFC1918) is visible in the
@@ -134,6 +165,82 @@ attempt_ssrf() {
 }
 
 # -------------------------------------------------------------------------
+# expect_webhook_allowed <label> <url>
+#
+# The inverse of attempt_ssrf for the RFC1918 private-space cases on the
+# webhook surface. In the release-gate test cluster the webhook target is
+# the runner pod's own RFC1918 IP and WEBHOOK_ALLOW_PRIVATE_IPS=1 is set
+# (helm/values-test-full.yaml), so an RFC1918 webhook URL is INTENTIONALLY
+# accepted. Behavior:
+#
+#   - 2xx with an .id field        -> PASS. RFC1918 allowed as configured;
+#                                     record the id for cleanup.
+#   - 2xx without an .id field     -> PASS, but no id to clean up.
+#   - 4xx (validation rejection)   -> FAIL. WEBHOOK_ALLOW_PRIVATE_IPS is
+#                                     expected to be set in this cluster;
+#                                     a reject means the toggle is not
+#                                     wired through to the webhook
+#                                     validator (regression of #1435), or
+#                                     the env var was not set on the
+#                                     deploy. Either way the suite's other
+#                                     webhook tests (mock receiver on the
+#                                     pod RFC1918 IP) would also be broken.
+#   - 501 / "not implemented"      -> SKIP. Endpoint absent in this build.
+#   - 5xx                          -> FAIL. After #1478 (B4) a secret-less
+#                                     create must not 500; a 500 here means
+#                                     that regression is back.
+#
+# This asserts a configuration outcome, NOT a relaxation of SSRF defense:
+# metadata / loopback / link-local stay hard-blocked (see attempt_ssrf
+# cases below) and the remote-proxy SSRF suite still rejects RFC1918.
+# -------------------------------------------------------------------------
+
+expect_webhook_allowed() {
+  local label="$1"
+  local url="$2"
+  local name="ssrf-allowed-${label}-${RUN_ID}"
+
+  local payload
+  payload=$(jq -n --arg name "$name" --arg url "$url" \
+    '{name: $name, url: $url, events: ["artifact_uploaded"]}')
+
+  local tmp status body
+  tmp=$(mktemp)
+  status=$(curl -s -o "$tmp" -w '%{http_code}' \
+    --max-time 10 \
+    -H "$(auth_header)" \
+    -H "Content-Type: application/json" \
+    -X POST \
+    -d "$payload" \
+    "${BASE_URL}/api/v1/webhooks" 2>/dev/null) || status="000"
+  body=$(cat "$tmp" 2>/dev/null || true)
+  rm -f "$tmp"
+
+  case "$status" in
+    2??)
+      local created_id
+      created_id=$(echo "$body" | jq -r '.id // empty' 2>/dev/null) || created_id=""
+      if [ -n "$created_id" ] && [ "$created_id" != "null" ]; then
+        CREATED_IDS+=("$created_id")
+      fi
+      pass
+      ;;
+    501)
+      skip "endpoint not implemented (HTTP 501)"
+      ;;
+    4??)
+      fail "RFC1918 webhook URL '${url}' (${label}) was rejected with HTTP ${status}, but WEBHOOK_ALLOW_PRIVATE_IPS is expected to be set on the test cluster so the webhook surface allows RFC1918 (backend #1435). Check helm/values-test-full.yaml and the backend webhook validator wiring." "${body:0:400}"
+      ;;
+    000)
+      fail "network failure contacting ${BASE_URL}/api/v1/webhooks (curl returned 000) for label='${label}'"
+      ;;
+    *)
+      fail "unexpected HTTP ${status} for url='${url}' (${label}); expected 2xx success (RFC1918 allowed on webhook surface). A 5xx here may be a regression of the #1478 secret-less-create fix." "${body:0:400}"
+      ;;
+  esac
+}
+
+# -------------------------------------------------------------------------
 # Cloud metadata services. 169.254.169.254 is the long-standing AWS /
 # GCP / Azure / DigitalOcean / Oracle Cloud metadata IP. A webhook
 # pointed at it can exfiltrate short-lived IAM credentials, instance
@@ -181,17 +288,30 @@ begin_test "Reject 'localhost' hostname"
 attempt_ssrf "localhost-name" "http://localhost:8080/"
 
 # -------------------------------------------------------------------------
-# RFC1918 private space. One representative per /8 so the JUnit row
-# tells the on-call which block leaked if any of them does.
+# RFC1918 private space. One representative per block. These arbitrary
+# RFC1918 IPs are SSRF targets and must be REJECTED.
+#
+# The release-gate deploy uses a CIDR-SCOPED allowlist
+# (AK_SSRF_ALLOW_PRIVATE_CIDRS=10.96.0.0/12,10.244.0.0/16 in
+# helm/values-test-full.yaml, backend #1224) instead of the blanket
+# WEBHOOK_ALLOW_PRIVATE_IPS toggle. The named-CIDR list, once set, governs
+# BOTH the upstream and webhook contexts and overrides the blanket toggles
+# (backend validation.rs). Only the cluster Service/Pod CIDR is permitted,
+# so legitimate in-cluster webhook delivery to the mock receiver (a pod IP
+# inside 10.244.0.0/16) still works -- covered by test-webhook-delivery.sh --
+# while these arbitrary RFC1918 addresses (10.0.0.1 / 172.16.0.1 /
+# 192.168.1.1, all OUTSIDE the allowed CIDRs) are correctly blocked. This is
+# a strictly stronger SSRF posture than the old all-RFC1918 allow. One
+# representative per block so a partial regression stays visible per-row.
 # -------------------------------------------------------------------------
 
-begin_test "Reject RFC1918 10.0.0.0/8 (10.0.0.1)"
+begin_test "Reject RFC1918 10.0.0.0/8 (10.0.0.1) outside cluster-CIDR allowlist"
 attempt_ssrf "rfc1918-10" "http://10.0.0.1/"
 
-begin_test "Reject RFC1918 172.16.0.0/12 (172.16.0.1)"
+begin_test "Reject RFC1918 172.16.0.0/12 (172.16.0.1) outside cluster-CIDR allowlist"
 attempt_ssrf "rfc1918-172" "http://172.16.0.1/"
 
-begin_test "Reject RFC1918 192.168.0.0/16 (192.168.1.1)"
+begin_test "Reject RFC1918 192.168.0.0/16 (192.168.1.1) outside cluster-CIDR allowlist"
 attempt_ssrf "rfc1918-192" "http://192.168.1.1/"
 
 # -------------------------------------------------------------------------

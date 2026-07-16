@@ -38,9 +38,9 @@ jobs:
           - name: system-packages
             scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-opkg.sh"
           - name: containers
-            scripts: "test-oci.sh test-docker-native-client.sh test-helm.sh test-incus.sh"
+            scripts: "test-oci.sh test-docker-native-client.sh test-helm.sh test-incus.sh test-streaming-blob-fallback.sh"
           - name: misc-native
-            scripts: "test-terraform.sh test-composer.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
+            scripts: "test-terraform.sh test-composer.sh test-composer-dist-cache.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
             scripts: "test-generic.sh test-generic-native-client.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
     env:
@@ -53,7 +53,7 @@ jobs:
       # Local-dev runs don't set this and keep graceful skip behavior.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Run ${{ matrix.batch.name }} tests
         if: inputs.batch == 'all' || inputs.batch == matrix.batch.name

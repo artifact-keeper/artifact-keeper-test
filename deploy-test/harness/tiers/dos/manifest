@@ -1,0 +1,18 @@
+# DTF tier manifest: dos
+# Profile-set: filesystem / single, with the login rate-limiter ENABLED.
+# This is the ONLY tier that flips the shipped control ON so it is actually
+# tested: today's k8s gate overlay runs with RATE_LIMIT_ENABLED=false, which is
+# why the rate-limit / worker-starvation DoS classes (matrix row 9) go untested.
+# DTF's base already defaults RATE_LIMIT_ENABLED=true; this manifest sets it
+# EXPLICITLY so the intent is unmistakable and a future base change cannot
+# silently disable the control this tier exists to gate.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (A) login-limiter HOLDS — repeated failed logins get 429 after the threshold
+#       (with the control OFF, no 429 ever appears -> the assertion FAILS).
+#   (B) worker-starvation is BOUNDED — a capped burst on the bcrypt/auth CPU path
+#       does not wedge availability (/health stays live, backend recovers, no
+#       genuine 5xx fault). The load is deliberately capped: a test, not a DoS.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="true"

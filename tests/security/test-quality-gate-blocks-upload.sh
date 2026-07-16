@@ -192,7 +192,7 @@ else
     fail "evaluate returned HTTP ${eval_status}" "body: $(head -c 400 "${WORK_DIR}/eval.json")"
   else
     body=$(cat "${WORK_DIR}/eval.json")
-    is_passed=$(echo "$body" | jq -r '.passed // empty')
+    is_passed=$(echo "$body" | jq -r 'if .passed == null then "" else (.passed|tostring) end')
     # Load-bearing: at least one violation row must be present. A body-wide
     # grep for "critical|high" would also match echoed policy-threshold field
     # names (e.g. "max_critical_issues":0) and pass on a backend that
@@ -302,7 +302,7 @@ else
     fail "re-evaluate returned HTTP ${eval2_status}"
   else
     body2=$(cat "${WORK_DIR}/eval2.json")
-    is_passed=$(echo "$body2" | jq -r '.passed // empty')
+    is_passed=$(echo "$body2" | jq -r 'if .passed == null then "" else (.passed|tostring) end')
     if [ "$is_passed" != "true" ]; then
       fail "loosened gate reported passed='${is_passed}', expected true" "body: $(echo "$body2" | head -c 400)"
     else

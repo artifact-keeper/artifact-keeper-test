@@ -1,0 +1,31 @@
+# DTF tier manifest: native-client
+# Profile-set: filesystem / single + the three real client containers
+# (client.dnf = Fedora, client.apt = Debian, client.docker = dind + a local
+# upstream OCI registry). The tier drives the REAL advertised client route:
+#   * RPM (#2580): publish an RPM, then a real `dnf install` in the Fedora
+#     client that RESOLVES AND FOLLOWS the repodata `<location href>` and
+#     asserts the package actually installs (not just that repodata lists it).
+#   * deb   (#2580 analogue): the apt equivalent — real `apt-get install`
+#     following the Packages `Filename:` field.
+#   * docker (#2477): a real `docker pull` through an AK Docker REMOTE (proxy)
+#     repo that forces >=2 OCI token exchanges re-presenting the same offline
+#     token; the pull must SUCCEED (no family revocation).
+#
+# NOTE (deviation from design brick-3 note "ALSO pull in proxy=squid"): the
+# squid overlay is purpose-built for #2570 (a mock nginx origin on a 172.16/12
+# net + an SSRF CIDR allowlist + HTTP_PROXY forcing all backend egress through
+# squid). It is NOT a Docker registry and its HTTP_PROXY/CIDR wiring would stop
+# the backend reaching an OCI upstream, breaking the pull. #2477's discriminator
+# is the >=2 token-exchange offline-token REUSE on the client<->AK path, which
+# is independent of egress-proxy topology. This tier therefore stands up a
+# self-contained local `upstream-registry` (registry:2) as the proxy source
+# instead, keeping the leg deterministic and offline. See oracle.sh header.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo create + an
+# RPM/deb publish + repeated OCI token exchanges back-to-back through a single
+# admin user; the base default (ON) would throttle them. The base default stays
+# ON; a tier that must disable a shipped control does so explicitly (design 2.2,
+# same as the migration and proxy-egress tiers).
+PROFILES="storage.filesystem client.dnf client.apt client.docker"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

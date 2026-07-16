@@ -1,0 +1,67 @@
+{
+  "realm": "dtf",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "users": [
+    {
+      "username": "dtf-user",
+      "enabled": true,
+      "email": "dtf-user@saml-e2e.test",
+      "emailVerified": true,
+      "firstName": "DTF",
+      "lastName": "User",
+      "credentials": [
+        { "type": "password", "value": "dtf-user-pw", "temporary": false }
+      ],
+      "attributes": { "groups": ["Developers"] }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "artifact-keeper",
+      "name": "Artifact Keeper (DTF SP)",
+      "enabled": true,
+      "protocol": "saml",
+      "publicClient": false,
+      "frontchannelLogout": true,
+      "redirectUris": ["*"],
+      "attributes": {
+        "saml.assertion.signature": "true",
+        "saml.server.signature": "false",
+        "saml.client.signature": "false",
+        "saml.signature.algorithm": "RSA_SHA256",
+        "saml_name_id_format": "email",
+        "saml.authnstatement": "true",
+        "saml_assertion_consumer_url_post": "http://localhost:8080/api/v1/auth/sso/saml/PLACEHOLDER/acs",
+        "saml_single_logout_service_url_post": "http://localhost:8080/api/v1/auth/sso/saml/PLACEHOLDER/slo"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "saml",
+          "protocolMapper": "saml-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "attribute.name": "groups",
+            "attribute.nameformat": "Basic",
+            "single": "false",
+            "full.path": "false"
+          }
+        },
+        {
+          "name": "email",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "email",
+            "attribute.name": "email",
+            "attribute.nameformat": "Basic"
+          }
+        }
+      ]
+    }
+  ]
+}

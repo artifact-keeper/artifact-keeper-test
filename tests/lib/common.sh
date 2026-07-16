@@ -198,8 +198,40 @@ get_backend_version() {
 # Add entries here in the same PR that ships the feature.
 _feature_min_version() {
   case "$1" in
+    # quality_checks_admin_list: the admin quality-checks list-all endpoint
+    # GET /api/v1/admin/quality-checks (#2419) — a repository-scoped (or
+    # unscoped) paginated `{items,total,page,per_page}` view that backs the web
+    # admin quality-checks page. The artifact-scoped GET /api/v1/quality/checks
+    # keeps its #2334 contract (400 without artifact_id). Pre-1.6.0 backends
+    # have no list-all endpoint (the page 400s), so the gate skips there.
+    "quality_checks_admin_list")      echo "1.6.0" ;;
     "conan_remote_search_forward")    echo "1.3.0" ;;
     "conan_virtual_search_aggregate") echo "1.3.0" ;;
+    # v1.3.0 release-gate additions (see rig FixSpec v130-test-gates-plan.md).
+    # metrics_unmatched_path: the metrics middleware collapses requests that
+    # match no route to a single path="unmatched" series instead of echoing
+    # the raw request path, closing the per-path label-cardinality DoS
+    # (artifact-keeper#2217). Pre-1.3.0 backends emit one series per junk path.
+    "metrics_unmatched_path")         echo "1.3.0" ;;
+    # streaming_large_artifact: artifacts larger than the 16 MiB in-memory
+    # buffer cap are streamed to/from storage rather than buffered, so a
+    # >16 MiB upload/download returns 2xx instead of 502/OOM (the #1608
+    # streaming-invariant trilogy). Pre-1.3.0 backends buffer and 502/OOM.
+    "streaming_large_artifact")       echo "1.3.0" ;;
+    # composer_dist_cache: a warm composer dist fetch is served from the
+    # pull-through cache without re-dialing upstream (artifact-keeper#2204).
+    # Pre-1.3.0 backends re-fetch upstream on every dist request.
+    "composer_dist_cache")            echo "1.3.0" ;;
+    # npm_packument_swr: npm packument responses are served stale-while-
+    # revalidate from cache within the TTL window (no upstream re-hit) and
+    # refreshed after a new version lands (artifact-keeper#2166).
+    "npm_packument_swr")              echo "1.3.0" ;;
+    # oci_gc_two_phase: the OCI/storage GC sweep reclaims a genuinely
+    # unreferenced blob (manifest deleted, grace elapsed) and leaves no
+    # dangling manifest reference behind (artifact-keeper#1660). Pre-1.3.0
+    # backends do not maintain the manifest->blob reference table the sweep
+    # needs, so the reclaim assertion cannot be driven there.
+    "oci_gc_two_phase")               echo "1.3.0" ;;
     # recipe_latest / recipe_revisions filter by user/channel rather than
     # collapsing variants to _/_/latest. Backported via artifact-keeper#869.
     # v1.1.x backend lacks this scoping; tracked for v1.1.10 backport in #986.
@@ -210,6 +242,14 @@ _feature_min_version() {
     "maven_virtual_snapshot")         echo "1.2.0" ;;
     "guest_access_toggle")            echo "1.2.0" ;;
     "opensearch_indexing")            echo "1.2.0" ;;
+    # sbom_declared_dependencies: SBOM generation merges the artifact's own
+    # declared dependencies (Maven POM, npm package.json, Helm Chart.yaml) with
+    # scanner output, so an artifact a scanner cannot enumerate (a bare Maven
+    # jar with no lockfile) no longer produces an authoritative empty SBOM, and
+    # the document carries a completeness signal (complete/declared/partial/
+    # none). artifact-keeper#870, lands in v1.2.0. Pre-1.2.0 backends return an
+    # empty SBOM for the declared-only case, so the gate skips there.
+    "sbom_declared_dependencies")     echo "1.2.0" ;;
     # proxy_stampede_protection: ProxyService gains a per-(repo,path) semaphore
     # capping concurrent upstream fetches at proxy_max_concurrent_fetches and
     # emitting 503 when proxy_queue_timeout_secs fires. Tracked by backend
@@ -495,6 +535,86 @@ api_get() {
   curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"
 }
 
+# api_get_with_retry - GET an idempotent management-API endpoint with a bounded
+# retry-with-backoff on TRANSIENT failures only. On success it echoes the
+# response body on stdout and returns 0, so it is a drop-in replacement for
+# `api_get` in `if resp=$(...); then`-style call sites.
+#
+# Why this exists (the test-sbt.sh "List artifacts" flake, ak-test):
+#   The plain `api_get` uses `curl -sf`, which exits non-zero on ANY >=400 and
+#   discards the response body. When ~25 format suites run in parallel in the
+#   `format-tests (jvm)` gate job they saturate the backend's tokio runtime
+#   (the known worker-starvation / availability issue: uncapped CPU work such
+#   as bcrypt(cost=12) on basic-auth format calls bypasses the auth semaphore).
+#   A GET that races peak saturation can transiently come back 503/502 (pool
+#   exhausted / shed) or 000 (request exceeded its time budget) even though the
+#   data is fine -- the very next attempt succeeds. With bare `api_get` that one
+#   transient blip hard-fails the suite ("GET .../artifacts returned error"),
+#   which is a retry-hope flake, not a real defect: the GET is idempotent and
+#   SHOULD be retried, exactly as format_get_with_retry / create_repo / login_as
+#   already do for their transient classes.
+#
+# Retry policy (deliberately narrow so we never mask a real bug):
+#   - Retry ONLY on transient-class statuses: 000 (network/timeout) and the 5xx
+#     range (500-599: 502/503/504 plus any residual 5xx).
+#   - DO NOT retry on 2xx (success) or 4xx (real client/auth/not-found errors):
+#     those are deterministic and a retry would just hide a genuine failure. A
+#     404/403/wrong-content surfaces immediately.
+#   - On a non-2xx final outcome, return 1 AND emit a precise diagnostic to
+#     stderr (final HTTP status + body snippet) so the failure is never opaque
+#     the way bare `curl -sf` made it.
+#
+# Knobs: API_GET_MAX_ATTEMPTS (default 4), API_GET_RETRY_DELAY (default 2s,
+# applied with linear backoff: delay * attempt).
+#
+# Usage:
+#   if resp=$(api_get_with_retry "/api/v1/repositories/${KEY}/artifacts"); then
+#     assert_contains "$resp" "$MODULE_NAME" "..."
+#   else
+#     fail "GET .../artifacts returned error"
+#   fi
+api_get_with_retry() {
+  local path="$1"; shift
+  local _max="${API_GET_MAX_ATTEMPTS:-4}"
+  local _delay="${API_GET_RETRY_DELAY:-2}"
+  local _attempt _status="000" _body_file _body=""
+  _body_file=$(mktemp)
+  for _attempt in $(seq 1 "$_max"); do
+    _status=$(curl -s $CURL_TIMEOUT -o "$_body_file" -w '%{http_code}' \
+      -H "$(auth_header)" "$@" "${BASE_URL}${path}" 2>/dev/null) || _status="000"
+
+    # Success: 2xx -> emit body, return 0.
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      cat "$_body_file"
+      rm -f "$_body_file"
+      return 0
+    fi
+
+    # Transient class -> retry. Everything else (4xx, other non-5xx) is a real,
+    # deterministic failure: stop immediately so we don't mask a bug.
+    local _transient=false
+    if [ "$_status" = "000" ] || \
+       { [ "$_status" -ge 500 ] 2>/dev/null && [ "$_status" -le 599 ] 2>/dev/null; }; then
+      _transient=true
+    fi
+    if [ "$_transient" != true ]; then
+      break
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      sleep "$(( _delay * _attempt ))"
+    fi
+  done
+
+  _body=$(head -c 400 "$_body_file" 2>/dev/null || true)
+  rm -f "$_body_file"
+  # _attempt holds the loop index of the last attempt made. A deterministic
+  # (non-transient) status breaks the loop early, so this reports the real
+  # number of requests issued rather than the configured ceiling.
+  echo "api_get_with_retry ${path} failed after ${_attempt} attempt(s) (max ${_max}): HTTP ${_status} body=${_body}" >&2
+  return 1
+}
+
 # Create a test user (admin auth) and echo the new user's UUID on stdout.
 # On failure, echoes empty string and the response body to stderr.
 #
@@ -515,6 +635,211 @@ create_test_user() {
     return 1
   fi
   echo "$uid"
+}
+
+# Create a test user (admin auth) with bounded retry-on-transient, echoing
+# the new user's UUID on stdout. Returns 0 on success, 1 after retries.
+#
+# Why this exists (release-gate flake #1):
+#   Several security suites create a throwaway user as a SETUP step
+#   (token-revocation, lockout, force-password-change). User creation hashes
+#   the password with bcrypt in spawn_blocking. Under fleet-concurrent load
+#   the backend's blocking pool / worker runtime can be momentarily starved
+#   (the known availability worker-starvation issue: uncapped CPU-bound auth
+#   work on the tokio runtime), so an otherwise-valid admin POST
+#   /api/v1/users can transiently return 5xx or drop the connection
+#   (curl exit -> 000). The plain api_post helper uses `curl -sf`, which
+#   collapses any non-2xx into a bare non-zero exit with no body and NO
+#   retry, so a single transient blip fails the whole suite at setup time
+#   ("could not create force-password-change test user").
+#
+#   This helper retries ONLY the transient class (HTTP 5xx and network 000).
+#   Real client errors (400 invalid payload, 409 username taken, 401/403
+#   auth) are returned immediately and NOT masked -- a duplicate-username or
+#   a malformed request is a genuine test bug, not a flake.
+#
+# Accepts EITHER the 3-arg short form (username password email) or a 4th arg
+# giving a full JSON body (so callers that also set display_name reuse the
+# same retry logic). The body, if given, must be a complete JSON object.
+#
+# Tunables (shared budget feel with create_repo / login_as):
+#   CREATE_USER_MAX_ATTEMPTS  default 4
+#   CREATE_USER_RETRY_DELAY   default 1 (seconds; doubled each attempt)
+#
+# Usage:
+#   USER_ID=$(create_test_user_with_retry "$USER" "$PASS" "$EMAIL") || fail ...
+#   USER_ID=$(create_test_user_with_retry "$USER" "$PASS" "$EMAIL" "$JSON") || fail ...
+create_test_user_with_retry() {
+  local username="$1"
+  local password="$2"
+  local email="$3"
+  local body="${4:-}"
+  if [ -z "$body" ]; then
+    body="{\"username\":\"${username}\",\"password\":\"${password}\",\"email\":\"${email}\"}"
+  fi
+  local _max="${CREATE_USER_MAX_ATTEMPTS:-4}"
+  local _delay="${CREATE_USER_RETRY_DELAY:-1}"
+  local _attempt _status _tmp _resp uid=""
+  for _attempt in $(seq 1 "$_max"); do
+    _tmp=$(mktemp)
+    _status=$(curl -s $CURL_TIMEOUT -o "$_tmp" -w '%{http_code}' \
+      -X POST -H "$(auth_header)" -H 'Content-Type: application/json' \
+      -d "$body" "${BASE_URL}/api/v1/users" 2>/dev/null) || _status="000"
+    _resp=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      uid=$(echo "$_resp" | jq -r '.user.id // .id // .user_id // empty' 2>/dev/null) || uid=""
+      if [ -n "$uid" ] && [ "$uid" != "null" ]; then
+        echo "$uid"
+        return 0
+      fi
+      # 2xx but no id: a contract break, not a transient blip. Don't retry.
+      echo "create_test_user_with_retry: ${username} got HTTP ${_status} but no id: ${_resp:0:200}" >&2
+      echo ""
+      return 1
+    fi
+
+    # Retry ONLY transient class: network 000 or any 5xx. Everything else
+    # (4xx) is a real failure surfaced immediately.
+    if [ "$_status" != "000" ] && { [ "$_status" -lt 500 ] 2>/dev/null || [ "$_status" -ge 600 ] 2>/dev/null; }; then
+      echo "create_test_user_with_retry: ${username} non-transient HTTP ${_status}: ${_resp:0:200}" >&2
+      echo ""
+      return 1
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      echo "  create-user ${username} attempt ${_attempt}/${_max} transient HTTP ${_status}, retrying in ${_delay}s..." >&2
+      sleep "$_delay"
+      _delay=$(( _delay * 2 ))
+    fi
+  done
+  echo "create_test_user_with_retry: ${username} failed after ${_max} attempts (last HTTP ${_status})" >&2
+  echo ""
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# create_dedicated_admin / cleanup_dedicated_admin
+#
+# Release-gate flake fix (shared-admin credential poisoning):
+#   The gate runs ~25 suites in parallel, ALL authenticating as the same
+#   global admin (ADMIN_USER/ADMIN_PASS). Any suite that mutates the shared
+#   admin's own auth state -- changes its password, flips its roles,
+#   deactivates it, or revokes its tokens -- trips the backend's credential
+#   invalidation (services/auth/credential_invalidations.rs). That
+#   invalidates the admin's JWT process-wide, so EVERY other concurrently
+#   running suite's ADMIN_TOKEN starts returning "401 Invalid or expired
+#   token" -> non-deterministic 401 cascades across the whole gate.
+#
+#   A suite that needs to exercise admin-self mutations (password recovery,
+#   role flip, self-deactivation) must do so on a THROWAWAY admin identity,
+#   never on the shared one. create_dedicated_admin mints such a user using
+#   the global admin token (which it does NOT mutate), and echoes the new
+#   admin's UUID on stdout. The throwaway admin is created with
+#   is_admin:true so it has the same admin authority as the shared admin and
+#   can hit admin-only routes / be used wherever the shared admin was.
+#
+#   The caller's global ADMIN_TOKEN is unaffected throughout: we only POST
+#   /users (create) and never touch /users/{global_admin_id}.
+#
+# Output / contract (mirrors create_test_user_with_retry):
+#   - echoes the new admin's UUID on stdout, returns 0 on success
+#   - echoes "" and a diagnostic to stderr, returns 1 on failure
+#   - retries ONLY the transient class (network 000 / HTTP 5xx); real 4xx
+#     (e.g. 409 duplicate, 403 authz) are surfaced immediately
+#
+# The username/password/email are derived from RUN_ID + $$ so they are
+# unique per suite invocation and cannot collide across parallel suites.
+#
+# Usage:
+#   ADMIN2_USER="e2e-dedadmin-${RUN_ID}-$$"
+#   ADMIN2_PASS="DedAdmin_${RUN_ID:0:8}_Aa1!"
+#   ADMIN2_ID=$(create_dedicated_admin "$ADMIN2_USER" "$ADMIN2_PASS") || fail ...
+#   add_exit_handler "cleanup_dedicated_admin $ADMIN2_ID"
+#
+# Or let it generate the credentials for you and read them back via the
+# convenience globals it exports (DEDICATED_ADMIN_USER / _PASS / _ID):
+#   create_dedicated_admin >/dev/null || fail "could not create dedicated admin"
+#   add_exit_handler "cleanup_dedicated_admin ${DEDICATED_ADMIN_ID}"
+create_dedicated_admin() {
+  # Generate unique, policy-compliant credentials when not supplied. The
+  # backend password policy wants >=12 chars + mixed case + digit + symbol;
+  # the suffix guarantees all four classes regardless of RUN_ID contents.
+  local label="${3:-dedadmin}"
+  local username="${1:-e2e-${label}-${RUN_ID}-$$}"
+  local password="${2:-Ded_${RUN_ID:0:8}_$$_Aa1!}"
+  local email="${username}@e2e.local"
+
+  # Export the resolved identity so callers that did not pass explicit args
+  # can still recover the credentials (and so the cleanup handler can be
+  # registered without recomputing them).
+  DEDICATED_ADMIN_USER="$username"
+  DEDICATED_ADMIN_PASS="$password"
+  export DEDICATED_ADMIN_USER DEDICATED_ADMIN_PASS
+
+  local body
+  body="{\"username\":\"${username}\",\"password\":\"${password}\",\"email\":\"${email}\",\"display_name\":\"E2E Dedicated Admin\",\"is_admin\":true}"
+
+  local _max="${CREATE_USER_MAX_ATTEMPTS:-4}"
+  local _delay="${CREATE_USER_RETRY_DELAY:-1}"
+  local _attempt _status _tmp _resp uid=""
+  for _attempt in $(seq 1 "$_max"); do
+    _tmp=$(mktemp)
+    # Uses the GLOBAL admin token via auth_header(); creating a user does not
+    # mutate the global admin, so its JWT stays valid for concurrent suites.
+    _status=$(curl -s $CURL_TIMEOUT -o "$_tmp" -w '%{http_code}' \
+      -X POST -H "$(auth_header)" -H 'Content-Type: application/json' \
+      -d "$body" "${BASE_URL}/api/v1/users" 2>/dev/null) || _status="000"
+    _resp=$(cat "$_tmp" 2>/dev/null || true)
+    rm -f "$_tmp"
+
+    if [ "$_status" -ge 200 ] 2>/dev/null && [ "$_status" -lt 300 ] 2>/dev/null; then
+      uid=$(echo "$_resp" | jq -r '.user.id // .id // .user_id // empty' 2>/dev/null) || uid=""
+      if [ -n "$uid" ] && [ "$uid" != "null" ]; then
+        DEDICATED_ADMIN_ID="$uid"
+        export DEDICATED_ADMIN_ID
+        echo "$uid"
+        return 0
+      fi
+      echo "create_dedicated_admin: ${username} got HTTP ${_status} but no id: ${_resp:0:200}" >&2
+      echo ""
+      return 1
+    fi
+
+    # Retry ONLY transient class: network 000 or any 5xx.
+    if [ "$_status" != "000" ] && { [ "$_status" -lt 500 ] 2>/dev/null || [ "$_status" -ge 600 ] 2>/dev/null; }; then
+      echo "create_dedicated_admin: ${username} non-transient HTTP ${_status}: ${_resp:0:200}" >&2
+      echo ""
+      return 1
+    fi
+
+    if [ "$_attempt" -lt "$_max" ]; then
+      echo "  create-dedicated-admin ${username} attempt ${_attempt}/${_max} transient HTTP ${_status}, retrying in ${_delay}s..." >&2
+      sleep "$_delay"
+      _delay=$(( _delay * 2 ))
+    fi
+  done
+  echo "create_dedicated_admin: ${username} failed after ${_max} attempts (last HTTP ${_status})" >&2
+  echo ""
+  return 1
+}
+
+# Delete a throwaway admin created by create_dedicated_admin. Best-effort:
+# re-authenticates as the global admin first (in case the suite rotated its
+# own ADMIN_TOKEN while testing), then DELETEs the user. Safe to call with an
+# empty/invalid id (no-op). Intended for use with add_exit_handler so an
+# interrupted run leaves no dangling admin users.
+#
+# Usage:
+#   add_exit_handler "cleanup_dedicated_admin $ADMIN2_ID"
+cleanup_dedicated_admin() {
+  local uid="${1:-${DEDICATED_ADMIN_ID:-}}"
+  if [ -z "$uid" ] || [ "$uid" = "null" ]; then
+    return 0
+  fi
+  auth_admin > /dev/null 2>&1 || true
+  api_delete "/api/v1/users/${uid}" > /dev/null 2>&1 || true
 }
 
 # Log in as the named user and echo the access_token on stdout.
@@ -876,6 +1201,78 @@ skip() {
   echo "  SKIP: ${reason} (${duration}s)"
 }
 
+## ---------------------------------------------------------------------------
+## Capability-exemption allowlist (RELEASE_GATE only)
+## ---------------------------------------------------------------------------
+##
+## `skip_suite` under RELEASE_GATE=1 is a HARD FAIL by design: a silently
+## skipped suite is the silent-success class (#870/#871/#888) we want to
+## catch loudly. That default stays in force for everything NOT listed here.
+##
+## A handful of suites, however, skip because a capability is genuinely NOT
+## provisioned / NOT shipped in the gate deploy. That is an environment fact,
+## not a backend defect, so hard-failing the gate on it is wrong. Each entry
+## below is a capability that has been verified to be a not-provisioned /
+## not-shipped condition (NOT a real bug), with the tracking issue that owns
+## the provisioning (or shipping) work.
+##
+## Format of each row: "<capability_key>|<match_substring>|<tracking_issue>"
+##   - capability_key:  stable identifier emitted in the EXEMPT line and logs
+##   - match_substring: matched (substring, case-sensitive) against the exact
+##                      skip_suite REASON the suite passes. Keep it distinctive
+##                      enough that it cannot accidentally match an unrelated
+##                      skip that might hide a real bug.
+##   - tracking_issue:  the GitHub issue (this repo) tracking the exemption /
+##                      provisioning. #211 owns the allowlist itself.
+##
+## CRITICAL: only add a row here for a capability that is genuinely
+## not-provisioned or not-shipped. Never add a row to silence a skip that
+## could mask a real backend bug. When in doubt, leave it hard-failing.
+##
+## Deliberately NOT exempted:
+##   - formats/test-pypi-native-client.sh twine 401: the test already sends
+##     valid Basic credentials (byte-identical to the curl -u upload that
+##     PASSES in the same gate run). A 401 there is not a not-provisioned
+##     capability, so it stays a hard failure pending backend triage.
+_CAPABILITY_EXEMPTIONS=(
+  # security: per-repo scan-config (auto-scan-on-upload) endpoint not shipped
+  "scan_config_autoscan|scan-config endpoint not mounted (HTTP 404); auto-scan-on-upload feature not shipped|211"
+  # security: scan-schedules (scheduled-scan) endpoint not shipped
+  "scan_schedules|scan-schedules endpoint not mounted (HTTP 404); scheduled-scan feature not shipped|211"
+  # security: Dependency-Track not deployed in gate namespace (see #200)
+  "dependency_track|DEPENDENCY_TRACK_API_KEY and/or DEPENDENCY_TRACK_URL not set|200"
+  "dependency_track|/api/v1/integrations/dependency-track not mounted (HTTP 404); backend pre-dates DTrack wiring|200"
+  # security: OpenSCAP sidecar not provisioned in gate deploy
+  "openscap|openscap service not configured|211"
+  # platform: no WASM plugin fixture loaded against the gate backend
+  "wasm_plugin_fixture|plugin list is empty; no plugin loaded against this backend deploy|211"
+  "wasm_plugin_fixture|no plugin list endpoint responded; backend deploy may not include the plugin overlay|211"
+  # mesh: run-now sync trigger endpoint not shipped (sync worker, TODO #78.4)
+  "mesh_run_now|sync run-now endpoint not shipped (HTTP 404)|211"
+)
+
+## _match_capability_exemption REASON
+##
+## If REASON matches an allowlisted capability, echo "<key> <issue>" and
+## return 0. Otherwise return 1. Matching is a plain substring test against
+## the exact reason string, so the match_substring must appear verbatim.
+_match_capability_exemption() {
+  local reason="$1"
+  local row key sub issue
+  for row in "${_CAPABILITY_EXEMPTIONS[@]}"; do
+    key="${row%%|*}"
+    sub="${row#*|}"; sub="${sub%|*}"
+    issue="${row##*|}"
+    case "$reason" in
+      *"$sub"*)
+        echo "${key} ${issue}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 ## skip_suite REASON
 ##
 ## Emit a JUnit testcase with <skipped/> for the SUITE itself, then exit
@@ -888,6 +1285,13 @@ skip() {
 ## into a hard FAIL: a skipped gate is a silent-success class
 ## (#870/#871/#888) we want to catch loudly. Local-dev runs that don't
 ## set RELEASE_GATE keep the graceful skip.
+##
+## Exception: if the reason matches the documented capability-exemption
+## allowlist (_CAPABILITY_EXEMPTIONS above), the suite is a known
+## not-provisioned/not-shipped capability rather than a code defect. It is
+## reported as EXEMPT (a JUnit <skipped/>, exit 0) instead of hard-failing.
+## Any reason that does NOT match the allowlist still hard-fails, preserving
+## the silent-success protection.
 skip_suite() {
   local reason="${1:-suite skipped}"
   local duration=0
@@ -896,6 +1300,29 @@ skip_suite() {
   fi
 
   if [ "${RELEASE_GATE:-0}" = "1" ]; then
+    local _exempt_match
+    if _exempt_match=$(_match_capability_exemption "$reason"); then
+      local cap="${_exempt_match%% *}"
+      local issue="${_exempt_match##* }"
+      echo "  EXEMPT: ${cap} (tracked by #${issue})"
+      echo "          capability not provisioned/shipped in gate deploy; not a backend defect (reason: ${reason})"
+      local xml_name
+      xml_name=$(_xml_escape "preflight")
+      local xml_suite
+      xml_suite=$(_xml_escape "$_SUITE_NAME")
+      local xml_reason
+      xml_reason=$(_xml_escape "EXEMPT ${cap} (tracked by #${issue}): ${reason}")
+      cat > "${JUNIT_OUTPUT_DIR}/${_SUITE_NAME}.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="${xml_suite}" tests="1" failures="0" skipped="1" time="${duration}">
+  <testcase name="${xml_name}" classname="${xml_suite}" time="${duration}">
+    <skipped message="${xml_reason}"/>
+  </testcase>
+</testsuite>
+EOF
+      exit 0
+    fi
+
     echo "  FAIL: skip_suite called with RELEASE_GATE=1 (reason: ${reason})"
     echo "        a skipped suite in release-gate is silent-success; failing the gate"
     local xml_name
@@ -1087,12 +1514,18 @@ assert_count() {
 # ---------------------------------------------------------------------------
 
 # require_cmd CMD
-# Skips the entire suite (exit 0) if CMD is not on PATH.
+# Verifies CMD is on PATH. If it is missing this routes through skip_suite so
+# it obeys the same RELEASE_GATE contract as every other pre-flight skip:
+#   - RELEASE_GATE unset (local dev): graceful skip (JUnit <skipped/>, exit 0).
+#   - RELEASE_GATE=1 (release gate): HARD FAIL (exit 1) unless the reason is on
+#     the documented capability-exemption allowlist.
+# A bare `exit 0` here was a silent-success hole (sibling of the skip() hole):
+# a gate runner missing a required tool (e.g. npm) would go green without ever
+# exercising the flow.
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" &>/dev/null; then
-    echo "SKIP: ${cmd} not found, skipping suite ${_SUITE_NAME:-unknown}"
-    exit 0
+    skip_suite "${cmd} not found on PATH; required command missing"
   fi
 }
 

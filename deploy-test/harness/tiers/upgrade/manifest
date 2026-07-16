@@ -1,0 +1,33 @@
+# DTF tier manifest: upgrade (upgrade-with-legacy-data, matrix row 6)
+# Profile-set: s3 / single. The #2574/#2584 regression class (legacy ROW-LESS
+# Maven objects breaking / leaking across a cloud-storage upgrade) only manifests
+# on a real shared object store, so this tier reuses the isolation tier's
+# storage.s3 profile and its cross-tenant assertions.
+#
+# UNLIKE every other tier, `upgrade` drives a TWO-PHASE compose itself (see
+# oracle.sh): it stands the stack up on an OLD pre-attribution backend, seeds the
+# row-less legacy Maven shape, then swaps ONLY the backend container to the
+# candidate image (--backend-image, exported as BACKEND_IMAGE) against the SAME
+# postgres+minio volumes and lets migrations run. run.sh still health-gates an
+# initial `up` on the candidate; the oracle tears that down (`down -v`) and
+# rebuilds from the OLD image, which is a legitimate tier-specific pattern
+# explicitly scoped to this tier (run.sh is NOT modified).
+#
+# RATE_LIMIT_ENABLED=false: the seed + oracle drive many admin/alice logins and
+# Maven PUTs back-to-back through a single admin; the base default (ON) would
+# throttle them. Matches the isolation tier / proof rig. (Base default stays ON;
+# a tier disabling a shipped control does so explicitly, per design 2.2.)
+#
+# UPGRADE_OLD_IMAGE: the pre-#2574 "legacy deployment" backend the stack is first
+# stood up on. It must be a clean migration ANCESTOR of the candidate (its applied
+# migrations are an exact-checksum prefix of the candidate's set) so the in-place
+# volume upgrade runs the candidate's NEW migrations instead of erroring on a
+# divergent history. nexus2457-v157base (release/1.5.x line, migrations 151-154,
+# NO maven_flat_object_owner attribution table) is that ancestor for the fixed
+# candidate v158-4fix (adds attribution migration 155). See MATRIX-ROW.md for the
+# image-lineage rationale and why base-2504 (the isolation coder's pre-#2504
+# image) canNOT be used as the OLD image here.
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ak-backend:nexus2457-v157base}"

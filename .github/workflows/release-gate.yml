@@ -100,17 +100,24 @@ jobs:
   # exists at that tag." Failing here is a release-blocker that should
   # NEVER be soft-failed: a missing tag is a publish-pipeline regression,
   # not a flake.
+  #
+  # Also enforces the release-documentation policy: when backend_tag is
+  # a final release version (X.Y.Z), artifact-keeper's CHANGELOG.md must
+  # contain a non-empty `## [X.Y.Z]` section for that version (promote
+  # [Unreleased] before tagging; see artifact-keeper RELEASING.md).
+  # Non-release tags (dev, sha-*, prereleases) skip that sub-check, so
+  # routine gate runs against non-release builds are unaffected.
   # -------------------------------------------------------------------
   version-set-integrity:
     runs-on: ak-e2e-runners
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
       - name: Install Helm (for chart-default verification)
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Clone iac chart for default-tag verification
         env:
@@ -125,7 +132,7 @@ jobs:
             https://github.com/artifact-keeper/artifact-keeper-iac.git \
             "${RUNNER_TEMP}/iac"
 
-      - name: Verify backend / web / openscap image tags exist on ghcr.io
+      - name: Verify image tags exist on ghcr.io and CHANGELOG documents the release
         env:
           BACKEND_TAG: ${{ inputs.backend_tag }}
           WEB_TAG: ${{ inputs.web_tag }}
@@ -168,7 +175,7 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -176,7 +183,7 @@ jobs:
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Run clean-install smoke test
         env:
@@ -254,7 +261,7 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -262,7 +269,7 @@ jobs:
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Run clean-install-smoke with all deps enabled
         env:
@@ -314,7 +321,7 @@ jobs:
     runs-on: ak-e2e-runners
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -322,7 +329,7 @@ jobs:
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Run chart-upgrade-smoke
         env:
@@ -336,6 +343,15 @@ jobs:
           # stable"). The script accepts the unprefixed semver form
           # because docker tags drop the leading 'v' (see CLAUDE.md).
           PREVIOUS_TAG: '1.1.9'
+          # PREVIOUS_WEB_TAG: the web image tag for the previous-tag side
+          # of the upgrade. The web repo cuts its own release cadence and
+          # does NOT mirror backend version tags, so the backend's
+          # PREVIOUS_TAG (e.g. "1.1.9") is NOT a valid web image tag and
+          # causes ImagePullBackOff (closes artifact-keeper#1378). `main`
+          # is published on every push to artifact-keeper-web main and is
+          # always pullable. If a future release wants stricter pinning,
+          # bump this to a specific SHA tag (e.g. `sha-ea664a1`).
+          PREVIOUS_WEB_TAG: 'main'
         run: |
           chmod +x tests/release-gate/chart-upgrade-smoke.sh
           RUN_ID="${{ github.run_id }}-${{ github.run_attempt }}-upgrade"
@@ -349,6 +365,7 @@ jobs:
             --previous-tag "${PREVIOUS_TAG}" \
             --backend-tag "${BACKEND_TAG}" \
             --web-tag "${WEB_TAG}" \
+            --previous-web-tag "${PREVIOUS_WEB_TAG}" \
             --iac-ref "${IAC_REF}" \
             --previous-iac-ref "${PREVIOUS_IAC_REF}" \
             --timeout 600
@@ -377,7 +394,7 @@ jobs:
       namespace: ${{ steps.setup.outputs.namespace }}
       backend_url: ${{ steps.deploy.outputs.backend_url }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -385,7 +402,7 @@ jobs:
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Generate run ID
         id: setup
@@ -465,7 +482,7 @@ jobs:
       # class (#870/#871/#888) this gate was added to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -540,7 +557,7 @@ jobs:
       ALLOW_SCANNER_SKIP: '0'
       FIXTURE_FORMAT: ${{ matrix.format }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -564,7 +581,11 @@ jobs:
           mkdir -p /tmp/test-logs
           kubectl -n "$NS" logs -l app.kubernetes.io/component=scanner \
             --tail=2000 > /tmp/test-logs/scanner-${{ matrix.format }}.log 2>&1 || true
-          kubectl -n "$NS" logs -l app.kubernetes.io/name=trivy \
+          # #1379: chart labels Trivy pods with app.kubernetes.io/component=trivy
+          # (app.kubernetes.io/name is the chart name "artifact-keeper", not the
+          # component). Use the component label so the log capture actually finds
+          # the pod when the gate is failing and the operator most needs the logs.
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=trivy \
             --tail=2000 > /tmp/test-logs/trivy-${{ matrix.format }}.log 2>&1 || true
           kubectl -n "$NS" logs -l app=artifact-keeper-backend \
             --tail=1000 > /tmp/test-logs/backend-${{ matrix.format }}.log 2>&1 || true
@@ -629,7 +650,7 @@ jobs:
       JUNIT_OUTPUT_DIR: /tmp/test-results
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -690,7 +711,7 @@ jobs:
       # TRIVY_DB_MAX_AGE_DAYS if needed.
       TRIVY_DB_MAX_AGE_DAYS: ${{ vars.TRIVY_DB_MAX_AGE_DAYS || '14' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -718,13 +739,42 @@ jobs:
           # Locate the Trivy pod. The Helm chart names the deployment
           # artifact-keeper-trivy; we kubectl-exec into the first ready
           # pod backed by that deployment.
+          #
+          # Label selector note (#1379): the chart's _helpers.tpl labels
+          # every component with app.kubernetes.io/name=artifact-keeper
+          # (the chart name) and distinguishes components via
+          # app.kubernetes.io/component=<name>. Earlier revisions of this
+          # pre-flight queried `app.kubernetes.io/name=trivy`, which
+          # never matched, producing the misleading "Trivy pod not
+          # found" error even though the deploy job's
+          # `kubectl rollout status deployment/artifact-keeper-trivy`
+          # had already succeeded. The correct selector is
+          # `app.kubernetes.io/component=trivy`.
           POD=$(kubectl -n "$NS" get pods \
-            -l app.kubernetes.io/name=trivy \
+            -l app.kubernetes.io/component=trivy \
             -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
           if [ -z "$POD" ]; then
             echo "::error::Trivy pod not found in namespace ${NS} (pre-flight cannot run)"
+            echo "::error::Checked selector: app.kubernetes.io/component=trivy"
+            echo "::error::Deploy job should have installed Trivy via values-test-full.yaml (trivy.enabled=true)."
+            kubectl -n "$NS" get pods --show-labels 2>&1 | head -40 || true
             exit 43
           fi
+
+          # Warm up the Trivy vulnerability DB before reading its
+          # UpdatedAt. Trivy 0.62 downloads the DB lazily on first scan,
+          # not at pod startup, so `trivy --version` immediately after
+          # rollout returns only `Version: <x>` with no `UpdatedAt:`
+          # line, which the parser below cannot handle (#197). Using
+          # `image --download-db-only` is idempotent: it no-ops if the
+          # DB is already present and within the upstream
+          # download-interval window.
+          echo "Warming up Trivy vulnerability DB..."
+          kubectl -n "$NS" exec "$POD" -c trivy -- \
+            trivy image --download-db-only --quiet >/dev/null 2>&1 \
+            || kubectl -n "$NS" exec "$POD" -- \
+                 trivy image --download-db-only --quiet >/dev/null 2>&1 \
+            || echo "::warning::trivy image --download-db-only returned non-zero; will inspect --version anyway"
 
           # trivy --version emits "Vulnerability DB: ... UpdatedAt: 2026-04-30 ..."
           # in older versions and a YAML-ish block in newer versions.
@@ -743,11 +793,20 @@ jobs:
           # Extract UpdatedAt timestamp. Format varies:
           #   "  UpdatedAt: 2026-04-30 12:34:56.789 +0000 UTC"
           #   "    UpdatedAt 2026-04-30 12:34:56.789 +0000 UTC"
-          DB_DATE=$(echo "$VER_OUT" | grep -iE 'UpdatedAt' | head -n1 \
+          #
+          # Pipeline hardening (#197): grep's no-match exit code (1)
+          # used to propagate via `set -o pipefail` and the workflow
+          # shell's implicit `set -e`, killing the script before the
+          # `if [ -z "$DB_DATE" ]` guard below could surface a clean
+          # exit 43. The `|| true` here keeps `DB_DATE` empty on
+          # no-match so the guard does its job.
+          DB_DATE=$( { echo "$VER_OUT" | grep -iE 'UpdatedAt' || true; } | head -n1 \
             | sed -E 's/.*UpdatedAt[: ]+([0-9-]+ [0-9:.]+).*/\1/' \
             | awk '{print $1" "$2}')
           if [ -z "$DB_DATE" ] || ! date -d "$DB_DATE" +%s >/dev/null 2>&1; then
-            echo "::error::Could not parse Trivy DB UpdatedAt from --version output"
+            echo "::error::Could not parse Trivy DB UpdatedAt from --version output."
+            echo "::error::Likely cause: Trivy DB download failed during warmup, or trivy --version output format changed."
+            echo "::error::Raw version output above for diagnosis."
             exit 43
           fi
 
@@ -782,6 +841,88 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
+  # Pinned-CVE IMAGE efficacy gate, PER SCANNER (#237, v1.2.4).
+  #
+  # Closes the blind spot that let artifact-keeper#2088 ship: container-
+  # image Trivy scans silently returned 0 findings (false-clean) after the
+  # trivy CLI was removed in #2059, while Grype still found CVEs in the same
+  # image. The existing pinned-cve-gate uploads an npm tarball (filesystem
+  # scanner) and asserts findings in AGGREGATE, so a dead image scanner
+  # hiding behind a healthy peer was invisible.
+  #
+  # This gate pushes a digest-pinned, known-vulnerable container image
+  # (alpine:3.4) into an AK OCI repo via the /v2/ distribution API (curl,
+  # no docker daemon on the runner) and asserts PER SCANNER that each wired
+  # image scanner (Trivy `image` + Grype) reached `completed` AND surfaced
+  # findings_count >= FINDINGS_FLOOR. A scanner that completes with ~0
+  # findings on the canary is a HARD FAIL.
+  #
+  # BLOCKING (not in the flaky tier): it must be reliable, so it gates the
+  # rollout at exactly the point #2088 should have been stopped. Wired into
+  # the collect-results rollup with the STRICTER `result != 'success'`
+  # predicate alongside the other silent-success gates.
+  # -------------------------------------------------------------------
+  pinned-cve-image-gate:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 10
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
+      # ALLOW_SCANNER_SKIP=0 is enforced inside the gate too -- a scanner-
+      # down skip in release-gate context is the #888/#2088 silent-success
+      # / false-clean class this gate exists to catch.
+      RELEASE_GATE: '1'
+      ALLOW_SCANNER_SKIP: '0'
+      # Per-scanner floor. alpine:3.4 yields >100 findings via a healthy
+      # scanner, so 10 is a generous, drift-proof lower bound. Override via
+      # the repo variable if a future canary is swapped.
+      FINDINGS_FLOOR: ${{ vars.IMAGE_SCAN_FINDINGS_FLOOR || '10' }}
+      # The wired image scanners that MUST independently find the floor.
+      # scan_type values on the scan rows: `image` = Trivy image scan
+      # (the #2088 target), `grype` = Grype.
+      REQUIRED_IMAGE_SCANNERS: 'image grype'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+
+      - name: Run pinned-CVE image efficacy gate (per scanner)
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x tests/release-gate/test-pinned-cve-image.sh
+          ./tests/release-gate/test-pinned-cve-image.sh
+
+      - name: Capture scanner pod logs on failure
+        if: failure()
+        run: |
+          NS="test-${{ needs.deploy.outputs.run_id }}"
+          mkdir -p /tmp/test-logs
+          # #1379: Trivy pods are labelled app.kubernetes.io/component=trivy.
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=trivy \
+            --tail=2000 > /tmp/test-logs/pinned-cve-image-trivy.log 2>&1 || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=scanner \
+            --tail=2000 > /tmp/test-logs/pinned-cve-image-scanner.log 2>&1 || true
+          kubectl -n "$NS" logs -l app=artifact-keeper-backend \
+            --tail=1000 > /tmp/test-logs/pinned-cve-image-backend.log 2>&1 || true
+
+      - name: Upload pinned-CVE image gate results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-pinned-cve-image
+          path: |
+            /tmp/test-results/
+            /tmp/test-logs/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
   # Format tests (8 parallel batches)
   # -------------------------------------------------------------------
   format-tests:
@@ -803,9 +944,9 @@ jobs:
           - name: system-packages
             scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-opkg.sh"
           - name: containers
-            scripts: "test-oci.sh test-oci-remote.sh test-docker-native-client.sh test-helm.sh test-incus.sh"
+            scripts: "test-oci.sh test-oci-remote.sh test-docker-native-client.sh test-helm.sh test-incus.sh test-streaming-blob-fallback.sh"
           - name: misc-native
-            scripts: "test-terraform.sh test-composer.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
+            scripts: "test-terraform.sh test-composer.sh test-composer-dist-cache.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
             scripts: "test-generic.sh test-generic-native-client.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
     env:
@@ -818,7 +959,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -962,7 +1103,7 @@ jobs:
       # rationale on how this maps from inputs.backend_tag.
       AK_BACKEND_BRANCH: ${{ startsWith(inputs.backend_tag, '1.1.') && 'release/1.1.x' || (startsWith(inputs.backend_tag, '1.2.') && 'release/1.2.x' || 'main') }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1067,7 +1208,7 @@ jobs:
       # workflow-vs-deploy mismatch in ONE place.
       AK_BACKEND_BRANCH: ${{ startsWith(inputs.backend_tag, '1.1.') && 'release/1.1.x' || (startsWith(inputs.backend_tag, '1.2.') && 'release/1.2.x' || 'main') }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1102,7 +1243,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1137,7 +1278,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1172,7 +1313,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1207,7 +1348,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1242,7 +1383,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1281,9 +1422,35 @@ jobs:
       # (WEBHOOK_RETRY_TIMEOUT) so the wrapping timeout must exceed that.
       TEST_TIMEOUT: '300'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Resolve runner pod address for backend dial-back
+        id: receiver-host
+        run: |
+          # Webhook tests spin up a mock receiver in this runner pod and
+          # pass the URL to the backend, which lives in a DIFFERENT pod.
+          # 127.0.0.1 from the backend's perspective is the backend pod
+          # itself, not the runner, so the mock would never be reached.
+          # Loopback is also a hard block in the backend's SSRF guard
+          # (#199, artifact-keeper validation.rs:203-212), so we MUST
+          # use the runner pod's RFC1918 IP.
+          POD_IP="${POD_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
+          if [ -z "$POD_IP" ]; then
+            echo "ERROR: could not determine runner pod IP" >&2
+            exit 1
+          fi
+          if ! echo "$POD_IP" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: POD_IP '${POD_IP}' is not an IPv4 address" >&2
+            exit 1
+          fi
+          if echo "$POD_IP" | grep -Eq '^127\.'; then
+            echo "ERROR: POD_IP '${POD_IP}' is loopback; backend pod cannot reach this" >&2
+            exit 1
+          fi
+          echo "Runner pod IP: ${POD_IP}"
+          echo "WEBHOOK_RECEIVER_HOST=${POD_IP}" >> "$GITHUB_ENV"
 
       - name: Run webhook tests
         run: |
@@ -1316,7 +1483,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1364,7 +1531,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1399,7 +1566,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1445,7 +1612,7 @@ jobs:
       JUNIT_OUTPUT_DIR: /tmp/test-results
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1538,7 +1705,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1658,7 +1825,7 @@ jobs:
       NAMESPACE: ${{ needs.deploy.outputs.namespace }}
       JUNIT_OUTPUT_DIR: /tmp/test-results
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1696,6 +1863,14 @@ jobs:
   # -------------------------------------------------------------------
   mesh-tests:
     needs: [deploy, resilience-tests]
+    # continue-on-error: multi-DC federation/replication (peer registration,
+    # cross-instance sync, failover) cannot be fully exercised in the ephemeral
+    # CI env — the sync worker isn't running and peer instances aren't reachable
+    # there (the suite's own steps SKIP/FAIL with "sync worker not running in
+    # ephemeral env"). Same known-infra-debt class as stress-tests; release.yml
+    # already treats mesh as an optional gate. Kept in the run for visibility but
+    # excluded from the blocking rollup. See artifact-keeper#1936.
+    continue-on-error: true
     if: |
       always() &&
       (inputs.test_suite == 'all' || inputs.test_suite == 'mesh') &&
@@ -1710,7 +1885,7 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1718,7 +1893,7 @@ jobs:
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Deploy mesh topology
         id: mesh-deploy
@@ -1785,7 +1960,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
     runs-on: ak-e2e-runners
     steps:
@@ -1804,7 +1979,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -1815,6 +1990,7 @@ jobs:
               scan-completion-gate) status="${{ needs.scan-completion-gate.result }}" ;;
               sbom-correctness-gate) status="${{ needs.sbom-correctness-gate.result }}" ;;
               pinned-cve-gate) status="${{ needs.pinned-cve-gate.result }}" ;;
+              pinned-cve-image-gate) status="${{ needs.pinned-cve-image-gate.result }}" ;;
               format-tests) status="${{ needs.format-tests.result }}" ;;
               repo-tests) status="${{ needs.repo-tests.result }}" ;;
               promotion-tests) status="${{ needs.promotion-tests.result }}" ;;
@@ -1892,6 +2068,7 @@ jobs:
           needs.scan-completion-gate.result != 'success' ||
           needs.sbom-correctness-gate.result != 'success' ||
           needs.pinned-cve-gate.result != 'success' ||
+          needs.pinned-cve-image-gate.result != 'success' ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
           needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||
@@ -1920,7 +2097,7 @@ jobs:
     if: always() && inputs.skip_teardown != true
     runs-on: ak-e2e-runners
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: artifact-keeper/artifact-keeper-test
 
@@ -1928,7 +2105,7 @@ jobs:
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Teardown test namespace
         env:

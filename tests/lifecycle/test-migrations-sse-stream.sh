@@ -43,7 +43,9 @@ begin_suite "migrations-sse-stream"
 auth_admin
 
 CONNECTION_NAME="mig-conn-sse-${RUN_ID}"
-JOB_NAME="mig-job-sse-${RUN_ID}"
+# Note: migration jobs no longer carry a `name` field in the backend
+# contract (migration.rs CreateMigrationRequest / MigrationJobResponse),
+# so there is no JOB_NAME to set or assert on.
 CONNECTIONS_BASE="/api/v1/migrations/connections"
 JOBS_BASE="/api/v1/migrations"
 
@@ -106,6 +108,7 @@ CREATE_PAYLOAD=$(jq -nc \
     name: $name,
     source_type: "artifactory",
     url: "https://example.invalid/artifactory",
+    auth_type: "basic_auth",
     credentials: { type: "basic", username: "test", password: "test" }
   }')
 
@@ -140,14 +143,16 @@ fi
 CONN_ID="${CONNECTION_IDS[0]}"
 
 begin_test "Create migration job for SSE consumer"
+# Backend contract (migration.rs `CreateMigrationRequest`, authoritative):
+# {source_connection_id, job_type?, config}. The old
+# {name, connection_id, source_path, target_repo} shape now 422s with
+# "missing field source_connection_id".
 JOB_PAYLOAD=$(jq -nc \
-  --arg name "$JOB_NAME" \
   --arg cid "$CONN_ID" \
   '{
-    name: $name,
-    connection_id: $cid,
-    source_path: "example-repo",
-    target_repo: "migration-target"
+    source_connection_id: $cid,
+    job_type: "full",
+    config: {}
   }')
 
 RESP=$(migrations_request POST "$JOBS_BASE" "$JOB_PAYLOAD")
