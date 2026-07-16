@@ -1,0 +1,70 @@
+# DTF tier manifest: signing
+# =============================================================================
+# Profile-set: filesystem + the four real signature-VERIFYING clients
+# (client.apt = Debian/apt-secure, client.dnf = Fedora/dnf gpgcheck,
+#  client.apk = Alpine/apk trusted index, client.helm = Helm provenance).
+#
+# WHY THIS TIER EXISTS (issue #72; triage §2.1 "Signing & verification chains"
+# = the highest-risk uncovered area):
+#
+#   1. The four signing scripts the corpus already had — tests/security/
+#      test-debian-gpg-chain.sh, tests/formats/test-helm-provenance-verify.sh,
+#      test-maven-snapshot-metadata.sh, test-pypi-yanking.sh — have ZERO hits in
+#      release-gate.yml. They run NOWHERE. Coverage that never executes is not
+#      coverage.
+#   2. Worse, the coverage we DO run tells the clients not to check signatures:
+#      the native-client tier's apt leg publishes `deb [trusted=yes] ...` and the
+#      format-conformance apk plugin runs `apk add --allow-untrusted`. Those two
+#      flags mean every "real client" leg we own is blind to the entire signing
+#      surface. This tier is the same real clients with verification turned ON.
+#
+# The native-client tier (#2580) asks "does the client FOLLOW the advertised
+# location?" and answers it with verification disabled. This tier asks the next
+# question — "does the client TRUST what it found?" — and is deliberately a
+# SEPARATE tier rather than an edit to that oracle: its legs need signing keys,
+# per-repo signing config, and negative (unsigned/tampered) repos that the #2580
+# legs must not have.
+#
+# LEGS — the standing regression gate for the merged backend signing fixes
+# (it began life pinning these as KNOWN-RED defects; the fixes landed and the
+# pins were removed — all but one, C4, which pins a still-open defect):
+#   A  apt   — Import AK's advertised gpg-key.asc and install with
+#              `signed-by=` and NO [trusted=yes]: apt verifies the clearsigned
+#              InRelease chain. Negative: an unsigned repo is REFUSED, and a
+#              tampered Release fails `gpg --verify`.
+#   B  rpm   — gates #2645 (repodata signed with REAL OpenPGP: importable
+#              repomd.xml.key, gpg-verifiable repomd.xml.asc, real dnf with
+#              repo_gpgcheck=1 installs) and #2679 (key_type=rsa on an RPM
+#              repo is rejected at config time with an actionable 400).
+#              Negative: tampered repomd.xml fails `gpg --verify`.
+#   C  apk   — gates #2634 (APKINDEX `C:` field in apk's native Q1+base64(SHA1)
+#              form) and #2677 (fail-closed index signing). ONE pin remains:
+#              C4 (real `apk add` with NO --allow-untrusted) is still
+#              KNOWN-RED — the served .SIGN.RSA signature is not
+#              apk-verifiable on current main (SHA256-over-text/single-stream
+#              vs apk's SHA1-over-data-segment/two-stream contract; see the
+#              oracle's LEG C header). Negative: with the advertised key
+#              removed the same index flips BAD->UNTRUSTED.
+#   D  helm  — gates #2640/#2680 (.prov stored AND served at <chart>.tgz.prov):
+#              real `helm pull --verify` succeeds against the AK repo.
+#              Control: the same chart pulls without --verify.
+#
+# Every leg keeps a discrimination control (verification-OFF / local-index /
+# no-verify control installs), so a future red is attributable to SIGNING and
+# not plumbing. Outside the C4 pin, a red here means a merged fix regressed;
+# the C4 pin fails loudly the moment the apk signature defect is fixed
+# (telling you to remove the pin).
+#
+# HARNESS DEPENDENCY: `gpg` on the host running the oracle (LEG A's crypto-level
+# verify + tamper discrimination). It is a hard preflight failure, not a skip —
+# a signing tier that silently skips when gpg is missing is exactly the
+# unfailable-test antipattern this program exists to kill.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + 6 repo creates + key
+# generation + publishes + repeated metadata fetches back-to-back through one
+# admin user; the base default (ON) would throttle them. The base default stays
+# ON (design 2.2, same rationale as the native-client / format-conformance
+# tiers). A tier that must disable a shipped control does so explicitly.
+PROFILES="storage.filesystem client.apt client.dnf client.apk client.helm"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -22,7 +22,7 @@
 # The consume runs `mvn dependency:get` into an EMPTY local repo so the fetch is
 # a REAL network resolution against AK only (remoteRepositories=dtf::...::AK).
 # =============================================================================
-FC_CASES="snapshot_metadata checksum_strict gav_case"
+FC_CASES="snapshot_metadata snapshot_classifiers checksum_strict gav_case"
 
 MVN_GROUP="io.dtf"
 MVN_ARTIFACT="marker"
@@ -172,6 +172,70 @@ fc_advertised_check() {
 # ===========================================================================
 # Edge cases (each a positive + negative discriminator tied to a bug class)
 # ===========================================================================
+
+# snapshot_classifiers (#72 / #68 wiring) — the residue of the corpus's
+# tests/formats/test-maven-snapshot-metadata.sh, which has 0 hits in
+# release-gate.yml (it runs nowhere). That script's unique assertion over the
+# snapshot_metadata case above is PER-CLASSIFIER resolution: redeploying the same
+# SNAPSHOT with a second classifier must add a DISTINCT <snapshotVersion> entry
+# (its own <classifier> + <value>), not overwrite the first. Ported here as a
+# real-client case (mvn deploy:deploy-file) instead of the script's curl PUTs,
+# and without its `skip_suite "auto-generation not supported"` escape hatch —
+# under RELEASE_GATE=1 a missing version-level metadata is a FAILURE, not a skip.
+# Bug class: classifier collapse (the tests jar overwriting the main jar's entry,
+# so `mvn dependency:get -Dclassifier=tests` resolves the wrong bytes).
+fc_case_snapshot_classifiers() {
+  local sver="1.2-SNAPSHOT"
+  local sjar="${MVN_WS}/${MVN_ARTIFACT}-cls.jar"
+  local cls
+  # Deploy the SAME snapshot version twice: once bare, once with a classifier.
+  for cls in "" "tests"; do
+    nc_exec "printf 'DTF-MAVEN-CLS-%s\n' '${cls:-main}' > '${MVN_WS}/cls-marker.txt' && \
+mkdir -p '${MVN_WS}/clsjar/dtf' && cp '${MVN_WS}/cls-marker.txt' '${MVN_WS}/clsjar/dtf/marker.txt' && \
+( cd '${MVN_WS}/clsjar' && jar cf '${sjar}' dtf )" || return 1
+    local cargs=""
+    [ -n "$cls" ] && cargs="-Dclassifier=${cls}"
+    nc_exec -t 300 "mvn -B -q --settings '${MVN_SETTINGS}' deploy:deploy-file \
+      -Dfile='${sjar}' -DgroupId='${MVN_GROUP}' -DartifactId='${MVN_ARTIFACT}' \
+      -Dversion='${sver}' -Dpackaging=jar ${cargs} \
+      -DrepositoryId=dtf -Durl='${FC_INT_URL}'" \
+      || { echo "snapshot deploy (classifier='${cls:-main}') failed"; return 1; }
+  done
+
+  local meta="${WORK_DIR}/cls-meta.xml"
+  nc_fetch "${FC_URL}/${MVN_GROUP_PATH}/${MVN_ARTIFACT}/${sver}/maven-metadata.xml" "$meta" || return 1
+  [ -s "$meta" ] || { echo "version-level maven-metadata.xml was not auto-generated for ${sver}"; return 1; }
+
+  # POSITIVE: a distinct <snapshotVersion> entry per classifier.
+  # NOTE: `grep -c` PRINTS the count and EXITS 1 when the count is zero, so a
+  # `|| echo 0` fallback would emit "0\n0" and break the integer tests below on
+  # exactly the negative path this case exists to catch. Take grep's stdout and
+  # swallow only its exit status.
+  local total classified
+  total="$(grep -c '<snapshotVersion>' "$meta" 2>/dev/null || true)"; total="${total:-0}"
+  classified="$(grep -c '<classifier>tests</classifier>' "$meta" 2>/dev/null || true)"; classified="${classified:-0}"
+  echo "  <snapshotVersion> entries=${total}; entries carrying <classifier>tests</classifier>=${classified}"
+  if [ "$classified" -lt 1 ]; then
+    echo "  classifier collapse: the 'tests' classifier has no <snapshotVersion> entry of its own"
+    sed -n '1,60p' "$meta"; return 1
+  fi
+  if [ "$total" -lt 2 ]; then
+    echo "  expected >=2 <snapshotVersion> entries (main + tests), got ${total}"
+    sed -n '1,60p' "$meta"; return 1
+  fi
+
+  # NEGATIVE/proof: the classified artifact must resolve at its OWN advertised
+  # timestamped path — i.e. the metadata entry is real, not decorative.
+  local ts bn base
+  ts="$(grep -oE '<timestamp>[^<]+</timestamp>' "$meta" | sed -E 's:</?timestamp>::g' | head -1)"
+  bn="$(grep -oE '<buildNumber>[^<]+</buildNumber>' "$meta" | sed -E 's:</?buildNumber>::g' | head -1)"
+  [ -n "$ts" ] || { echo "empty <timestamp> in classifier metadata"; return 1; }
+  base="${MVN_ARTIFACT}-1.2-${ts}-${bn}-tests"
+  local cj="${WORK_DIR}/cls.jar"
+  nc_fetch "${FC_URL}/${MVN_GROUP_PATH}/${MVN_ARTIFACT}/${sver}/${base}.jar" "$cj" || return 1
+  [ -s "$cj" ] || { echo "classified snapshot jar did not resolve (${base}.jar)"; return 1; }
+  echo "  classified snapshot resolves at ${base}.jar"
+}
 
 # snapshot_metadata (#2183 class) — deploy 1.1-SNAPSHOT TWICE; the timestamped
 # version-level maven-metadata.xml must resolve the LATEST snapshot, and the

@@ -122,10 +122,22 @@ rate-limit DoS classes were untested). Overlays ADD services and/or PATCH
 | `upgrade` | s3 (two-phase swap) | legacy row-less across upgrade — #2574/#2584 | owner-read 404 on over-restrictive |
 | `supply-chain` | trivy | scanner false-clean per-scanner floor — #2088 | false-clean fails |
 | `dos` | filesystem, RATE_LIMIT=true | rate-limit + worker-starvation | no-429 when disabled |
+| `signing` | apt/dnf/apk/helm | signature-verification regressions — #2645/#2679/#2634/#2677/#2640/#2680 (#72) | unsigned repo refused / tampered metadata BAD / untrusted index refused |
 
 **Coverage:** every must-have escaped-defect class + both previously-disabled controls
 (scanner, rate-limit). The one **GAP** is row 8 (WASM/cosign plugin signing) — no signing
-fixture yet.
+fixture yet. Note `signing` (row 8s) is a *different* row: it covers **format** signature
+verification (apt/dnf/apk/helm), not WASM plugin signing.
+
+> **The `signing` tier's premise.** Every other real-client leg disables verification —
+> `native-client` LEG B publishes `deb [trusted=yes]`, its LEG A sets `gpgcheck=0`, and
+> the `format-conformance` apk plugin runs `apk add --allow-untrusted`. Those legs answer
+> "did the client FOLLOW the advertised location?" (#2580) and deliberately say nothing
+> about trust. `signing` turns verification ON for the same clients. When first written it
+> surfaced three real defects (rpm/apk/helm) that were pinned KNOWN-RED; the backend fixes
+> (#2645/#2679, #2634/#2677, #2640/#2680) have since merged, the pins are gone, and the
+> tier is the standing regression gate for those fixes. One pin remains: the apk
+> end-to-end verify (C4) — the `.SIGN.RSA` digest/framing is still not apk-verifiable.
 
 ---
 
@@ -178,7 +190,9 @@ fixed images, each proven discriminating (red on a pre-fix image), clean per-slo
   is a follow-up.
 - **Discrimination is proven once (manual image swap), not continuously.** No standing
   tripwire re-proves the fail-path after a refactor — see the `EXPECT_FAILURE` follow-up.
-- **Row 8 (WASM signing)** has no tier.
+- **Row 8 (WASM signing)** has no tier. (Row 8s, *format* signing, has one — the standing
+  regression gate for the merged backend signing fixes #2645/#2679/#2634/#2677/#2640/
+  #2680, with a single remaining KNOWN-RED pin on the apk end-to-end verify.)
 - **Nothing is pushed / no real CI run has validated any of this** — this branch and all
   patches are local, behind the release freeze.
 
