@@ -16,13 +16,13 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 |---|---|---|---|---|---|
 | 1 | **Cloud cross-tenant read+write** (incl. row-less Maven) — #2504/#2574/#2584 | storage=**s3** | `prove.sh` A–F (cross-repo read, write-poison, checksum/metadata sidecar, soft-delete carve-out, row-less #2574/#2584) + DB assert | **isolation** | **COVERED** (brick 1) — green on fix-2574, 11 gate-fails on base-2504 |
 | 2 | **Migration source→native pull, single+multi-arch** — #2457 | upstreams=**nexus** (+ filesystem/single) | vendored `nexus_migrate_assert` → `tiers/migration/assert.sh` (config-blob 404, child-manifest 404, `oci_blobs==0`, **per-image** `docker pull` single AND multi-arch) | **migration** | **COVERED** (brick 2) — green (exit 0) on v1.5.8 (`ak-backend:v158-4fix`), red (5 findings, exit 1) on pre-fix `nexus2457-v157base` |
-| 3 | **Native client via advertised route** — #2477/#2580 | client=**dnf/apt/docker** (+proxy) | `ak` push → `dnf/apt install` follows repodata `<location>`; `docker pull` proxy repo ≥2 token exchanges | native-client | GAP — **brick 3** |
+| 3 | **Native client via advertised route** — #2477/#2580 | client=**dnf/apt/docker** (+proxy) | `ak` push → `dnf/apt install` follows repodata `<location>`; `docker pull` proxy repo ≥2 token exchanges | **native-client** | **COVERED** (brick 3) — green (exit 0) on `ak-backend:v158-4fix`; DISCRIMINATING: LEG A/B follow the advertised location and reject the non-prefixed href a #2580 regression emits; LEG C's 2nd/3rd offline-token re-presentation is the exact call that 401'd pre-#2477 (v1.5.5) |
 | 4 | **Egress proxy / SSRF hostname→private IP** — #2570 | proxy=**squid** | backend behind squid; legit egress-through-proxy works (not 502) AND SSRF upstream (IP-literal + hostname→private IP) still refused | **proxy-egress** | **COVERED** (brick 4) — green on fix-2574, legit half 502s on pre-#2570 (pr2578); SSRF half holds on both |
 | 5 | **SAML XSW / SSO** — #2449 (CRITICAL) | sso=**saml (keycloak)** | XSW-wrapped assertion admin-escalation MUST fail; claim extraction scoped to signed subtree | **sso** | **COVERED** (brick 5) — green on fix-2574 (12/12), DISCRIMINATING: pre-#2449 fix-2329 reproduces XSW admin escalation (307 + attacker is_admin=t) and the tier exits non-zero |
-| 6 | **Upgrade with legacy data** — #2574/#2584 class | upgrade (seed old rows → swap image) | seed row-less Maven object, upgrade candidate, re-run isolation → still isolated | upgrade | GAP — **brick 6** (reuses row 1 oracle) |
-| 7 | **Scanner efficacy (pinned-CVE)** — #2088 | scanners=**trivy** | pinned-CVE image → scan reports the known CVE; false-clean fails | supply-chain | EXISTS (k8s gate + pool trivy sidecar); MIGRATE — **brick 7** |
-| 8 | **WASM plugin signing / cosign** | scanners=trivy + plugin overlay | signed plugin loads; tampered/unsigned rejected | supply-chain | Partial (exempted in gate) → GAP — **brick 7** |
-| 9 | **Rate-limit / worker-starvation DoS** | dos, **RATE_LIMIT_ENABLED=true** | login-limiter holds; TOTP/bcrypt does not bypass the auth semaphore | dos | GAP (today's overlay disables the control; **DTF base now defaults it ON**) — **brick 7** |
+| 6 | **Upgrade with legacy data** — #2574/#2584 class | upgrade (seed old rows → swap image) | seed row-less Maven object, upgrade candidate, re-run isolation → still isolated | **upgrade** | **COVERED** (brick 6) — green (exit 0) on `ak-backend:v158-4fix` upgraded in-place from OLD `ak-backend:nexus2457-v157base` on the same pg+minio volumes; post-upgrade the legacy row-less sidecar is owner-readable (200, no #2574 404 regression) AND cross-tenant isolated (404, no #2504/#2584 leak) + DB attribution assert |
+| 7 | **Scanner efficacy (pinned-CVE)** — #2088 | scanners=**trivy** | pinned-CVE image → scan reports the known CVE; false-clean fails | **supply-chain** | **COVERED** (brick 7) — green (exit 0) on `ak-backend:v158-4fix` (digest-pinned alpine:3.4, scan_type=image `completed`, 12 findings ≥ 10 floor, trivy-0.71.2); DISCRIMINATING: a false-clean scanner (`completed`/0) reproduces the #2088 signature and the tier exits non-zero |
+| 8 | **WASM plugin signing / cosign** | scanners=trivy + plugin overlay | signed plugin loads; tampered/unsigned rejected | supply-chain | **GAP** — brick 7 did NOT close it; the `filesystem+trivy` profile provisions no plugin-signing keypair or plugin-load fixture, so a real "tampered/unsigned plugin rejected" oracle is not stand-up-able without net-new fixtures (faking it would violate the no-unfailable-test rule). Deferred to a dedicated plugin-signing overlay (future brick) |
+| 9 | **Rate-limit / worker-starvation DoS** | dos, **RATE_LIMIT_ENABLED=true** | login-limiter holds; TOTP/bcrypt does not bypass the auth semaphore | **dos** | **COVERED** (brick 7) — green (exit 0) on `ak-backend:v158-4fix`: limiter 10x401 then 20x429 (first 429 at attempt #11), `/health` 12/12 ok (slowest 4ms) under a capped 20-way bcrypt burst, 0 faults; DISCRIMINATING: with `RATE_LIMIT_ENABLED=false` the same 30 failed logins return 30x401 / ZERO 429 and the tier exits non-zero (today's-gate blind spot) |
 | 10 | **40+ format handlers conformance** | filesystem/single | `tests/formats` (118), `tests/pullthrough` (11) | format-conformance | EXISTS; keep |
 | 10s | **Real push→pull→scan smoke** | **filesystem**/single/none | `test-real-flow-smoke.sh` (npm publish → pack pull-back → scan → numeric findings_count) | **smoke** | **COVERED** (brick 0) — green, 8/8 |
 | 11 | **Path-traversal (discriminating)** | any | body-assert traversal (not `/dev/null`) | (cross-tier rule) | Partly landed; enforce everywhere |
@@ -30,17 +30,22 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 
 ## Consolidated status (this checkpoint)
 
-- **COVERED now (5 of the must-have rows):** row 1 (isolation / S3, brick 1),
-  row 2 (migration / Nexus, brick 2), row 4 (proxy-egress / #2570, brick 4),
-  row 5 (sso / SAML XSW, brick 5), and row 10s (smoke / filesystem, brick 0).
-  All run under the single `harness/run.sh <tier>` contract, health-gated,
-  per-slot isolated, JUnit into `results/<tier>/`, real pass/fail exit codes,
-  never touching :8080.
-- **Still GAP (owning brick):** row 3 native-client (brick 3), row 6 upgrade
-  (brick 6 — reuses the row-1 oracle), row 7 scanner-efficacy + row 8 WASM/cosign
-  + row 9 rate-limit/DoS (brick 7), and the CI gate workflow (brick 8).
+- **COVERED now (all 8 must-have rows + smoke):** row 1 (isolation / S3, brick 1),
+  row 2 (migration / Nexus, brick 2), row 3 (native-client / dnf+apt+docker, brick 3),
+  row 4 (proxy-egress / #2570, brick 4), row 5 (sso / SAML XSW, brick 5),
+  row 6 (upgrade / legacy-data #2574/#2584, brick 6), row 7 (supply-chain /
+  scanner-efficacy #2088, brick 7), row 9 (dos / rate-limit + worker-starvation,
+  brick 7), and row 10s (smoke / filesystem, brick 0). All run under the single
+  `harness/run.sh <tier>` contract, health-gated, per-slot isolated, JUnit into
+  `results/<tier>/`, real pass/fail exit codes, never touching :8080.
+- **Still GAP:** row 8 WASM plugin signing / cosign only — brick 7's
+  `filesystem+trivy` profile provisions no plugin-signing keypair or plugin-load
+  fixture, so a real discriminating oracle is not stand-up-able without net-new
+  fixtures; deferred to a dedicated plugin-signing overlay (future brick).
+  The CI gate workflow (brick 8) is deferred as online work.
 - **Profiles present:** `storage.filesystem`, `storage.s3`, `upstreams.nexus`,
-  `proxy.squid`, `sso.saml`. Every other overlay in design §2.1 is a later brick.
+  `proxy.squid`, `sso.saml`, `client.dnf/apt/docker`, `scanners.trivy`. Every
+  other overlay in design §2.1 is a later brick.
 
 ## Brick-2 status (migration / Nexus — #2457)
 

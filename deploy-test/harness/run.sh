@@ -21,9 +21,11 @@
 #   6. tear down (down -v) unless --keep
 #   7. return non-zero if the oracle (any suite) failed
 #
-# Consolidated scope (bricks 0/1/2/4/5): the `smoke` (filesystem), `isolation`
-# (s3), `migration` (nexus), `proxy-egress` (squid), and `sso` (saml/keycloak)
-# tiers exist. native-client / upgrade / dos / supply-chain tiers are later bricks.
+# Consolidated scope (bricks 0/1/2/3/4/5/6/7): the `smoke` (filesystem),
+# `isolation` (s3), `migration` (nexus), `proxy-egress` (squid), `sso`
+# (saml/keycloak), `native-client` (dnf/apt/docker), `upgrade` (two-phase image
+# swap), `supply-chain` (trivy scanner efficacy), and `dos` (rate-limit /
+# worker-starvation) tiers exist. Row 8 (WASM plugin signing) remains a GAP.
 # =============================================================================
 set -uo pipefail
 
@@ -240,11 +242,16 @@ case "$CMD" in
     dtf_ports "${SLOT_ARG:-1}" ;;
 
   all)
-    # Consolidated tier set (bricks 0/1/2/4/5). Run SEQUENTIALLY — heavy legs
-    # (migration = Nexus JVM) never share a slot with another tier. Each tier
-    # claims its own slot, health-gates up, and `down -v` cleans before the next.
+    # Consolidated tier set (bricks 0/1/2/3/4/5/6/7). Run SEQUENTIALLY — heavy
+    # legs (migration = Nexus JVM, upgrade = two-phase image swap) never share a
+    # slot with another tier. Each tier claims its own slot, health-gates up, and
+    # `down -v` cleans before the next.
+    # NOTE: `all` drives every tier with a SINGLE --backend-image; the tiers'
+    # documented fixed images differ (some pin v158-4fix, some fix-2574), so for
+    # the full-fidelity coexistence proof run the differing tiers individually.
+    # Per-tier image support for `all` is a follow-up.
     overall=0
-    for t in smoke isolation migration proxy-egress sso; do
+    for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
