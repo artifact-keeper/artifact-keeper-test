@@ -7,17 +7,19 @@ Coverage half of the release-assurance program (design:
 blue-fix pool's slot/port discipline and the existing `tests/lib/common.sh` /
 `scripts/run-suite.sh` assertion harness in strict `RELEASE_GATE=1` mode.
 
-## Status: brick 0 (walking skeleton)
+## Status: built — 9 tiers green locally
 
-Two green tiers only:
+> **See [`ARCHITECTURE.md`](ARCHITECTURE.md)** for the full layout, the lines between DTF /
+> the corpus / the k8s gate / the rig, how to add a tier, and the honest verification status.
 
-| Tier | Profile-set | Oracle | Weight |
-|---|---|---|---|
-| `smoke` | filesystem / single | real push→pull→scan (`test-real-flow-smoke.sh`) | Light |
-| `isolation` | s3 (MinIO) / single | fail-closed `prove.sh` A–F cross-tenant gate | Med |
+All nine tiers exist and ran green sequentially (each discriminating — passes on the fixed
+image, fails on a pre-fix one): `smoke` `isolation` `migration` `native-client`
+`proxy-egress` `sso` `upgrade` `supply-chain` `dos`. Coverage: every must-have escaped-defect
+class + both previously-disabled controls; the one GAP is row 8 (WASM/cosign signing). See
+`matrix.md`.
 
-migration / native-client / proxy-egress / sso / upgrade / supply-chain / dos
-tiers and the CI gate workflow are later bricks (see `matrix.md`).
+**Verified locally (arm64) only** — nothing has run on `ak-docker-runners` / x86_64 yet, and
+the CI-gate workflow (brick 8) is deferred as online work. Details in `ARCHITECTURE.md` §7–8.
 
 ## Run
 
