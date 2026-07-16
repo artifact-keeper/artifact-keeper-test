@@ -1,0 +1,35 @@
+# =============================================================================
+# profiles/client.rubygems.yml — client dimension = rubygems (a real gem client)
+# =============================================================================
+# Adds a `ruby` container that joins the DTF network and targets the backend BY
+# SERVICE NAME (http://backend:8080). The format-conformance tier's rubygems
+# plugin `docker exec`s into it to `gem build` + `gem push --host` a marker gem
+# and then consume it via `gem fetch --clear-sources --source ...` + `gem
+# install` — the REAL client resolving the gem from `specs.4.8.gz` / the
+# `/api/v1/dependencies` API and FOLLOWING `/gems/<file>` to download it (the
+# #2580 path). Ports the orphaned tests/formats/test-rubygems-native-client.sh
+# verbs onto the DTF topology.
+#
+# NOTE the mount prefix is `/gems` (routes.rs:73), NOT `/rubygems` — the plugin
+# header sets FC_MOUNT: gems accordingly.
+#
+# arm64: the rig is aarch64. `ruby:3.3-slim` publishes an arm64/v8 manifest
+# (verified with `docker manifest inspect`), so it runs natively — no amd64-only
+# surprise (the brick-4 trap). The marker gem is pure Ruby (no native
+# extensions), so it builds/installs offline with no toolchain.
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck (ready once running, same
+# discipline as client.dnf.yml). It waits on backend health via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-rubygems:
+    image: ruby:3.3-slim
+    container_name: ak-dtf${DTF_SLOT}-client-rubygems
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

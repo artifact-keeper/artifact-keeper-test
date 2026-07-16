@@ -1,0 +1,41 @@
+# =============================================================================
+# profiles/client.composer.yml — client dimension = composer (real PHP client)
+# =============================================================================
+# Adds a Composer 2 container that joins the DTF network and targets the backend
+# BY SERVICE NAME (http://backend:8080). The format-conformance tier's composer
+# plugin `docker exec`s into it to run a REAL `composer update --prefer-dist`
+# that reads `packages.json` -> `metadata-url` (p2) -> `dist.url`, FOLLOWS the
+# ABSOLUTE dist URL back to AK, downloads the archive, and extracts it into
+# `vendor/` (the #2361/#2370/#2421 regression class — a relative dist.url made
+# Composer silently fall back to a `source` git clone and bypass the proxy).
+#
+# The consumer composer.json disables packagist.org and pins the AK repo as the
+# ONLY source, so the install can succeed ONLY via AK; the assertion checks
+# `installed.json` records `installation-source: dist` (NOT source), which is
+# the discriminator upload-only curl tests cannot see.
+#
+# arm64: the rig is aarch64. `composer:2` publishes an arm64/v8 manifest
+# (verified with `docker manifest inspect`), so it runs natively — no amd64-only
+# surprise (the brick-4 trap).
+#
+# The image's default entrypoint execs `composer`; we override it to
+# `sleep infinity` so the plugin can exec into a long-lived container (same
+# discipline as client.conda.yml). It waits on backend health via depends_on.
+# COMPOSER_ALLOW_SUPERUSER silences the root warning; secure-http is disabled
+# per-run in the consumer config (plain-HTTP cluster-internal backend).
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-composer:
+    image: composer:2
+    container_name: ak-dtf${DTF_SLOT}-client-composer
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    environment:
+      COMPOSER_ALLOW_SUPERUSER: "1"
+      COMPOSER_NO_INTERACTION: "1"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

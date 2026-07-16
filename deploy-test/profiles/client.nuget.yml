@@ -1,0 +1,43 @@
+# =============================================================================
+# profiles/client.nuget.yml — client dimension = nuget (a real dotnet client)
+# =============================================================================
+# Adds a .NET SDK container that joins the DTF network and targets the backend
+# BY SERVICE NAME (http://backend:8080). The format-conformance tier's nuget
+# plugin `docker exec`s into it to:
+#   1. `dotnet new classlib` + `dotnet pack` a dependency-free marker package,
+#   2. `dotnet nuget push` it to a hosted AK nuget repo — the CLIENT discovers
+#      the PackagePublish/2.0.0 resource from the v3 service index (that
+#      discovery IS part of the test),
+#   3. run a REAL `dotnet restore` that reads the v3 index -> RegistrationsBaseUrl
+#      / PackageBaseAddress(flatcontainer) and FOLLOWS the advertised location
+#      to fetch the .nupkg (the #2580 path — the client following the advertised
+#      location, not the native upload route that already works).
+#
+# arm64: the rig is aarch64. `mcr.microsoft.com/dotnet/sdk:8.0` publishes an
+# arm64/v8 manifest (verified with `docker manifest inspect`), so it runs
+# natively — no amd64-only surprise (the brick-4 trap). It is ~800 MB, so it is
+# pre-pulled before a batch run.
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats it
+# ready once running (same discipline as client.conda.yml). It waits on backend
+# health via depends_on. dotnet restore/pack of a dependency-free classlib
+# resolves the framework reference packs from the SDK's bundled NuGetFallback
+# folder, so the ONLY configured source can be the AK repo (no nuget.org).
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-nuget:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    container_name: ak-dtf${DTF_SLOT}-client-nuget
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    environment:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

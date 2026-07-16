@@ -1,0 +1,41 @@
+# =============================================================================
+# profiles/client.maven.yml — client dimension = maven (a real Maven client)
+# =============================================================================
+# Adds a Maven 3.9 (Temurin 17) container that joins the DTF network and targets
+# the backend BY SERVICE NAME (http://backend:8080). The format-conformance
+# tier's maven plugin `docker exec`s into it to:
+#   1. assemble a synthetic marker JAR + POM,
+#   2. `mvn deploy:deploy-file` it to a hosted AK maven repo,
+#   3. run a REAL `mvn dependency:get` (empty local repo) that resolves the GAV
+#      path + checksums and FOLLOWS the advertised `maven-metadata.xml` /
+#      GAV layout to fetch the artifact (the #2580 / #2183 path — the resolver
+#      following the advertised location + verifying the .sha1 sidecar, not the
+#      native upload route that already works).
+#
+# This ports the proven corpus `tests/formats/test-maven-native-client.sh`
+# verbs (deploy:deploy-file at :175, dependency:get at :235) onto the DTF
+# topology so future thread x format work (s3/upgrade x mvn) has a base.
+#
+# arm64: the rig is aarch64. `maven:3.9-eclipse-temurin-17` publishes an
+# arm64/v8 manifest (verified with `docker manifest inspect`), so it runs
+# natively — no amd64-only surprise (the brick-4 trap).
+#
+# The image's default entrypoint is `mvn-entrypoint.sh`; we override it to
+# `sleep infinity` so the plugin can exec into a long-lived container (same
+# discipline as client.conda.yml). It waits on backend health via depends_on.
+# The plugin writes a hermetic settings.xml (localRepository under /tmp) that
+# also overrides Maven 3.8.1+'s built-in http-blocker mirror so the plain-HTTP
+# cluster-internal backend is reachable (see the corpus native-client script).
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-maven:
+    image: maven:3.9-eclipse-temurin-17
+    container_name: ak-dtf${DTF_SLOT}-client-maven
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]
