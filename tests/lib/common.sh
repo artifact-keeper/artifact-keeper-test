@@ -1514,12 +1514,18 @@ assert_count() {
 # ---------------------------------------------------------------------------
 
 # require_cmd CMD
-# Skips the entire suite (exit 0) if CMD is not on PATH.
+# Verifies CMD is on PATH. If it is missing this routes through skip_suite so
+# it obeys the same RELEASE_GATE contract as every other pre-flight skip:
+#   - RELEASE_GATE unset (local dev): graceful skip (JUnit <skipped/>, exit 0).
+#   - RELEASE_GATE=1 (release gate): HARD FAIL (exit 1) unless the reason is on
+#     the documented capability-exemption allowlist.
+# A bare `exit 0` here was a silent-success hole (sibling of the skip() hole):
+# a gate runner missing a required tool (e.g. npm) would go green without ever
+# exercising the flow.
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" &>/dev/null; then
-    echo "SKIP: ${cmd} not found, skipping suite ${_SUITE_NAME:-unknown}"
-    exit 0
+    skip_suite "${cmd} not found on PATH; required command missing"
   fi
 }
 

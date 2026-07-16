@@ -1,0 +1,16 @@
+# =============================================================================
+# profiles/storage.filesystem.yml — storage dimension = filesystem (DEFAULT)
+# =============================================================================
+# The trivial default overlay. compose.base.yml already declares the backend
+# and a /data volume; the only opinion this profile adds is pinning
+# STORAGE_BACKEND=filesystem explicitly (so a tier that selects it is
+# self-documenting rather than relying on the base default).
+#
+# On filesystem storage each repository physically owns its own key space, so
+# the cloud cross-tenant class (#2504/#2574) cannot manifest here — that is why
+# the isolation tier uses storage.s3.yml instead.
+# =============================================================================
+services:
+  backend:
+    environment:
+      STORAGE_BACKEND: filesystem

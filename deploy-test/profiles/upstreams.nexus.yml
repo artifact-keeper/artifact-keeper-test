@@ -1,0 +1,65 @@
+# =============================================================================
+# profiles/upstreams.nexus.yml — upstreams=nexus overlay (migration source)
+# =============================================================================
+# Adds a pinned Sonatype Nexus 3 as a MIGRATION SOURCE on the slot's own DTF
+# network, for the migration tier (#2457: Nexus -> AK Docker migration produced
+# hollow / unpullable images; the multi-arch leg was the one the v1.5.5-era
+# fix missed).
+#
+# VENDORED (not `include:`d) from rig/compose.nexus.yml — flagged deviation:
+# the rig file pins a fixed project name (ak-nexus-2457), fixed container name
+# and fixed host ports (8071/8072), all of which violate the DTF per-slot
+# isolation contract (two concurrent migration tiers would collide), and a
+# relative `include:` path to rig/ does not exist in the productized
+# artifact-keeper-test home. Image digest, JVM sizing, healthcheck and volume
+# semantics are copied verbatim from the rig file.
+#
+# Nexus is HEAVY: -Xmx1g JVM, 2-3 min boot. `run.sh` uses `up -d --wait`, so
+# the tier is health-gated on /service/rest/v1/status before the oracle runs
+# (start_period 180s + 30x10s retries ~= 8 min worst case).
+#
+# Ports (exported by harness/lib/ports.sh per slot):
+#   NEXUS_API_PORT    -> 8081  Nexus REST API + UI (bootstrap/seed talk to this)
+#   NEXUS_DOCKER_PORT -> 8082  Docker V2 hosted connector (skopeo/docker push)
+#
+# Volume note (from the rig file): sonatype/nexus3 creates /nexus-data owned by
+# uid 200; docker seeds a FRESH named volume from the image dir, so no chown is
+# needed. `run.sh` tears it down with `down -v`.
+# =============================================================================
+
+services:
+  nexus:
+    # PINNED version + digest (never :latest) — same pin as rig/compose.nexus.yml.
+    image: sonatype/nexus3:3.90.4@sha256:e71768c68f3bfd69b95735b7e328cd88a274135d3c448dafcdcc2555b3035ebe
+    container_name: ak-dtf${DTF_SLOT}-nexus
+    environment:
+      # Keep the JVM small; this is a throwaway migration source.
+      INSTALL4J_ADD_VM_PARAMS: >-
+        -Xms1g -Xmx1g -XX:MaxDirectMemorySize=1g
+        -Dnexus.scripts.allowCreation=true
+    ports:
+      - "127.0.0.1:${NEXUS_API_PORT:?set NEXUS_API_PORT (ports.sh)}:8081"
+      - "127.0.0.1:${NEXUS_DOCKER_PORT:?set NEXUS_DOCKER_PORT (ports.sh)}:8082"
+    volumes:
+      - nexus_data:/nexus-data
+    healthcheck:
+      # curl is present in the image. Nexus takes 2-3 min to boot.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/service/rest/v1/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 180s
+    networks: [dtf]
+
+  backend:
+    environment:
+      # Migration source-URL SSRF allowlist (#2389 keeps migration sources
+      # fail-closed against private/internal targets — correct in production).
+      # In THIS profile the source Nexus deliberately lives on the slot's
+      # private docker bridge, so the backend must be allowed to reach it.
+      # Test-rig-only override; same CIDR set the rig harness uses.
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: ${AK_SSRF_ALLOW_PRIVATE_CIDRS:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+
+volumes:
+  nexus_data:
+    name: ak-dtf${DTF_SLOT}_nexus_data

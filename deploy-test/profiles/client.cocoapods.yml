@@ -1,0 +1,33 @@
+# =============================================================================
+# profiles/client.cocoapods.yml — client dimension = cocoapods (FEASIBILITY)
+# =============================================================================
+# FEASIBILITY PROBE leg (game-plan §4.17). A real `pod install` consumes either
+# a git Specs repo (git transport) or the CDN layout (`/CocoaPods-version.yml`,
+# `/all_pods_versions_*.txt` shards, MD5-fanned `Specs/<a>/<b>/<c>/<name>/...`).
+# The backend serves neither: it exposes a flat `all_specs` JSON + a
+# `Specs/<name>/<version>/<name>.podspec.json` route + a `pods/*` download route.
+# So a real pod client cannot consume this repo — see rig/results/format-
+# conformance/cocoapods-finding.md.
+#
+# The cocoapods plugin therefore ships FC_ENABLED: 0 (probe only): it does NOT
+# fake a green `pod install`. This overlay provides a ruby container with the
+# CocoaPods gem so the probe (when run manually with FC_ONLY=cocoapods and the
+# header flipped to 1) can demonstrate `pod repo add-cdn` failing against the
+# advertised layout, alongside a curl self-consistency check of what the backend
+# DOES serve.
+#
+# arm64: `ruby:3.3` publishes an arm64/v8 manifest (verified with
+# `docker inspect .Architecture`). The cocoapods gem is installed on demand in
+# fc_client_setup (rig egress proven by the dnf leg).
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-cocoapods:
+    image: ruby:3.3
+    container_name: ak-dtf${DTF_SLOT}-client-cocoapods
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

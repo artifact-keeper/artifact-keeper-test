@@ -1,0 +1,37 @@
+# =============================================================================
+# profiles/client.gitlfs.yml — client dimension = gitlfs (a real git-lfs client)
+# =============================================================================
+# Adds an alpine container that joins the DTF network and targets the backend BY
+# SERVICE NAME (http://backend:8080). The format-conformance tier's gitlfs plugin
+# installs `git git-lfs` at setup and drives a REAL git-lfs round trip: a local
+# `file://` bare repo carries the git bytes (commits + LFS pointer files) while
+# the LFS object bytes go to AK (mount /lfs) via the Batch API. A fresh clone
+# with an EMPTY lfs cache then runs `git lfs pull`, which MUST fetch the object
+# from AK through the advertised batch->download href (the #2580 path).
+#
+# arm64: the rig is aarch64. `alpine:3.21` publishes an arm64/v8 manifest
+# (verified with `docker manifest inspect`), and apk serves arm64 git/git-lfs.
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` (no healthcheck, ready-once-running, same discipline as
+# client.dnf.yml). It waits on backend health via depends_on. Tool install
+# happens in the plugin (fc_publish/fc_client_setup) so a network blip fails
+# loudly in one test, not mysteriously later.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-gitlfs:
+    image: alpine:3.21
+    container_name: ak-dtf${DTF_SLOT}-client-gitlfs
+    entrypoint: ["/bin/sh", "-c"]
+    # alpine ships only /bin/sh; the shared driver (native_client.sh) execs via
+    # `bash -c`, so `bash` MUST exist before the plugin runs. Install the LFS
+    # toolchain (bash + git + git-lfs + curl) at container startup via sh, then
+    # idle. The plugin still verifies each tool is present (fail loudly, no silent
+    # skip) and only fails the affected test if a startup egress blip left one out.
+    command: ["apk add --no-cache bash git git-lfs curl >/dev/null 2>&1; sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

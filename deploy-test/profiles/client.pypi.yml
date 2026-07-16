@@ -1,0 +1,31 @@
+# =============================================================================
+# profiles/client.pypi.yml — client dimension = pypi (real twine + pip clients)
+# =============================================================================
+# Adds a Python container that joins the DTF network and targets the backend BY
+# SERVICE NAME (http://backend:8080). The format-conformance tier's pypi plugin
+# `docker exec`s into it to run a REAL `twine upload` of a wheel and then a REAL
+# `pip install --index-url .../simple/`, which reads the PEP 503 simple index,
+# resolves the advertised `<a href=...#sha256=...>` wheel URL, FOLLOWS it to
+# download the wheel (verifying the sha256 fragment), and installs the marker
+# module onto the client fs (the #2580 path — the client following the
+# advertised location, not the native upload route).
+#
+# twine + build are installed on demand in fc_client_setup (rig egress is proven
+# by the dnf leg's `dnf install`), pinned to known-good versions so a floating
+# :latest never drifts the wire format.
+#
+# arm64: the rig is aarch64. `python:3.12-slim` publishes an arm64/v8 manifest
+# (verified with `docker inspect .Architecture`), so it runs natively — no
+# amd64-only surprise (the brick-4 trap).
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-pypi:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-client-pypi
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

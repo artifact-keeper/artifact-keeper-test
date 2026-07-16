@@ -1,0 +1,66 @@
+# =============================================================================
+# profiles/client.terraform.yml — client dimension = terraform (+ TLS sidecar)
+# =============================================================================
+# RESEARCH-GRADE leg (game-plan §4.16). Terraform/OpenTofu's registry protocols
+# demand HTTPS and host-rooted service discovery (`https://HOST/.well-known/
+# terraform.json`), which the per-repo backend cannot satisfy directly. The one
+# path-prefixed, TLS-only exception is the Provider Network Mirror protocol:
+#
+#     provider_installation {
+#       network_mirror { url = "https://tf.dtf.local/terraform/<repo>/" }
+#     }
+#
+# So this overlay adds TWO services:
+#   * caddy-terraform — a TLS terminator that presents an INTERNAL (self-signed)
+#     cert for `tf.dtf.local` and reverse-proxies to the plaintext backend. The
+#     hostname `tf.dtf.local` is a docker network ALIAS on this service, so the
+#     terraform container resolves it over the compose network (no /etc/hosts
+#     edit). Caddy's internal CA root lives at
+#     /data/caddy/pki/authorities/local/root.crt; the plugin trusts it in the
+#     terraform container at fc_client_setup time.
+#   * client-terraform — the real `hashicorp/terraform:1.9` CLI.
+#
+# arm64: `hashicorp/terraform:1.9` and `caddy:2` both publish arm64/v8 manifests
+# (verified with `docker inspect .Architecture`) — no amd64-only surprise.
+#
+# NOTE: the terraform plugin ships FC_ENABLED: 0 (KNOWN-RED). The network-mirror
+# handlers are gated to REMOTE/proxy repos and serve an upstream, not a hosted
+# repo's own uploaded providers — see rig/results/format-conformance/
+# terraform-finding.md. The overlay + plugin are kept faithful so re-enabling is
+# a one-line edit once the backend grows hosted network-mirror support.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  caddy-terraform:
+    image: caddy:2
+    container_name: ak-dtf${DTF_SLOT}-caddy-terraform
+    # Serve HTTPS for tf.dtf.local with an internal (self-signed) issuer and
+    # reverse-proxy everything to the plaintext backend on the compose network.
+    command:
+      - caddy
+      - reverse-proxy
+      - --from
+      - https://tf.dtf.local
+      - --to
+      - http://backend:8080
+      - --internal-certs
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      dtf:
+        aliases:
+          - tf.dtf.local
+
+  client-terraform:
+    image: hashicorp/terraform:1.9
+    container_name: ak-dtf${DTF_SLOT}-client-terraform
+    # The stock entrypoint is the terraform binary; override so the container
+    # idles and the plugin can `docker exec` arbitrary shell into it.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

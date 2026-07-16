@@ -1,0 +1,23 @@
+# DTF tier manifest: sso  (brick 5)
+# Profile-set: filesystem / single + sso=saml (Keycloak IdP in-compose).
+# The #2449 CRITICAL SAML XML-Signature-Wrapping (XSW) auth-bypass class: an
+# attacker wraps an unsigned attacker-controlled assertion around/alongside a
+# validly-signed one so a whole-doc last-wins parser consumes attacker claims
+# OUTSIDE the signed subtree and escalates to admin. The v1.5.4 fix scopes claim
+# extraction to the VERIFIED signed subtree (backend saml_service.rs).
+#
+# Oracle: drives the real SAML ACS flow over HTTP against the live backend. A
+# stateless Rust payload generator (probe/) mints an ephemeral IdP keypair,
+# registers its cert as the SAML provider certificate via the admin API, and
+# signs base assertions with bergshamra (the SAME crate the backend verifies
+# with) — then crafts every XSW variant. Legit signed assertion -> authenticates
+# as the mapped user; each XSW variant -> REJECTED / NOT admin (DB-asserted).
+# Keycloak proves real-IdP interop (live SAML descriptor + AK login handoff).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives many admin + ACS logins back to
+# back through one admin; the base default (ON) would throttle them. A tier that
+# must disable a shipped control does so explicitly, per design §2.2 (same as the
+# isolation tier).
+PROFILES="storage.filesystem sso.saml"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

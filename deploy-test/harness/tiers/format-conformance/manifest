@@ -1,0 +1,43 @@
+# DTF tier manifest: format-conformance
+# =============================================================================
+# ONE shared filesystem AK instance (backend + postgres on one slot) + every
+# enabled plugin's client overlay. Each format publishes to its OWN repo
+# (/conda/dtf-conda-..., /cargo/dtf-cargo-...) and drives a REAL native client
+# through the registry's advertised metadata/location (the #2580 bug class).
+# Client containers are `sleep infinity` (idle ~0 CPU), so many on one slot is
+# fine; the cost is image pulls, not runtime. See game-plan §2.
+#
+# PROFILES is COMPUTED from the plugin registry: the storage backend plus, for
+# every FC_ENABLED plugin, its FC_PROFILE client overlay. Adding a plugin
+# therefore never edits this file. FC_ONLY (env, comma/space list of formats)
+# narrows BOTH the compose profile-set here AND the oracle loop, so a single-
+# format dev iteration stands up only backend+postgres+that one client.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo create +
+# publish + repeated metadata/download requests back-to-back through a single
+# admin user, per format, sequentially; the base default (ON) would throttle
+# them (same rationale as the native-client tier). The base default stays ON.
+
+_fc_dir="$(dirname "${BASH_SOURCE[0]}")"
+_fc_plugins="${_fc_dir}/plugins"
+
+PROFILES="storage.filesystem"
+if [ -d "$_fc_plugins" ]; then
+  for _p in "$_fc_plugins"/*.sh; do
+    [ -e "$_p" ] || continue
+    _fmt="$(grep -m1 '^# FC_FORMAT:'  "$_p" | awk '{print $3}')"
+    _en="$(grep -m1 '^# FC_ENABLED:' "$_p" | awk '{print $3}')"
+    _prof="$(grep -m1 '^# FC_PROFILE:' "$_p" | awk '{print $3}')"
+    [ "${_en:-1}" = "1" ] || continue
+    if [ -n "${FC_ONLY:-}" ]; then
+      case " ${FC_ONLY//,/ } " in
+        *" ${_fmt} "*) : ;;
+        *) continue ;;
+      esac
+    fi
+    [ -n "$_prof" ] && PROFILES="$PROFILES $_prof"
+  done
+fi
+
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

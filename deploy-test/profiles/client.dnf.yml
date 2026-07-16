@@ -1,0 +1,32 @@
+# =============================================================================
+# profiles/client.dnf.yml — client dimension = dnf (a real Fedora RPM client)
+# =============================================================================
+# Adds a Fedora client container that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The native-client tier's
+# oracle `docker exec`s into it to:
+#   1. build a minimal, dependency-free noarch marker RPM (rpmbuild),
+#   2. publish it to a hosted AK RPM repo,
+#   3. run a REAL `dnf install` that reads repomd.xml -> primary.xml.gz and
+#      FOLLOWS the repodata-advertised `<location href>` to fetch + install
+#      the package (the #2580 path — the client following the advertised
+#      location, not the native upload route that already works).
+#
+# arm64: the rig is aarch64. `fedora:*` is multi-arch (arm64/v8 present), so
+# this image runs natively — no amd64-only surprise (the trap brick 4 hit).
+#
+# The container just needs to be up so the oracle can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats
+# it as ready once running (same discipline as profiles/proxy.squid.yml's
+# healthcheck-less squid). It waits on backend health via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-dnf:
+    image: fedora:40
+    container_name: ak-dtf${DTF_SLOT}-client-dnf
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]
