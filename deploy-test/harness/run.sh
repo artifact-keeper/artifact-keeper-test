@@ -26,6 +26,9 @@
 # (saml/keycloak), `native-client` (dnf/apt/docker), `upgrade` (two-phase image
 # swap), `supply-chain` (trivy scanner efficacy), and `dos` (rate-limit /
 # worker-starvation) tiers exist. Row 8 (WASM plugin signing) remains a GAP.
+# `format-conformance` (filesystem, ONE shared AK + per-format client plugins)
+# adds real publish->consume conformance per registry format (conda is the
+# reference; more formats are drop-in plugins, no shared-file edits).
 # =============================================================================
 set -uo pipefail
 
@@ -251,7 +254,7 @@ case "$CMD" in
     # the full-fidelity coexistence proof run the differing tiers individually.
     # Per-tier image support for `all` is a follow-up.
     overall=0
-    for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos; do
+    for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
