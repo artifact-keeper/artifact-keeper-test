@@ -1,0 +1,36 @@
+# =============================================================================
+# profiles/client.helm.yml — client dimension = helm (a real Helm v3 client)
+# =============================================================================
+# Adds a `helm` container that joins the DTF network and targets the backend BY
+# SERVICE NAME (http://backend:8080). The format-conformance tier's helm plugin
+# `docker exec`s into it to package a chart, `helm repo add/update`, and then
+# `helm pull dtf/dtf-marker` — the REAL client resolving the chart's location
+# from `index.yaml`'s `urls[]` and FOLLOWING it (the #2580 path). There is NO
+# curl fallback in the consume path: a failing `helm pull` fails the test, which
+# is exactly the test-helm.sh:127-137 anti-pattern this tier bans.
+#
+# The OCI edge case (`oci_push_pull`) also drives `helm push/pull oci://...
+# --plain-http` against a docker-format repo through this same container, so no
+# extra profile is needed.
+#
+# arm64: the rig is aarch64. `alpine/helm:3.16` publishes an arm64/v8 manifest
+# (verified with `docker manifest inspect`), so it runs natively — no amd64-only
+# surprise (the brick-4 trap).
+#
+# The alpine/helm image's entrypoint IS `helm`, so we override entrypoint to a
+# shell and idle on `sleep infinity`; the plugin execs `helm` explicitly. No
+# healthcheck (ready once running, same discipline as client.dnf.yml); it waits
+# on backend health via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-helm:
+    image: alpine/helm:3.16
+    container_name: ak-dtf${DTF_SLOT}-client-helm
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

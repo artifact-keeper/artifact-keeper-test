@@ -1,0 +1,28 @@
+# =============================================================================
+# profiles/client.apt.yml — client dimension = apt (a real Debian APT client)
+# =============================================================================
+# Adds a Debian client container that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The native-client tier's
+# oracle `docker exec`s into it to run a REAL `apt-get install` that reads the
+# dists/{dist}/Release + component/binary-{arch}/Packages index and FOLLOWS the
+# advertised `Filename:` field to fetch + install the .deb (the apt analogue of
+# the #2580 RPM `<location href>` path — the client following the advertised
+# location, not the native upload route that already works).
+#
+# arm64: `debian:*` is multi-arch (arm64/v8 present) so this runs natively on
+# the aarch64 rig. `dpkg-deb`/`apt-get` are in the base image (no extra deps).
+#
+# Healthcheck-less `sleep infinity` container (see client.dnf.yml rationale);
+# `up --wait` treats it as ready once running. Waits on backend via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-apt:
+    image: debian:12
+    container_name: ak-dtf${DTF_SLOT}-client-apt
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

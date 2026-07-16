@@ -1,0 +1,31 @@
+# =============================================================================
+# profiles/client.npm.yml — client dimension = npm (a real npm CLI client)
+# =============================================================================
+# Adds a Node.js container that joins the DTF network and targets the backend
+# BY SERVICE NAME (http://backend:8080). The format-conformance tier's npm
+# plugin `docker exec`s into it to run a REAL `npm publish` of a scoped package
+# and then a REAL `npm install @dtf/marker`, which reads the packument, resolves
+# the advertised `dist.tarball` URL, FOLLOWS it to download the tarball, and
+# unpacks the marker file onto the client fs (the #2580 path — the client
+# following the advertised location, not the native upload route).
+#
+# arm64: the rig is aarch64. `node:22-slim` publishes an arm64/v8 manifest
+# (verified with `docker inspect .Architecture`), so it runs natively — no
+# amd64-only surprise (the brick-4 trap).
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats it
+# ready once running (same discipline as client.dnf.yml). It waits on backend
+# health via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-npm:
+    image: node:22-slim
+    container_name: ak-dtf${DTF_SLOT}-client-npm
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

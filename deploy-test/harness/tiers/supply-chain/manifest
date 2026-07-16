@@ -1,0 +1,17 @@
+# DTF tier manifest: supply-chain
+# Profile-set: filesystem / single + trivy (the scanner-adapter sidecar).
+# The ONLY topology on which issue #2088 (Trivy image-scan false-clean after the
+# in-image trivy CLI was dropped in #2059) can be reproduced AND gated: a real
+# out-of-process image scanner is wired, so a scanner that completes with 0
+# findings on a known-vulnerable image is observable as the regression it is.
+# Oracle: push a DIGEST-PINNED known-vulnerable image, scan it, and assert
+# PER SCANNER that findings >= FLOOR; a false-clean (0 findings) is a HARD FAIL.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives many admin OCI blob/manifest PUTs
+# and scan polls back-to-back through a single admin; the base default (ON)
+# would throttle them. (The base default stays ON; a tier that must disable a
+# shipped control does so explicitly, per design §2.2 — same as the isolation
+# and proxy-egress tiers. Rate-limiting itself is gated by the `dos` tier.)
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

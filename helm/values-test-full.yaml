@@ -16,13 +16,31 @@ backend:
     tag: dev
     pullPolicy: Always
   replicaCount: 1
+  # Release-gate runs the full gate matrix (20+ test pods: lifecycle,
+  # platform, format-containers, format-native, pinned-cve, security, ...)
+  # concurrently against this ONE shared backend. Under that fan-out the
+  # backend's peak RSS (Rust workers + upload buffers + OpenSearch/Meili
+  # index round-trips + Trivy scan orchestration in the same critical path)
+  # blew past the old 2Gi limit and the pod was OOMKilled. Because every
+  # gate's auth_admin() re-checks readiness with only a 30s budget
+  # (tests/lib/common.sh), a single OOM-restart window during the run
+  # cascades into the whole matrix failing "backend not ready after 30s"
+  # (release-gate run 28901902700 / 2026-07-07: all gates down; the runs
+  # where the pod happened to survive instead surfaced real per-test bugs).
+  #
+  # NOTE: the "namespace quota" the older comments blame is a red herring:
+  # create-test-namespace.sh never creates a ResourceQuota and the
+  # TEST_NAMESPACE_*/TEST_MAX_* repo vars are not consumed anywhere, so the
+  # only memory ceiling in effect is this pod limit. rocky (the ARC node)
+  # has ~157Gi and sits at ~15% used, so we can size the backend generously.
+  # Raised memory 2Gi -> 6Gi (request 256Mi -> 1Gi) and CPU limit 2 -> 3.
   resources:
     requests:
       cpu: 500m
-      memory: 256Mi
+      memory: 1Gi
     limits:
-      cpu: "2"
-      memory: 2Gi
+      cpu: "3"
+      memory: 6Gi
   env:
     ENVIRONMENT: test
     RUST_LOG: info
@@ -88,6 +106,14 @@ backend:
     # actually does so. (Release-gate run 26616763325: webhook-delivery 4
     # failures, all rooted at the producer never starting.)
     WEBHOOKS_V2_PRODUCER_ENABLED: "true"
+    # Blob GC is opt-in (BLOB_GC_ENABLED defaults false → the admin
+    # storage-gc endpoint dry-runs and never reclaims). Enable it so the
+    # v1.3.0 OCI GC reclaim gate (test-oci-gc-mark-sweep.sh, #1660) can prove
+    # an unreferenced blob is actually deleted. The admin-triggered orchestrator
+    # runs mark+sweep at grace 0 (immediate), so a short sweep grace only
+    # affects the scheduler path; keep it short for determinism.
+    BLOB_GC_ENABLED: "true"
+    BLOB_GC_SWEEP_GRACE_SECS: "5"
     # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys

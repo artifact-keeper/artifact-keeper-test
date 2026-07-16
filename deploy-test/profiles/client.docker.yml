@@ -1,0 +1,93 @@
+# =============================================================================
+# profiles/client.docker.yml — client dimension = docker (dind pull client +
+#                              a local upstream OCI registry to proxy)
+# =============================================================================
+# Reproduces the #2477 topology: a `docker pull` through an AK Docker REMOTE
+# (proxy) repository that forces >=2 OCI token exchanges re-presenting the same
+# stored offline/identity token. The pre-#2477 backend treated the daemon's
+# expected reuse of that offline token as a single-use browser refresh token
+# and REVOKED THE FAMILY on the 2nd exchange -> every repeated pull 401'd. The
+# fix (mint_access_from_registry_refresh, non-rotating) makes it reusable.
+#
+# This overlay adds two sidecars:
+#
+#   * upstream-registry — a plain `registry:2` that stands in for the remote
+#     registry the AK proxy repo mirrors. It lives on the DTF network so the
+#     BACKEND reaches it by service name (http://upstream-registry:5000). It
+#     also publishes 127.0.0.1:${TRIVY_PORT}:5000 on the host PURELY so the
+#     oracle can seed it offline from the host's local images (docker treats
+#     127.0.0.1 as insecure by default, so no daemon reconfig is needed). No
+#     Docker Hub egress: the whole leg is self-contained and deterministic.
+#     (TRIVY_PORT is the slot's spare, unused by this tier — reused per the
+#     per-slot-port discipline, exactly as brick 5 reused it for Keycloak,
+#     rather than editing the shared lib/ports.sh.)
+#
+#   * client-docker — a `docker:dind` daemon (the REAL native client). The
+#     oracle `docker exec`s into it to `docker login` to the AK registry and
+#     `docker pull` proxied images. Its daemon trusts the plain-HTTP AK
+#     registry via --insecure-registry=backend:8080. Runs privileged (dind
+#     requirement) with TLS disabled.
+#
+# arm64: `registry:2` and `docker:dind` are both multi-arch (arm64/v8 present)
+# so they run natively on the aarch64 rig.
+#
+# Required vars (exported by run.sh): DTF_SLOT, TRIVY_PORT.
+#
+# Backend patch: the local `upstream-registry` resolves (docker DNS) to a
+# private docker-bridge address (172.16/12). AK's fail-closed SSRF DNS guard
+# blocks private upstreams by default, so a docker REMOTE repo pointing at it
+# would be refused at create/fetch. We opt that RFC1918 space back in with
+# UPSTREAM_ALLOW_PRIVATE_IPS + AK_SSRF_ALLOW_PRIVATE_CIDRS (the same escape
+# hatch proxy.squid.yml uses for its 172.16/12 mock origin) so the proxy repo
+# can reach the in-network upstream. This does NOT touch the client<->AK
+# offline-token path that #2477 actually regressed.
+# =============================================================================
+services:
+  # --- Backend: allow the in-network private upstream registry -------------
+  backend:
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    depends_on:
+      upstream-registry:
+        condition: service_healthy
+
+  # --- Upstream OCI registry the AK proxy repo mirrors ---------------------
+  upstream-registry:
+    image: registry:2
+    container_name: ak-dtf${DTF_SLOT}-upstream-registry
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+    ports:
+      # Host seeding only (127.0.0.1 => docker treats it as insecure by
+      # default). The backend reaches this service by name on the DTF net.
+      - "127.0.0.1:${TRIVY_PORT}:5000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [dtf]
+
+  # --- Real native docker client (dind) ------------------------------------
+  client-docker:
+    image: docker:dind
+    container_name: ak-dtf${DTF_SLOT}-client-docker
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    # dind entrypoint prepends `dockerd` when the first arg starts with `-`.
+    # Trust the plain-HTTP AK registry (backend:8080) so real pulls work.
+    command: ["--insecure-registry=backend:8080"]
+    depends_on:
+      backend:
+        condition: service_healthy
+      upstream-registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "docker info >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+    networks: [dtf]

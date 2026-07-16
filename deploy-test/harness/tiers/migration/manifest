@@ -1,0 +1,16 @@
+# DTF tier manifest: migration
+# Profile-set: filesystem / single + upstreams=nexus (the #2457 topology: a
+# real Nexus 3 migration source next to the backend on the slot's network).
+# Oracle: nexus bootstrap -> seed (single-arch AND multi-arch AND large-index
+# fixtures) -> real AK migration -> vendored nexus_migrate_assert (assert.sh):
+# non-zero-while-bug (config-blob 404, child-manifest 404, oci_blobs==0,
+# per-image `docker pull`). The multi-arch leg is the one #2457/v1.5.5 missed
+# and is exercised explicitly.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repeated OCI token
+# exchanges + two `docker pull`s back-to-back through one admin user; matches
+# the rig harness, which runs its pool slot the same way. (Base default stays
+# ON; a tier that must disable a shipped control does so explicitly, §2.2.)
+PROFILES="storage.filesystem upstreams.nexus"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -1,0 +1,38 @@
+# =============================================================================
+# profiles/client.apk.yml — client dimension = apk (a real Alpine apk client)
+# =============================================================================
+# Adds an `alpine` container that joins the DTF network and targets the backend
+# BY SERVICE NAME (http://backend:8080). The format-conformance tier's apk
+# plugin `docker exec`s into it to:
+#   1. build a dependency-free marker apk in-container via `abuild -F`
+#      (alpine-sdk installed from the default Alpine repos at publish time),
+#   2. publish it to a hosted AK alpine repo,
+#   3. point `/etc/apk/repositories` ONLY at the AK repo and run a REAL
+#      `apk add dtf-marker` that reads the AK-generated APKINDEX.tar.gz and
+#      FOLLOWS the advertised package location to fetch + install it (the #2580
+#      path — the dnf/apt clone for Alpine).
+#
+# arm64: the rig is aarch64. `alpine:3.21` publishes an arm64/v8 manifest
+# (verified with `docker manifest inspect`), so it runs natively and abuild
+# produces an `aarch64` package — no amd64-only surprise (the brick-4 trap).
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck (ready once running, same
+# discipline as client.dnf.yml). It waits on backend health via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-apk:
+    image: alpine:3.21
+    container_name: ak-dtf${DTF_SLOT}-client-apk
+    # nc_exec drives `docker exec ... bash -c`, but the base alpine image ships
+    # only busybox sh. Install bash once at startup (default Alpine repos are
+    # still in place here; the apk plugin rewrites /etc/apk/repositories to the
+    # AK repo only AFTER publish), then idle.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["apk add --no-cache bash >/dev/null 2>&1 || true; exec sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

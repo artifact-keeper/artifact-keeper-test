@@ -1,0 +1,35 @@
+# =============================================================================
+# profiles/client.swift.yml — client dimension = swift (a real SwiftPM client)
+# =============================================================================
+# Adds a swift toolchain container that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The format-conformance tier's
+# swift plugin `docker exec`s into it to run a REAL `swift package resolve`
+# against the Swift Package Registry protocol (SE-0292): SwiftPM lists releases
+# (`/:scope/:name`), reads the release metadata + source-archive checksum,
+# fetches the Package.swift manifest BEFORE the archive (#1100), downloads the
+# `.zip`, verifies the checksum, and pins it in Package.resolved.
+#
+# arm64: the rig is aarch64. `swift:6.0` publishes an arm64/v8 manifest (verified
+# with `docker manifest inspect`), so the toolchain runs natively (no amd64-only
+# surprise — the brick-4 trap).
+#
+# STRICTNESS NOTE (game-plan §4.13 / §6): SwiftPM is the strictest client on the
+# list — the registry protocol wants HTTPS. We use `--allow-insecure-http`
+# against the plaintext in-cluster backend. A red on TLS/protocol strictness is
+# itself a deliverable (a backend/feature-gap finding), not something to soften.
+#
+# The container runs `sleep infinity` (no healthcheck, ready-once-running, same
+# discipline as client.conda.yml) and waits on backend health via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-swift:
+    image: swift:6.0
+    container_name: ak-dtf${DTF_SLOT}-client-swift
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

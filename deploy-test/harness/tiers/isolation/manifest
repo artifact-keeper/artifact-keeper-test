@@ -1,0 +1,13 @@
+# DTF tier manifest: isolation
+# Profile-set: s3 / single. A real shared object store (MinIO) — the only
+# topology on which the #2504 cross-tenant read+write and #2574/#2584 row-less
+# Maven flat-key classes can manifest.
+# Oracle: the fail-closed prove.sh A-F cross-tenant gate (vendored, patched).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives many admin+alice logins and Maven
+# PUTs back-to-back through a single admin; the base default (ON) would throttle
+# them. Matches the proof rig's compose.s3.yml. (The base default stays ON; a
+# tier that must disable a shipped control does so explicitly, per design §2.2.)
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

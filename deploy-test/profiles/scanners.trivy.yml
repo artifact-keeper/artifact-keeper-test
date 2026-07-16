@@ -1,0 +1,96 @@
+# =============================================================================
+# profiles/scanners.trivy.yml — scanners dimension = trivy (image-scan adapter)
+# =============================================================================
+# Stands up the in-house AK scanner-adapter sidecar (docker/scanner-adapter,
+# #2091) that the backend talks to over the Harbor Pluggable-Scanner API v1 for
+# CONTAINER-IMAGE scans. This is the topology that reproduces issue #2088: after
+# the trivy CLI was removed from the backend image (#2059), container-image
+# Trivy scans silently returned 0 findings and were recorded `completed` — a
+# false-clean. The adapter-sidecar (#2088/#2090) restores real Trivy image scans
+# out-of-process; this overlay wires it exactly as the blue-fix worker pool does
+# (rig/compose.worker.yml `--profile trivy`, rig/compose.bluefix.trivy.yml).
+#
+# The overlay ADDS the `trivy` sidecar and PATCHES backend for the scanner tier:
+#   * trivy   — artifact-keeper-scanner-adapter: a stdlib Go service serving the
+#               Harbor Pluggable-Scanner API on :8090. It pulls the target image
+#               from the AK registry (backend:8080, plain HTTP => TRIVY_INSECURE)
+#               and execs the bundled trivy binary. Stateless; downloads the vuln
+#               DB on first scan into a cached volume so the first-run DB pull
+#               does not dominate the tier.
+#   * backend — TRIVY_ADAPTER_URL points image scans at the adapter (when set,
+#               the ImageScanner is registered and FAILS CLOSED on any adapter
+#               error — the #2088 fix contract). AK_GRYPE_REGISTRY_HOST tells the
+#               backend which registry host the adapter should pull the stored
+#               image from (its own registry, over the compose net). TRIVY_URL
+#               also points at the adapter for fs/dependency scans.
+#
+# The service name stays `trivy` and the internal port stays 8090 so nothing
+# else changes; the host publish port is the slot's ${TRIVY_PORT} (from
+# harness/lib/ports.sh, 8250+slot) — never hardcoded, same non-collision
+# discipline as the HTTP/PG/GRPC block.
+#
+# Required vars (run.sh exports them): DTF_SLOT, TRIVY_PORT.
+# Optional: SCANNER_ADAPTER_IMAGE (default artifact-keeper-scanner-adapter:dev).
+# =============================================================================
+services:
+  # --- In-house scanner-adapter (Harbor Pluggable-Scanner API v1) ----------
+  trivy:
+    image: ${SCANNER_ADAPTER_IMAGE:-artifact-keeper-scanner-adapter:dev}
+    container_name: ak-dtf${DTF_SLOT}-trivy
+    environment:
+      # Listen on :8090 (the service-name:port the backend expects).
+      SCANNER_ADAPTER_ADDR: ":8090"
+      # The AK registry serves manifests/blobs over PLAIN HTTP on the compose
+      # net, so the adapter must treat it as an insecure registry.
+      SCANNER_TRIVY_INSECURE: "true"
+      # Persist the trivy vuln DB across scans within a run so only the first
+      # scan pays the DB download.
+      SCANNER_TRIVY_CACHE_DIR: /home/scanner/.cache/trivy
+      SCANNER_LOG_LEVEL: ${SCANNER_LOG_LEVEL:-info}
+      # Pull the vuln DB from ghcr (anon-token) — trivy's historical default DB
+      # mirror (mirror.gcr.io/aquasec/trivy-db) now returns UNAUTHORIZED, which
+      # would make every image scan `failed` (an infra fault, not a real result).
+      # The trivy subprocess inherits this from the adapter env. ~100 MiB, cached
+      # in dtf_trivycache after the first scan. Override to point at an in-cluster
+      # mirror if ghcr egress is unavailable in CI.
+      TRIVY_DB_REPOSITORY: ${TRIVY_DB_REPOSITORY:-ghcr.io/aquasecurity/trivy-db:2}
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:8090"
+    volumes:
+      # Named volume => initialized with the image's scanner:scanner (uid 1001)
+      # ownership so trivy can write the downloaded DB. Cache survives for the
+      # life of the tier run (removed by the harness `down -v` teardown, so no
+      # host leftovers).
+      - dtf_trivycache:/home/scanner/.cache
+    healthcheck:
+      # The adapter serves the Harbor metadata document once it is listening.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/api/v1/metadata | grep -q Trivy"]
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 12
+    networks: [dtf]
+    restart: unless-stopped
+
+  # --- Backend: wire image + fs scans through the adapter ------------------
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      trivy:
+        condition: service_healthy
+    environment:
+      # Container IMAGE scans go through the adapter (Harbor API). When set, the
+      # ImageScanner is registered and fails closed on any adapter error — the
+      # exact #2088 contract (no more silent scan_type=image completed/0).
+      TRIVY_ADAPTER_URL: http://trivy:8090
+      # fs/dependency scans (the trivy server path) also resolve to the adapter.
+      TRIVY_URL: http://trivy:8090
+      # Registry host the adapter pulls the stored target image from. Points at
+      # the backend's OWN registry over the compose net (service name `backend`,
+      # plain HTTP :8080). resolve_registry_host() strips scheme/creds.
+      AK_GRYPE_REGISTRY_HOST: backend:8080
+
+volumes:
+  dtf_trivycache:
+    name: ak-dtf${DTF_SLOT}_trivycache

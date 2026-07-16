@@ -1,0 +1,143 @@
+# =============================================================================
+# profiles/proxy.squid.yml — proxy dimension = squid (outbound egress proxy)
+# =============================================================================
+# Stands up the topology that reproduces issue #2570: the backend is forced to
+# make ALL of its outbound HTTP(S) through a CONFIGURED egress proxy whose own
+# address sits on a PRIVATE network. AK's fail-closed SSRF DNS guard used to
+# resolve the proxy host, see a private IP, and block it — so every remote /
+# pull-through fetch died as a 502 ("egress proxy connection refused by SSRF
+# egress policy"). The fix (`configured_proxy_hosts()` in
+# backend/src/services/ssrf_dns.rs) exempts the EXACT env-configured proxy host
+# from the SSRF mode filter, BEFORE the private-IP block, keyed on the proxy
+# host token only (never widening the guard for any other target).
+#
+# The overlay ADDS three sidecars and PATCHES backend for the proxy-egress tier:
+#   * squid          — the egress forward proxy (3proxy; anonymous, allow-all).
+#                      Its BACKEND-FACING interface is on a NON-172 private net
+#                      (10.201.<slot>.0/24) so the SSRF guard genuinely blocks it
+#                      on a pre-#2570 backend (the discriminating condition).
+#   * mock-upstream  — a tiny nginx "origin" the proxy can reach, on a private
+#                      172.16/12 address (the LEGIT pull-through target).
+#   * mock-evil      — a tiny nginx on the NON-allowlisted egress net; a repo
+#                      whose upstream hostname resolves here must stay REFUSED
+#                      (proves the proxy exemption did not open a hole).
+#
+# The backend is patched with:
+#   * HTTP_PROXY/HTTPS_PROXY/ALL_PROXY -> squid  (the configured egress proxy;
+#     the host token `squid` is exactly what configured_proxy_hosts() exempts).
+#   * NO_PROXY=localhost,127.0.0.1,::1  so the container healthcheck curl and any
+#     loopback call bypass the proxy (otherwise curl would tunnel /health to the
+#     proxy and the stack would never come up healthy).
+#   * UPSTREAM_ALLOW_PRIVATE_IPS=true + AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12
+#     — the private-IP escape hatch that lets the LEGIT mock-upstream (172.16/12)
+#     be reached, while the SSRF-half targets (10.x / a non-172 container IP) stay
+#     blocked. The CIDR ALLOWLIST is the load-bearing knob: when it is set the
+#     backend honors ONLY those CIDRs and ignores the blanket toggle, so squid's
+#     own 10.201.x address is NOT allowlisted and the pre-fix 502 (discrimination)
+#     survives. `UPSTREAM_ALLOW_PRIVATE_IPS=true` is set too per the tier design
+#     but is deliberately NOT the mechanism that reaches the upstream here.
+#
+# Required vars (run.sh exports them): DTF_SLOT (per-slot subnets + static IPs so
+# concurrent slots never collide on network/IP; same non-collision discipline as
+# the HTTP/PG/GRPC port block).
+# =============================================================================
+services:
+  # --- Egress forward proxy (the "squid" of #2570) -------------------------
+  # 3proxy in anonymous allow-all mode: a plain HTTP forward proxy on :3128.
+  # Its backend-facing IP lives on the NON-172 egress net, so a pre-#2570
+  # backend's SSRF guard blocks it (the exact bug). It also has a leg on the
+  # 172.16/12 upstream net so it can actually reach mock-upstream.
+  squid:
+    image: ghcr.io/tarampampam/3proxy:latest
+    container_name: ak-dtf${DTF_SLOT}-squid
+    environment:
+      PROXY_PORT: "3128"
+      # No PROXY_LOGIN => anonymous, allow-all (open forward proxy).
+    # No healthcheck: the 3proxy image is distroless (no /bin/sh, no nc), so a
+    # CMD/CMD-SHELL probe can't run. `up --wait` treats a healthcheck-less
+    # service as ready once running; 3proxy binds :3128 in <1s, long before the
+    # ~30s backend boot, and backend depends_on squid: service_started.
+    networks:
+      egress:
+        ipv4_address: 10.201.${DTF_SLOT}.10
+      upstream:
+        ipv4_address: 172.31.${DTF_SLOT}.10
+
+  # --- Legit pull-through origin (reached THROUGH the proxy) ---------------
+  # nginx serving a fixed marker body for any path, on a 172.16/12 address so
+  # AK's create-time upstream-URL validation allowlists it. This is the origin
+  # the #2570-regression half fetches via squid.
+  mock-upstream:
+    image: nginx:alpine
+    container_name: ak-dtf${DTF_SLOT}-mock-upstream
+    command: ["/bin/sh", "-c", "printf 'server{listen 80 default_server;location / {default_type text/plain;return 200 \"DTF-PROXY-EGRESS-OK path=$$request_uri\\n\";}}' > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ | grep -q DTF-PROXY-EGRESS-OK"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      upstream:
+        ipv4_address: 172.31.${DTF_SLOT}.50
+
+  # --- SSRF decoy origin (must stay REFUSED) -------------------------------
+  # A nginx on the NON-allowlisted egress net. A remote repo whose upstream
+  # hostname is `mock-evil` resolves (via docker DNS, from the backend) to a
+  # 10.201.x private address that is NOT in AK_SSRF_ALLOW_PRIVATE_CIDRS, so the
+  # SSRF guard must reject it at create time. It exists only so the hostname
+  # actually RESOLVES (an unresolvable name would sail through as "not blocked").
+  mock-evil:
+    image: nginx:alpine
+    container_name: ak-dtf${DTF_SLOT}-mock-evil
+    command: ["/bin/sh", "-c", "printf 'server{listen 80 default_server;location / {default_type text/plain;return 200 \"DTF-EVIL-INTERNAL\\n\";}}' > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
+    networks:
+      egress: {}
+
+  # --- Backend: forced through the egress proxy ----------------------------
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      squid:
+        condition: service_started
+      mock-upstream:
+        condition: service_healthy
+      mock-evil:
+        condition: service_started
+    environment:
+      # The configured egress proxy. `squid` (from the backend's egress-net
+      # view = 10.201.<slot>.10, a private IP) is exactly the host token that
+      # configured_proxy_hosts() must exempt for the fetch to work.
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      ALL_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      all_proxy: http://squid:3128
+      # Keep loopback (the healthcheck curl + any self-call) OFF the proxy.
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
+      # Private-IP escape hatch. The CIDR allowlist is load-bearing: it scopes
+      # the exemption to 172.16/12 ONLY (the mock-upstream), so squid's 10.201.x
+      # address stays blocked and the pre-#2570 502 (discrimination) holds.
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      egress: {}
+
+networks:
+  # Backend <-> squid. NON-172 subnet: squid's backend-facing IP is therefore a
+  # private address OUTSIDE AK_SSRF_ALLOW_PRIVATE_CIDRS, which is what makes a
+  # pre-#2570 backend fail closed (502) here.
+  egress:
+    name: ak-dtf${DTF_SLOT}-egress
+    ipam:
+      config:
+        - subnet: 10.201.${DTF_SLOT}.0/24
+  # squid <-> mock-upstream. 172.16/12 subnet so the legit origin is allowlisted.
+  upstream:
+    name: ak-dtf${DTF_SLOT}-upstream
+    ipam:
+      config:
+        - subnet: 172.31.${DTF_SLOT}.0/24

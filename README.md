@@ -123,7 +123,6 @@ create-test-namespace.sh
     │
     ├── kubectl create namespace test-<run-id>
     ├── Create image pull secret (ghcr-creds)
-    ├── Apply ResourceQuota (CPU/memory caps)
     ├── helm install with candidate image tags
     └── wait-for-ready.sh (poll /health, 3-min timeout)
     │
@@ -138,9 +137,20 @@ teardown-test-namespace.sh
     └── kubectl delete namespace (cascading)
 ```
 
-Resource limits are configured as GitHub Actions repository variables, not hardcoded:
+Per-pod resource requests/limits are set in the `helm/values-test*.yaml`
+overlays. The test namespace itself is **not** currently constrained by a
+Kubernetes `ResourceQuota`, so a pod may use up to its own configured limit.
 
-| Variable | Default | Purpose |
+> NOTE: the `TEST_NAMESPACE_*` / `TEST_MAX_*` repository variables below are
+> **not currently wired into a ResourceQuota** — `create-test-namespace.sh`
+> does not create one and the release-gate workflow does not consume them.
+> They are retained as the intended knobs for a future quota implementation;
+> changing them today has no effect on running gates. To actually cap a
+> namespace, `create-test-namespace.sh` must be extended to `kubectl apply` a
+> `ResourceQuota` (and every pod/Job in the chart must declare
+> requests+limits, or the quota will reject admission).
+
+| Variable | Default | Intended purpose (not yet enforced) |
 |---|---|---|
 | `TEST_MAX_CPU` | 8000m | Total CPU cap across all test namespaces |
 | `TEST_MAX_MEMORY` | 16Gi | Total memory cap |

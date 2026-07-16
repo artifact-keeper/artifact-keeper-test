@@ -1,0 +1,36 @@
+# =============================================================================
+# profiles/client.conan.yml — client dimension = conan (a real Conan 2 client)
+# =============================================================================
+# Adds a python client container that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The format-conformance tier's
+# conan plugin `docker exec`s into it to `pip install "conan>=2,<3"`, build a
+# minimal recipe with `conan create`, `conan upload` it to a hosted AK conan
+# repo, and then — with an EMPTY local cache — run a REAL
+# `conan install --requires=dtf-marker/1.0 -r dtf --build=never` that resolves
+# the recipe via `/latest` -> revisions -> files and FETCHES the pre-built
+# binary package from AK (the #2580 path: the client following the advertised
+# revision/files location, `--build=never` forbidding any local rebuild).
+#
+# arm64: the rig is aarch64. Official conanio/* images are amd64-history (the
+# brick-4 trap), so we use `python:3.12-slim` (arm64/v8 manifest present,
+# verified with `docker manifest inspect`) and install conan via pip at setup —
+# the pip route is arch-neutral. Rig egress is proven (the dnf client already
+# installs from the internet).
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats it
+# ready once running (same discipline as client.dnf.yml). It waits on backend
+# health via depends_on. python:3.12-slim runs as root, so ~/.conan2 under
+# /root is writable with no FC_EXEC_USER override needed.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-conan:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-client-conan
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

@@ -1,0 +1,39 @@
+# =============================================================================
+# profiles/client.hex.yml — client dimension = hex (a real Elixir/mix client)
+# =============================================================================
+# Adds an Elixir client container that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The format-conformance tier's
+# hex plugin `docker exec`s into it to build a hex tarball with the REAL tool
+# (`mix hex.build`), publish it to a hosted AK hex repo, and then run a REAL
+# `mix hex.repo add` + `mix deps.get` that resolves the dep by reading the hex
+# registry resources (`/versions`, `/packages/<name>`) and FOLLOWS the tarball
+# URL to fetch + unpack the dependency (the #2580 path).
+#
+# EXPECTED-RED CANDIDATE (game-plan §4.11 + §6): the hex protocol requires the
+# registry resources to be GZIPPED SIGNED PROTOBUF (with a repo public key), and
+# `mix` hard-verifies them. The backend source only emits protocol-shaped
+# payloads on the REMOTE proxy path (pass-through of upstream hex.pm bytes);
+# HOSTED repos return plain JSON from `/versions` + `/packages/:name`. If `mix`
+# rejects that on a protocol-true basis, the conformance case going red is a
+# BACKEND FINDING — the plugin keeps it # KNOWN-RED and writes
+# rig/results/format-conformance/hex-finding.md; it is NOT softened into passing.
+#
+# arm64: `elixir:1.17` publishes an arm64/v8 manifest (verified with
+# `docker manifest inspect`), so it runs natively — no amd64-only surprise.
+#
+# The container runs `sleep infinity` with no healthcheck (ready once running,
+# same discipline as client.dnf.yml) and waits on backend health via
+# depends_on. elixir:1.17 runs as root, so $HOME (/root) + the mix build dir
+# under /work are writable with no FC_EXEC_USER override.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-hex:
+    image: elixir:1.17
+    container_name: ak-dtf${DTF_SLOT}-client-hex
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

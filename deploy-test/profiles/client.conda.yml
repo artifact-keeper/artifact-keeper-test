@@ -1,0 +1,34 @@
+# =============================================================================
+# profiles/client.conda.yml — client dimension = conda (a real micromamba client)
+# =============================================================================
+# Adds a micromamba container that joins the DTF network and targets the backend
+# BY SERVICE NAME (http://backend:8080). The format-conformance tier's conda
+# plugin `docker exec`s into it to run a REAL `micromamba create` that reads the
+# channel's `noarch/repodata.json`, resolves the advertised package filename,
+# FOLLOWS it to `<channel>/noarch/<fname>`, downloads + extracts the package,
+# and links the marker file onto the client fs (the #2580 path — the client
+# following the advertised location, not the native upload route).
+#
+# arm64: the rig is aarch64. `mambaorg/micromamba:2.0` publishes an arm64/v8
+# manifest (verified with `docker manifest inspect`), so it runs natively — no
+# amd64-only surprise (the brick-4 trap). It is tiny + static, no Anaconda-TOS.
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats it
+# ready once running (same discipline as client.dnf.yml). It waits on backend
+# health via depends_on. The conda plugin execs as root (FC_EXEC_USER=root) so
+# `micromamba create -p /tmp/env` and MAMBA_ROOT_PREFIX under /tmp are writable
+# regardless of the image's default mambauser.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-conda:
+    image: mambaorg/micromamba:2.0
+    container_name: ak-dtf${DTF_SLOT}-client-conda
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

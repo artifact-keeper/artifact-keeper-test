@@ -1,0 +1,33 @@
+# =============================================================================
+# profiles/client.cran.yml — client dimension = cran (a real R client)
+# =============================================================================
+# Adds an R container (rocker/r-ver) that joins the DTF network and targets the
+# backend BY SERVICE NAME (http://backend:8080). The format-conformance tier's
+# cran plugin `docker exec`s into it to run a REAL
+# `install.packages("dtf.marker", repos=<AK>, type="source")` that reads the
+# repo's `src/contrib/PACKAGES` index, resolves the advertised source tarball,
+# FOLLOWS it to `src/contrib/dtf.marker_1.0.tar.gz`, downloads + installs the
+# package, and can call its exported marker function (the #2580 path — the
+# client following the advertised location, not the native upload route).
+#
+# arm64: the rig is aarch64. `rocker/r-ver:4.4` publishes an arm64 manifest
+# (verified with `docker manifest inspect`), so it runs natively (no amd64-only
+# surprise — the brick-4 trap).
+#
+# The container just needs to be up so the plugin can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats it
+# ready once running (same discipline as client.conda.yml). It waits on backend
+# health via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-cran:
+    image: rocker/r-ver:4.4
+    container_name: ak-dtf${DTF_SLOT}-client-cran
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

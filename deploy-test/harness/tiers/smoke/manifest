@@ -1,0 +1,5 @@
+# DTF tier manifest: smoke
+# Profile-set: filesystem / single / none (the walking-skeleton topology).
+# Oracle: a real push -> pull -> scan flow that actually exercises the backend.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"

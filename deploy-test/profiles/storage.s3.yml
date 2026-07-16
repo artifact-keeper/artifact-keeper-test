@@ -1,0 +1,61 @@
+# =============================================================================
+# profiles/storage.s3.yml — storage dimension = s3 (MinIO)
+# =============================================================================
+# Derived from target-backend/proof/compose.s3base.yml, MINUS the backend
+# service duplication (compose.base.yml already declares backend). This overlay:
+#   * ADDS  minio + createbucket sidecars (on the base `dtf` network)
+#   * PATCHES backend.environment with STORAGE_BACKEND=s3 + the S3_* config
+#   * ADDS  a createbucket completion gate to backend.depends_on
+#
+# This is the isolation tier's profile: a real shared object store, on which the
+# #2504 (cross-tenant read+write) and #2574/#2584 (row-less Maven flat-key)
+# classes are actually reachable. prove.sh is the discriminating oracle.
+#
+# Required vars (run.sh exports them): S3_PORT, S3_CONSOLE_PORT (interpolated to
+# stay non-colliding per slot, same discipline as HTTP/PG/GRPC).
+# =============================================================================
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: ak-dtf${DTF_SLOT}-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "127.0.0.1:${S3_PORT:?set S3_PORT}:9000"
+      - "127.0.0.1:${S3_CONSOLE_PORT:?set S3_CONSOLE_PORT}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [dtf]
+
+  createbucket:
+    image: minio/mc:latest
+    container_name: ak-dtf${DTF_SLOT}-mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/ak-artifacts &&
+      echo bucket-ready
+      "
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      createbucket:
+        condition: service_completed_successfully
+    environment:
+      STORAGE_BACKEND: s3
+      S3_BUCKET: ak-artifacts
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
