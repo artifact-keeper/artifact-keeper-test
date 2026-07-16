@@ -1,0 +1,87 @@
+# =============================================================================
+# profiles/sso.saml.yml — sso dimension = saml (Keycloak IdP)  [DTF brick 5]
+# =============================================================================
+# Adds a REAL SAML Identity Provider (Keycloak) to the DTF network so the sso
+# tier can exercise the #2449 SAML XML-Signature-Wrapping (XSW) auth-bypass
+# class against a live backend, plus prove real-IdP interop.
+#
+# What this overlay does:
+#   * ADDS  a `keycloak` service (quay.io/keycloak/keycloak:24.0) in dev mode
+#     with a canned realm imported at boot (fixtures/keycloak-realm.json) — a
+#     SAML client for AK (clientId = SP entity id "artifact-keeper") + a test
+#     user. Realm-import (not manual clicks) keeps it reproducible.
+#   * PATCHES backend.environment with AK's SAML SSO config env vars (the exact
+#     names read by `SamlConfig::from_env` in backend/src/services/saml_service.rs).
+#     NOTE: AK's ACS flow is DB-driven (per-provider, created via the admin API
+#     `/api/v1/admin/sso/saml`); `SamlConfig::from_env` is NOT instantiated at
+#     boot (verified: no non-test caller of SamlService::new), so these vars are
+#     documentary/self-describing and inert for the ACS path. The load-bearing
+#     runtime var is SSO_ENCRYPTION_KEY/JWT_SECRET (cert-at-rest encryption),
+#     already set in compose.base.yml.
+#
+# Keycloak boot is ~1-2 min. It has bash (for a /dev/tcp healthcheck) but no
+# curl; the healthcheck below gates on the realm's SAML IdP descriptor actually
+# being served (server up AND realm imported), which is exactly the readiness
+# signal the oracle needs. `docker compose up --wait` blocks on it.
+#
+# Port: Keycloak's HTTP is published to the slot's spare ${TRIVY_PORT} (8250+N,
+# already exported per-slot by harness/lib/ports.sh; the sso tier runs no
+# scanner) so the host oracle can read the real IdP descriptor. No shared file
+# (run.sh / compose.base.yml / ports.sh) is modified — this is ADD-only.
+#
+# Required vars (exported by run.sh): DTF_SLOT, TRIVY_PORT, DTF_DIR.
+# =============================================================================
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: ak-dtf${DTF_SLOT}-keycloak
+    command: ["start-dev", "--import-realm", "--http-enabled=true"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+      KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/sso/fixtures/keycloak-realm.json:/opt/keycloak/data/import/dtf-realm.json:ro"
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:8080"
+    healthcheck:
+      # bash /dev/tcp GET of the realm SAML descriptor: 200 + EntityDescriptor
+      # means the server is up AND the canned realm imported. No curl in-image.
+      test:
+        - "CMD"
+        - "bash"
+        - "-c"
+        - "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/dtf/protocol/saml/descriptor HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q EntityDescriptor <&3"
+      interval: 5s
+      timeout: 5s
+      start_period: 120s
+      retries: 40
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    environment:
+      # --- AK SAML SSO config env (SamlConfig::from_env var names) ---
+      # Documentary: the ACS flow reads DB-stored per-provider config; these
+      # describe the in-compose Keycloak IdP for operators reading the topology.
+      SAML_IDP_SSO_URL: "http://keycloak:8080/realms/dtf/protocol/saml"
+      SAML_IDP_ISSUER: "http://keycloak:8080/realms/dtf"
+      SAML_IDP_METADATA_URL: "http://keycloak:8080/realms/dtf/protocol/saml/descriptor"
+      SAML_SP_ENTITY_ID: "artifact-keeper"
+      SAML_ACS_URL: "http://localhost:8080/api/v1/auth/sso/saml/acs"
+      SAML_USERNAME_ATTR: "NameID"
+      SAML_EMAIL_ATTR: "email"
+      SAML_GROUPS_ATTR: "groups"
+      SAML_ADMIN_GROUP: "ak-admins"
+      SAML_REQUIRE_SIGNED_ASSERTIONS: "true"
+      SAML_SIGN_REQUESTS: "false"
+
+networks:
+  dtf:
+    name: ak-dtf${DTF_SLOT}-net

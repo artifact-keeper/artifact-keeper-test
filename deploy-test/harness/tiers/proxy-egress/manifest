@@ -1,0 +1,16 @@
+# DTF tier manifest: proxy-egress
+# Profile-set: filesystem / single + squid (the outbound egress proxy topology).
+# The ONLY topology on which issue #2570 (fail-closed SSRF DNS guard blocking the
+# CONFIGURED egress proxy's own private IP) can manifest: the backend is forced
+# to make every outbound fetch through a proxy whose address is private.
+# Oracle: the two-half discriminating gate (legit egress-through-proxy WORKS;
+# a genuine SSRF upstream is still REFUSED).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives several admin create/delete +
+# test-upstream calls back-to-back through a single admin; the base default (ON)
+# would throttle them. (The base default stays ON; a tier that must disable a
+# shipped control does so explicitly, per design section 2.2 — same as the
+# isolation tier.)
+PROFILES="storage.filesystem proxy.squid"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
