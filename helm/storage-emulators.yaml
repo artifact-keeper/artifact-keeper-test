@@ -1,0 +1,194 @@
+# storage-emulators.yaml - Self-hosted object-storage emulators for the
+# full-stack test deploy.
+#
+# Applied by create-test-namespace.sh --full-stack BEFORE the Helm install:
+# the backend registers its named storage backends (s3, azure) at boot from
+# env vars (main.rs storage registry), so the emulators must be reachable
+# when the backend pod starts. values-test-full.yaml carries the matching
+# S3_* / AZURE_STORAGE_* env.
+#
+# Emulators:
+#   minio    - S3 API        (bucket ak-e2e created by the minio-init Job)
+#   azurite  - Azure Blob    (container ak-e2e created by the azurite-init
+#                             Job; well-known devstoreaccount1 account).
+#                             Deployed but not yet wired to the backend:
+#                             Shared Key signing breaks on path-style
+#                             endpoints (artifact-keeper#2649); the AZURE_*
+#                             env in values-test-full.yaml is commented out
+#                             until that fix ships.
+#
+# GCS (fake-gcs-server) is intentionally absent until the backend supports
+# an endpoint override (artifact-keeper#2646); tests/platform/
+# test-storage-backend-gcs.sh skips until then.
+#
+# Credentials below are throwaway test-namespace values, torn down with the
+# namespace. The Azurite key is the PUBLIC well-known emulator key that
+# ships in Azure SDK docs, not a secret.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storage-minio
+  labels:
+    app: storage-minio
+    app.kubernetes.io/part-of: storage-emulators
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: storage-minio
+  template:
+    metadata:
+      labels:
+        app: storage-minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+          args: ["server", "/data"]
+          env:
+            - name: MINIO_ROOT_USER
+              value: ak-test-access
+            - name: MINIO_ROOT_PASSWORD
+              value: ak-test-secret-2026
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 2
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storage-minio
+  labels:
+    app: storage-minio
+    app.kubernetes.io/part-of: storage-emulators
+spec:
+  selector:
+    app: storage-minio
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: storage-minio-init
+  labels:
+    app.kubernetes.io/part-of: storage-emulators
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: storage-minio-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              until mc alias set local http://storage-minio:9000 ak-test-access ak-test-secret-2026; do
+                echo "waiting for minio..."; sleep 2
+              done
+              mc mb --ignore-existing local/ak-e2e
+              echo "bucket ak-e2e ready"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storage-azurite
+  labels:
+    app: storage-azurite
+    app.kubernetes.io/part-of: storage-emulators
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: storage-azurite
+  template:
+    metadata:
+      labels:
+        app: storage-azurite
+    spec:
+      containers:
+        - name: azurite
+          image: mcr.microsoft.com/azure-storage/azurite:3.34.0
+          args: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000"]
+          ports:
+            - containerPort: 10000
+          readinessProbe:
+            tcpSocket:
+              port: 10000
+            initialDelaySeconds: 2
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storage-azurite
+  labels:
+    app: storage-azurite
+    app.kubernetes.io/part-of: storage-emulators
+spec:
+  selector:
+    app: storage-azurite
+  ports:
+    - port: 10000
+      targetPort: 10000
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: storage-azurite-init
+  labels:
+    app.kubernetes.io/part-of: storage-emulators
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: storage-azurite-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: az
+          image: mcr.microsoft.com/azure-cli:2.72.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              # Well-known Azurite dev account (public emulator credentials).
+              CONN="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://storage-azurite:10000/devstoreaccount1;"
+              for i in $(seq 1 30); do
+                if az storage container create --name ak-e2e --connection-string "$CONN" > /dev/null 2>&1; then
+                  echo "container ak-e2e ready"
+                  exit 0
+                fi
+                echo "waiting for azurite..."; sleep 2
+              done
+              echo "azurite never became ready" >&2
+              exit 1

@@ -93,6 +93,25 @@ if [ ! -f "${CHART_DIR}/Chart.yaml" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Storage emulators (full-stack only)
+#
+# The backend registers its named object-storage backends (s3, azure) at
+# boot from env vars, so MinIO and Azurite must be up and their bucket/
+# container provisioned BEFORE the Helm install starts the backend pod.
+# values-test-full.yaml carries the matching S3_* / AZURE_STORAGE_* env.
+# ---------------------------------------------------------------------------
+
+if [ "$FULL_STACK" = true ]; then
+  echo "Deploying storage emulators (MinIO, Azurite)"
+  kubectl apply --namespace "$NAMESPACE" -f "${REPO_ROOT}/helm/storage-emulators.yaml"
+  kubectl rollout status --namespace "$NAMESPACE" deployment/storage-minio --timeout=120s
+  kubectl rollout status --namespace "$NAMESPACE" deployment/storage-azurite --timeout=120s
+  kubectl wait --namespace "$NAMESPACE" --for=condition=complete \
+    job/storage-minio-init job/storage-azurite-init --timeout=180s
+  echo "Storage emulators ready (bucket/container provisioned)"
+fi
+
+# ---------------------------------------------------------------------------
 # Helm install
 # ---------------------------------------------------------------------------
 
@@ -101,7 +120,7 @@ echo "Installing Helm release: ${RELEASE_NAME}"
 # Select base values file: --full-stack enables Trivy + scan workspace
 if [ "$FULL_STACK" = true ]; then
   VALUES_FILE="${REPO_ROOT}/helm/values-test-full.yaml"
-  echo "  Mode: full-stack (Trivy + scan workspace enabled)"
+  echo "  Mode: full-stack (Trivy + scan workspace + storage emulators enabled)"
 else
   VALUES_FILE="${REPO_ROOT}/helm/values-test.yaml"
 fi

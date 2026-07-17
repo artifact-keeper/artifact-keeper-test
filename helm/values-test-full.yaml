@@ -118,6 +118,32 @@ backend:
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys
     # and helm rejects the manifest. Kept the chart-side values authoritative.
+    #
+    # Object-storage emulators (helm/storage-emulators.yaml, deployed by
+    # create-test-namespace.sh --full-stack before this install). With these
+    # set, main.rs registers additional named "s3" and "azure" backends at
+    # boot, which tests/platform/test-storage-backend-{s3,azure}.sh exercise.
+    # The filesystem backend stays the default (STORAGE_BACKEND unset); repos
+    # opt in per-repo via storage_backend. Credentials are throwaway
+    # test-namespace values; the Azurite key is the PUBLIC well-known
+    # emulator key from Azure SDK docs, not a secret.
+    S3_BUCKET: "ak-e2e"
+    S3_REGION: "us-east-1"
+    S3_ENDPOINT: "http://storage-minio:9000"
+    S3_ACCESS_KEY_ID: "ak-test-access"
+    S3_SECRET_ACCESS_KEY: "ak-test-secret-2026"
+    # AZURE deliberately absent: Shared Key signing is wrong for path-style
+    # (Azurite) endpoints, so registration succeeds but every upload 403s
+    # (artifact-keeper#2649). The Azurite deployment and init Job already
+    # ride along in storage-emulators.yaml; when #2649 ships, uncomment and
+    # test-storage-backend-azure.sh starts running with no other changes.
+    # The Azurite key below is the PUBLIC well-known emulator key.
+    # AZURE_STORAGE_ACCOUNT: "devstoreaccount1"
+    # AZURE_STORAGE_CONTAINER: "ak-e2e"
+    # AZURE_STORAGE_ACCESS_KEY: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+    # AZURE_STORAGE_ENDPOINT: "http://storage-azurite:10000/devstoreaccount1"
+    # GCS deliberately absent: the backend has no endpoint override yet
+    # (artifact-keeper#2646). test-storage-backend-gcs.sh skips until then.
   persistence:
     size: 2Gi
   scanWorkspace:
