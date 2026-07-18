@@ -1,0 +1,41 @@
+# DTF tier manifest: proxy-downloadcount  (PKT-F, P6 — issue #2537)
+# Profile-set: filesystem / single + upstreams=raworigin (a tiny mock nginx
+# origin on the slot's 172.16/12 net returning a marker body for any path).
+#
+# Feature under test — #2537 proxy-cache first-serve download count: a FIRST
+# cold proxy GET of a freshly-cached object must be counted. Pre-fix, the
+# authoritative `proxy_cache_artifacts` catalog row was written only by the
+# streaming tee AFTER the client drained the body, so the serve recorder found
+# no catalog row and the first serve recorded +0 (undercounted by 1). The fix
+# (proxy_catalog::record_proxy_download) ensures the catalog row in the same
+# statement, so the first serve writes exactly one `proxy_download_statistics`
+# row. Discriminator: after ONE cold GET the proxy download count == 1 (RED: 0).
+#
+# OBSERVABILITY (OQ#4 resolved against candidate-a4d7f9d1): NO HTTP endpoint
+# surfaces the proxy first-serve count. `GET /api/v1/admin/downloads`,
+# `GET /api/v1/admin/analytics/downloads/trend`, and `GET /api/v1/artifacts/{id}
+# /stats` all read the SEPARATE `download_statistics` table (hosted-artifact
+# attribution), which the remote pull-through serve path does NOT write. The
+# only reader of `proxy_download_statistics` is `proxy_catalog::
+# download_count_by_repo`, which is NOT wired to any route in this candidate.
+# The count is therefore observable ONLY at the DB surface — this oracle asserts
+# it via `docker exec $DB_CONTAINER psql` (the established DTF DB-surface idiom;
+# see storage-accounting / sso / upgrade / migration tiers). See MATRIX-ROW.md
+# for the filed product-gap note (unwired download_count_by_repo).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives one admin create + a few proxied
+# GET/HEAD calls back-to-back through a single admin; the base default (ON) would
+# throttle them. Base default stays ON; a tier that must disable a shipped
+# control does so explicitly (design section 2.2), same as proxy-egress.
+#
+# INTEGRATOR NOTES (shared-file needs — DO NOT edit shared files from this packet):
+#   * No new published port: raw-origin is reached container-to-container on the
+#     slot's private raworigin net; nothing is host-published, so ports.sh needs
+#     no change.
+#   * No new run.sh manifest-env passthrough: the only manifest override is
+#     RATE_LIMIT_ENABLED, which run.sh already special-cases and exports.
+#   * Add `proxy-downloadcount` to run.sh's `all` list: it runs green on the
+#     single candidate image, so it can join the one-image `all` run.
+PROFILES="storage.filesystem upstreams.raworigin"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

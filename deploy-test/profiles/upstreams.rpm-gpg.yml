@@ -1,0 +1,92 @@
+# =============================================================================
+# profiles/upstreams.rpm-gpg.yml — upstreams=rpm-gpg overlay (signed RPM upstream)
+# =============================================================================
+# Stands up the topology PKT-E (#2568 RPM curation trusted GPG key, fail-closed)
+# needs: a mock RPM upstream serving a baked repodata/ tree whose repomd.xml is
+# GPG-signed by a REAL keypair (fixtures/rpm-gpg/build.sh), on the slot's own
+# 172.16/12 net so AK's create-time upstream-URL SSRF allowlist accepts it —
+# exactly the proxy.squid.yml / upstreams.debian.yml pattern.
+#
+# The overlay ADDS one sidecar, PATCHES the backend, and EXTENDS client-dnf:
+#   * rpm-upstream — nginx:alpine serving the PRE-BAKED tree read-only (NOT built
+#                    at container start: the tree carries a real OpenPGP detached
+#                    signature that needs gpg, which alpine can't apk-add offline
+#                    on the rig; fixtures/rpm-gpg/build.sh bakes it on the host at
+#                    authoring time). Serves two roots:
+#                      /signed/repodata/{repomd.xml, repomd.xml.asc, primary.xml.gz}
+#                      /unsigned/repodata/{repomd.xml, primary.xml.gz}  (NO .asc)
+#   * backend      — reach rpm-upstream directly on the 172.16/12 net with the
+#                    SSRF private-IP escape hatch scoped to that CIDR
+#                    (AK_SSRF_ALLOW_PRIVATE_CIDRS + UPSTREAM_ALLOW_PRIVATE_IPS).
+#   * client-dnf   — joined ALSO to the rpmupstream net so the client-side leg
+#                    (repo_gpgcheck=1) can reach http://rpm-upstream/signed and
+#                    prove GPG is actually enforced (the audit's ask: undo the
+#                    native-client `gpgcheck=0` bypass).
+#
+# NOTE (profile ORDER): the tier manifest lists this overlay LAST
+#   PROFILES="storage.filesystem client.dnf upstreams.rpm-gpg"
+# so this file's client-dnf `networks:` mapping wins the merge over
+# client.dnf.yml's `networks: [dtf]` list (a later -f file replaces a differing
+# sequence with the mapping, giving client-dnf BOTH nets).
+#
+# NOTE (fixture bind mount): fixtures/rpm-gpg/tree is bind-mounted read-only; the
+# relative path resolves against the DTF project dir (deploy-test/), the base of
+# run.sh's first `-f` file (compose.base.yml). The tree must be pre-baked — run
+# `bash fixtures/rpm-gpg/build.sh` once before the tier (the profile does NOT
+# regenerate it, so the served .asc always matches the committed public keys the
+# oracle configures).
+#
+# Required vars (exported by run.sh): DTF_SLOT (per-slot subnet + static IP so
+# concurrent slots never collide).
+# =============================================================================
+services:
+  # --- Mock signed RPM upstream (pre-baked repodata + detached GPG signature) --
+  rpm-upstream:
+    image: nginx:alpine
+    container_name: ak-dtf${DTF_SLOT}-rpm-upstream
+    volumes:
+      - ./fixtures/rpm-gpg/tree:/usr/share/nginx/html:ro
+    healthcheck:
+      # Ready only once the signed repomd is being served.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/signed/repodata/repomd.xml | grep -q '<data type=\"primary\">'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      rpmupstream:
+        ipv4_address: 172.31.${DTF_SLOT}.60
+
+  # --- Backend: reach the upstream directly on the allowlisted 172.16/12 net ---
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rpm-upstream:
+        condition: service_healthy
+    environment:
+      # Private-IP escape hatch scoped to the upstream CIDR (172.16/12) so the
+      # create-time SSRF check accepts the 172.31.<slot>.60 upstream while
+      # nothing else private is opened up.
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      rpmupstream: {}
+
+  # --- dnf client: also on the upstream net for the repo_gpgcheck=1 leg --------
+  # client-dnf's image/command/depends_on come from profiles/client.dnf.yml; this
+  # block only widens its networks. Mapping form (vs client.dnf.yml's list) wins
+  # because this overlay is stacked LAST (see manifest PROFILES order).
+  client-dnf:
+    networks:
+      dtf: {}
+      rpmupstream: {}
+
+networks:
+  # Backend/client-dnf <-> rpm-upstream. 172.16/12 subnet so the mock upstream is
+  # inside AK_SSRF_ALLOW_PRIVATE_CIDRS and the remote-repo create is accepted.
+  rpmupstream:
+    name: ak-dtf${DTF_SLOT}-rpmupstream
+    ipam:
+      config:
+        - subnet: 172.31.${DTF_SLOT}.0/24

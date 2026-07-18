@@ -1,0 +1,46 @@
+# DTF tier manifest: rpm-curation-gpg  (PKT-E, P5, epic #2568)
+# Profile-set: filesystem / single + client.dnf + upstreams=rpm-gpg (a mock RPM
+# upstream on the slot's 172.16/12 net serving a GPG-signed repodata/ tree baked
+# by fixtures/rpm-gpg/build.sh, plus a Fedora dnf client on both nets).
+#
+# Oracle covers the fail-closed RPM curation GPG gate (#2568):
+#   verify_detached(trusted_key, repomd.xml, repomd.xml.asc) is fail-closed:
+#     - correct trusted key  -> repomd signature verifies -> packages INGESTED
+#     - wrong / absent key    -> verify fails / .asc missing -> 0 packages ingested
+#   The curation sync is driven DETERMINISTICALLY by the manual, SYNCHRONOUS
+#   trigger POST /api/v1/curation/repos/{staging_key}/sync (#2357 WI-5), which
+#   calls run_curation_sync_cycle(only_repo=Some(id)) inline and returns — NO
+#   sleep-and-hope on the scheduler cron. (OPEN QUESTION #2 resolved: the manual
+#   trigger exists; scheduler_service.rs documents it as the only_repo path.)
+#
+#   Discrimination (self-discriminating, no pre-fix image needed):
+#     POS correct-key + signed tree      -> curation_packages count > 0
+#     CONTROL no-key + signed tree       -> count > 0 (documented UNVERIFIED ingest; proves the pipeline works w/o a key)
+#     NEG wrong-key + signed tree        -> count == 0 (verify_detached fails -> continue)   <- THE #2568 discriminator
+#     NEG correct-key + unsigned tree    -> count == 0 (repomd.xml.asc 404 -> fail-closed)
+#     CLIENT dnf repo_gpgcheck=1         -> makecache OK w/ correct key, FAILS w/ wrong key (undoes native-client gpgcheck=0)
+#   A backend that trusted the wrong-key upstream would ingest > 0 on the NEG
+#   wrong-key leg -> tier red (that is the bug the dnf gpgcheck=0 leg bypasses).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives several admin create + trigger +
+# metadata calls back-to-back through a single admin; the base default (ON) would
+# throttle them. Base default stays ON; a tier that must disable a shipped
+# control does so explicitly (design section 2.2), same as debian-remote/sso.
+#
+# INTEGRATOR NOTES (shared-file needs — DO NOT edit shared files from this packet):
+#   * No new published port: rpm-upstream is reached container-to-container on the
+#     slot's private rpmupstream net; nothing host-published, so ports.sh is
+#     unchanged. The dnf client leg runs via `docker exec` (no host port).
+#   * No new run.sh manifest-env passthrough: the only manifest override used is
+#     RATE_LIMIT_ENABLED, which run.sh already special-cases and exports. The SSRF
+#     allowlist envs are set inside profiles/upstreams.rpm-gpg.yml, not the manifest.
+#   * PROFILES ORDER MATTERS: upstreams.rpm-gpg MUST come after client.dnf so its
+#     client-dnf `networks:` mapping wins the merge (see the profile header).
+#   * Pre-bake the fixture ONCE before running: `bash fixtures/rpm-gpg/build.sh`
+#     (host-side; needs gpg). The nginx upstream serves the baked tree read-only.
+#   * matrix.md row is in this dir's MATRIX-ROW.md for the integrator's merge.
+#   * Add `rpm-curation-gpg` to run.sh's `all` list: it runs green on the single
+#     candidate image, so it can join the one-image `all` run.
+PROFILES="storage.filesystem client.dnf upstreams.rpm-gpg"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

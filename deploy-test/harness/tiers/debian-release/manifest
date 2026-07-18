@@ -1,0 +1,56 @@
+# DTF tier manifest: debian-release  (PKT-B, epic #2458 / feature #2489)
+# Profile-set: filesystem / single + client.apt (a real Debian APT client).
+# Feature under test: #2489 hosted Debian/APT `Release` metadata customization.
+#
+# A HOSTED debian repo renders `GET /debian/{key}/dists/{dist}/Release` from
+# `render_release_document`; its `Origin:`/`Label:`/`Version:`/`Description:`
+# lines come from `fetch_apt_release_metadata`, which reads the repository_config
+# keys `apt_origin` / `apt_label` / `apt_release_version` / `apt_description`.
+# When unset, Origin/Label fall back to the constant "artifact-keeper" and the
+# Version/Description lines are OMITTED entirely.
+#
+# CONFIRMED against ak-backend:candidate-a4d7f9d1 (see MATRIX-ROW.md for the
+# exact source sites):
+#   * The keys are set via the TOP-LEVEL request fields `apt_origin`,
+#     `apt_label`, `apt_release_version`, `apt_description` (NOT nested under the
+#     `debian` field — that field is the #2460 proxy dist/comp/arch FILTER).
+#   * Repo update is `PATCH /api/v1/repositories/{key}` (router `.patch`), same
+#     verb the debian-remote coder confirmed. These fields are only accepted for
+#     HOSTED (local) APT repos; sending them on a non-debian repo 400s.
+#   * Defaults: DEFAULT_APT_ORIGIN = DEFAULT_APT_LABEL = "artifact-keeper".
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   POSITIVE: create a hosted debian repo, PATCH custom apt_origin/apt_label/
+#     apt_release_version/apt_description, publish a real .deb so the Release has
+#     content, GET the served dists/stable/Release and assert the served bytes
+#     carry the EXACT custom `Origin: DTF Corp` / `Label: DTF Internal` /
+#     `Version: 2026.7` / `Description: DTF custom release` lines. Then a real
+#     `apt-get update` + `apt-get install` in client.apt against the customized
+#     repo still succeeds (the customization did not break the index).
+#   NEGATIVE / discrimination: a SECOND hosted repo with NO apt_* keys renders
+#     the DEFAULT Origin/Label ("artifact-keeper") and OMITS Version/Description.
+#     The tier FAILS if the custom strings appear on the default repo (rules out
+#     a hardcoded constant) OR if the custom strings are absent on the custom
+#     repo (rules out a vacuous field-present check). Self-discriminating on the
+#     candidate image; a backend that ignored apt_* config would render defaults
+#     on the custom repo -> the positive assertion fails -> tier red.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives 2 admin creates + 1 PATCH + 2
+# uploads + ~4 Release GETs back-to-back through a single admin; the base default
+# (ON) would throttle them. Base default stays ON; a tier that must disable a
+# shipped control does so explicitly (design 2.2), same as debian-remote.
+#
+# INTEGRATOR NOTES (shared-file needs — DO NOT edit shared files from this packet):
+#   * No new published port: client.apt reaches the backend container-to-
+#     container (http://backend:8080) on the slot's dtf net; nothing host-
+#     published, so ports.sh needs no change.
+#   * No new run.sh manifest-env passthrough: the only manifest override used is
+#     RATE_LIMIT_ENABLED, which run.sh already special-cases and exports.
+#   * Add `debian-release` to run.sh's `all` list: it runs green on the single
+#     candidate image, so it can join the one-image `all` run. (Peer tiers
+#     debian-remote/audit-export/storage-accounting are already in the list;
+#     debian-release is NOT yet — the integrator adds it.)
+#   * matrix.md row is in this dir's MATRIX-ROW.md for the integrator's merge.
+PROFILES="storage.filesystem client.apt"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

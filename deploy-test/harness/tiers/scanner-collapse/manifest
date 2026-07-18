@@ -1,0 +1,43 @@
+# DTF tier manifest: scanner-collapse  (PKT-F, P7 — issue #2471)
+# Profile-set: filesystem / single + scanners=trivy (the scanner-adapter sidecar,
+# reused as-is from the supply-chain tier). No new fixture.
+#
+# Feature under test — #2471 not_applicable row collapse: when an artifact is
+# offered to several scanners that decline by TYPE (`not_applicable`), the raw
+# scan list carries one `not_applicable` row per scanner and operators misread
+# them as N separate failures. The feature folds every `not_applicable` row for
+# an artifact (groups of >= 2) into ONE synthetic summary row carrying
+# `collapsed_not_applicable_count` + `collapsed_scan_types`.
+#
+# OQ#3 RESOLVED (verified against candidate-a4d7f9d1): the collapse is
+# SERVER-SIDE and API-observable, NOT UI-only. `collapse_not_applicable_rows`
+# (api/handlers/security.rs) runs inside the scan-results API handlers
+# (list_scans / list_artifact_scans / list_repo_scans) before serialization, and
+# the fold is visible on the wire via the `collapsed_not_applicable_count` and
+# `collapsed_scan_types` fields on the summary ScanResponse. => a DTF oracle CAN
+# discriminate it. (Had it been a pure web-render change it would have been
+# marked out-of-DTF-scope; it is not.)
+#
+# HOW THE >=2 not_applicable ROWS ARE PRODUCED DETERMINISTICALLY: with the trivy
+# adapter wired, ScannerService registers image + filesystem + incus (+ grype +
+# dependency). A NON-image artifact with an extension outside TrivyFsScanner's
+# scannable set (a plain `.bin`) makes image, filesystem AND incus all decline by
+# TYPE (is_applicable=false) — three fast `not_applicable` rows, no engine call,
+# no trivy-DB dependency — which the collapse folds into one summary. This is
+# type-driven (deterministic), not engine-availability-driven.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives one admin create + upload + scan
+# trigger + a few poll GETs back-to-back through a single admin; the base default
+# (ON) would throttle them. Base default stays ON; a tier that must disable a
+# shipped control does so explicitly (design section 2.2), same as supply-chain.
+#
+# INTEGRATOR NOTES (shared-file needs — DO NOT edit shared files from this packet):
+#   * No new profile: reuses scanners.trivy verbatim.
+#   * No new published port: reuses the slot's ${TRIVY_PORT} (scanners.trivy).
+#   * No new run.sh manifest-env passthrough: only RATE_LIMIT_ENABLED, already
+#     special-cased by run.sh.
+#   * Add `scanner-collapse` to run.sh's `all` list: runs green on the single
+#     candidate image, so it can join the one-image `all` run.
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

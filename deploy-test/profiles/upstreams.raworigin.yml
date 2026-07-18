@@ -1,0 +1,72 @@
+# =============================================================================
+# profiles/upstreams.raworigin.yml — upstreams=raworigin (tiny mock proxy origin)
+# =============================================================================
+# PKT-F (#2537 proxy-cache first-serve download count). Stands up the minimal
+# topology the proxy-downloadcount tier needs: a 3-line nginx "origin" that
+# returns a fixed marker body for ANY path, on the slot's own 172.16/12 net so
+# AK's create-time upstream-URL SSRF allowlist accepts it. A generic REMOTE
+# (pull-through) repo is pointed at this origin; a cold GET through AK proxies to
+# it, and `record_proxy_download` writes exactly one `proxy_download_statistics`
+# row against the ensured `proxy_cache_artifacts` catalog row (the #2537 fix).
+#
+# This is deliberately SELF-CONTAINED (a dedicated origin in its own profile)
+# rather than reusing upstreams.debian.yml, so the tier does not couple to PKT-A.
+# Mirrors the proven mock-origin pattern from proxy.squid.yml (return 200 marker
+# for any path) minus the egress proxy — this tier fetches the upstream DIRECTLY
+# (it is not about #2570), so no HTTP_PROXY/NO_PROXY is set.
+#
+# The overlay ADDS one sidecar and PATCHES the backend:
+#   * raw-origin — nginx:alpine returning `DTF-PROXY-DLCOUNT-OK path=<uri>` 200
+#                  for every path, on 172.31.<slot>.50 (inside 172.16/12).
+#   * backend    — reachable to raw-origin on the raworigin net + the SSRF
+#                  private-IP escape hatch scoped to 172.16/12 (same pattern as
+#                  proxy.squid.yml / upstreams.debian.yml).
+#
+# Required vars (exported by run.sh): DTF_SLOT (per-slot subnet + static IP so
+# concurrent slots never collide; same discipline as the HTTP/PG/gRPC block).
+# =============================================================================
+services:
+  # --- Mock raw origin (returns a marker body for ANY path) ----------------
+  raw-origin:
+    image: nginx:alpine
+    container_name: ak-dtf${DTF_SLOT}-raw-origin
+    command: ["/bin/sh", "-c", "printf 'server{listen 80 default_server;location / {default_type application/octet-stream;return 200 \"DTF-PROXY-DLCOUNT-OK path=$$request_uri\\n\";}}' > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/anything | grep -q DTF-PROXY-DLCOUNT-OK"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      raworigin:
+        ipv4_address: 172.31.${DTF_SLOT}.50
+
+  # --- Backend: reach the origin directly on the allowlisted 172.16/12 net --
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      raw-origin:
+        condition: service_healthy
+    environment:
+      # Private-IP escape hatch scoped to the origin CIDR (172.16/12). Lets the
+      # create-time SSRF check accept the 172.30.<slot>.50 origin while nothing
+      # else private is opened up.
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      raworigin: {}
+
+networks:
+  # Backend <-> raw-origin. 172.16/12 subnet so the mock origin is inside
+  # AK_SSRF_ALLOW_PRIVATE_CIDRS and the remote-repo create is accepted. Per-slot
+  # /24 (172.31.<slot>) so concurrent slots never collide — the same proven base
+  # the debian/rpm upstream profiles use (docker reserves 172.30.0.0/16 for its
+  # default pool, so 172.31.<slot> is the safe upstream-net base here). This
+  # profile is never loaded in the same compose project as debian/rpm/squid, so
+  # sharing the 172.31.<slot> base across those tiers is collision-free.
+  raworigin:
+    name: ak-dtf${DTF_SLOT}-raworigin
+    ipam:
+      config:
+        - subnet: 172.31.${DTF_SLOT}.0/24
