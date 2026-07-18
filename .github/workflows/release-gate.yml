@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      backend_digest:
+        description: 'Manifest-list digest (sha256:...) to pin the backend deploy to. Empty = tag only.'
+        required: false
+        type: string
+        default: ''
       test_suite:
         description: Test suite to run
         required: false
@@ -62,6 +67,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      backend_digest:
+        description: 'Manifest-list digest (sha256:...) to pin the backend deploy to. Empty = tag only.'
+        required: false
+        type: string
+        default: ''
       test_suite:
         required: false
         type: string
@@ -188,6 +198,7 @@ jobs:
       - name: Run clean-install smoke test
         env:
           BACKEND_TAG: ${{ inputs.backend_tag }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
           WEB_TAG: ${{ inputs.web_tag }}
           # Pin iac chart ref so the gate validates against the chart
           # version that ships with the release. Defaults to `main` when
@@ -204,9 +215,12 @@ jobs:
           # attempt (re-runs increment run_attempt). Avoids RUN_ID
           # collisions when a job is retried.
           RUN_ID="${{ github.run_id }}-${{ github.run_attempt }}"
+          # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
+          # plain tag (byte-identical to the pre-digest behaviour).
+          BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
           ./scripts/clean-install-smoke.sh \
             --run-id "${RUN_ID}" \
-            --backend-tag "${BACKEND_TAG}" \
+            --backend-tag "${BACKEND_TAG_PINNED}" \
             --web-tag "${WEB_TAG}" \
             --iac-ref "${IAC_REF}" \
             --timeout 300
@@ -274,15 +288,19 @@ jobs:
       - name: Run clean-install-smoke with all deps enabled
         env:
           BACKEND_TAG: ${{ inputs.backend_tag }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
           WEB_TAG: ${{ inputs.web_tag }}
           IAC_REF: ${{ inputs.iac_ref || 'main' }}
           GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
         run: |
           chmod +x tests/release-gate/clean-install-smoke-with-deps.sh
           RUN_ID="${{ github.run_id }}-${{ github.run_attempt }}-deps"
+          # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
+          # plain tag (byte-identical to the pre-digest behaviour).
+          BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
           ./tests/release-gate/clean-install-smoke-with-deps.sh \
             --run-id "${RUN_ID}" \
-            --backend-tag "${BACKEND_TAG}" \
+            --backend-tag "${BACKEND_TAG_PINNED}" \
             --web-tag "${WEB_TAG}" \
             --iac-ref "${IAC_REF}" \
             --timeout 600
@@ -334,6 +352,7 @@ jobs:
       - name: Run chart-upgrade-smoke
         env:
           BACKEND_TAG: ${{ inputs.backend_tag }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
           WEB_TAG: ${{ inputs.web_tag }}
           IAC_REF: ${{ inputs.iac_ref || 'main' }}
           GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
@@ -360,10 +379,15 @@ jobs:
           # the script; pinned here so the chart-template upgrade path
           # exercises the actual prev->current chart diff (issue #54).
           PREVIOUS_IAC_REF="artifact-keeper-${PREVIOUS_TAG}"
+          # Compose the digest-pinned image ref for the TARGET side only.
+          # --previous-tag stays a plain tag (it pins the previously
+          # released image, not the candidate). Empty BACKEND_DIGEST =>
+          # plain tag (byte-identical to the pre-digest behaviour).
+          BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
           ./tests/release-gate/chart-upgrade-smoke.sh \
             --run-id "${RUN_ID}" \
             --previous-tag "${PREVIOUS_TAG}" \
-            --backend-tag "${BACKEND_TAG}" \
+            --backend-tag "${BACKEND_TAG_PINNED}" \
             --web-tag "${WEB_TAG}" \
             --previous-web-tag "${PREVIOUS_WEB_TAG}" \
             --iac-ref "${IAC_REF}" \
@@ -416,15 +440,19 @@ jobs:
         env:
           RUN_ID: ${{ steps.setup.outputs.run_id }}
           BACKEND_TAG: ${{ inputs.backend_tag }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
           WEB_TAG: ${{ inputs.web_tag }}
         run: |
           chmod +x scripts/create-test-namespace.sh
+          # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
+          # plain tag (byte-identical to the pre-digest behaviour).
+          BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
           # --full-stack enables Trivy + scan workspace so the security
           # tests actually exercise the scanner instead of false-passing
           # against a no-scanner stack (#888 silent-success class).
           ./scripts/create-test-namespace.sh \
             --run-id "${RUN_ID}" \
-            --backend-tag "${BACKEND_TAG}" \
+            --backend-tag "${BACKEND_TAG_PINNED}" \
             --web-tag "${WEB_TAG}" \
             --full-stack
 
@@ -453,6 +481,37 @@ jobs:
             deployment/artifact-keeper-trivy --timeout=180s
           kubectl -n "${NAMESPACE}" wait --for=condition=Available \
             deployment/artifact-keeper-trivy --timeout=60s
+
+      - name: Assert deployed pod runs the pinned digest
+        # Only runs when the caller pinned a digest; the empty-default
+        # path (routine dispatches / old callers) skips this entirely.
+        if: inputs.backend_digest != ''
+        env:
+          RUN_ID: ${{ steps.setup.outputs.run_id }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: |
+          NAMESPACE="test-${RUN_ID}"
+          # app.kubernetes.io/component=backend is a stable selector label
+          # on the backend pod template (iac chart _helpers.tpl
+          # backend.selectorLabels), matching the deployment
+          # artifact-keeper-backend the deploy step waits on.
+          IMGID=$(kubectl -n "${NAMESPACE}" get pods \
+                    -l app.kubernetes.io/component=backend \
+                    -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
+          echo "backend pod imageID: ${IMGID}"
+          echo "pinned digest:       ${BACKEND_DIGEST}"
+          # Substring match: the runtime may report the per-arch PLATFORM
+          # digest in imageID rather than the manifest-list digest passed
+          # here. If a drill shows that, the caller (resolve-candidate-digest
+          # in artifact-keeper#2696 PR 1) can instead pass the amd64
+          # platform digest; the pull itself is content-addressed either way.
+          case "${IMGID}" in
+            *"${BACKEND_DIGEST}"*)
+              echo "OK: pod imageID contains the pinned digest";;
+            *)
+              echo "::error::pod imageID ${IMGID} does not contain pinned ${BACKEND_DIGEST}"
+              exit 1;;
+          esac
 
   # -------------------------------------------------------------------
   # Real-flow smoke (issue #45)
@@ -1897,17 +1956,24 @@ jobs:
 
       - name: Deploy mesh topology
         id: mesh-deploy
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+          WEB_TAG: ${{ inputs.web_tag }}
         run: |
           MESH_RUN_ID="${RUN_ID}"
           chmod +x scripts/create-test-namespace.sh
+          # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
+          # plain tag (byte-identical to the pre-digest behaviour).
+          BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
 
           # Deploy 4 mesh instances
           for i in main peer1 peer2 peer3; do
             MESH_NS="test-${MESH_RUN_ID}-mesh-${i}"
             ./scripts/create-test-namespace.sh \
               --run-id "${MESH_RUN_ID}-mesh-${i}" \
-              --backend-tag "${{ inputs.backend_tag }}" \
-              --web-tag "${{ inputs.web_tag }}" \
+              --backend-tag "${BACKEND_TAG_PINNED}" \
+              --web-tag "${WEB_TAG}" \
               --values helm/values-test-mesh.yaml
           done
 
