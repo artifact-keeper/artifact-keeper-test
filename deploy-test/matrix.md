@@ -87,3 +87,11 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   XSW 1 reproduces the CRITICAL escalation (307 + attacker `is_admin=t`) and the
   tier exits non-zero. Supersedes `tests/security/test-saml-signature.sh` (which
   404s against the current per-provider ACS routes).
+
+## 1.6.0 feature-coverage tiers (added 2026-07-18)
+| # | Class / capability | Profile-set | Discriminating oracle | DTF tier | Status |
+|---|---|---|---|---|---|
+| 13 | Debian remote proxy integrity (index sha/size vs signed Release) — #2459 | upstreams=debian | tampered `Packages` vs signed `Release` → 502; clean → 200; poisoned repeat still 502 | debian-remote | COVERED (PKT-A) |
+| 14 | Debian dist/component/arch filtering — #2460 | upstreams=debian | filtered-out comp/arch → 404; included → 200; clear filter → both re-serve 200 | debian-remote | COVERED (PKT-A) |
+| 15 | Structured audit-log export, versioned SIEM schema — #2413 | filesystem + client.jsonschema, AUDIT_STREAM=stdout | 5 audited actions → NDJSON strictly validated vs vendored audit-event.v1.schema.json; event_id joins admin audit API; non-vacuous tripwire | audit-export | COVERED (PKT-C) |
+| 16 | Deduplicated storage accounting per repo — #2056 (folder-rollup #2601 deferred, no HTTP surface) | storage=s3, fast STORAGE_STATS_SCHEDULE | shared OCI blob to A+B, distinct to C → instance_unique==naive_sum-Sx (counted once); reds on naive double-count | storage-accounting | COVERED (PKT-D) |

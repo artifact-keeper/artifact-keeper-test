@@ -1,0 +1,53 @@
+# =============================================================================
+# profiles/client.jsonschema.yml — client dimension = jsonschema validator
+# =============================================================================
+# Adds a python + `jsonschema` sidecar that the audit-export tier's oracle uses
+# to validate each captured audit NDJSON line against the PUBLISHED contract
+# (`backend/schemas/audit-event.v1.schema.json`, draft 2020-12). The oracle
+# `docker cp`s the vendored schema + the captured NDJSON into this container and
+# `docker exec`s a strict per-line validation; a line that is missing a
+# `required` field or whose envelope version drifts makes the validator exit
+# non-zero -> the tier goes red. That strictness IS the discriminator (#2413).
+#
+# The image is built inline (dockerfile_inline) so this profile is fully
+# self-contained: no separate Dockerfile, no COPY context, just `python:3-alpine`
+# + `pip install jsonschema`. Naming the built image (`image:`) lets every DTF
+# slot reuse the one cached build. jsonschema >=4.18 selects the draft-2020-12
+# validator automatically from the schema's `$schema`.
+#
+# arm64: `python:*-alpine` is multi-arch (arm64/v8 present) so this builds and
+# runs natively on the aarch64 rig.
+#
+# Healthcheck-less `sleep infinity` container (same rationale as client.apt.yml /
+# client.dnf.yml): `up --wait` treats it ready once running; it waits on the
+# backend via depends_on. The oracle does not talk to it over the network — it
+# drives it purely via `docker exec` — so it needs no published port.
+#
+# This profile ALSO opts the backend into the audit stream under test:
+# `AUDIT_STREAM=${AUDIT_STREAM:-stdout}`. The default (stdout) makes the tier
+# testable standalone with NO run.sh edit; exporting `AUDIT_STREAM=off` in the
+# invoking shell flips the backend to the disabled path to prove the red
+# (absent-stream) discrimination without touching any shared file.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  backend:
+    environment:
+      # Opt in to the #2413 structured audit-event stream. Default stdout so the
+      # oracle runs standalone; `AUDIT_STREAM=off run.sh ...` proves the red.
+      AUDIT_STREAM: ${AUDIT_STREAM:-stdout}
+
+  client-jsonschema:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM python:3-alpine
+        RUN pip install --no-cache-dir "jsonschema>=4.18"
+    image: ak-dtf-jsonschema-validator:local
+    container_name: ak-dtf${DTF_SLOT}-client-jsonschema
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

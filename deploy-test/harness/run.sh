@@ -254,7 +254,7 @@ case "$CMD" in
     # the full-fidelity coexistence proof run the differing tiers individually.
     # Per-tier image support for `all` is a follow-up.
     overall=0
-    for t in smoke isolation isolation-formats migration proxy-egress sso native-client upgrade supply-chain dos format-conformance; do
+    for t in smoke isolation isolation-formats migration proxy-egress sso native-client upgrade supply-chain dos format-conformance debian-remote audit-export storage-accounting; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

@@ -1,0 +1,31 @@
+# DTF tier manifest: storage-accounting  (PKT-D, feature #2056)
+# ---------------------------------------------------------------------------
+# Profile-set: s3 / single. The deduplicated storage-accounting feature (#2056)
+# reports per-repo PHYSICAL vs LOGICAL bytes plus the cross-repo SHARED /
+# instance-unique footprint. Cross-repo dedup (shared_bytes > 0, one physical
+# object backing a digest referenced by >1 repo) is only observable on a shared
+# object store: on filesystem the backend forces DedupScope::PerRepo, so
+# shared_bytes is 0 by construction and the "dedup-aware vs naive-sum"
+# discriminator cannot manifest. Hence the discriminating leg runs on
+# storage.s3 (reused as-is; NO new storage profile per PKT-D scope).
+#
+# The oracle drives OCI blob pushes (digest-addressed, the CAS vehicle that
+# actually dedups cross-repo — Maven flat keys are refused across repos by the
+# #2584 write guard) and reads GET /api/v1/repositories/{key}/storage.
+ORACLE="oracle.sh"
+PROFILES="storage.s3"
+
+# Many admin logins + OCI blob PUTs back-to-back through one admin; the base
+# default (rate-limit ON) would throttle them. Same rationale as the isolation
+# tier. run.sh exports RATE_LIMIT_ENABLED into the compose environment.
+RATE_LIMIT_ENABLED="false"
+
+# STORAGE_STATS_SCHEDULE: the materialization cron. Default is every 4h, which
+# would leave repository_storage_stats empty for the whole oracle run. The
+# oracle NEEDS a fast cron so the materialized cache refreshes within its wait
+# budget. It reads this value and, if run.sh/compose.base.yml do not already
+# pass STORAGE_STATS_SCHEDULE into the backend container, the oracle injects it
+# itself via an in-scope compose override + backend recreate (see oracle.sh and
+# MATRIX-ROW.md "Integrator note"). Kept here so an integrator who wires the
+# passthrough gets the same value the oracle expects.
+STORAGE_STATS_SCHEDULE="*/10 * * * * *"

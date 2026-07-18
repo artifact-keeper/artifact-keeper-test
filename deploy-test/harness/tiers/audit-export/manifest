@@ -1,0 +1,32 @@
+# DTF tier manifest: audit-export
+# Profile-set: filesystem / single + the jsonschema validator sidecar.
+# Feature under test: #2413 structured audit-log export (versioned SIEM schema).
+#
+# The backend opt-in `AUDIT_STREAM=stdout` (default OFF in the product) makes it
+# emit one NDJSON audit line per audited action to stdout (docker logs) — NOT an
+# HTTP endpoint. Each line is an instance of the PUBLISHED contract
+# `backend/schemas/audit-event.v1.schema.json` (draft 2020-12), vendored next to
+# this manifest as `audit-event.v1.schema.json`.
+#
+# --- AUDIT_STREAM env: how it reaches the backend container --------------------
+# This tier does NOT rely on run.sh passing manifest env through to compose
+# (run.sh currently only special-cases RATE_LIMIT_ENABLED, see off-limits rules).
+# Instead the `client.jsonschema` profile sets the backend env directly:
+#     AUDIT_STREAM: ${AUDIT_STREAM:-stdout}
+# so the tier is testable standalone with the default (stdout) and the RED path
+# is `AUDIT_STREAM=off ./harness/run.sh audit-export ...` (compose reads the var
+# from the invoking shell). See MATRIX-ROW.md for the OPTIONAL integrator wiring
+# if the manifest should own the knob instead of the profile default.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   POSITIVE: drive a spread of audited actions (admin login, repo create, token
+#     create, failed login, repo delete); capture the backend's stdout NDJSON;
+#     STRICTLY validate every `category:"audit"` line against the published
+#     schema via the jsonschema sidecar; assert >=1 valid line per action class;
+#     assert one exported event_id JOINS to the admin audit API row.
+#   NEGATIVE / discrimination: a strict-validator tripwire (a deliberately
+#     malformed line MUST be rejected) proves the validator is not vacuous; and
+#     with AUDIT_STREAM=off the same actions emit ZERO audit lines so the
+#     "class present" assertions fail and the tier exits non-zero.
+PROFILES="storage.filesystem client.jsonschema"
+ORACLE="oracle.sh"

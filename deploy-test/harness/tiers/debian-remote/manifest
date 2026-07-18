@@ -1,0 +1,33 @@
+# DTF tier manifest: debian-remote  (PKT-A, epic #2458)
+# Profile-set: filesystem / single + upstreams=debian (a mock APT upstream on
+# the slot's 172.16/12 net serving a baked, signed-shaped Debian dists/ tree
+# with a clean `bookworm` and a tampered `bookworm-evil`).
+#
+# Oracle covers the two discriminating halves of the Debian remote/proxy path:
+#   #2459 (integrity): a proxied dists index whose sha/size != the signed
+#         Release SHA256 table must 502 (enforce_dists_integrity); the clean
+#         tree serves 200. Self-discriminating via the clean-vs-tampered fixture
+#         (no pre-fix image needed): a backend missing the guard serves the
+#         tampered index 200 -> tier red.
+#   #2460 (filtering): with debian_config excluding a dist/component/arch, the
+#         excluded target must 404 and an included one 200. Self-discriminating
+#         via filtered-vs-included + an allow-all guard that re-serves the
+#         filtered paths 200 (proving the 404 is filter-driven, not a dead route).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives one admin create + one update +
+# ~8 metadata GETs back-to-back through a single admin; the base default (ON)
+# would throttle them. Base default stays ON; a tier that must disable a shipped
+# control does so explicitly (design section 2.2), same as proxy-egress/isolation.
+#
+# INTEGRATOR NOTES (shared-file needs — DO NOT edit shared files from this packet):
+#   * No new published port: deb-upstream is reached container-to-container on
+#     the slot's private debupstream net; nothing is host-published, so ports.sh
+#     needs no change.
+#   * No new run.sh manifest-env passthrough: the only manifest override used is
+#     RATE_LIMIT_ENABLED, which run.sh already special-cases and exports.
+#   * matrix.md row is in this dir's MATRIX-ROW.md for the integrator's merge.
+#   * Add `debian-remote` to run.sh's `all` list: it runs green on the single
+#     candidate image, so it can join the one-image `all` run.
+PROFILES="storage.filesystem upstreams.debian"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

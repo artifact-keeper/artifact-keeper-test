@@ -140,8 +140,11 @@ fc_client_setup() {
 # --allow-untrusted: the base hosted repo is unsigned (see signed_index KNOWN-RED).
 # ---------------------------------------------------------------------------
 fc_consume() {
+  # The hosted repo is unsigned (see signed_index KNOWN-RED), so --allow-untrusted
+  # is required on BOTH update and add; `apk update` alone exits 2 on an untrusted
+  # repo and would abort the `set -e` script before `apk add` runs.
   nc_exec -t 120 "set -e
-apk update
+apk update --allow-untrusted
 apk add --allow-untrusted ${APK_NAME}" \
     || { echo "apk add (following the APKINDEX) failed"; return 1; }
 }
@@ -213,7 +216,7 @@ EOF
     echo "  LEAK: ${xname} appears in the aarch64 APKINDEX"; return 1
   fi
   # and the aarch64 client cannot resolve it
-  if nc_exec "apk update >/dev/null 2>&1; apk info ${xname} >/dev/null 2>&1"; then
+  if nc_exec "apk update --allow-untrusted >/dev/null 2>&1; apk info ${xname} >/dev/null 2>&1"; then
     echo "  LEAK: aarch64 apk can see ${xname}"; return 1
   fi
   echo "  aarch64 view isolated from the x86_64-only package"
@@ -230,7 +233,7 @@ fc_case_index_regen_on_upgrade() {
   nc_put_file "${WORK_DIR}/${newfile}" "$(_apk_repo_url)/${APK_ARCH}/${newfile}" || return 1
   # positive: the regenerated index advertises 1.1 and upgrade installs it
   nc_exec -t 120 "set -e
-apk update
+apk update --allow-untrusted
 apk upgrade --allow-untrusted ${APK_NAME}
 apk info -e ${APK_NAME}
 grep -q '${APK_MARKER}-1.1' /usr/share/${APK_NAME}/marker.txt" \

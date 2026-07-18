@@ -1,0 +1,82 @@
+# =============================================================================
+# profiles/upstreams.debian.yml — upstreams=debian overlay (mock APT upstream)
+# =============================================================================
+# Stands up the topology PKT-A (#2459 Debian proxy integrity + #2460
+# dist/component/arch filtering) needs: a mock APT upstream serving a baked,
+# self-consistent (signed-shaped) Debian `dists/` tree, on the slot's own
+# 172.16/12 net so AK's create-time upstream-URL SSRF allowlist accepts it.
+#
+# The overlay ADDS one sidecar and PATCHES the backend:
+#   * deb-upstream — nginx:alpine that runs fixtures/debian/build.sh at start to
+#                    bake the tree (clean `bookworm` + tampered `bookworm-evil`)
+#                    into its webroot, then serves it. The SHA256 `Release`
+#                    table is computed from the exact served bytes at build time
+#                    (fixtures/debian/build.sh), so the clean tree verifies and
+#                    the tampered `bookworm-evil` Packages does NOT.
+#   * backend      — reachable to deb-upstream on the 172.16/12 net + the SSRF
+#                    private-IP escape hatch scoped to that CIDR, exactly the
+#                    proxy.squid.yml pattern (AK_SSRF_ALLOW_PRIVATE_CIDRS +
+#                    UPSTREAM_ALLOW_PRIVATE_IPS). No egress proxy here: the
+#                    backend fetches the upstream DIRECTLY (this tier is not
+#                    about #2570), so no HTTP_PROXY/NO_PROXY is set.
+#
+# Unlike proxy.squid.yml this profile does NOT need a non-172 decoy net: the
+# discrimination is carried by the clean-vs-tampered fixture and the
+# filtered-vs-included request, not by an SSRF refusal.
+#
+# NOTE (fixture bind mount): fixtures/debian is bind-mounted read-only; the
+# relative path resolves against the DTF project dir (deploy-test/), the base of
+# run.sh's first `-f` file (compose.base.yml). build.sh writes into the webroot,
+# not the mount, so :ro is fine.
+#
+# Required vars (exported by run.sh): DTF_SLOT (per-slot subnet + static IP so
+# concurrent slots never collide; same discipline as the HTTP/PG/gRPC block).
+# =============================================================================
+services:
+  # --- Mock APT upstream (baked signed-shaped tree) ------------------------
+  deb-upstream:
+    image: nginx:alpine
+    container_name: ak-dtf${DTF_SLOT}-deb-upstream
+    # Bake the tree with the fixture, then hand off to nginx. `merge_slashes`
+    # is on by default in nginx, so a `//dists/...` join is collapsed cleanly.
+    command:
+      - /bin/sh
+      - -c
+      - "sh /fixtures/build.sh /usr/share/nginx/html && exec nginx -g 'daemon off;'"
+    volumes:
+      - ./fixtures/debian:/fixtures:ro
+    healthcheck:
+      # Ready only once the clean bookworm Release is being served.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/dists/bookworm/Release | grep -q 'Codename: bookworm'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      debupstream:
+        ipv4_address: 172.31.${DTF_SLOT}.60
+
+  # --- Backend: reach the upstream directly on the allowlisted 172.16/12 net
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      deb-upstream:
+        condition: service_healthy
+    environment:
+      # Private-IP escape hatch scoped to the upstream CIDR (172.16/12). The
+      # allowlist is load-bearing: it lets the create-time SSRF check accept the
+      # 172.31.<slot>.60 upstream while nothing else private is opened up.
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      debupstream: {}
+
+networks:
+  # Backend <-> deb-upstream. 172.16/12 subnet so the mock upstream is inside
+  # AK_SSRF_ALLOW_PRIVATE_CIDRS and the remote-repo create is accepted.
+  debupstream:
+    name: ak-dtf${DTF_SLOT}-debupstream
+    ipam:
+      config:
+        - subnet: 172.31.${DTF_SLOT}.0/24
