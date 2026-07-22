@@ -114,6 +114,18 @@ db_make_operator_group() {
   db "INSERT INTO groups (name, description) VALUES ('$1','dtf operator managed')
       ON CONFLICT (name) DO NOTHING" >/dev/null
 }
+# is the oidc user (external_id=$1) an admin? -> "t" | "f" | "" (no such user)
+db_is_admin() {
+  db "SELECT is_admin FROM users WHERE external_id='$1' AND auth_provider='oidc' LIMIT 1"
+}
+# directly set is_admin on the oidc user (external_id=$1) to model an operator grant
+db_set_admin() {
+  db "UPDATE users SET is_admin=true WHERE external_id='$1' AND auth_provider='oidc'" >/dev/null
+}
+
+# Backend container name (base compose: ak-dtf<slot>-backend). Used to assert the
+# CASE 5 premise that OIDC_ADMIN_GROUP is unset in the profile env.
+BACKEND_CONTAINER="${DB_CONTAINER%-db}-backend"
 
 # =============================================================================
 begin_suite "oidc-group-sync"
@@ -249,15 +261,100 @@ else
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# CASE 5 -- #2829 GUARD (default-open admin escalation): with NO admin group
+# configured (P1: attribute_mapping={}, OIDC_ADMIN_GROUP unset), a self-asserted
+# group claim MUST NOT grant admin. Pre-fix, map_groups_to_roles fell back to a
+# case-insensitive substring match against a hardcoded admin-pattern list, so any
+# claim containing "admin" (e.g. backend-admins) or matching a pattern set
+# users.is_admin=true. RED on the pre-fix image (is_admin='t'), GREEN on the fix.
+# Also proves operator-granted admin is PRESERVED across a federated re-login
+# (is_admin stays None from the claim -> COALESCE keeps the prior value).
+# ---------------------------------------------------------------------------
+begin_test "CASE 5 (#2829 guard): OIDC_ADMIN_GROUP unset in profile env (CASE 5 premise)"
+OAG=$(docker exec "$BACKEND_CONTAINER" printenv OIDC_ADMIN_GROUP 2>/dev/null || true)
+if [ -z "$OAG" ]; then
+  pass
+else
+  fail "OIDC_ADMIN_GROUP is set ('${OAG}') in the backend env; CASE 5's 'no admin group configured' premise is invalid" \
+       "The oidc-group-sync profile must not set OIDC_ADMIN_GROUP, otherwise required_admin_group is not None and the default-open path is not exercised."
+fi
+
+begin_test "CASE 5 (#2829 guard): no admin group -> claim 'nonadmin-users'/'backend-admins' does NOT grant admin"
+SUB5A="dev5a-${SUF}"
+SUB5B="dev5b-${SUF}"
+ST5A=$(drive_oidc_login "$P1" "$SUB5A" "${SUB5A}@dtf.test" "nonadmin-users")
+ADM5A=$(db_is_admin "$SUB5A")
+ST5B=$(drive_oidc_login "$P1" "$SUB5B" "${SUB5B}@dtf.test" "backend-admins")
+ADM5B=$(db_is_admin "$SUB5B")
+if [ "$ST5A" = "307" ] && [ "$ADM5A" != "t" ] && [ "$ST5B" = "307" ] && [ "$ADM5B" != "t" ]; then
+  pass
+else
+  fail "default-open admin escalation (login5a=$ST5A is_admin5a='$ADM5A' login5b=$ST5B is_admin5b='$ADM5B')" \
+       "With no admin group configured a self-asserted claim MUST NOT set users.is_admin. On a pre-#2829 image both users are is_admin='t' (RED), which is exactly the escalation this case catches."
+fi
+
+begin_test "CASE 5 (#2829): operator-granted admin is PRESERVED across a federated re-login (not demoted)"
+SUB5C="dev5c-${SUF}"
+# First login (creates the user, no admin group -> not admin).
+ST5C1=$(drive_oidc_login "$P1" "$SUB5C" "${SUB5C}@dtf.test" "readonly-users")
+# Operator grants admin directly on the user.
+db_set_admin "$SUB5C"
+PRE5C=$(db_is_admin "$SUB5C")
+# Re-login with a non-admin claim: is_admin from the claim is None -> COALESCE
+# preserves the operator grant.
+ST5C2=$(drive_oidc_login "$P1" "$SUB5C" "${SUB5C}@dtf.test" "readonly-users")
+POST5C=$(db_is_admin "$SUB5C")
+if [ "$ST5C1" = "307" ] && [ "$PRE5C" = "t" ] && [ "$ST5C2" = "307" ] && [ "$POST5C" = "t" ]; then
+  pass
+else
+  fail "operator-granted admin not preserved (login1=$ST5C1 pre='$PRE5C' login2=$ST5C2 post='$POST5C')" \
+       "An operator who set is_admin=true directly must stay admin after a federated re-login (the claim path never clears is_admin)."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 6 -- #2829 EXACT-MATCH: with an admin group explicitly configured
+# (attribute_mapping.admin_group), admin is granted ONLY on an exact
+# (case-insensitive) claim match -- never a substring/prefix/suffix.
+# ---------------------------------------------------------------------------
+begin_test "CASE 6 (#2829 exact-match): configured admin_group grants admin ONLY on exact claim (no substring)"
+AG6="platform-admins-${SUF}"
+P6="$(create_oidc_provider "dtf-oidc-p6-${SUF}" "dtf-client-p6-${SUF}" true \
+  "{\"attribute_mapping\":{\"admin_group\":\"${AG6}\"}}")"
+if [ -z "$P6" ] || [ "$P6" = "null" ]; then
+  fail "could not create OIDC provider with configured admin_group for CASE 6"
+else
+  SUB6A="dev6a-${SUF}"   # exact -> admin
+  SUB6B="dev6b-${SUF}"   # suffix -> NOT admin
+  SUB6C="dev6c-${SUF}"   # prefix/short -> NOT admin
+  ST6A=$(drive_oidc_login "$P6" "$SUB6A" "${SUB6A}@dtf.test" "$AG6")
+  ADM6A=$(db_is_admin "$SUB6A")
+  ST6B=$(drive_oidc_login "$P6" "$SUB6B" "${SUB6B}@dtf.test" "${AG6}-x")
+  ADM6B=$(db_is_admin "$SUB6B")
+  ST6C=$(drive_oidc_login "$P6" "$SUB6C" "${SUB6C}@dtf.test" "platform-admin-${SUF}")
+  ADM6C=$(db_is_admin "$SUB6C")
+  if [ "$ST6A" = "307" ] && [ "$ADM6A" = "t" ] \
+     && [ "$ST6B" = "307" ] && [ "$ADM6B" != "t" ] \
+     && [ "$ST6C" = "307" ] && [ "$ADM6C" != "t" ]; then
+    pass
+  else
+    fail "admin_group exact-match breached (exact:login=$ST6A adm='$ADM6A' suffix:login=$ST6B adm='$ADM6B' prefix:login=$ST6C adm='$ADM6C')" \
+         "Configured admin_group='${AG6}': claim '${AG6}' -> admin; '${AG6}-x' and 'platform-admin-${SUF}' -> NOT admin (exact match only, no substring)."
+  fi
+fi
+
 # ---- discrimination summary (printed, not a gate) --------------------------
 echo ""
 echo "=== DISCRIMINATION SUMMARY (why this tier catches the OIDC group-sync class) ==="
-echo "  One live backend, one mock IdP, four claims:"
+echo "  One live backend, one mock IdP, claims covering group-sync AND admin mapping:"
 echo "    - brand-new name              -> auto-create oidc group + attach   (CASE 1)"
 echo "    - operator NULL-source name   -> NOT attached, group stays NULL     (CASE 2, #2759)"
 echo "    - operator name + trust ON    -> attached                           (CASE 3, pending #2823)"
 echo "    - another provider's oidc name-> NOT attached, owner unchanged       (CASE 4)"
-echo "  CASE 2 flips RED (user attached) on a pre-#2759 image -- that contrast"
-echo "  is the regression guard. CASE 3 stays a clean skip until #2823 ships."
+echo "    - no admin group + admin-ish claim -> NOT admin; operator grant kept (CASE 5, #2829)"
+echo "    - configured admin group, exact claim only -> admin (no substring)   (CASE 6, #2829)"
+echo "  CASE 2 flips RED (user attached) on a pre-#2759 image; CASE 5 flips RED"
+echo "  (is_admin granted) on a pre-#2829 image -- those contrasts are the"
+echo "  regression guards. CASE 3 stays a clean skip until #2823 ships."
 
 end_suite
