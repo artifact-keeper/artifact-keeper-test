@@ -1,0 +1,34 @@
+# DTF tier manifest: ci-token-basic  (issue #2786)
+# Profile-set: filesystem / single (the walking-skeleton topology; the auth
+# asymmetry this tier gates is storage-independent).
+#
+# Feature (#2786): an OIDC / service-account API token may be presented as the
+# HTTP **Basic** *password* (with ANY username) on FORMAT (package-manager)
+# endpoints — /v2/* (OCI), /maven/*, /pypi/*, and the other registries — matching
+# the `pip` netrc / Artifactory `token:<api_token>` convention used by clients
+# that cannot send a Bearer header. The request is attributed to the TOKEN OWNER,
+# not the (ignored) Basic username. The security ASYMMETRY is the point: the same
+# Basic-with-token fallback is refused on the JSON management API `/api/v1/*`,
+# which accepts an API token ONLY as `Authorization: Bearer <token>`. A token in
+# the Basic password field on `/api/v1/*` must return 401 AUTH_ERROR.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (A) POSITIVE  — token-as-Basic-password (bogus username) PUTs+GETs a private
+#       maven artifact -> 2xx, and the upload is DB-attributed to the token owner
+#       (uploaded_by = owner uuid, NOT the Basic username). Pre-#2786 this 401s.
+#   (B) CONTROL   — the SAME token as `Bearer` on /api/v1/auth/me -> 200 and
+#       reports the owner. Proves the token itself is valid the canonical way.
+#   (C) BOUNDARY  — the SAME token as the Basic *password* on /api/v1/* (auth/me
+#       + a management route) -> 401 AUTH_ERROR, while a garbage Basic password
+#       also 401s (sanity) and Bearer still 200s. This is the load-bearing
+#       SECURITY assertion: the Basic-with-token fallback must NOT bleed into the
+#       management API. Dropping it would make the tier a hollow pass.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + a user create +
+# user login + token mint + several format PUT/GETs and repeated /api/v1 probes
+# back to back through one admin/user; the base default (ON) would throttle them.
+# A tier that must disable a shipped control does so explicitly (design 2.2, same
+# as the isolation / sso tiers).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
