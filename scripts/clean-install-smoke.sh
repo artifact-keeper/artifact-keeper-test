@@ -351,12 +351,21 @@ fi
 #   networkPolicy.enabled=false
 #     Default-deny would block the in-cluster /readyz probe pod.
 #
-#   opensearch.replicaCount=1, persistence.enabled=false, javaOpts heap reduced
-#     OpenSearch can NOT be wholly disabled — the backend has a hard
-#     dependency on the OpenSearch service for indexing. We squash it to
-#     single-node, no PVC, 512m heap so the StatefulSet -> Deployment
-#     switch and the in-memory mode boot in <60s on `local-path`.
-#     Production OpenSearch shape is exercised by search-tests.
+#   opensearch.enabled=false
+#     The backend does NOT hard-depend on OpenSearch: with opensearch
+#     disabled the chart drops both the `wait-for-opensearch` init container
+#     (backend-deployment.yaml guards it on `.Values.opensearch.enabled`) and
+#     the OPENSEARCH_URL env, and the backend falls back to Postgres-native
+#     search. Verified by the DTF `search` tier (73 cases green with no
+#     OpenSearch at all). Keeping OpenSearch ON in this boot smoke was the
+#     root cause of the release-gate cascade: a flaky/slow single-node
+#     OpenSearch that never reached `_cluster/health` green/yellow left the
+#     backend blocked in `wait-for-opensearch` (Init:1/2) until the 300s
+#     rollout timeout, failing clean-install-smoke and, because deploy and all
+#     ~15 *-tests jobs `needs` it, skipping the entire gate (run 29649800319,
+#     the v1.6.0 gate). A startup smoke must not hard-block on a heavy optional
+#     service. Production OpenSearch shape stays covered by search-tests, which
+#     run against the separate `deploy` stack.
 #
 #   cosign.enabled=false (default already)
 #     No signature verification in CI; would block on cosign tooling.
@@ -388,11 +397,7 @@ HELM_OVERRIDES=(
   --set trivy.enabled=false
   --set dependencyTrack.enabled=false
   --set networkPolicy.enabled=false
-  --set opensearch.replicaCount=1
-  --set opensearch.persistence.enabled=false
-  --set 'opensearch.javaOpts=-Xms512m -Xmx512m'
-  --set 'opensearch.resources.requests.memory=1Gi'
-  --set 'opensearch.resources.limits.memory=1Gi'
+  --set opensearch.enabled=false
   # v1.1.x charts: values-production.yaml ships meilisearch.masterKey=""
   # and env="production" so operators must provide the key out-of-band.
   # The smoke gate is a transient test deploy: provide a hardcoded test
