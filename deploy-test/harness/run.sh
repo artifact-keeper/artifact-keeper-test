@@ -259,7 +259,8 @@ case "$CMD" in
     # #2787, nexus-go-apt #2784, nexus-group-virtual #2783, pypi-contenttype
     # #2801, ldaps #2782).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
-             ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps; do
+             ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
+             vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
