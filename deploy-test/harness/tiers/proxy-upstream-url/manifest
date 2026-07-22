@@ -1,0 +1,32 @@
+# DTF tier manifest: proxy-upstream-url  (issue #2822)
+# Profile-set: filesystem / single + upstreams=nexus (same real-Nexus topology
+# as the `migration` / nexus-go-apt tiers: a live Sonatype Nexus 3 migration
+# source next to the backend on the slot's own DTF network; health-gated
+# ~2-3 min boot).
+#
+# WHAT THIS DISCRIMINATES (#2822): a Nexus `proxy` source repo is SKIPPED during
+# migration. A Nexus proxy maps to an AK `remote` repo, but the migration's
+# create_repository INSERT never populated `upstream_url`, so the row violated
+# the repositories.check_upstream_url CHECK constraint (Postgres SQLSTATE 23514,
+# which requires upstream_url IS NOT NULL when repo_type='remote'). The INSERT
+# failed, the worker logged "Failed to create destination repository; skipping",
+# incremented failed, and the proxy repo never landed -- and with it the only
+# requested repo, the whole job reported Failed. Fix B captures the Nexus
+# `repositorySettings.proxy.remoteUrl` and persists it as `upstream_url`, so the
+# remote repo is created and the job completes.
+#
+# The oracle seeds a maven `proxy` repo (proxy.remoteUrl =
+# https://repo1.maven.org/maven2/) into Nexus, runs a REAL AK migration of it,
+# and asserts (DB):
+#   * the AK repository row EXISTS (not skipped) with repo_type='remote' and
+#     `upstream_url` populated (= the proxy remoteUrl); AND
+#   * the migration status is Completed / CompletedWithErrors (not Failed).
+# NON-ZERO-WHILE-BUG: pre-#2822 the repo is absent (skipped, 23514) and the job
+# is Failed, so the existence + status checks fail; only the fixed image exits 0.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repeated migration
+# REST calls back-to-back through one admin user; matches the migration tier's
+# rig posture (relax a shipped control explicitly; base default stays ON).
+PROFILES="storage.filesystem upstreams.nexus"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

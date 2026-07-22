@@ -1,0 +1,36 @@
+# DTF tier manifest: virtual-no-transfer  (issue #2821, regression of #2783)
+# Profile-set: filesystem / single + upstreams=nexus (same real-Nexus topology
+# as the `migration` / nexus-group-virtual tiers: a live Sonatype Nexus 3
+# migration source next to the backend on the slot's own DTF network;
+# health-gated ~2-3 min boot).
+#
+# WHAT THIS DISCRIMINATES (#2821): migrating a Nexus `group` repo to an AK
+# `virtual` repo physically COPIES its members' bytes into the virtual repo's
+# own storage. A virtual repo aggregates its members at read time; it must NOT
+# accrue artifact rows / storage objects of its own. The pre-#2821 worker ran
+# the same transfer loop for the virtual repo as for a local repo, so
+# list_artifacts on the Nexus group returned the members' aggregated components
+# and process_repository_artifacts copied every one into the virtual repo,
+# doubling storage and breaking the aggregation model. Fix A gates the transfer
+# enqueue for RepositoryType::Virtual so the virtual repo is provisioned + its
+# member correlation written (the #2783 behaviour), but no bytes are transferred
+# into it.
+#
+# The oracle seeds 2 raw HOSTED member repos AND a raw GROUP repo over them,
+# runs a REAL AK migration of both members + the group, and asserts (DB):
+#   * the group migrates to an AK repo with repo_type='virtual' whose
+#     virtual_repo_members are correlated (provisioning + #2783 intact); AND
+#   * that virtual repo has ZERO artifact rows / storage objects of its own
+#     (no member bytes copied in) -- the #2821 discriminator; AND
+#   * the member hosted repos DID transfer their bytes normally (positive
+#     control -- the fix must not suppress legitimate hosted transfers).
+# NON-ZERO-WHILE-BUG: pre-#2821 the virtual repo accrues artifact rows, so the
+# zero-artifacts check fails and the oracle exits non-zero; only the fixed image
+# exits 0.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repeated migration
+# REST calls back-to-back through one admin user; matches the migration tier's
+# rig posture (relax a shipped control explicitly; base default stays ON).
+PROFILES="storage.filesystem upstreams.nexus"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
