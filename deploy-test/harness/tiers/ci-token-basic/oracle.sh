@@ -145,13 +145,19 @@ fi
 
 # ---------------------------------------------------------------------------
 # (C) BOUNDARY — the Basic-with-token fallback must NOT bleed into /api/v1/*.
-#     This is the load-bearing SECURITY gate. Verified against two management
-#     routes so it cannot pass on a single whoami exemption. A garbage Basic
-#     password 401s (sanity: the route DOES authenticate) while the valid-token
-#     Basic password must ALSO 401 (the token is not honoured as a Basic carrier
-#     on the management API).
+#     This is the load-bearing SECURITY gate. Verified across the hard-auth
+#     (auth_middleware) AND optional-auth (optional_auth_middleware) /api/v1
+#     surfaces so it cannot pass on a single whoami exemption and so it proves
+#     the COMPLETE boundary (#2806): the shared resolver refuses token-as-Basic
+#     on the management API too, not just the auth_middleware routes. A garbage
+#     Basic password 401s (sanity: the route DOES authenticate the Basic creds)
+#     while the valid-token Basic password must ALSO 401 (the token is not
+#     honoured as a Basic carrier on the management API). The Bearer control
+#     accepts 200 OR 403 — both prove the route authenticated the token (403 is
+#     authz-denied, still not anonymous); only a token-as-Basic 401 passes the
+#     boundary, and a 403 there would itself be a violation (auth succeeded).
 # ---------------------------------------------------------------------------
-for MEP in "/api/v1/auth/me" "/api/v1/users/me"; do
+for MEP in "/api/v1/auth/me" "/api/v1/users/me" "/api/v1/repositories"; do
   begin_test "BOUNDARY: API token as Basic password on ${MEP} -> 401 (documented AUTH_ERROR asymmetry)"
   TB_CODE="$(http_code GET "${BASE_URL}${MEP}" "$BASIC_TOKEN_HDR")"
   GB_CODE="$(http_code GET "${BASE_URL}${MEP}" "$BASIC_GARBAGE_HDR")"
@@ -159,8 +165,8 @@ for MEP in "/api/v1/auth/me" "/api/v1/users/me"; do
   if [ "$GB_CODE" != "401" ]; then
     fail "sanity failed: garbage Basic password on ${MEP} returned ${GB_CODE}, expected 401 (route must authenticate Basic)" \
          "tokenBasic=${TB_CODE} garbageBasic=${GB_CODE} Bearer=${BR_CODE}"
-  elif [ "$BR_CODE" != "200" ]; then
-    fail "control failed: Bearer token on ${MEP} returned ${BR_CODE}, expected 200" \
+  elif [ "$BR_CODE" != "200" ] && [ "$BR_CODE" != "403" ]; then
+    fail "control failed: Bearer token on ${MEP} returned ${BR_CODE}, expected 200 or 403 (authenticated)" \
          "tokenBasic=${TB_CODE} garbageBasic=${GB_CODE} Bearer=${BR_CODE}"
   elif [ "$TB_CODE" = "401" ]; then
     pass
