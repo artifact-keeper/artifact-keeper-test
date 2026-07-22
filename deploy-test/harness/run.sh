@@ -254,7 +254,12 @@ case "$CMD" in
     # the full-fidelity coexistence proof run the differing tiers individually.
     # Per-tier image support for `all` is a follow-up.
     overall=0
-    for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance; do
+    # Base tiers, then the 1.6.1 feature/fix coverage tiers (ci-token-basic
+    # #2786, virtual-usage #2785, maven-files-casing #2706/#2707, backup-reclaim
+    # #2787, nexus-go-apt #2784, nexus-group-virtual #2783, pypi-contenttype
+    # #2801, ldaps #2782).
+    for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
+             ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
