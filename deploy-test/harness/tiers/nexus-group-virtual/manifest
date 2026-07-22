@@ -1,0 +1,24 @@
+# DTF tier manifest: nexus-group-virtual  (issue #2783)
+# Profile-set: filesystem / single + upstreams=nexus (same real-Nexus topology
+# as the `migration` tier: a live Sonatype Nexus 3 migration source next to the
+# backend on the slot's own DTF network; health-gated ~2-3 min boot).
+#
+# WHAT THIS DISCRIMINATES (#2783): Nexus `group` repositories did NOT correlate
+# to AK `virtual` repos on migration — the group migrated to a virtual repo with
+# ZERO members (the member links were never written). The #2783 fix captures the
+# Nexus group's memberNames, correlates each source member name to the id of its
+# already-migrated AK repo, and writes virtual_repo_members in order (skipping
+# absent members, no dangling rows). The oracle seeds 2+ hosted repos AND a
+# `group` repo whose members are those hosted repos, runs a REAL AK migration,
+# and asserts (DB): the group migrates to an AK repo with repo_type='virtual'
+# whose virtual_repo_members are exactly the migrated AK repo ids of the member
+# repos, in order — and that there are no dangling member rows.
+# NON-ZERO-WHILE-BUG: pre-#2783 the virtual has 0 members -> oracle asserts the
+# member rows exist + match, so it exits 0 only on the fixed image.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repeated migration
+# REST calls back-to-back through one admin user; matches the migration tier's
+# rig posture (§2.2: relax a shipped control explicitly; base default stays ON).
+PROFILES="storage.filesystem upstreams.nexus"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

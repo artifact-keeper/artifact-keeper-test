@@ -1,0 +1,14 @@
+# Seed entries for the ldaps tier (#2782). Loaded by the oracle via
+# `docker exec -i <ldap> ldapadd` (idempotent — "already exists" is ignored).
+# The base dc=dtf,dc=local is created by osixia from LDAP_DOMAIN=dtf.local.
+dn: ou=people,dc=dtf,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: uid=alice,ou=people,dc=dtf,dc=local
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Example
+sn: Example
+mail: alice@dtf.local
+userPassword: alicepass

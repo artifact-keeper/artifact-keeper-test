@@ -1,0 +1,80 @@
+# =============================================================================
+# profiles/sso.ldap.yml — sso dimension = ldap (LDAPS server)  [issue #2782]
+# =============================================================================
+# Adds a REAL LDAPS server (osixia/openldap) with a self-signed TLS cert to the
+# DTF network so the ldaps tier can exercise the #2782 feature: per-provider
+# LDAPS TLS options (insecure_skip_verify + ca_certificate), secure-by-default.
+#
+# What this overlay does:
+#   * ADDS  an `openldap` service on the slot's `dtf` net, reachable at the
+#     network alias `ldap.dtf.local` (which MATCHES the CN/SAN of the mounted
+#     server certificate — so full TLS verification with the correct CA passes
+#     hostname checks, while a client with no CA rejects the self-signed chain).
+#     Fresh long-lived (2036) self-signed certs are mounted from fixtures/ so
+#     the negative control fails on TRUST, never on expiry.
+#   * PATCHES backend with the private-IP SSRF escape hatch so it can create an
+#     LDAP provider pointing at the private LDAPS host and open the bind socket
+#     (the LDAP-test/login path re-vets the resolved IP against this allowlist).
+#
+# The oracle seeds a test user (uid=alice) via `docker exec ldapadd` and drives
+# the admin SSO-LDAP API + the real /auth/sso/ldap/{id}/login bind. The bind
+# path (NOT the connectivity /test endpoint, which only does a TCP probe) is
+# where #2782's per-provider TLS options are honored.
+#
+# Required vars (exported by run.sh): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  openldap:
+    image: osixia/openldap:1.5.0
+    container_name: ak-dtf${DTF_SLOT}-ldap
+    command: ["--copy-service"]
+    hostname: ldap.dtf.local
+    environment:
+      LDAP_ORGANISATION: "DTF"
+      LDAP_DOMAIN: "dtf.local"
+      LDAP_ADMIN_PASSWORD: "adminpass"
+      LDAP_TLS: "true"
+      LDAP_TLS_VERIFY_CLIENT: "never"
+      # Use the fresh mounted certs (CN/SAN = ldap.dtf.local, valid to 2036)
+      # instead of the image's baked 2021-expired self-signed pair.
+      LDAP_TLS_CRT_FILENAME: "ldap.crt"
+      LDAP_TLS_KEY_FILENAME: "ldap.key"
+      LDAP_TLS_CA_CRT_FILENAME: "ca.crt"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/ldaps/fixtures/ldap.crt:/container/service/slapd/assets/certs/ldap.crt:ro"
+      - "${DTF_DIR}/harness/tiers/ldaps/fixtures/ldap.key:/container/service/slapd/assets/certs/ldap.key:ro"
+      - "${DTF_DIR}/harness/tiers/ldaps/fixtures/ca.crt:/container/service/slapd/assets/certs/ca.crt:ro"
+    healthcheck:
+      # slapd up AND serving TLS AND base DN bootstrapped: an AUTHENTICATED
+      # baseObject search over ldaps. Must bind as admin — osixia's default ACL
+      # denies anonymous reads of the base entry (returns err=32), so an
+      # anonymous probe would wrongly report unhealthy. REQCERT never here is
+      # only for the healthcheck's own client, not the backend.
+      test:
+        - "CMD-SHELL"
+        - "LDAPTLS_REQCERT=never ldapsearch -H ldaps://localhost:636 -x -D 'cn=admin,dc=dtf,dc=local' -w adminpass -b 'dc=dtf,dc=local' -s base >/dev/null 2>&1"
+      interval: 5s
+      timeout: 5s
+      start_period: 40s
+      retries: 30
+    networks:
+      dtf:
+        aliases:
+          - ldap.dtf.local
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openldap:
+        condition: service_healthy
+    environment:
+      # The LDAPS host is on the slot's private docker net; the LDAP test/login
+      # path re-vets the resolved IP against the SSRF allowlist. Allow the
+      # private ranges docker assigns (same set as upstreams.nexus.yml).
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16
+
+networks:
+  dtf:
+    name: ak-dtf${DTF_SLOT}-net
