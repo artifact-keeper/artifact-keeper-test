@@ -1,0 +1,26 @@
+# DTF tier manifest: backup-reclaim  (#2787)
+# Profile-set: filesystem / single. The backup archive is a plain object on the
+# storage backend; the storage-leak class is backend-agnostic, so this runs on
+# the default filesystem overlay (the archive lands on disk inside the backend
+# container at /data/storage/<storage_path>, directly inspectable via
+# `docker exec`).
+#
+# The bug (#2787): BackupService retention cleanup deleted the `backups` DB row
+# but LEAKED the .tar.gz storage object (BackupService::cleanup ran a bare
+# `DELETE FROM backups` and never touched storage). The fix deletes the archive
+# object first, then the row.
+#
+# Oracle (oracle.sh) is the discriminating gate:
+#   * create + execute a backup -> assert the .tar.gz archive exists on the
+#     storage backend AND a completed `backups` row exists
+#   * age the row past retention (SQL) + set backup_retention_count=0 so a single
+#     aged backup is eligible, then trigger POST /api/v1/admin/cleanup
+#   * assert BOTH the `backups` row AND the .tar.gz object are gone.
+#     Pre-#2787 the object remains on disk (leak) => the object-absent assertion
+#     fails. On the rc (fixed) image both are gone => PASS.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + several admin API
+# calls back-to-back; the base default (ON) could throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
