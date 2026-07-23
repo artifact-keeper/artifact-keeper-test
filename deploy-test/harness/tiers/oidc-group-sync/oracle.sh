@@ -49,12 +49,14 @@ login() {
     -d "{\"username\":\"$1\",\"password\":\"$2\"}" | jq -r '.access_token // empty'
 }
 
-# create_oidc_provider <name> <client_id> <map_groups:true|false> <extra_json_obj>
+# create_oidc_provider <name> <client_id> <map_groups:true|false> <extra_json_obj> [issuer_url]
 # -> prints the provider UUID. <extra_json_obj> is merged into the request body
 # ('{}' for none, '{"trust_group_names":true}' for the Fix-C opt-in probe).
+# [issuer_url] defaults to $ISSUER; the userinfo SSRF case passes a sub-path
+# issuer whose discovery advertises a blocked userinfo_endpoint.
 create_oidc_provider() {
-  local name="$1" cid="$2" mg="$3" extra="$4" body
-  body=$(jq -n --arg name "$name" --arg iss "$ISSUER" --arg cid "$cid" \
+  local name="$1" cid="$2" mg="$3" extra="$4" iss="${5:-$ISSUER}" body
+  body=$(jq -n --arg name "$name" --arg iss "$iss" --arg cid "$cid" \
     --argjson mg "$mg" --argjson extra "$extra" \
     '{name:$name, issuer_url:$iss, client_id:$cid, client_secret:"dtf-oidc-secret",
       is_enabled:true, auto_create_users:true, pkce_enabled:false,
@@ -91,6 +93,31 @@ drive_oidc_login() {
   # group sync run here (synchronously, before the 307), so the DB is settled
   # by the time this returns.
   curl -s -o /dev/null -w '%{http_code}' "$cb"
+}
+
+# drive_oidc_login_ex <provider_id> <sub> <email> <extra_authorize_query>
+#   -> AK callback status. Same as drive_oidc_login but the caller supplies the
+#   full claim-control query fragment (so it can OMIT the `groups` key entirely,
+#   set a non-`groups` primary claim, add a second claim, or drive the userinfo
+#   params). e.g. extra="groups_claim=groups_direct&groups=platform%2Fbackend".
+drive_oidc_login_ex() {
+  local pid="$1" sub="$2" email="$3" extra="$4" authz cb
+  authz=$(curl -s -o /dev/null -w '%{redirect_url}' \
+    "${BASE_URL}/api/v1/auth/sso/oidc/${pid}/login")
+  [ -z "$authz" ] && { echo "000-no-login-redirect"; return; }
+  cb=$(curl -s -o /dev/null -w '%{redirect_url}' \
+    "${authz}&sub=${sub}&email=${email}&${extra}")
+  [ -z "$cb" ] && { echo "000-no-authorize-redirect"; return; }
+  curl -s -o /dev/null -w '%{http_code}' "$cb"
+}
+
+# count of OIDC-source group memberships for external_id=$1 -> integer string
+db_oidc_member_count() {
+  db "SELECT count(*) FROM user_group_members m
+      JOIN users u ON u.id = m.user_id
+      JOIN groups g ON g.id = m.group_id
+      WHERE u.external_id='$1' AND u.auth_provider='oidc'
+        AND g.external_source='oidc'"
 }
 
 # --- DB helpers (docker exec psql, prove.sh style) --------------------------
@@ -343,6 +370,240 @@ else
   fi
 fi
 
+# ===========================================================================
+# #2831 -- OIDC group memberships from candidate claims (GitLab groups_direct)
+# + userinfo merge (inherited subgroups). Provider P1 has no explicit
+# groups_claim, so the candidate fallback ["groups","groups_direct","roles"]
+# engages. Cases use drive_oidc_login_ex so they can omit the `groups` key,
+# set a non-`groups` primary claim, or drive the userinfo params.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# CASE 7 -- GitLab out-of-box (HEADLINE): groups_direct path values, no explicit
+# claim. Mock emits under groups_direct only (no `groups` key), one top-level
+# group and one subgroup path.
+# ---------------------------------------------------------------------------
+begin_test "CASE 7 (#2831 HEADLINE): GitLab groups_direct path values with no explicit claim auto-create both groups + attach"
+SUB7="dev7-${SUF}"
+G7_TOP="platform-${SUF}"
+G7_SUB="platform-${SUF}/backend"
+ST7=$(drive_oidc_login_ex "$P1" "$SUB7" "${SUB7}@dtf.test" \
+  "groups_claim=groups_direct&groups=platform-${SUF}%2Cplatform-${SUF}%2Fbackend")
+MEM7_TOP=$(db_member "$SUB7" "$G7_TOP")
+MEM7_SUB=$(db_member "$SUB7" "$G7_SUB")
+SRC7_TOP=$(db_group_source "$G7_TOP")
+SRC7_SUB=$(db_group_source "$G7_SUB")
+if [ "$ST7" = "307" ] \
+   && [ "$MEM7_TOP" = "1" ] && [ "$MEM7_SUB" = "1" ] \
+   && [ "$SRC7_TOP" = "oidc" ] && [ "$SRC7_SUB" = "oidc" ]; then
+  pass
+else
+  fail "GitLab groups_direct not synced (login=$ST7 top_member='$MEM7_TOP' sub_member='$MEM7_SUB' top_src='$SRC7_TOP' sub_src='$SRC7_SUB')" \
+       "P1 has no explicit groups_claim; the id_token carries paths under 'groups_direct'. Candidate fallback must resolve them and auto-create '${G7_TOP}' and '${G7_SUB}' (external_source=oidc) and attach ${SUB7}. RED on a pre-#2831 image (reads only 'groups')."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 8 -- Explicit override honored (no accidental multi-name). P8 pins
+# groups_claim="groups"; the mock emits ONLY groups_direct (id_token AND
+# userinfo), so neither source yields a value for the explicit 'groups' claim.
+# ---------------------------------------------------------------------------
+begin_test "CASE 8 (#2831): explicit groups_claim='groups' is NOT supplemented by groups_direct (id_token or userinfo)"
+SUB8="dev8-${SUF}"
+G8="explicit-honored-${SUF}"
+P8="$(create_oidc_provider "dtf-oidc-p8-${SUF}" "dtf-client-p8-${SUF}" true \
+  '{"attribute_mapping":{"groups_claim":"groups"}}')"
+if [ -z "$P8" ] || [ "$P8" = "null" ]; then
+  fail "could not create OIDC provider P8 with explicit groups_claim"
+else
+  ST8=$(drive_oidc_login_ex "$P8" "$SUB8" "${SUB8}@dtf.test" \
+    "groups_claim=groups_direct&groups=${G8}&ui_groups_claim=groups_direct&ui_groups=${G8}")
+  MEM8=$(db_member "$SUB8" "$G8")
+  SRC8=$(db_group_source "$G8")
+  if [ "$ST8" = "307" ] && [ -z "$MEM8" ] && [ -z "$SRC8" ]; then
+    pass
+  else
+    fail "explicit groups_claim leaked a groups_direct value (login=$ST8 member='$MEM8' group_src='$SRC8')" \
+         "P8 configures groups_claim='groups'. A groups_direct-only login must attach NOTHING and NOT create '${G8}'."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 9 -- Full-path naming rule (no last-segment split). Reuses CASE 7's
+# subgroup: the group is named by its FULL path, and a bare last-segment
+# 'backend' group is NEVER created for this user.
+# ---------------------------------------------------------------------------
+begin_test "CASE 9 (#2831): subgroup uses the FULL path name, never the collapsed last segment 'backend'"
+MEM9_FULL=$(db_member "$SUB7" "$G7_SUB")
+MEM9_LEAF=$(db_member "$SUB7" "backend")
+SRC9_LEAF=$(db_group_source "backend")
+if [ "$MEM9_FULL" = "1" ] && [ -z "$MEM9_LEAF" ] && { [ "$SRC9_LEAF" = "" ] || [ "$SRC9_LEAF" = "NULL" ]; }; then
+  pass
+else
+  fail "path naming collapsed to last segment (full_member='$MEM9_FULL' leaf_member='$MEM9_LEAF' leaf_src='$SRC9_LEAF')" \
+       "The GitLab path '${G7_SUB}' must be stored verbatim as the group name; a last-segment 'backend' group must not exist or hold this user (Option (a) full-path)."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 10 -- Precedence (candidate order groups > groups_direct > roles). Same
+# login emits BOTH claims with different values; 'groups' must win.
+# ---------------------------------------------------------------------------
+begin_test "CASE 10 (#2831): candidate precedence -- 'groups' wins over 'groups_direct'"
+SUB10="dev10-${SUF}"
+G10_WIN="from-groups-${SUF}"
+G10_LOSE="from-direct-${SUF}"
+ST10=$(drive_oidc_login_ex "$P1" "$SUB10" "${SUB10}@dtf.test" \
+  "groups_claim=groups&groups=${G10_WIN}&groups_claim2=groups_direct&groups2=${G10_LOSE}")
+MEM10_WIN=$(db_member "$SUB10" "$G10_WIN")
+MEM10_LOSE=$(db_member "$SUB10" "$G10_LOSE")
+if [ "$ST10" = "307" ] && [ "$MEM10_WIN" = "1" ] && [ -z "$MEM10_LOSE" ]; then
+  pass
+else
+  fail "candidate precedence wrong (login=$ST10 groups_member='$MEM10_WIN' direct_member='$MEM10_LOSE')" \
+       "When both 'groups' and 'groups_direct' are present, the first candidate ('groups') wins; '${G10_LOSE}' must NOT attach."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 11 -- String-valued claim (single JSON string, not an array). The path
+# must survive intact (slash is not a delimiter).
+# ---------------------------------------------------------------------------
+begin_test "CASE 11 (#2831): single-string groups_direct claim (a GitLab path) is synced intact"
+SUB11="dev11-${SUF}"
+G11="platform-${SUF}/data"
+ST11=$(drive_oidc_login_ex "$P1" "$SUB11" "${SUB11}@dtf.test" \
+  "groups_claim=groups_direct&groups_shape=string&groups=platform-${SUF}%2Fdata")
+MEM11=$(db_member "$SUB11" "$G11")
+SRC11=$(db_group_source "$G11")
+if [ "$ST11" = "307" ] && [ "$MEM11" = "1" ] && [ "$SRC11" = "oidc" ]; then
+  pass
+else
+  fail "string-shaped claim not synced intact (login=$ST11 member='$MEM11' src='$SRC11')" \
+       "A single JSON-string groups_direct value '${G11}' must create that group (external_source=oidc) and attach ${SUB11}; the slash is preserved."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 12 -- Empty / missing group claims -> no groups, no error, login 307.
+# ---------------------------------------------------------------------------
+begin_test "CASE 12 (#2831): all candidate claims empty/absent -> clean no-op (login 307, zero oidc memberships)"
+SUB12="dev12-${SUF}"
+ST12=$(drive_oidc_login_ex "$P1" "$SUB12" "${SUB12}@dtf.test" \
+  "groups_claim=groups_direct&groups=&ui_groups=")
+ADM12=$(db_is_admin "$SUB12")
+CNT12=$(db_oidc_member_count "$SUB12")
+if [ "$ST12" = "307" ] && [ -n "$ADM12" ] && [ "$CNT12" = "0" ]; then
+  pass
+else
+  fail "empty-claims login not a clean no-op (login=$ST12 user_admin='$ADM12' oidc_member_count='$CNT12')" \
+       "With no group values in any candidate claim (and empty userinfo), the user is created but holds ZERO oidc-source memberships; no 500."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 13 -- roles third-candidate fallback.
+# ---------------------------------------------------------------------------
+begin_test "CASE 13 (#2831): 'roles' third-candidate fallback auto-creates + attaches"
+SUB13="dev13-${SUF}"
+G13="role-team-${SUF}"
+ST13=$(drive_oidc_login_ex "$P1" "$SUB13" "${SUB13}@dtf.test" \
+  "groups_claim=roles&groups=${G13}")
+MEM13=$(db_member "$SUB13" "$G13")
+SRC13=$(db_group_source "$G13")
+if [ "$ST13" = "307" ] && [ "$MEM13" = "1" ] && [ "$SRC13" = "oidc" ]; then
+  pass
+else
+  fail "roles fallback not synced (login=$ST13 member='$MEM13' src='$SRC13')" \
+       "With only 'roles' populated, the third candidate must resolve '${G13}' (external_source=oidc) and attach ${SUB13}."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 14 -- INHERITANCE (userinfo HEADLINE): id_token groups_direct carries
+# only the DIRECT group, userinfo `groups` carries the effective set incl. the
+# inherited subgroup. The user must be attached to BOTH.
+# ---------------------------------------------------------------------------
+begin_test "CASE 14 (#2831 HEADLINE): inherited subgroup from userinfo -- id_token direct=[platform], userinfo effective=[platform, platform/backend] -> BOTH synced"
+SUB14="dev14-${SUF}"
+G14_DIRECT="platform-${SUF}"
+G14_INHERIT="platform-${SUF}/backend"
+ST14=$(drive_oidc_login_ex "$P1" "$SUB14" "${SUB14}@dtf.test" \
+  "groups_claim=groups_direct&groups=platform-${SUF}&ui_groups_claim=groups&ui_groups=platform-${SUF}%2Cplatform-${SUF}%2Fbackend")
+MEM14_DIRECT=$(db_member "$SUB14" "$G14_DIRECT")
+MEM14_INHERIT=$(db_member "$SUB14" "$G14_INHERIT")
+SRC14_INHERIT=$(db_group_source "$G14_INHERIT")
+if [ "$ST14" = "307" ] \
+   && [ "$MEM14_DIRECT" = "1" ] && [ "$MEM14_INHERIT" = "1" ] \
+   && [ "$SRC14_INHERIT" = "oidc" ]; then
+  pass
+else
+  fail "inherited subgroup from userinfo not synced (login=$ST14 direct_member='$MEM14_DIRECT' inherited_member='$MEM14_INHERIT' inherited_src='$SRC14_INHERIT')" \
+       "id_token carries only the direct group; the inherited '${G14_INHERIT}' arrives ONLY at /oauth/userinfo. Merging both sources must attach the user to BOTH. RED before the userinfo fix (id_token-only -> just '${G14_DIRECT}')."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 15 -- userinfo-DOWN graceful: userinfo returns 500; id_token groups
+# still sync, login still 307 (NON-FATAL fetch).
+# ---------------------------------------------------------------------------
+begin_test "CASE 15 (#2831): userinfo 500 -> login still 307 and id_token groups still sync (graceful degrade)"
+SUB15="dev15-${SUF}"
+G15="platform-${SUF}"
+ST15=$(drive_oidc_login_ex "$P1" "$SUB15" "${SUB15}@dtf.test" \
+  "groups_claim=groups_direct&groups=platform-${SUF}&ui_status=500")
+MEM15=$(db_member "$SUB15" "$G15")
+if [ "$ST15" = "307" ] && [ "$MEM15" = "1" ]; then
+  pass
+else
+  fail "userinfo outage broke login or dropped id_token groups (login=$ST15 direct_member='$MEM15')" \
+       "A 500 from /oauth/userinfo must be NON-FATAL: login still 307 and the id_token group '${G15}' still syncs."
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 16 -- userinfo SSRF guard: a provider whose discovery advertises an
+# internal/blocked userinfo_endpoint. The fetch must be refused by
+# validate_oidc_fetch_url; login still 307 on id_token groups only.
+# ---------------------------------------------------------------------------
+begin_test "CASE 16 (#2831 SEC-1): userinfo_endpoint on a blocked/internal host is refused; login still 307 with id_token groups only"
+SUB16="dev16-${SUF}"
+# Provider-unique group names: P16 is a distinct provider, so reusing a P1-owned
+# name would be refused by the cross-provider guard (CASE 4) and mask the probe.
+G16_DIRECT="ssrf-direct-${SUF}"
+G16_LEAK="ssrf-userinfo-leak-${SUF}"
+P16="$(create_oidc_provider "dtf-oidc-p16-${SUF}" "dtf-client-p16-${SUF}" true '{}' "${ISSUER}/ssrf")"
+if [ -z "$P16" ] || [ "$P16" = "null" ]; then
+  fail "could not create OIDC provider P16 for the userinfo SSRF probe"
+else
+  # id_token carries the direct group; the (blocked) userinfo would add G16_LEAK
+  # if it were ever fetched. iss is baked to match the provider's sub-path issuer.
+  ST16=$(drive_oidc_login_ex "$P16" "$SUB16" "${SUB16}@dtf.test" \
+    "iss=${ISSUER}%2Fssrf&groups_claim=groups_direct&groups=ssrf-direct-${SUF}&ui_groups_claim=groups&ui_groups=ssrf-userinfo-leak-${SUF}")
+  MEM16_DIRECT=$(db_member "$SUB16" "$G16_DIRECT")
+  MEM16_LEAK=$(db_member "$SUB16" "$G16_LEAK")
+  SRC16_LEAK=$(db_group_source "$G16_LEAK")
+  if [ "$ST16" = "307" ] && [ "$MEM16_DIRECT" = "1" ] \
+     && [ -z "$MEM16_LEAK" ] && { [ "$SRC16_LEAK" = "" ] || [ "$SRC16_LEAK" = "NULL" ]; }; then
+    pass
+  else
+    fail "userinfo SSRF guard breached or login broke (login=$ST16 direct_member='$MEM16_DIRECT' leak_member='$MEM16_LEAK' leak_src='$SRC16_LEAK')" \
+         "Discovery advertises userinfo_endpoint on a link-local host; validate_oidc_fetch_url must refuse the fetch so '${G16_LEAK}' is never created, while id_token group '${G16_DIRECT}' still syncs and login is 307."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 17 -- merge dedup: a group present in BOTH id_token and userinfo yields
+# exactly ONE membership; the inherited-only group adds a second.
+# ---------------------------------------------------------------------------
+begin_test "CASE 17 (#2831): overlapping id_token+userinfo group is not double-counted (merge dedup)"
+SUB17="dev17-${SUF}"
+G17_BOTH="platform-${SUF}"
+G17_INHERIT="platform-${SUF}/backend"
+ST17=$(drive_oidc_login_ex "$P1" "$SUB17" "${SUB17}@dtf.test" \
+  "groups_claim=groups_direct&groups=platform-${SUF}&ui_groups_claim=groups&ui_groups=platform-${SUF}%2Cplatform-${SUF}%2Fbackend")
+MEM17_BOTH=$(db_member "$SUB17" "$G17_BOTH")
+MEM17_INHERIT=$(db_member "$SUB17" "$G17_INHERIT")
+CNT17=$(db_oidc_member_count "$SUB17")
+if [ "$ST17" = "307" ] && [ "$MEM17_BOTH" = "1" ] && [ "$MEM17_INHERIT" = "1" ] && [ "$CNT17" = "2" ]; then
+  pass
+else
+  fail "merge dedup wrong (login=$ST17 both_member='$MEM17_BOTH' inherited_member='$MEM17_INHERIT' oidc_member_count='$CNT17')" \
+       "'${G17_BOTH}' appears in BOTH id_token and userinfo; the union must dedup to exactly ONE membership, plus one for the inherited '${G17_INHERIT}' -> 2 total."
+fi
+
 # ---- discrimination summary (printed, not a gate) --------------------------
 echo ""
 echo "=== DISCRIMINATION SUMMARY (why this tier catches the OIDC group-sync class) ==="
@@ -353,8 +614,21 @@ echo "    - operator name + trust ON    -> attached                           (C
 echo "    - another provider's oidc name-> NOT attached, owner unchanged       (CASE 4)"
 echo "    - no admin group + admin-ish claim -> NOT admin; operator grant kept (CASE 5, #2829)"
 echo "    - configured admin group, exact claim only -> admin (no substring)   (CASE 6, #2829)"
+echo "    - GitLab groups_direct paths, no explicit claim -> auto-create both   (CASE 7, #2831)"
+echo "    - explicit groups_claim -> groups_direct/userinfo NOT supplemented    (CASE 8, #2831)"
+echo "    - subgroup stored as FULL path, no last-segment 'backend'             (CASE 9, #2831)"
+echo "    - both claims present -> 'groups' wins (candidate precedence)          (CASE 10, #2831)"
+echo "    - single-string path claim synced intact                              (CASE 11, #2831)"
+echo "    - all candidates empty -> clean no-op, login 307                        (CASE 12, #2831)"
+echo "    - 'roles' third-candidate fallback                                     (CASE 13, #2831)"
+echo "    - inherited subgroup from /oauth/userinfo -> attached to BOTH          (CASE 14, #2831)"
+echo "    - userinfo 500 -> login still 307 + id_token groups (graceful)         (CASE 15, #2831)"
+echo "    - userinfo_endpoint on a blocked host -> refused, no leak group        (CASE 16, #2831)"
+echo "    - overlapping id_token+userinfo group -> deduped to one membership     (CASE 17, #2831)"
 echo "  CASE 2 flips RED (user attached) on a pre-#2759 image; CASE 5 flips RED"
-echo "  (is_admin granted) on a pre-#2829 image -- those contrasts are the"
-echo "  regression guards. CASE 3 stays a clean skip until #2823 ships."
+echo "  (is_admin granted) on a pre-#2829 image. CASE 7 flips RED (no groups) and"
+echo "  CASE 14 flips RED (inherited subgroup missing) on a pre-#2831 image --"
+echo "  those contrasts are the regression guards. CASE 3 stays a clean skip"
+echo "  until #2823 ships."
 
 end_suite

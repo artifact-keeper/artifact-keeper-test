@@ -6,9 +6,11 @@
 # OIDC login -> callback flow WITHOUT a browser. It is the OIDC analogue of the
 # SAML `sso` tier's Keycloak + probe: where SAML needs a live IdP that signs
 # assertions, OIDC needs a live IdP that (a) publishes a discovery document and
-# JWKS and (b) mints a signed `id_token` carrying attacker/operator-controlled
-# claims (notably the `groups` claim) so group-sync behaviour can be asserted
-# against the database.
+# JWKS, (b) mints a signed `id_token` carrying attacker/operator-controlled
+# claims, and (c) -- for #2831 -- answers `/oauth/userinfo` with a group set
+# that can DIFFER from the id_token (to emulate GitLab, whose id_token carries
+# only DIRECT memberships under `groups_direct` while `/oauth/userinfo` returns
+# the full EFFECTIVE set incl. inherited subgroups under `groups`).
 #
 # It is dependency-light on purpose (stdlib only, single file, stock python
 # image), mirroring harness/tiers/pypi-contenttype/fixtures/mock_pypi.py:
@@ -30,50 +32,78 @@
 #   1. GET AK /api/v1/auth/sso/oidc/{id}/login  -> 302 to
 #      {MOCK_AUTHORIZE_URL}?...&state=S&nonce=Nc&redirect_uri=<AK callback>
 #   2. The oracle re-issues that /authorize GET to THIS mock, appending the
-#      per-case claim controls it wants this login to assert:
-#          &sub=...&email=...&groups=a,b,c
-#      (comma-separated; an explicit empty `groups=` means "no groups").
+#      per-case claim controls it wants this login to assert (see the /authorize
+#      query table below).
 #   3. /authorize is STATELESS: it does not remember anything. It encodes the
-#      claims it must later mint -- {nonce, sub, email, groups} -- into the
-#      opaque `code` itself (base64url JSON), then 302s back to
-#          {redirect_uri}?code=<opaque>&state=S
-#      echoing AK's `state` verbatim so AK's CSRF/session lookup succeeds.
-#   4. The oracle follows that 302 to AK's callback. AK (server-side) then
-#      fetches this mock's /token with the `code`; /token decodes the code and
-#      mints an id_token carrying exactly those claims (aud = the client_id AK
-#      sends in the token request, iss = MOCK_ISSUER, nonce echoed so AK's
-#      nonce check passes). AK verifies the signature against /jwks, extracts
-#      the `groups` claim, and runs group sync.
+#      claims it must later mint -- {nonce, sub, email, iss, claims_spec,
+#      userinfo} -- into the opaque `code` itself (base64url JSON), then 302s
+#      back to {redirect_uri}?code=<opaque>&state=S echoing AK's `state`.
+#   4. The oracle follows that 302 to AK's callback. AK (server-side) fetches
+#      this mock's /token with the `code`; /token decodes the code and mints an
+#      id_token carrying exactly the specified group claims plus an `access_token`
+#      that itself carries the baked userinfo spec (still stateless). AK verifies
+#      the id_token signature against /jwks, extracts groups from the id_token,
+#      then -- for #2831 -- fetches /oauth/userinfo with that access_token and
+#      merges the two group sets before running group sync.
 #
-# Because the claims ride inside the `code`, the oracle controls the groups (and
-# which user) PER LOGIN with zero shared state and zero container restarts. Env
-# vars (MOCK_OIDC_SUB / MOCK_OIDC_EMAIL / MOCK_OIDC_GROUPS) supply defaults when
-# the query omits them.
+# Because the claims ride inside the `code` (id_token) and the `access_token`
+# (userinfo), the oracle controls both group sources PER LOGIN with zero shared
+# state and zero container restarts.
+#
+# ---------------------------------------------------------------------------
+# /authorize query interface (all optional; defaults preserve prior behaviour)
+# ---------------------------------------------------------------------------
+#   sub, email            the user (default from env)
+#   iss                   `iss` claim baked into the id_token; MUST equal the
+#                         AK provider issuer_url. Default MOCK_ISSUER. Used by
+#                         the SSRF case, whose provider issuer is a sub-path.
+#   groups                CSV values for the PRIMARY id_token group claim.
+#   groups_claim          name of the primary claim (default `groups`).
+#   groups_shape          `array` (default) or `string` (single JSON string,
+#                         no CSV split -- a GitLab path stays intact).
+#   groups2               CSV values for an optional SECOND id_token claim,
+#                         emitted simultaneously (precedence tests).
+#   groups_claim2         name of the second claim (default `groups_direct`).
+#   groups_shape2         shape of the second claim (default `array`).
+#   ui_groups             CSV values returned by /oauth/userinfo under
+#                         `ui_groups_claim`. Unset => mirror the primary id_token
+#                         values (so cases that never assert on userinfo are a
+#                         union no-op).
+#   ui_groups_claim       userinfo claim name (default `groups`, as GitLab).
+#   ui_status             forced /oauth/userinfo HTTP status (default 200; set
+#                         500 to drive the userinfo-DOWN graceful-degrade case).
+#
+# EMISSION RULE (faithfulness): /token emits ONLY the id_token claim keys that
+# were specified. `groups_claim=groups_direct` yields `"groups_direct":[...]`
+# and NO `groups` key -- letting the candidate fallback + explicit-override be
+# tested honestly.
 #
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 #   GET  /.well-known/openid-configuration  discovery (issuer + endpoints)
+#   GET  <prefix>/.well-known/openid-configuration  per-issuer discovery; when
+#        <prefix> == MOCK_SSRF_ISSUER_PREFIX the advertised userinfo_endpoint is
+#        an internal/blocked host (drives the userinfo SSRF-guard case).
 #   GET  /authorize                         302 back to redirect_uri w/ code
 #   POST /token                             {access_token, id_token, token_type}
+#   GET  /oauth/userinfo                     Bearer access_token -> {sub, groups}
 #   GET  /jwks                              public JWKS for the static key
 #   GET  /__readyz                          readiness probe ("ok")
 #
 # ---------------------------------------------------------------------------
 # Env
 # ---------------------------------------------------------------------------
-#   MOCK_PORT          listen port (default 80)
-#   MOCK_ISSUER        issuer_url AK stores + fetches server-side; the `iss`
-#                      claim. MUST equal the AK provider issuer_url exactly
-#                      (e.g. http://mock-oidc).
-#   MOCK_AUTHORIZE_URL browser/oracle-facing authorize endpoint advertised in
-#                      discovery (e.g. http://127.0.0.1:8251/authorize). This
-#                      is the ONE endpoint the user-agent hits, so it points at
-#                      the slot's published host port; token/jwks stay on the
-#                      docker-internal issuer host that AK reaches server-side.
-#   MOCK_OIDC_SUB      default `sub` claim         (default dtf-oidc-user)
-#   MOCK_OIDC_EMAIL    default `email` claim       (default dtf-oidc-user@dtf.test)
-#   MOCK_OIDC_GROUPS   default groups, CSV         (default "")
+#   MOCK_PORT               listen port (default 80)
+#   MOCK_ISSUER             issuer_url AK stores + fetches server-side; the base
+#                           `iss` claim. MUST equal the AK provider issuer_url.
+#   MOCK_AUTHORIZE_URL      browser/oracle-facing authorize endpoint advertised
+#                           in discovery (the slot's published host port).
+#   MOCK_OIDC_SUB/EMAIL/GROUPS  fixture defaults for sub/email/groups.
+#   MOCK_SSRF_ISSUER_PREFIX issuer sub-path whose discovery advertises a blocked
+#                           userinfo_endpoint (default `/ssrf`).
+#   MOCK_SSRF_USERINFO      the blocked userinfo_endpoint advertised for that
+#                           prefix (default a link-local metadata host).
 #
 # Nothing here is production code: it is a test double whose whole purpose is to
 # emit claims a test tells it to. It never validates PKCE or the client secret;
@@ -93,6 +123,16 @@ AUTHORIZE_URL = os.environ.get("MOCK_AUTHORIZE_URL", f"{ISSUER}/authorize")
 DEFAULT_SUB = os.environ.get("MOCK_OIDC_SUB", "dtf-oidc-user")
 DEFAULT_EMAIL = os.environ.get("MOCK_OIDC_EMAIL", "dtf-oidc-user@dtf.test")
 DEFAULT_GROUPS = os.environ.get("MOCK_OIDC_GROUPS", "")
+
+# #2831: a provider whose issuer_url is ISSUER + this prefix gets a discovery
+# doc advertising a userinfo_endpoint on an internal/blocked host, so the DTF
+# can prove AK refuses the userinfo fetch via validate_oidc_fetch_url (SEC-1)
+# and still logs the user in on id_token groups alone.
+SSRF_ISSUER_PREFIX = os.environ.get("MOCK_SSRF_ISSUER_PREFIX", "/ssrf")
+SSRF_USERINFO = os.environ.get(
+    "MOCK_SSRF_USERINFO", "http://169.254.169.254/oauth/userinfo"
+)
+BASE_USERINFO = f"{ISSUER}/oauth/userinfo"
 
 KID = "dtf-oidc-mock-key-1"
 
@@ -154,6 +194,21 @@ def parse_groups(raw: str):
     return [g.strip() for g in raw.split(",") if g.strip()]
 
 
+def emit_claim(claims: dict, name: str, shape: str, vals: list):
+    """Apply one {name, shape, vals} spec entry to an id_token claims dict.
+
+    `array` -> the key is a JSON array (possibly []); `string` -> the key is a
+    single JSON string (the first value), omitted entirely when there are no
+    values. Only the specified key is written, so an unspecified `groups`
+    stays ABSENT rather than an empty array (candidate-fallback fidelity).
+    """
+    if shape == "string":
+        if vals:
+            claims[name] = vals[0]
+    else:
+        claims[name] = vals
+
+
 def encode_code(payload: dict) -> str:
     return b64url_json(payload)
 
@@ -162,19 +217,55 @@ def decode_code(code: str) -> dict:
     return json.loads(b64url_decode(code))
 
 
-DISCOVERY = {
-    "issuer": ISSUER,
-    "authorization_endpoint": AUTHORIZE_URL,
-    "token_endpoint": f"{ISSUER}/token",
-    "jwks_uri": f"{ISSUER}/jwks",
-    "response_types_supported": ["code"],
-    "subject_types_supported": ["public"],
-    "id_token_signing_alg_values_supported": ["RS256"],
-    "scopes_supported": ["openid", "profile", "email", "groups"],
-    "claims_supported": ["sub", "email", "preferred_username", "name", "groups"],
-    "grant_types_supported": ["authorization_code"],
-    "code_challenge_methods_supported": ["S256"],
-}
+ACCESS_TOKEN_PREFIX = "at."
+
+
+def encode_access_token(payload: dict) -> str:
+    """Bake the userinfo spec into the opaque access_token (stateless)."""
+    return ACCESS_TOKEN_PREFIX + b64url_json(payload)
+
+
+def decode_access_token(token: str):
+    if not token or not token.startswith(ACCESS_TOKEN_PREFIX):
+        return None
+    try:
+        return json.loads(b64url_decode(token[len(ACCESS_TOKEN_PREFIX):]))
+    except Exception:  # noqa: BLE001 - test double
+        return None
+
+
+def build_discovery(prefix: str) -> dict:
+    """Discovery doc for issuer ISSUER+prefix.
+
+    token_endpoint/jwks_uri/authorization_endpoint stay on the base host (they
+    work for every issuer). Only the advertised userinfo_endpoint varies: the
+    SSRF-probe prefix advertises an internal/blocked host so AK's userinfo
+    fetch is refused by validate_oidc_fetch_url.
+    """
+    userinfo = SSRF_USERINFO if prefix == SSRF_ISSUER_PREFIX else BASE_USERINFO
+    return {
+        "issuer": ISSUER + prefix,
+        "authorization_endpoint": AUTHORIZE_URL,
+        "token_endpoint": f"{ISSUER}/token",
+        "userinfo_endpoint": userinfo,
+        "jwks_uri": f"{ISSUER}/jwks",
+        "response_types_supported": ["code"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["RS256"],
+        "scopes_supported": ["openid", "profile", "email", "groups"],
+        "claims_supported": [
+            "sub",
+            "email",
+            "preferred_username",
+            "name",
+            "groups",
+            "groups_direct",
+            "roles",
+        ],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+    }
+
 
 JWKS = {
     "keys": [
@@ -188,6 +279,8 @@ JWKS = {
         }
     ]
 }
+
+WELL_KNOWN = "/.well-known/openid-configuration"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -221,10 +314,14 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/__readyz":
             return self._text(200, "ok")
-        if path == "/.well-known/openid-configuration":
-            return self._json(200, DISCOVERY)
+        if path.endswith(WELL_KNOWN):
+            # base "" or a per-issuer sub-path prefix (e.g. "/ssrf").
+            prefix = path[: -len(WELL_KNOWN)]
+            return self._json(200, build_discovery(prefix))
         if path == "/jwks":
             return self._json(200, JWKS)
+        if path == "/oauth/userinfo":
+            return self._userinfo()
         if path == "/authorize":
             return self._authorize(urllib.parse.parse_qs(parsed.query))
         return self._text(404, "not found")
@@ -249,17 +346,52 @@ class Handler(BaseHTTPRequestHandler):
             return self._text(400, "authorize: missing redirect_uri")
 
         # Per-login claim controls (query beats env default). `groups` present
-        # but empty means "authenticate this user with NO group claim".
+        # but empty means "authenticate this user with NO group values".
         sub = one("sub", DEFAULT_SUB)
         email = one("email", DEFAULT_EMAIL)
-        groups_raw = one("groups", DEFAULT_GROUPS)
+        iss = one("iss", ISSUER)
+
+        # id_token group claim spec. The primary claim is always present (name
+        # defaults to `groups`) for backward compatibility with CASES 1-6.
+        primary_vals = parse_groups(one("groups", DEFAULT_GROUPS))
+        claims_spec = [
+            {
+                "name": one("groups_claim", "groups"),
+                "shape": one("groups_shape", "array"),
+                "vals": primary_vals,
+            }
+        ]
+        g2 = one("groups2")
+        if g2 is not None:
+            claims_spec.append(
+                {
+                    "name": one("groups_claim2", "groups_direct"),
+                    "shape": one("groups_shape2", "array"),
+                    "vals": parse_groups(g2),
+                }
+            )
+
+        # userinfo spec (#2831). Unset ui_groups mirrors the primary id_token
+        # values so cases that never assert on userinfo see a union no-op.
+        ui_groups_raw = one("ui_groups")
+        ui_vals = parse_groups(ui_groups_raw) if ui_groups_raw is not None else primary_vals
+        userinfo = {
+            "claim": one("ui_groups_claim", "groups"),
+            "vals": ui_vals,
+            "status": int(one("ui_status", "200")),
+        }
 
         code = encode_code(
             {
                 "nonce": nonce,
                 "sub": sub,
                 "email": email,
-                "groups": parse_groups(groups_raw),
+                "iss": iss,
+                "claims_spec": claims_spec,
+                "userinfo": userinfo,
+                # legacy fast-path field (see _token): a bare `groups` list for
+                # any older caller that does not carry a claims_spec.
+                "groups": primary_vals,
             }
         )
         sep = "&" if urllib.parse.urlparse(redirect_uri).query else "?"
@@ -284,7 +416,9 @@ class Handler(BaseHTTPRequestHandler):
         # rejects the token. AK includes client_id in the token-exchange form.
         client_id = formone("client_id", "dtf-oidc-client")
         if not code:
-            return self._json(400, {"error": "invalid_request", "error_description": "missing code"})
+            return self._json(
+                400, {"error": "invalid_request", "error_description": "missing code"}
+            )
 
         try:
             payload = decode_code(code)
@@ -296,7 +430,7 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         sub = payload.get("sub", DEFAULT_SUB)
         claims = {
-            "iss": ISSUER,
+            "iss": payload.get("iss", ISSUER),
             "sub": sub,
             "aud": client_id,
             "iat": now,
@@ -307,19 +441,58 @@ class Handler(BaseHTTPRequestHandler):
             "email_verified": True,
             "preferred_username": sub,
             "name": sub,
-            "groups": payload.get("groups", []),
         }
+        # Emit only the specified id_token group claim keys (fidelity: an
+        # unspecified `groups` stays ABSENT). Fall back to the legacy bare
+        # `groups` field for any caller that predates claims_spec.
+        spec = payload.get("claims_spec")
+        if spec:
+            for entry in spec:
+                emit_claim(claims, entry["name"], entry.get("shape", "array"), entry["vals"])
+        elif "groups" in payload:
+            claims["groups"] = payload["groups"]
+
         id_token = make_id_token(claims)
+
+        # Bake the userinfo spec into the opaque access_token so /oauth/userinfo
+        # can recover it statelessly. Default (no baked userinfo) mirrors the
+        # id_token `groups` under `groups`, status 200.
+        userinfo = payload.get("userinfo") or {
+            "claim": "groups",
+            "vals": payload.get("groups", []),
+            "status": 200,
+        }
+        access_token = encode_access_token({"sub": sub, "userinfo": userinfo})
         return self._json(
             200,
             {
-                "access_token": f"dtf-oidc-access-{now}",
+                "access_token": access_token,
                 "token_type": "Bearer",
                 "expires_in": 3600,
                 "id_token": id_token,
                 "scope": "openid profile email groups",
             },
         )
+
+    # ---- /oauth/userinfo: recover the baked userinfo group set -----------
+    def _userinfo(self):
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return self._json(401, {"error": "invalid_token", "error_description": "missing bearer"})
+        token = auth[len("Bearer "):].strip()
+        payload = decode_access_token(token)
+        if payload is None:
+            return self._json(401, {"error": "invalid_token", "error_description": "unknown token"})
+        ui = payload.get("userinfo") or {}
+        status = int(ui.get("status", 200))
+        if status != 200:
+            # Drive the userinfo-DOWN graceful-degrade case (#2831 CASE 15).
+            return self._json(
+                status, {"error": "server_error", "error_description": "userinfo forced failure"}
+            )
+        claim = ui.get("claim", "groups")
+        vals = ui.get("vals", [])
+        return self._json(200, {"sub": payload.get("sub", DEFAULT_SUB), claim: vals})
 
     def log_message(self, fmt, *args):
         # Quiet: the oracle asserts on AK's DB/HTTP behaviour, not mock stderr.
