@@ -1,0 +1,39 @@
+# DTF tier manifest: backup-exclude-repos  (#2772)
+# Profile-set: filesystem / single. A backup archive is a plain object written
+# by StorageService (filesystem backend rooted at /data/storage); the set of
+# artifacts it contains is chosen by BackupService::get_artifact_storage_keys
+# straight from the `artifacts` table, so the exclusion behaviour is
+# backend-agnostic and runs on the default filesystem overlay. The archive's
+# artifact_count is recorded on the completed `backups` row and asserted from
+# the DB, and the archive's own objects live on disk in the backend container.
+#
+# The feature (#2772): airgapped / low-bandwidth operators want to leave large
+# or non-critical repositories out of a Full/Incremental backup.
+# CreateBackupRequest gains an optional `exclude_repository_ids` list; artifacts
+# belonging to those repositories are skipped during the backup and the
+# exclusion is recorded in the `backups` row metadata. Empty/absent list ==
+# exclude nothing (no behaviour change). A repository may not appear in both the
+# include (`repository_ids`) and exclude lists (contradiction -> 400).
+# Pre-#2772 the `exclude_repository_ids` field does not exist, so it is silently
+# ignored: every repository is backed up regardless, the metadata carries no
+# exclusion, and the contradictory include/exclude request is accepted.
+#
+# Oracle (oracle.sh) is the discriminating gate. It seeds two maven local repos
+# with one real .jar each, then:
+#   * BEHAVIOURAL — a full backup (no exclusion) counts N artifacts; a backup
+#     excluding one repo counts strictly fewer (exactly the excluded repo's
+#     stored artifacts are dropped).
+#     Pre-#2772: the exclude list is ignored -> the excluding backup counts the
+#     same N -> FAIL.
+#   * METADATA — the excluding backup's `backups.metadata` records the excluded
+#     repository id. Pre-#2772: no exclusion key is present -> FAIL.
+#   * REJECTION — a create-backup naming the same repo in BOTH include and
+#     exclude is rejected 400. Pre-#2772: the unknown field is ignored and the
+#     request is accepted (2xx) -> FAIL.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo creation +
+# maven PUTs + several admin create/execute-backup calls back-to-back; the base
+# default (ON) could throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
