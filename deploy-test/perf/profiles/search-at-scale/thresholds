@@ -1,0 +1,33 @@
+# Baseline-delta budget for search-at-scale. Sourced KV.
+# Percentage metrics compare against baselines/<version>/search-at-scale.json;
+# *_ABS_* metrics are absolute hard ceilings (baseline-independent).
+# Verdict = OR over all guarded metrics: any breach => REGRESSION (non-zero exit).
+#
+# A baseline-relative metric fires REGRESSION only when it breaches BOTH the
+# percentage budget AND the absolute tolerance band (the rig's noise floor).
+# Search latency at scale is DB-bound and larger + noisier than the upload path,
+# so p95 and the tail ratio carry wide bands. Every value is overridable at run
+# time via the matching PTF_<NAME> environment variable.
+#
+# NOTE ON GUARDED METRICS FOR THIS PROFILE:
+#   - p95 latency (ms)  : aggregate over the scale sweep; the equal-per-scale
+#                         request mix puts p95 in the largest-scale bucket, so it
+#                         tracks at-scale search latency (the #2516 signal). The
+#                         per-scale p95-vs-count curve is the scenario's headline
+#                         (stdout SCALING lines + PTF_SCALING_OUT).
+#   - throughput (MB/s) : read-response throughput proxy (search uploads nothing);
+#                         small + roughly flat, wide-band so it does not flap.
+#   - peak backend RSS  : memory-blowup guard (unbounded in-memory aggregation at
+#                         scale would show here).
+#   - error rate / pool sat : hard ceilings; error rate catches 429s if the
+#                         limiter was left ON (see manifest) or 5xx at scale.
+P95_REGRESSION_PCT=20          # fail if aggregate app.latency_ms.p95 > baseline*1.20 ...
+P95_TOLERANCE_MS=150           #   ... AND it rose by more than 150 ms (search p95 is large+noisy)
+THROUGHPUT_REGRESSION_PCT=20   # fail if read throughput < baseline*0.80 ...
+THROUGHPUT_TOLERANCE_MBPS=5    #   ... AND it dropped by more than 5 MB/s (responses are small)
+RSS_REGRESSION_PCT=20          # fail if resource.backend.rss_bytes_peak > baseline*1.20 ...
+RSS_TOLERANCE_BYTES=134217728  #   ... AND it rose by more than 128 MiB
+TAIL_FAIRNESS_RATIO_PCT=35     # fail if (p99/p50)@largest-scale > baseline ratio*1.35 ...
+TAIL_TOLERANCE_RATIO=1.00      #   ... AND the ratio rose by more than 1.00
+ERROR_RATE_ABS_MAX=0.01        # hard ceiling on app.error_rate (catches 429/5xx at scale)
+POOL_SAT_ABS_MAX=95            # hard ceiling on backend_internal.db_pool.saturation_pct_peak

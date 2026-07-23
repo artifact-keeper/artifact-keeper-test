@@ -1,0 +1,88 @@
+# PTF profile manifest: search-at-scale   (Phase 2b — targets perf issue #2516)
+# The analog of a DTF tier manifest. Sourced KV by harness/run.sh.
+#
+# WHAT THIS PROFILE MEASURES
+#   #2516 = million-artifact readiness. This profile answers the core scaling
+#   question: does SEARCH/QUERY p95 stay FLAT or DEGRADE as the artifact count
+#   grows? It seeds the GLOBAL artifacts table to several scales (SCALE_K_VALUES,
+#   default 10k / 100k / 500k) and at each scale fires a fixed mix of the read
+#   surfaces — /search/quick, /search/advanced (FTS + name-ILIKE + deep page),
+#   and repo artifact listing/paging — measuring p50/p95/p99 per scale. The
+#   headline is the p95-vs-count curve (linear? cliff?), with db-pool saturation
+#   and the pg_stat_statements top queries (Layer C) showing WHERE the time goes.
+#
+# WHERE THE TIME GOES (recon-grounded, target-backend @1.6.2-rc)
+#   quick_search + advanced_search both route through SearchService::search
+#   (services/search_service.rs:273). Its predicate is an INLINE functional FTS:
+#     to_tsvector('english', a.name||' '||a.path||' '||COALESCE(a.version,''))
+#       @@ to_tsquery('english', $1)
+#   with NO GIN index on a stored tsvector column (none in migrations/). So every
+#   query recomputes to_tsvector for every row == a SEQUENTIAL SCAN, O(N). A
+#   separate COUNT(*) for pagination repeats the same full scan. name=*term*
+#   maps to a.name ILIKE '%term%' (non-sargable), and deep pages add OFFSET cost.
+#   Expect p95 to grow ~linearly with row count and these queries to dominate
+#   pg_stat_statements at 500k — the quantified #2516 cliff.
+#
+# GLOBAL SCALE (why reset-per-iteration): search scans the whole artifacts table
+#   (no repo scope), so the scale is the STANDING table size at measurement time.
+#   The scenario truncates + re-grows 0 -> K1 -> K2 -> K3 on every iteration so
+#   each scale is measured independently and the trimmed-mean combine stays valid.
+#   Equal request counts per scale put the union's p95 in the largest-scale
+#   bucket, so the harness-guarded aggregate `p95` reflects at-scale search
+#   latency; the per-scale breakdown is emitted to stdout + PTF_SCALING_OUT.
+#
+# RATE LIMIT — REQUIRED INVOCATION: /search has a 300/min per-IP limiter
+#   (routes.rs:680). This profile drives search far past it on purpose, so run
+#   the harness with the limiter OFF. compose.base.yml reads it from the shell:
+#     RATE_LIMIT_ENABLED=false bash harness/run.sh search-at-scale \
+#       --backend-image artifact-keeper-backend:1.6.2-rc --slot 3 --baseline
+#   With the limiter ON, every request past the bucket 429s and this profile
+#   measures the limiter, not query latency (the scenario pre-flights + warns).
+#
+# GEN        : bash generator (curl timing of the read mix; needs docker-exec
+#              seeding via seed.sh, so k6-in-container is not used here).
+# SCENARIO   : the GEN=bash scenario in this dir.
+# PROFILES   : DTF storage overlay to reuse. filesystem is enough — search reads
+#              the DB, not the object store, so no blobs are seeded.
+# THRESHOLDS : baseline-delta budget + noise-floor band file in this dir.
+# RUNS/WARMUP: measured repetitions (trimmed-mean combined) + discarded warm-up.
+#              Kept modest because each iteration re-seeds up to max(K) rows.
+GEN="bash"
+SCENARIO="scenario.sh"
+PROFILES="storage.filesystem"
+THRESHOLDS="thresholds"
+RUNS="3"
+WARMUP="1"
+
+# ---- legacy workload knobs (kept so run.sh's fixed export list is satisfied) --
+# This profile does NOT do the upload concurrency/size/dedup sweep; these are
+# placeholders that keep run.sh's `export CONCURRENCY FORMATS ...` line valid.
+# The search-at-scale knobs below are read by the scenario re-sourcing THIS
+# manifest (run.sh does not export arbitrary manifest keys).
+CONCURRENCY="1"
+FORMATS="search-mix"
+SWEEP_SIZE_MB="0"
+REQUESTS_PER_CELL="0"
+BIGFILE_SIZE_MB="0"
+BIGFILE_COUNT="0"
+DEDUP_COUNT="0"
+
+# ---- search-at-scale knobs (consumed by scenario.sh; env overrides win) ------
+# SCALE_K_VALUES        : GLOBAL artifact counts to seed + measure at (ascending).
+#                         The largest K is the "at scale" condition the guarded
+#                         p95 reflects. Trim for a quick shared-rig check; the
+#                         10k/100k/500k default is the #2516 readiness target.
+# QUERY_CONCURRENCY     : concurrent query workers firing the mix at each scale.
+# REQUESTS_PER_ENDPOINT : requests per endpoint per scale (per iteration) — the
+#                         per-scale percentile sample size (x6 endpoints x scales).
+# SEED_REPOS            : repos the K rows spread across (round-robin).
+# SEARCH_TERM           : the query term (FTS + name-ILIKE). 'pkg' matches the
+#                         seeded names; latency is realized regardless of matches
+#                         (the seq scan runs either way).
+# SEED_SIZE_BYTES       : per-row size_bytes recorded (cosmetic; no blob written).
+SCALE_K_VALUES="10000 100000 500000"
+QUERY_CONCURRENCY="4"
+REQUESTS_PER_ENDPOINT="15"
+SEED_REPOS="5"
+SEARCH_TERM="pkg"
+SEED_SIZE_BYTES="1024"

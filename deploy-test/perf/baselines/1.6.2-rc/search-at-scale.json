@@ -1,0 +1,71 @@
+{
+  "profile": "search-at-scale",
+  "version": "1.6.2-rc",
+  "backend_image": "artifact-keeper-backend:1.6.2-rc",
+  "run_id": "perf-search-at-scale-6-1784824265",
+  "started_at": "2026-07-23T16:38:19Z",
+  "iterations": 3,
+  "combine": "trimmed",
+  "duration_s": 166.62,
+  "workload": {
+    "max_concurrency": 4,
+    "requests": 288,
+    "sweep_size_bytes": 0,
+    "formats": "search-mix"
+  },
+  "app": {
+    "requests": 288,
+    "errors": 0,
+    "error_rate": 0,
+    "throughput_rps": 1.73,
+    "throughput_mbps": 0.02,
+    "bigfile_mbps": 0,
+    "latency_ms": {
+      "p50": 344.807,
+      "p90": 2542.03,
+      "p95": 2831.256,
+      "p99": 3771.56,
+      "max": 4329.614
+    },
+    "tail_at_max_conc": {
+      "p50": 950.627,
+      "p99": 4220.058,
+      "p99_over_p50": 4.439
+    }
+  },
+  "resource": {
+    "backend": {
+      "cpu_pct_peak": 4.1,
+      "cpu_pct_mean": 0.6,
+      "rss_bytes_peak": 46881833,
+      "rss_bytes_mean": 44657133,
+      "block_read_bytes": 65500,
+      "block_write_bytes": 0
+    },
+    "postgres": {
+      "cpu_pct_peak": 1108.2,
+      "rss_bytes_peak": 498283315
+    }
+  },
+  "backend_internal": {
+    "http_mean_ms_server": 0,
+    "db_pool": {
+      "active_peak": 2,
+      "max": 50,
+      "saturation_pct_peak": 4
+    },
+    "in_flight_peak": 4,
+    "responses_5xx": 0,
+    "webhook_backlog_peak": null,
+    "pg_stat": {
+      "slow_queries": 6,
+      "top_query_mean_ms": 73090.305155,
+      "top_query": "DELETE FROM repositories WHERE key LIKE $1"
+    }
+  },
+  "storage": {
+    "bytes_uploaded": 3736064,
+    "storage_used_bytes_delta": 0,
+    "dedup_ratio": 0
+  }
+}
