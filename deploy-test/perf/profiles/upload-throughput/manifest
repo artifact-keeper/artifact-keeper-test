@@ -1,16 +1,25 @@
 # PTF profile manifest: upload-throughput   (Phase 1 — implemented)
 # The analog of a DTF tier manifest. Sourced KV by harness/run.sh.
 #
-# GEN       : generator kind — bash (curl concurrency, big-file MB/s) or k6.
-# SCENARIO  : the scenario file in this dir (scenario.sh for bash).
-# PROFILES  : DTF storage overlay(s) to reuse (space-separated basenames under ../../profiles/).
-# THRESHOLDS: baseline-delta budget file in this dir.
-# RUNS      : measured repetitions; the reported number is the MEDIAN (+1 warm-up).
+# GEN        : default generator kind — bash (curl concurrency, big-file MB/s) or
+#              k6. Overridable per-invocation with --gen / GEN env, so this one
+#              profile drives BOTH paths (Phase 2a added the k6 path).
+# SCENARIO   : the GEN=bash scenario file in this dir.
+# SCENARIO_K6: the GEN=k6 scenario file in this dir.
+# PROFILES   : DTF storage overlay(s) to reuse (space-separated basenames under ../../profiles/).
+# THRESHOLDS : baseline-delta budget + noise-floor band file in this dir.
+# RUNS       : measured repetitions; reported number is the TRIMMED MEAN
+#              (drop hi+lo) of these. Phase 2a raised the default 3->5 so the
+#              trim leaves >=3 runs and the verdict is stable on the noisy rig.
+#              Override with --runs / PTF_RUNS.
+# WARMUP     : discarded warm-up iterations before measurement. Override --warmup.
 GEN="bash"
 SCENARIO="scenario.sh"
+SCENARIO_K6="scenario.js"
 PROFILES="storage.filesystem"
 THRESHOLDS="thresholds"
-RUNS="3"
+RUNS="5"
+WARMUP="1"
 
 # ---- workload sweep (consumed by scenario.sh) -------------------------------
 # sweep phase: concurrency sweep at SWEEP_SIZE_MB, REQUESTS_PER_CELL per cell,

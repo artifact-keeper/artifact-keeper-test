@@ -9,31 +9,56 @@ PASS / REGRESSION / IMPROVED).
 - Reuses DTF's `../compose.base.yml` + storage overlays under `../profiles/`,
   the corpus `tests/lib/common.sh`, and the slot/port claim discipline.
 
-## Status: Phase 1 complete (`upload-throughput`, GEN=bash)
+## Status: Phase 2a complete — shared harness hardened + ready for fan-out
 
-`upload-throughput` runs end-to-end: stack stand-up, load generation, all four
-metric layers into one `metrics.json`, a markdown report, and a
-`--baseline`/`--compare` delta verdict. The other four profiles are Phase 2.
+`upload-throughput` runs end-to-end on BOTH generator paths (GEN=bash and
+GEN=k6). The harness is now hardened so the baseline->delta verdict is stable on
+the noisy shared rig, the k6 containerized generator path is wired, and a bulk
+seeder exists for the scale profiles. The other four profiles are Phase 2b.
+
+### What Phase 2a added
+- **Stable verdict.** The per-run combine is a **trimmed mean** (drop the single
+  highest + lowest iteration), default `RUNS=5` (configurable), plus warm-up
+  discard. Each baseline-relative guard fires REGRESSION only when it breaches
+  **both** its percentage budget **and** an absolute **tolerance band** (the
+  rig's noise floor), so drift within noise no longer flaps the gate. Percentile
+  metrics (p95, tail ratio) get wider bands than deterministic ones. All budgets
+  + bands are env-overridable via `PTF_<NAME>`.
+- **Rig-quiesce guard.** `--baseline` refuses to run if the host 1-min loadavg
+  exceeds `QUIESCE_LOADAVG_MAX` (default ~0.6*nproc); override with
+  `--force-baseline`. Baselines must be captured quiesced.
+- **k6 generator path.** `GEN=k6` runs the containerized `grafana/k6` generator
+  (`scenario.js`) joined to the slot's compose network; its summary maps into the
+  SAME normalized `metrics.json`. Selectable per invocation (`--gen k6` / `GEN=k6`).
+- **Bulk seeder.** `harness/lib/seed.sh` DB-direct-inserts K artifacts across R
+  repos in seconds (~17k rows/s) for the scale profiles.
 
 ## Usage
 
 ```bash
-# stand up + measure + record the per-version baseline
+# stand up + measure + record the per-version baseline (refuses if rig is busy)
 bash harness/run.sh upload-throughput --backend-image <IMG> --slot 3 --baseline
 
 # stand up + measure + diff against the baseline (default when a baseline exists)
 bash harness/run.sh upload-throughput --backend-image <IMG> --slot 3 --compare
 #   -> exit 0 on PASS/IMPROVED, exit 1 on REGRESSION (fleet/CI gate signal)
 
+# drive the SAME profile with the containerized k6 generator instead of bash
+GEN=k6 bash harness/run.sh upload-throughput --backend-image <IMG> --slot 3 --compare
+
 # deliberately-throttled run to exercise the regression path
-bash harness/run.sh upload-throughput --backend-image <IMG> --slot 3 --compare --throttle-ms 60
+bash harness/run.sh upload-throughput --backend-image <IMG> --slot 3 --compare --throttle-ms 40
+
+# bulk-seed a running slot's DB for a scale profile
+bash harness/lib/seed.sh --db-container ak-perf3-db --count 50000 --repos 5 \
+     --format generic --size-bytes 4096 --prefix myscale --run-id $RUN_ID
 
 bash harness/run.sh ports --slot 3        # show the slot's port block
 ```
 
-Flags: `--baseline` | `--compare` (auto when a baseline exists), `--keep` (leave
-the stack up), `--slot N`, `--version V` (default: image tag), `--throttle-ms MS`
-(injects per-request client latency to force a regression).
+Flags: `--baseline` | `--compare` (auto when a baseline exists) | `--force-baseline`,
+`--keep`, `--slot N`, `--version V` (default: image tag), `--throttle-ms MS`,
+`--runs N` (`PTF_RUNS`), `--warmup N` (`PTF_WARMUP`), `--gen bash|k6` (`GEN=`).
 
 ## Layout
 
@@ -42,14 +67,16 @@ perf/
   compose.metrics.yml        # overlay: unauth /metrics (METRICS_PORT) + pg_stat_statements
                              #          + re-namespaces the slot to ak-perf<N>
   harness/
-    run.sh                   # entrypoint: stand-up, warm-up, RUNS iterations, median, verdict
+    run.sh                   # entrypoint: stand-up, quiesce-guard, warm-up, RUNS iters, combine, verdict
     lib/ports.sh             # PERF slot/port block (8300+N etc.), collision-free vs DTF
-    lib/collect.sh           # 4-layer capture -> normalized per-iteration metrics.json
-    lib/report.sh            # median-combine + baseline->delta verdict + report.md
+    lib/collect.sh           # 4-layer capture -> normalized per-iteration metrics.json; k6 runner + token fetch; quiesce guard
+    lib/report.sh            # trimmed-mean combine + baseline->delta verdict (budget + band) + report.md
+    lib/seed.sh              # bulk DB-direct dataset seeder for the scale profiles
   profiles/upload-throughput/
-    manifest                 # GEN, storage overlay, RUNS, workload sweep knobs
+    manifest                 # GEN, storage overlay, RUNS/WARMUP, workload knobs
     scenario.sh              # GEN=bash generator (concurrency/size/format sweep + bigfile + dedup)
-    thresholds               # per-metric regression budget
+    scenario.js              # GEN=k6 generator (VU upload workload; handleSummary -> Layer-A schema)
+    thresholds               # per-metric regression budget + noise-floor bands
   baselines/<version>/<profile>.json   # committed known-good number
   results/<profile>/                   # metrics.json + report.md + raw jsonl (gitignored)
 ```
@@ -58,7 +85,7 @@ perf/
 
 | Layer | Source | Signals |
 |---|---|---|
-| A client | the load generator's raw per-request log | p50/p90/p95/p99, MB/s, req/s, error-rate, tail p99/p50 |
+| A client | the generator (bash raw log OR k6 summary) | p50/p90/p95/p99, MB/s, req/s, error-rate, tail p99/p50 |
 | B resource | `docker stats` @1Hz + synchronous end-sample | backend/pg CPU%, peak/mean RSS, block IO |
 | C backend-internal | AK unauth `/metrics` (start/end + @1Hz) + `pg_stat_statements` | server mean latency, db-pool saturation, in-flight peak, 5xx, slow queries |
 | D storage | docker-volume `du` ground-truth (gauge lags on a scheduler tick) | bytes uploaded, storage delta, dedup ratio |
@@ -69,12 +96,76 @@ not p95; the storage/artifact gauges refresh on a scheduler tick and read 0 duri
 a short run, so Layer D uses volume `du`; no webhook/proxy-cache/upload-size series
 are emitted by this build (those fields are `null`, reported as n/a).
 
-## Noise control
+---
 
-Every profile runs one warm-up iteration (discarded) then `RUNS` measured
-iterations; the reported number is the **median**. Runs claim a dedicated slot
-and never co-schedule (rocky wedges on CPU load). NOTE: absolute p95/MB/s still
-drift ~2-3x run-to-run on the shared rig (k3s/kube co-tenant load) — capture the
-committed baseline on a **quiesced** slot, and see the Phase-2 notes about making
-the between-run delta more robust (trimmed mean / higher RUNS / per-metric
-env-tolerance).
+## Shared-harness contract (read this before writing a Phase 2b profile)
+
+A profile is a directory `profiles/<name>/` with three files. The harness
+(`run.sh` + `lib/*`) is generator-agnostic and profile-agnostic; a profile only
+declares WHAT to run and WHAT budget to hold it to. You do NOT edit `run.sh`,
+`report.sh`, or the combine/verdict logic.
+
+### 1. `profiles/<name>/manifest` — declare the scenario
+Sourced KV. Required: `GEN` (`bash`|`k6`), `PROFILES` (DTF storage overlay
+basename(s), e.g. `storage.filesystem`). For `GEN=bash` set `SCENARIO`
+(default `scenario.sh`); for `GEN=k6` set `SCENARIO_K6` (default `scenario.js`).
+Optional: `THRESHOLDS` (default `thresholds`), `RUNS` (default 5), `WARMUP`
+(default 1), plus any workload knobs your scenario reads (they are just env vars
+you export downstream — add your own; existing ones: `CONCURRENCY`, `FORMATS`,
+`SWEEP_SIZE_MB`, `REQUESTS_PER_CELL`, `BIGFILE_*`, `DEDUP_COUNT`). One profile
+may ship both a `scenario.sh` and a `scenario.js` and be driven either way.
+
+### 2. `profiles/<name>/scenario.sh` (GEN=bash) or `scenario.js` (GEN=k6) — the load
+- **bash:** source `$COMMON_SH` for auth/repo helpers, drive the workload, and
+  append ONE line per request to `$RAW_LOG` in the exact field order
+  `<phase> <concurrency> <format> <size_bytes> <http_code> <time_total_s> <upload_bytes>`.
+  `collect.sh` reduces that into Layer A (percentiles, MB/s, error-rate, tail).
+  Inputs are exported by `run.sh`: `BASE_URL`, `ADMIN_USER`, `ADMIN_PASS`,
+  `ADMIN_TOKEN` (after `auth_admin`), `RUN_ID`, `PERF_WORK_DIR`, `RAW_LOG`, `ITER`.
+- **k6:** an ES-module scenario. The container gets `BASE_URL`
+  (`http://backend:8080`, in-network), `TOKEN`, `RUN_ID`, `RUN_NONCE` (unique per
+  iteration — fold it into upload paths to avoid 409 on immutable re-PUT), `VUS`,
+  `ITERATIONS`, `SIZE_BYTES`, `THROTTLE_MS`. Your `handleSummary()` MUST write
+  `/out/summary.json` shaped as the Layer-A `app` object:
+  `{requests, errors, error_rate, throughput_rps, throughput_mbps, bytes_uploaded,
+  max_concurrency, latency_ms:{p50,p90,p95,p99,max}}`. The harness already passes
+  `--summary-trend-stats="avg,min,med,max,p(50),p(90),p(95),p(99)"`. See
+  `upload-throughput/scenario.js` as the reference.
+
+### 3. `profiles/<name>/thresholds` — declare the budget + bands
+Sourced KV. Override only what you care about; unset keys fall to the defaults in
+`report.sh`. Percentage budgets compare to the baseline; `*_ABS_*` are absolute
+hard ceilings. Each baseline-relative metric ALSO needs a **tolerance band** (the
+noise floor) — a REGRESSION requires breaching both. Keys:
+`P95_REGRESSION_PCT` + `P95_TOLERANCE_MS`; `THROUGHPUT_REGRESSION_PCT` +
+`THROUGHPUT_TOLERANCE_MBPS`; `RSS_REGRESSION_PCT` + `RSS_TOLERANCE_BYTES`;
+`TAIL_FAIRNESS_RATIO_PCT` + `TAIL_TOLERANCE_RATIO`; hard ceilings
+`ERROR_RATE_ABS_MAX`, `POOL_SAT_ABS_MAX`. Every one is env-overridable as
+`PTF_<KEY>`. Give percentile/tail metrics WIDER bands than deterministic ones.
+
+### metrics.json fields a profile must populate
+The combine + verdict currently guard: `app.latency_ms.p95`,
+`app.throughput_mbps`, `resource.backend.rss_bytes_peak`,
+`app.tail_at_max_conc.p99_over_p50`, `app.error_rate`,
+`backend_internal.db_pool.saturation_pct_peak`. Layer A is generator-produced;
+Layers B/C/D are captured by the harness automatically (docker stats, `/metrics`
+scrape, volume `du`) as long as your scenario actually drives the backend — you
+do not write them. If your profile guards a NEW metric (e.g. a scaling-slope or
+cache-hit-ratio), add its guard + band to `report.sh` and its budget to your
+`thresholds` (extend, do not fork).
+
+### Scale profiles: use `seed.sh`
+`metadata-scale` / `search-at-scale` / `million-artifact-lite` seed with
+`harness/lib/seed.sh --db-container ak-perf<N>-db --count K --repos R --format F
+--size-bytes S --prefix <p> --run-id $RUN_ID`. It DB-direct-inserts artifacts (+
+`artifact_metadata`) round-robin across R repos; list/quick+advanced search/
+`admin/stats`/repo-browse all see the rows. `--blobs 1 --volume ak-perf<N>_data`
+additionally writes a minimal placeholder blob per repo (downloads are otherwise
+not backed — the scale profiles measure the metadata/read plane, not transfer).
+
+### Guardrails carried from the rig memory
+Runs claim a dedicated slot and never co-schedule (rocky wedges on CPU load).
+Baselines are per-`(version, profile, GENERATOR)` — **a k6 baseline and a bash
+baseline are NOT interchangeable** (different client, different numbers), so
+compare k6-to-k6 and bash-to-bash only. Capture baselines on a quiesced slot (the
+guard enforces it). Clean stale `/tmp` clones before a big fleet campaign.

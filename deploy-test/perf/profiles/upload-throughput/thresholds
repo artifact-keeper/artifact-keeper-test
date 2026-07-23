@@ -2,9 +2,20 @@
 # Percentage metrics compare against baselines/<version>/upload-throughput.json;
 # *_ABS_* metrics are absolute hard ceilings (baseline-independent).
 # Verdict = OR over all guarded metrics: any breach => REGRESSION (non-zero exit).
-P95_REGRESSION_PCT=15          # fail if app.latency_ms.p95 > baseline * 1.15
-THROUGHPUT_REGRESSION_PCT=10   # fail if app.throughput_mbps < baseline * 0.90
-RSS_REGRESSION_PCT=20          # fail if resource.backend.rss_bytes_peak > baseline * 1.20
-TAIL_FAIRNESS_RATIO_PCT=25     # fail if (p99/p50)@C16 > baseline ratio * 1.25  (#2598)
-ERROR_RATE_ABS_MAX=0.01        # hard ceiling on app.error_rate
+#
+# Phase 2a noise hardening: a baseline-relative metric fires REGRESSION only when
+# it breaches BOTH the percentage budget AND the absolute tolerance band below.
+# The band is the rig's noise floor for that metric — drift smaller than it is
+# indistinguishable from between-run jitter and must NOT flag. Percentile metrics
+# (p95, tail ratio) carry WIDER bands than deterministic ones. Every value here
+# is overridable at run time via the matching PTF_<NAME> environment variable.
+P95_REGRESSION_PCT=15          # fail if app.latency_ms.p95 > baseline * 1.15 ...
+P95_TOLERANCE_MS=75            #   ... AND it rose by more than 75 ms
+THROUGHPUT_REGRESSION_PCT=10   # fail if app.throughput_mbps < baseline * 0.90 ...
+THROUGHPUT_TOLERANCE_MBPS=30   #   ... AND it dropped by more than 30 MB/s
+RSS_REGRESSION_PCT=20          # fail if resource.backend.rss_bytes_peak > baseline * 1.20 ...
+RSS_TOLERANCE_BYTES=134217728  #   ... AND it rose by more than 128 MiB
+TAIL_FAIRNESS_RATIO_PCT=25     # fail if (p99/p50)@C16 > baseline ratio * 1.25 ...  (#2598)
+TAIL_TOLERANCE_RATIO=0.60      #   ... AND the ratio rose by more than 0.60
+ERROR_RATE_ABS_MAX=0.01        # hard ceiling on app.error_rate (no band; deterministic)
 POOL_SAT_ABS_MAX=95            # hard ceiling on backend_internal.db_pool.saturation_pct_peak

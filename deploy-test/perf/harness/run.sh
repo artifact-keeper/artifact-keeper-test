@@ -48,6 +48,7 @@ resolve_test_root() {
 # --- argument parsing --------------------------------------------------------
 CMD="${1:-}"; shift || true
 BACKEND_IMAGE_ARG=""; MODE=""; KEEP=0; SLOT_ARG=""; VERSION_ARG=""; THROTTLE_MS=0
+FORCE_BASELINE=0; RUNS_ARG=""; WARMUP_ARG=""; GEN_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --backend-image) BACKEND_IMAGE_ARG="$2"; shift 2 ;;
@@ -57,6 +58,10 @@ while [ $# -gt 0 ]; do
     --slot)          SLOT_ARG="$2"; shift 2 ;;
     --version)       VERSION_ARG="$2"; shift 2 ;;
     --throttle-ms)   THROTTLE_MS="$2"; shift 2 ;;
+    --force-baseline) FORCE_BASELINE=1; MODE="baseline"; shift ;;
+    --runs)          RUNS_ARG="$2"; shift 2 ;;
+    --warmup)        WARMUP_ARG="$2"; shift 2 ;;
+    --gen)           GEN_ARG="$2"; shift 2 ;;
     *) echo "!! unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -71,10 +76,30 @@ MANIFEST="${PERF_DIR}/profiles/${PROFILE}/manifest"
 [ -f "$MANIFEST" ] || { echo "!! no manifest for profile '${PROFILE}' (${MANIFEST})" >&2; exit 4; }
 
 # --- resolve manifest + corpus + image ---------------------------------------
-GEN=""; SCENARIO=""; PROFILES=""; THRESHOLDS="thresholds"; RUNS="3"
+# Capture any env-provided GEN BEFORE sourcing the manifest, else the manifest's
+# GEN= clobbers it (the literal `GEN=k6 bash run.sh ...` invocation must work).
+GEN_ENV="${GEN:-}"
+GEN=""; SCENARIO=""; SCENARIO_K6=""; PROFILES=""; THRESHOLDS="thresholds"; RUNS="5"; WARMUP="1"
 # shellcheck disable=SC1090
 source "$MANIFEST"
-[ -n "$GEN" ] && [ -n "$SCENARIO" ] && [ -n "$PROFILES" ] || { echo "!! manifest must set GEN, SCENARIO, PROFILES" >&2; exit 4; }
+# generator kind precedence: --gen flag > GEN env > manifest default. Lets one
+# profile drive both the bash and the k6 path (design doc §1 "two generator kinds").
+GEN="${GEN_ARG:-${GEN_ENV:-${GEN:-}}}"
+[ -n "$GEN" ] && [ -n "$PROFILES" ] || { echo "!! manifest must set GEN, PROFILES" >&2; exit 4; }
+# iteration count + warm-up are configurable (Phase 2a: default RUNS raised to 5,
+# more runs -> a tighter trimmed-mean -> a more stable verdict on the noisy rig).
+RUNS="${RUNS_ARG:-${PTF_RUNS:-$RUNS}}"
+WARMUP="${WARMUP_ARG:-${PTF_WARMUP:-$WARMUP}}"
+case "$RUNS" in ''|*[!0-9]*) echo "!! --runs must be a positive integer" >&2; exit 2 ;; esac
+[ "$RUNS" -ge 1 ] || { echo "!! --runs must be >= 1" >&2; exit 2; }
+case "$WARMUP" in ''|*[!0-9]*) echo "!! --warmup must be a non-negative integer" >&2; exit 2 ;; esac
+# resolve the scenario file for the selected generator
+if [ "$GEN" = "k6" ]; then
+  SCENARIO="${SCENARIO_K6:-scenario.js}"
+else
+  SCENARIO="${SCENARIO:-scenario.sh}"
+fi
+[ -f "${PERF_DIR}/profiles/${PROFILE}/${SCENARIO}" ] || { echo "!! generator '${GEN}' selected but scenario '${SCENARIO}' not found in profiles/${PROFILE}/" >&2; exit 4; }
 
 AK_TEST_ROOT="$(resolve_test_root)"; [ -n "$AK_TEST_ROOT" ] || { echo "!! cannot locate artifact-keeper-test corpus (set AK_TEST_ROOT)" >&2; exit 5; }
 export COMMON_SH="${AK_TEST_ROOT}/tests/lib/common.sh"
@@ -82,6 +107,16 @@ BACKEND_IMAGE="${BACKEND_IMAGE_ARG:-${BACKEND_IMAGE:-}}"
 [ -n "$BACKEND_IMAGE" ] || { echo "!! --backend-image required" >&2; exit 2; }
 export BACKEND_IMAGE
 VERSION="${VERSION_ARG:-${BACKEND_IMAGE##*:}}"   # default: image tag
+
+# --- rig-quiesce guard (baselines must be captured on a QUIESCED rig) ---------
+# A --baseline is the canonical "known-good" number; capturing it while the rig
+# is busy bakes contention noise into the reference and poisons every future
+# --compare. Before a baseline we sample host load; if the 1-min loadavg exceeds
+# the budget we WARN and REFUSE, unless --force-baseline (override) is given.
+# QUIESCE_LOADAVG_MAX defaults to ~0.6*nproc; override via env.
+if [ "$MODE" = "baseline" ]; then
+  perf_quiesce_guard "$FORCE_BASELINE" || exit 8
+fi
 
 # --- claim slot + port block -------------------------------------------------
 if [ -n "$SLOT_ARG" ]; then SLOT="$SLOT_ARG"; else SLOT="$(perf_claim_slot)" || exit 6; fi
@@ -121,10 +156,21 @@ if ! compose up -d --wait; then
 fi
 
 export RUN_ID="perf-${PROFILE}-${PERF_SLOT}-$(date +%s)"
-export PROFILE VERSION
+export PROFILE VERSION GEN
 export SWEEP_BYTES_ENV=$(( SWEEP_SIZE_MB * 1048576 ))
 export CONCURRENCY FORMATS SWEEP_SIZE_MB REQUESTS_PER_CELL BIGFILE_SIZE_MB BIGFILE_COUNT DEDUP_COUNT
 export PERF_THROTTLE_MS="$THROTTLE_MS"
+
+# k6 path needs a bearer token in the harness shell (the bash scenario fetches
+# its own via common.sh; the k6 container gets it via env). Fetch once up front.
+if [ "$GEN" = "k6" ]; then
+  K6_TOKEN="$(perf_fetch_admin_token "$BASE_URL" "$ADMIN_USER" "$ADMIN_PASS")" \
+    || { echo "!! k6: failed to obtain admin token from ${BASE_URL}" >&2; teardown; exit 9; }
+  export K6_TOKEN
+  export K6_IMAGE="${K6_IMAGE:-grafana/k6:latest}"
+  export PERF_NET="ak-perf${PERF_SLOT}-net"
+  export BACKEND_INTERNAL_URL="http://backend:8080"
+fi
 
 # --- one measured iteration --------------------------------------------------
 run_iteration() {
@@ -148,7 +194,12 @@ run_iteration() {
     mpid="$(perf_start_metrics_sampler "$METRICS_URL" "$MSAMPLE_JSONL")"
     STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     local t0; t0="$(date +%s.%N)"
-    bash "${PERF_DIR}/profiles/${PROFILE}/${SCENARIO}"
+    if [ "$GEN" = "k6" ]; then
+      export K6_SUMMARY="${iwork}/k6-summary.json"
+      perf_run_k6 "${PERF_DIR}/profiles/${PROFILE}/${SCENARIO}" "$K6_SUMMARY" "${iwork}/k6-stdout.log"
+    else
+      bash "${PERF_DIR}/profiles/${PROFILE}/${SCENARIO}"
+    fi
     local t1; t1="$(date +%s.%N)"
     # Guarantee >=1 Layer-B sample even for sub-2s profiles (the periodic
     # docker-stats sampler needs ~1s per --no-stream tick; a fast run can end
@@ -168,23 +219,29 @@ run_iteration() {
     cp -f "$STATS_JSONL" "$MSAMPLE_JSONL" "$MSTART" "$MEND" "$RESULTS/" 2>/dev/null || true
   else
     echo ">> warm-up iteration (discarded)..."
-    bash "${PERF_DIR}/profiles/${PROFILE}/${SCENARIO}" >/dev/null 2>&1 || true
+    if [ "$GEN" = "k6" ]; then
+      export K6_SUMMARY="${iwork}/k6-summary.json"
+      perf_run_k6 "${PERF_DIR}/profiles/${PROFILE}/${SCENARIO}" "$K6_SUMMARY" "${iwork}/k6-stdout.log" >/dev/null 2>&1 || true
+    else
+      bash "${PERF_DIR}/profiles/${PROFILE}/${SCENARIO}" >/dev/null 2>&1 || true
+    fi
   fi
   rm -rf "$iwork"
 }
 
 # --- warm-up + measured runs -------------------------------------------------
-run_iteration warmup 0
+echo ">> generator=${GEN}  warm-up=${WARMUP}  measured runs=${RUNS}  combine=${PTF_COMBINE:-trimmed}"
+for w in $(seq 1 "$WARMUP"); do run_iteration "warmup${w}" 0; done
 ITER_JSONS=()
 for k in $(seq 1 "$RUNS"); do
   run_iteration "$k" 1
   ITER_JSONS+=("${RESULTS}/iters/iter-${k}.json")
 done
 
-# --- median combine ----------------------------------------------------------
+# --- combine (trimmed mean, default) -----------------------------------------
 FINAL="${RESULTS}/metrics.json"
-perf_median_combine "$FINAL" "${ITER_JSONS[@]}"
-echo ">> median metrics.json written: ${FINAL}"
+perf_combine "$FINAL" "${ITER_JSONS[@]}"
+echo ">> combined metrics.json written (${PTF_COMBINE:-trimmed} of ${RUNS}): ${FINAL}"
 
 # --- baseline / compare ------------------------------------------------------
 BASELINES_DIR="${PERF_DIR}/baselines"

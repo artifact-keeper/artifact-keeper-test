@@ -23,6 +23,95 @@
 #     are emitted by this build -> those fields are null and the report says n/a.
 # =============================================================================
 
+# ---- rig-quiesce guard ------------------------------------------------------
+# perf_quiesce_guard <force 0|1> -> 0 = proceed, 1 = refuse.
+# Baselines must be captured on a quiesced rig. Samples the 1-min host loadavg
+# (plus a 2s idle re-sample to catch a transient spike) and compares against
+# QUIESCE_LOADAVG_MAX (default ~0.6*nproc). WARN + refuse unless force=1.
+perf_quiesce_guard() {
+  local force="${1:-0}"
+  local nproc; nproc="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+  local budget="${QUIESCE_LOADAVG_MAX:-$(awk -v n="$nproc" 'BEGIN{printf "%.2f", n*0.6}')}"
+  local l1 l2 load
+  l1="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)"
+  sleep 2
+  l2="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)"
+  # use the lower of the two samples so a single transient tick doesn't block us
+  load="$(awk -v a="$l1" -v b="$l2" 'BEGIN{print (a<b)?a:b}')"
+  if awk -v v="$load" -v c="$budget" 'BEGIN{exit !(v>c)}'; then
+    echo "!! rig-quiesce guard: 1-min loadavg ${load} > budget ${budget} (nproc=${nproc})." >&2
+    echo "!! baselines must be captured quiesced; the current load will bake noise into the reference." >&2
+    if [ "$force" = "1" ]; then
+      echo ">> --force-baseline set: proceeding on a BUSY rig anyway (baseline may be noisy)." >&2
+      return 0
+    fi
+    echo "!! refusing. Wait for the rig to settle, or re-run with --force-baseline to override." >&2
+    return 1
+  fi
+  echo ">> rig-quiesce guard OK: 1-min loadavg ${load} <= budget ${budget} (nproc=${nproc})."
+  return 0
+}
+
+# ---- k6 generator path ------------------------------------------------------
+# perf_fetch_admin_token <base_url> <user> <pass> -> echoes bearer token.
+perf_fetch_admin_token() {
+  local base="$1" user="$2" pass="$3" i resp tok
+  for i in $(seq 1 15); do
+    resp="$(curl -s --max-time 10 -X POST "${base}/api/v1/auth/login" \
+      -H 'Content-Type: application/json' \
+      -d "{\"username\":\"${user}\",\"password\":\"${pass}\"}" 2>/dev/null)"
+    tok="$(printf '%s' "$resp" | jq -r '.token // .access_token // empty' 2>/dev/null)"
+    [ -n "$tok" ] && { printf '%s' "$tok"; return 0; }
+    sleep 2
+  done
+  return 1
+}
+
+# perf_run_k6 <scenario.js> <summary-out.json> <stdout-log>
+# Runs the containerized grafana/k6 generator joined to the slot's compose
+# network so it reaches the backend by its in-network service name. The scenario
+# writes its normalized Layer-A summary via handleSummary() to /out/summary.json.
+# Required env: K6_IMAGE, PERF_NET, K6_TOKEN, BACKEND_INTERNAL_URL, RUN_ID, and
+# the workload knobs (CONCURRENCY, REQUESTS_PER_CELL, SWEEP_SIZE_MB, ...).
+perf_run_k6() {
+  local script="$1" summary="$2" log="$3"
+  local outdir; outdir="$(dirname "$summary")"
+  : > "$summary"
+  # k6 workload knobs derived from the shared manifest so bash and k6 drive a
+  # comparable load. VUS = max concurrency in the sweep; ITER = total requests.
+  local vus iters
+  vus="$(printf '%s\n' $CONCURRENCY | sort -n | tail -1)"; vus="${vus:-8}"
+  iters="${K6_ITERATIONS:-$(( ${REQUESTS_PER_CELL:-18} * $(printf '%s\n' $CONCURRENCY | wc -l) ))}"
+  # k6's official image runs as its own uid; without --user it cannot write the
+  # summary into the host-owned bind mount (permission denied). Run it as the
+  # invoking user and make the out dir group/other-writable as belt-and-braces.
+  chmod 0777 "$outdir" 2>/dev/null || true
+  # per-invocation nonce: the harness calls this once per iteration (warmup + N
+  # measured) with the SAME RUN_ID, so upload PATHS must be uniquified per call
+  # or the 2nd+ iteration 409s on an already-existing immutable artifact.
+  local nonce; nonce="$(date +%s%N)"
+  docker run --rm --network "$PERF_NET" \
+    --user "$(id -u):$(id -g)" \
+    -e BASE_URL="$BACKEND_INTERNAL_URL" \
+    -e TOKEN="$K6_TOKEN" \
+    -e RUN_ID="$RUN_ID" \
+    -e RUN_NONCE="$nonce" \
+    -e VUS="$vus" \
+    -e ITERATIONS="$iters" \
+    -e SIZE_BYTES="$(( ${SWEEP_SIZE_MB:-4} * 1048576 ))" \
+    -e THROTTLE_MS="${PERF_THROTTLE_MS:-0}" \
+    -v "${outdir}:/out" \
+    -v "${script}:/scenario.js:ro" \
+    "$K6_IMAGE" run --quiet \
+      --summary-trend-stats="avg,min,med,max,p(50),p(90),p(95),p(99)" \
+      /scenario.js > "$log" 2>&1 || {
+        echo "!! k6 run exited non-zero; tail of output:" >&2; tail -20 "$log" >&2 || true; }
+  # k6 wrote /out/summary.json inside the container == ${outdir}/summary.json.
+  if [ -f "${outdir}/summary.json" ] && [ "${outdir}/summary.json" != "$summary" ]; then
+    mv -f "${outdir}/summary.json" "$summary"
+  fi
+}
+
 # ---- byte / percent helpers -------------------------------------------------
 # to_bytes "50.14MiB" -> integer bytes.  Handles B/kB/KiB/MB/MiB/GB/GiB.
 perf_to_bytes() {
@@ -183,32 +272,67 @@ perf_layerB_container() {
 perf_build_metrics_json() {
   local out="$1"
 
-  # ---- Layer A (client) from RAW_LOG ----
   local total errors err_rate up_bytes
-  read -r total errors up_bytes < <(awk '
-    { tot++; code=$5; szb=$4; up=$7;
-      if(code<200||code>=300) err++;
-      ub+=up }
-    END{ printf "%d %d %.0f", tot+0, err+0, ub+0 }' "$RAW_LOG")
-  err_rate=$(awk -v e="$errors" -v t="$total" 'BEGIN{ printf "%.5f", (t>0)? e/t : 0 }')
+  local p50 p90 p95 p99 pmax
+  local t50 t90 t95 t99 tmax tail_ratio maxc
+  local mbps rps big_mbps
 
-  # latency percentiles over ALL requests (time_total s -> ms)
-  local pA; pA=$(awk '{printf "%.3f\n", $6*1000}' "$RAW_LOG" | perf_pctl)
-  local p50 p90 p95 p99 pmax; read -r p50 p90 p95 p99 pmax <<<"$pA"
+  if [ "${GEN:-bash}" = "k6" ]; then
+    # ---- Layer A from the k6 handleSummary() JSON (already schema-shaped) ----
+    # The k6 scenario maps k6's native metrics into the same app-latency schema
+    # the bash path produces, so this branch is a straight jq read. Fields the
+    # bash generator derives from workload phases (tail@maxC, bigfile MB/s) are
+    # approximated from the whole-run distribution and noted in the report.
+    local S="$K6_SUMMARY"
+    [ -s "$S" ] || { echo "!! k6 summary missing/empty at ${S}" >&2; : > "$RAW_LOG" 2>/dev/null || true; }
+    total=$(jq -r '.requests // 0'        "$S" 2>/dev/null); total="${total%.*}"
+    errors=$(jq -r '.errors // 0'         "$S" 2>/dev/null); errors="${errors%.*}"
+    err_rate=$(jq -r '.error_rate // 0'   "$S" 2>/dev/null)
+    up_bytes=$(jq -r '.bytes_uploaded // 0' "$S" 2>/dev/null); up_bytes="${up_bytes%.*}"
+    p50=$(jq -r '.latency_ms.p50 // 0'    "$S" 2>/dev/null)
+    p90=$(jq -r '.latency_ms.p90 // 0'    "$S" 2>/dev/null)
+    p95=$(jq -r '.latency_ms.p95 // 0'    "$S" 2>/dev/null)
+    p99=$(jq -r '.latency_ms.p99 // 0'    "$S" 2>/dev/null)
+    pmax=$(jq -r '.latency_ms.max // 0'   "$S" 2>/dev/null)
+    rps=$(jq -r '.throughput_rps // 0'    "$S" 2>/dev/null)
+    mbps=$(jq -r '.throughput_mbps // 0'  "$S" 2>/dev/null)
+    maxc=$(jq -r '.max_concurrency // 0'  "$S" 2>/dev/null); maxc="${maxc%.*}"; maxc="${maxc:-1}"
+    big_mbps="$mbps"
+    # defensive: a missing/partial summary must yield 0s, never empty strings
+    # (empty would make the --argjson assembly below fail and emit no iter file).
+    local _z
+    for _z in total errors err_rate up_bytes p50 p90 p95 p99 pmax rps mbps maxc big_mbps; do
+      [ -n "${!_z}" ] || printf -v "$_z" '%s' 0
+    done
+    # tail-fairness approximated from the whole-run p50/p99 (k6 does not phase)
+    t50="$p50"; t99="$p99"
+    tail_ratio=$(awk -v a="$t99" -v b="$t50" 'BEGIN{ printf "%.3f", (b>0)? a/b : 0 }')
+  else
+    # ---- Layer A (client) from RAW_LOG ----
+    read -r total errors up_bytes < <(awk '
+      { tot++; code=$5; szb=$4; up=$7;
+        if(code<200||code>=300) err++;
+        ub+=up }
+      END{ printf "%d %d %.0f", tot+0, err+0, ub+0 }' "$RAW_LOG")
+    err_rate=$(awk -v e="$errors" -v t="$total" 'BEGIN{ printf "%.5f", (t>0)? e/t : 0 }')
 
-  # tail-fairness: p50/p99 at the MAX concurrency in the sweep phase
-  local maxc; maxc=$(awk '$1=="sweep"{print $2}' "$RAW_LOG" | sort -n | tail -1)
-  maxc="${maxc:-1}"
-  local pT; pT=$(awk -v c="$maxc" '$1=="sweep" && $2==c {printf "%.3f\n", $6*1000}' "$RAW_LOG" | perf_pctl)
-  local t50 t90 t95 t99 tmax; read -r t50 t90 t95 t99 tmax <<<"$pT"
-  local tail_ratio; tail_ratio=$(awk -v a="$t99" -v b="$t50" 'BEGIN{ printf "%.3f", (b>0)? a/b : 0 }')
+    # latency percentiles over ALL requests (time_total s -> ms)
+    local pA; pA=$(awk '{printf "%.3f\n", $6*1000}' "$RAW_LOG" | perf_pctl)
+    read -r p50 p90 p95 p99 pmax <<<"$pA"
 
-  # throughput: aggregate MB/s + req/s over the wall clock
-  local mbps rps
-  mbps=$(awk -v b="$up_bytes" -v d="$DURATION_S" 'BEGIN{ printf "%.2f", (d>0)? b/1000000/d : 0 }')
-  rps=$(awk -v t="$total" -v d="$DURATION_S" 'BEGIN{ printf "%.2f", (d>0)? t/d : 0 }')
-  # bigfile MB/s: pure transfer rate (sum bytes / sum time) over the bigfile phase
-  local big_mbps; big_mbps=$(awk '$1=="bigfile"{b+=$7; t+=$6} END{ printf "%.2f", (t>0)? b/1000000/t : 0 }' "$RAW_LOG")
+    # tail-fairness: p50/p99 at the MAX concurrency in the sweep phase
+    maxc=$(awk '$1=="sweep"{print $2}' "$RAW_LOG" | sort -n | tail -1)
+    maxc="${maxc:-1}"
+    local pT; pT=$(awk -v c="$maxc" '$1=="sweep" && $2==c {printf "%.3f\n", $6*1000}' "$RAW_LOG" | perf_pctl)
+    read -r t50 t90 t95 t99 tmax <<<"$pT"
+    tail_ratio=$(awk -v a="$t99" -v b="$t50" 'BEGIN{ printf "%.3f", (b>0)? a/b : 0 }')
+
+    # throughput: aggregate MB/s + req/s over the wall clock
+    mbps=$(awk -v b="$up_bytes" -v d="$DURATION_S" 'BEGIN{ printf "%.2f", (d>0)? b/1000000/d : 0 }')
+    rps=$(awk -v t="$total" -v d="$DURATION_S" 'BEGIN{ printf "%.2f", (d>0)? t/d : 0 }')
+    # bigfile MB/s: pure transfer rate (sum bytes / sum time) over the bigfile phase
+    big_mbps=$(awk '$1=="bigfile"{b+=$7; t+=$6} END{ printf "%.2f", (t>0)? b/1000000/t : 0 }' "$RAW_LOG")
+  fi
 
   # ---- Layer B (docker stats) ----
   local be pg
