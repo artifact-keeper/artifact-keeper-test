@@ -1,0 +1,47 @@
+# =============================================================================
+# profiles/sso.oidc-bootstrap.yml -- sso dimension = oidc env bootstrap  [DTF]
+# =============================================================================
+# Drives AK's env-var OIDC bootstrap path (main.rs `bootstrap_oidc_from_env` ->
+# `build_oidc_request_from_values`) so the oidc-env-config tier can assert that
+# the provider toggles are configurable from the environment at boot (#2792 /
+# PR #2841). No mock IdP is needed: `AuthConfigService::create_oidc` only
+# SSRF-validates the issuer URL and inserts the row -- it performs NO live
+# discovery/token fetch at create time. The tier reads the stored config back
+# through the admin SSO API and asserts the toggles reflect the env vars.
+#
+# Why the issuer host is `idp.dtf.invalid`: the create-time SSRF guard
+# (`validate_outbound_sso_url`) resolves DNS names and blocks private/internal
+# addresses, but a host that does NOT resolve (the reserved `.invalid` TLD,
+# RFC 6761 -> guaranteed NXDOMAIN) sails through as "not blocked" without any
+# IdP being reachable. This keeps the tier a pure config-bootstrap probe with
+# zero extra containers.
+#
+# Bootstrap env (read by main.rs at startup):
+#   OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET  -> required trio; their
+#     presence triggers provider creation on boot.
+#   OIDC_NAME                                          -> reconciled provider
+#     name (the oracle finds the row by this name).
+#   OIDC_MAP_GROUPS_TO_GROUPS=true   -> map_groups_to_groups (headline #2792;
+#     pre-fix hardcoded None -> stored false; fix -> stored true).
+#   OIDC_AUTO_CREATE_USERS=false     -> auto_create_users (pre-fix hardcoded
+#     Some(true) -> stored true; fix -> stored false).
+#   OIDC_PKCE_ENABLED=false          -> pkce_enabled (pre-fix hardcoded None ->
+#     service default true; fix -> stored false).
+# Each of the three toggles is chosen to flip against the pre-fix default, so
+# the tier is discriminating on ALL THREE, with map_groups_to_groups as the
+# primary ask.
+# =============================================================================
+services:
+  backend:
+    environment:
+      # Required trio -- presence triggers env bootstrap on boot.
+      OIDC_ISSUER: "https://idp.dtf.invalid"
+      OIDC_CLIENT_ID: "dtf-oidc-bootstrap-client"
+      OIDC_CLIENT_SECRET: "dtf-oidc-bootstrap-secret"
+      # Env-managed provider name the oracle reconciles against.
+      OIDC_NAME: "dtf-env-bootstrap"
+      # The three toggles under test (#2792). Values chosen to flip against the
+      # pre-fix hardcoded defaults so each is a discriminator.
+      OIDC_MAP_GROUPS_TO_GROUPS: "true"
+      OIDC_AUTO_CREATE_USERS: "false"
+      OIDC_PKCE_ENABLED: "false"

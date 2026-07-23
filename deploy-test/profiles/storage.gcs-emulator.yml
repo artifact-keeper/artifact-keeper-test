@@ -1,0 +1,91 @@
+# =============================================================================
+# profiles/storage.gcs-emulator.yml -- storage dimension = gcs (fake-gcs-server)
+# =============================================================================
+# The GCS analog of storage.s3.yml (MinIO). Adds a fake-gcs-server emulator +
+# a create-bucket sidecar, and points the backend's GCS storage at the emulator
+# via GCS_ENDPOINT. This exercises the custom-endpoint support added by #2646 /
+# PR #2842 (backend/src/storage/gcs.rs): GCS_ENDPOINT routes all JSON/XML API
+# URLs at the emulator and selects an emulator auth mode (static bearer token,
+# no real Google token/metadata endpoint contacted).
+#
+# The overlay:
+#   * ADDS  `fake-gcs` (fsouza/fake-gcs-server) on a dedicated 172.16/12 subnet
+#     so the backend's SSRF-guarded control/stream clients can reach it once
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS allowlists that CIDR (the GCS clients use the
+#     shared guarded builder, unlike the S3 SDK; same escape-hatch discipline as
+#     sso.oidc.yml / upstreams.mockpypi.yml).
+#   * ADDS  `gcs-createbucket` -- a curl sidecar that POSTs the bucket into the
+#     emulator JSON API (the GCS analog of the isolation tier's `mc mb`).
+#   * PATCHES backend.environment with STORAGE_BACKEND=gcs + GCS_BUCKET +
+#     GCS_ENDPOINT (http://fake-gcs:4443) + the SSRF allowlist, and no
+#     GCS_PRIVATE_KEY so the emulator (static-token) auth mode engages.
+#
+# RED (pre-#2646): GCS_ENDPOINT is ignored -> base_url stays
+# https://storage.googleapis.com and auth mode is ADC (metadata token) -> the
+# upload/download round-trip cannot reach the emulator and fails. GREEN: the
+# round-trip succeeds against fake-gcs.
+#
+# Required vars (exported by run.sh): DTF_SLOT (per-slot subnet + static IP so
+# concurrent slots never collide), S3_PORT (reused as the emulator's spare host
+# publish port -- this tier runs no MinIO).
+# =============================================================================
+services:
+  fake-gcs:
+    image: fsouza/fake-gcs-server:latest
+    container_name: ak-dtf${DTF_SLOT}-fake-gcs
+    command:
+      - "-scheme"
+      - "http"
+      - "-host"
+      - "0.0.0.0"
+      - "-port"
+      - "4443"
+      - "-backend"
+      - "memory"
+    ports:
+      - "127.0.0.1:${S3_PORT:?set S3_PORT}:4443"
+    networks:
+      gcsemu:
+        ipv4_address: 172.29.${DTF_SLOT}.70
+
+  gcs-createbucket:
+    image: curlimages/curl:latest
+    container_name: ak-dtf${DTF_SLOT}-gcs-mkbucket
+    depends_on:
+      - fake-gcs
+    # NOTE: single-line script -- a YAML folded (>) block preserves newlines on
+    # more-indented continuation lines, which would split the curl command.
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - 'for i in $$(seq 1 30); do if curl -sf -X POST "http://fake-gcs:4443/storage/v1/b?project=dtf" -H "Content-Type: application/json" -d "{\"name\":\"ak-artifacts\"}"; then echo bucket-ready; exit 0; fi; echo "waiting for fake-gcs ($$i)"; sleep 1; done; echo gcs-createbucket-FAILED; exit 1'
+    networks:
+      gcsemu: {}
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gcs-createbucket:
+        condition: service_completed_successfully
+    environment:
+      STORAGE_BACKEND: gcs
+      GCS_BUCKET: ak-artifacts
+      # Custom endpoint (#2646): routes GCS API URLs at the emulator + selects
+      # the static-token emulator auth mode (no GCS_PRIVATE_KEY set).
+      GCS_ENDPOINT: http://fake-gcs:4443
+      # The GCS control/stream clients are SSRF-guarded; allow the emulator's
+      # private subnet. Metadata/loopback/link-local stay hard-blocked.
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      gcsemu: {}
+
+networks:
+  # backend <-> fake-gcs. 172.16/12 subnet so the emulator is allowlisted by
+  # AK_SSRF_ALLOW_PRIVATE_CIDRS at fetch time.
+  gcsemu:
+    name: ak-dtf${DTF_SLOT}-gcsemu
+    ipam:
+      config:
+        - subnet: 172.29.${DTF_SLOT}.0/24

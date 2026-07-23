@@ -1,0 +1,23 @@
+# DTF tier manifest: oidc-env-config
+# Profile-set: filesystem / single + sso.oidc-bootstrap (env-var OIDC bootstrap,
+# no mock IdP -- create_oidc only SSRF-validates the issuer + inserts the row).
+#
+# Guards #2792 / PR #2841: OIDC provider toggles are now configurable via env at
+# bootstrap (main.rs bootstrap_oidc_from_env -> build_oidc_request_from_values).
+# The sso.oidc-bootstrap profile sets OIDC_ISSUER/CLIENT_ID/SECRET (the required
+# trio that triggers creation) plus the three toggles under test with values
+# chosen to flip against the pre-fix hardcoded defaults:
+#   * OIDC_MAP_GROUPS_TO_GROUPS=true  (headline; pre-fix None -> stored false)
+#   * OIDC_AUTO_CREATE_USERS=false    (pre-fix Some(true) -> stored true)
+#   * OIDC_PKCE_ENABLED=false         (pre-fix None -> service default true)
+# The oracle logs in as admin, reads the bootstrapped provider back through
+# GET /api/v1/admin/sso/oidc, and asserts the stored config reflects the env.
+# RED on a pre-#2792 image (env ignored -> map_groups_to_groups=false); GREEN on
+# the fixed image (true).
+#
+# RATE_LIMIT_ENABLED=false: matches the oidc-group-sync tier's discipline (a few
+# admin logins back to back); a tier that disables a shipped control does so
+# explicitly, per design 2.2.
+PROFILES="storage.filesystem sso.oidc-bootstrap"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
