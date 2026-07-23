@@ -1,0 +1,59 @@
+# PTF profile manifest: million-artifact-lite   (Phase 3 — scaled #2516 proxy)
+# The strategic large-customer readiness snapshot: read-plane behavior on a
+# LARGE (but rig-feasible, "lite") dataset. Sourced KV by harness/run.sh.
+#
+# This is the HEAVIEST profile. It seeds a big dataset via the DB-direct bulk
+# seeder (harness/lib/seed.sh — NOT HTTP uploads) then measures list/paging,
+# search, metadata read, admin/stats, storage-stats and (optionally) a backup
+# timing at scale. See scenario.sh for the operation basket and phases.
+GEN="bash"
+SCENARIO="scenario.sh"
+PROFILES="storage.filesystem"
+THRESHOLDS="thresholds"
+# Heavy profile: seed is one-time per invocation, but each read iteration walks
+# the whole basket + a concurrent sweep. RUNS=3 keeps a quiesced baseline within
+# a sane wall time while the trimmed mean still leaves the middle sample. Bump
+# --runs 5 for a tighter capture on an idle slot.
+RUNS="3"
+WARMUP="1"
+
+# ---- dataset (the "lite" scale) ---------------------------------------------
+# PERF_DATASET_K = total artifacts seeded, spread round-robin across
+# PERF_DATASET_REPOS. "lite" = the biggest that seeds + reads in a sane time on
+# the shared rig. 500k is the default proxy for the million-artifact target;
+# override PERF_DATASET_K to scale up/down. PERF_SEED_SIZE_BYTES is the synthetic
+# per-artifact size_bytes (feeds the admin/stats + storage/breakdown aggregates).
+PERF_DATASET_K="500000"
+PERF_DATASET_REPOS="5"
+PERF_SEED_SIZE_BYTES="4096"
+
+# ---- read workload (consumed by scenario.sh) --------------------------------
+# ops phase: OPS_REPS clean (concurrency=1) reps of every read surface -> clean
+#   per-operation latencies (the readiness table).
+# sweep phase: SWEEP_CONCURRENCY concurrent workers, SWEEP_REQS mixed reads ->
+#   db-pool saturation + tail-fairness at scale.
+# PAGE_SIZE feeds list/paging; the deep-offset page is derived from K/repos.
+# SEARCH_TERM matches every seeded artifact name ('<prefix>-pkg-<n>') so search
+#   exercises the worst-case full-set count/aggregate (the #2516 suspect).
+# MEASURE_BACKUP=1 attempts ONE bounded backup create+execute timing (iter 1
+#   only, non-fatal). READ_MAX_TIME bounds each request so a fallen-over op is a
+#   recorded hotspot, never a hang.
+# NOTE: SWEEP_SIZE_MB + FORMATS are consumed by the SHARED harness itself
+# (run.sh derives SWEEP_BYTES_ENV from SWEEP_SIZE_MB under `set -u`; collect.sh
+# records FORMATS into workload.formats). This is a read-plane profile with no
+# upload payload, so SWEEP_SIZE_MB is 0 (workload.sweep_size_bytes -> 0) and
+# FORMATS is a descriptive label. They MUST be set or the harness aborts unbound.
+SWEEP_SIZE_MB="0"
+FORMATS="read-plane"
+
+# OPS_REPS reps of the full basket; each pass includes two full-set search
+# queries (~4-5s each at K=500k), so this is the dominant time cost. 6 gives a
+# solid per-op sample (6 reps x RUNS iterations) while keeping a quiesced
+# baseline within a sane wall time on the shared rig.
+OPS_REPS="6"
+SWEEP_CONCURRENCY="16"
+SWEEP_REQS="64"
+PAGE_SIZE="50"
+SEARCH_TERM="pkg"
+MEASURE_BACKUP="1"
+READ_MAX_TIME="40"

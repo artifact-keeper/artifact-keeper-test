@@ -1,0 +1,31 @@
+# Baseline-delta budget for million-artifact-lite. Sourced KV.
+# Percentage metrics compare against baselines/<version>/million-artifact-lite.json;
+# *_ABS_* metrics are absolute hard ceilings. A baseline-relative metric fires
+# REGRESSION only when it breaches BOTH its percentage budget AND its absolute
+# tolerance band (the rig noise floor). Verdict = OR over all guarded metrics.
+# Every value is env-overridable via the matching PTF_<NAME>.
+#
+# This is a READ-PLANE-at-scale profile, so the bands differ from the
+# upload-throughput defaults:
+#   * p95 mixes cheap list/paging with expensive full-table aggregates
+#     (admin/stats, storage/breakdown) and deep-offset paging at K=500k -> it is
+#     inherently high-variance; the band is WIDE so ordinary aggregate jitter
+#     does not flap, while a real scaling regression (a new full scan) still
+#     clears it.
+#   * throughput_mbps is near-meaningless here (read responses are small JSON,
+#     not artifact bytes); the band is set so it effectively never gates. The
+#     load-bearing metrics for THIS profile are p95 (per-op latency at scale) and
+#     peak backend RSS (the "how heavy is AK holding 500k artifacts" question).
+#   * peak backend RSS is the headline "lightness" guard: the stats/breakdown
+#     aggregates are the in-memory-blowup suspects, so RSS is guarded tightly on
+#     percentage with a band that tolerates only normal allocator noise.
+P95_REGRESSION_PCT=15          # fail if read p95 > baseline * 1.15 ...
+P95_TOLERANCE_MS=150           #   ... AND it rose by more than 150 ms (wide: heavy aggregates vary)
+THROUGHPUT_REGRESSION_PCT=25   # read-plane: tiny JSON bodies, throughput is not the signal ...
+THROUGHPUT_TOLERANCE_MBPS=50   #   ... band set so throughput effectively never gates this profile
+RSS_REGRESSION_PCT=20          # fail if backend peak RSS > baseline * 1.20 ...  (the lightness guard)
+RSS_TOLERANCE_BYTES=268435456  #   ... AND it rose by more than 256 MiB (allocator noise floor at scale)
+TAIL_FAIRNESS_RATIO_PCT=30     # fail if (p99/p50)@sweep-C > baseline ratio * 1.30 ...
+TAIL_TOLERANCE_RATIO=1.00      #   ... AND the ratio rose by more than 1.00 (concurrent reads on heavy aggregates)
+ERROR_RATE_ABS_MAX=0.01        # hard ceiling: reads must stay clean; a 5xx on a heavy aggregate at scale trips this (a #2516 hotspot)
+POOL_SAT_ABS_MAX=95            # hard ceiling: if concurrent reads saturate the DB pool that is a #2516 readiness finding

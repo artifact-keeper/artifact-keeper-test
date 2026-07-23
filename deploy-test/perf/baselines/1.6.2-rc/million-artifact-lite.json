@@ -1,0 +1,71 @@
+{
+  "profile": "million-artifact-lite",
+  "version": "1.6.2-rc",
+  "backend_image": "artifact-keeper-backend:1.6.2-rc",
+  "run_id": "perf-million-artifact-lite-1-1784824085",
+  "started_at": "2026-07-23T16:33:03Z",
+  "iterations": 3,
+  "combine": "trimmed",
+  "duration_s": 85.36,
+  "workload": {
+    "max_concurrency": 16,
+    "requests": 124,
+    "sweep_size_bytes": 0,
+    "formats": "read-plane"
+  },
+  "app": {
+    "requests": 124,
+    "errors": 0,
+    "error_rate": 0,
+    "throughput_rps": 1.45,
+    "throughput_mbps": 0.01,
+    "bigfile_mbps": 0,
+    "latency_ms": {
+      "p50": 388.396,
+      "p90": 8163.497,
+      "p95": 9834.827,
+      "p99": 11718.501,
+      "max": 12098.071
+    },
+    "tail_at_max_conc": {
+      "p50": 1284.856,
+      "p99": 11853.341,
+      "p99_over_p50": 9.225
+    }
+  },
+  "resource": {
+    "backend": {
+      "cpu_pct_peak": 2.5,
+      "cpu_pct_mean": 0.8,
+      "rss_bytes_peak": 1619202671,
+      "rss_bytes_mean": 1615587740,
+      "block_read_bytes": 0,
+      "block_write_bytes": 38200000
+    },
+    "postgres": {
+      "cpu_pct_peak": 1725.1,
+      "rss_bytes_peak": 832988774
+    }
+  },
+  "backend_internal": {
+    "http_mean_ms_server": 0,
+    "db_pool": {
+      "active_peak": 2,
+      "max": 50,
+      "saturation_pct_peak": 4
+    },
+    "in_flight_peak": 16,
+    "responses_5xx": 0,
+    "webhook_backlog_peak": null,
+    "pg_stat": {
+      "slow_queries": 3,
+      "top_query_mean_ms": 3266.3358068676484,
+      "top_query": "SELECT a.id, a.repository_id, r.key, a.path, a.name, a.version, r.format::text, "
+    }
+  },
+  "storage": {
+    "bytes_uploaded": 931250,
+    "storage_used_bytes_delta": 0,
+    "dedup_ratio": 0
+  }
+}
