@@ -1,0 +1,71 @@
+{
+  "profile": "dtrack-cost",
+  "version": "baseline-main",
+  "backend_image": "ak-backend:baseline-main",
+  "run_id": "perf-dtrack-cost-5-1784839425",
+  "started_at": "2026-07-23T20:43:45Z",
+  "iterations": 1,
+  "combine": "trimmed",
+  "duration_s": 157.55,
+  "workload": {
+    "max_concurrency": 1,
+    "requests": 200,
+    "sweep_size_bytes": 1048576,
+    "formats": "generic"
+  },
+  "app": {
+    "requests": 200,
+    "errors": 0,
+    "error_rate": 0,
+    "throughput_rps": 1.27,
+    "throughput_mbps": 0,
+    "bigfile_mbps": 0,
+    "latency_ms": {
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0
+    },
+    "tail_at_max_conc": {
+      "p50": 0,
+      "p99": 0,
+      "p99_over_p50": 0
+    }
+  },
+  "resource": {
+    "backend": {
+      "cpu_pct_peak": 1.7,
+      "cpu_pct_mean": 0.3,
+      "rss_bytes_peak": 39300628,
+      "rss_bytes_mean": 37926422,
+      "block_read_bytes": 0,
+      "block_write_bytes": 0
+    },
+    "postgres": {
+      "cpu_pct_peak": 1161.2,
+      "rss_bytes_peak": 462317158
+    }
+  },
+  "backend_internal": {
+    "http_mean_ms_server": 0,
+    "db_pool": {
+      "active_peak": 2,
+      "max": 50,
+      "saturation_pct_peak": 4
+    },
+    "in_flight_peak": 0,
+    "responses_5xx": 0,
+    "webhook_backlog_peak": null,
+    "pg_stat": {
+      "slow_queries": 0,
+      "top_query_mean_ms": 4.178012,
+      "top_query": "CREATE TABLE \"EVENTSERVICELOG\" ( \"ID\" BIGSERIAL, \"COMPLETED\" timestamptz NULL, \""
+    }
+  },
+  "storage": {
+    "bytes_uploaded": 0,
+    "storage_used_bytes_delta": 0,
+    "dedup_ratio": 0
+  }
+}

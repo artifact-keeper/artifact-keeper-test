@@ -1,0 +1,61 @@
+# =============================================================================
+# profiles/opensearch.yml — search dimension = OpenSearch (full-text index)
+# =============================================================================
+# Stands up the OpenSearch node the backend indexes artifacts/repositories into
+# (backend/src/services/opensearch_service.rs), wired exactly as the product
+# docker-compose.yml does (opensearchproject/opensearch:2.19.1, single-node,
+# security plugin off, 512m heap). When OPENSEARCH_URL is set the backend
+# registers the search service: it fire-and-forget indexes each artifact on
+# create, runs a full O(N) bulk reindex on POST /api/v1/admin/reindex (and on
+# boot if the index is empty), and serves GET /api/v1/search/* from OpenSearch.
+#
+# Used by the PTF `opensearch-cost` profile to measure OpenSearch CPU/RSS +
+# on-disk index bytes as a function of stored ARTIFACT COUNT (ingest via bulk
+# reindex vs steady-state query load). The backend reaches it in-network as
+# opensearch:9200; the profile reads _count / index size via `docker exec` into
+# the OpenSearch container (curl + du are in the image — the healthcheck uses
+# curl), so no host port is published.
+#
+# Required vars (run.sh exports them): DTF_SLOT.
+# Optional: OPENSEARCH_IMAGE, OPENSEARCH_JAVA_OPTS (heap sizing knob).
+# =============================================================================
+services:
+  opensearch:
+    image: ${OPENSEARCH_IMAGE:-opensearchproject/opensearch:2.19.1}
+    container_name: ak-dtf${DTF_SLOT}-opensearch
+    environment:
+      discovery.type: single-node
+      # Heap is the OpenSearch sizing knob; product default is 512m. Override via
+      # OPENSEARCH_JAVA_OPTS to profile a larger heap at higher artifact counts.
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      bootstrap.memory_lock: "false"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - dtf_opensearch:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 24
+      start_period: 30s
+    networks: [dtf]
+    restart: unless-stopped
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    environment:
+      # Registers the OpenSearch search service in the backend (index-on-create,
+      # /admin/reindex bulk, GET /search/* served from OpenSearch).
+      OPENSEARCH_URL: http://opensearch:9200
+
+volumes:
+  dtf_opensearch:
+    name: ak-dtf${DTF_SLOT}_opensearch

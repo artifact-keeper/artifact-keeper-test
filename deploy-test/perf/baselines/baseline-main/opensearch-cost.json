@@ -1,0 +1,71 @@
+{
+  "profile": "opensearch-cost",
+  "version": "baseline-main",
+  "backend_image": "ak-backend:baseline-main",
+  "run_id": "perf-opensearch-cost-5-1784839232",
+  "started_at": "2026-07-23T20:40:32Z",
+  "iterations": 1,
+  "combine": "trimmed",
+  "duration_s": 163.61,
+  "workload": {
+    "max_concurrency": 1,
+    "requests": 148,
+    "sweep_size_bytes": 1048576,
+    "formats": "generic"
+  },
+  "app": {
+    "requests": 148,
+    "errors": 0,
+    "error_rate": 0,
+    "throughput_rps": 0.9,
+    "throughput_mbps": 0,
+    "bigfile_mbps": 0,
+    "latency_ms": {
+      "p50": 1315.491,
+      "p90": 2184.325,
+      "p95": 3046.243,
+      "p99": 4857.685,
+      "max": 5302.943
+    },
+    "tail_at_max_conc": {
+      "p50": 1315.491,
+      "p99": 4857.685,
+      "p99_over_p50": 3.693
+    }
+  },
+  "resource": {
+    "backend": {
+      "cpu_pct_peak": 23.6,
+      "cpu_pct_mean": 5.2,
+      "rss_bytes_peak": 72383201,
+      "rss_bytes_mean": 63330311,
+      "block_read_bytes": 0,
+      "block_write_bytes": 0
+    },
+    "postgres": {
+      "cpu_pct_peak": 1099.8,
+      "rss_bytes_peak": 298529587
+    }
+  },
+  "backend_internal": {
+    "http_mean_ms_server": 0,
+    "db_pool": {
+      "active_peak": 6,
+      "max": 50,
+      "saturation_pct_peak": 12
+    },
+    "in_flight_peak": 4,
+    "responses_5xx": 0,
+    "webhook_backlog_peak": null,
+    "pg_stat": {
+      "slow_queries": 4,
+      "top_query_mean_ms": 8282.629194000001,
+      "top_query": "INSERT INTO artifacts (repository_id, path, name, version, size_bytes, checksum_"
+    }
+  },
+  "storage": {
+    "bytes_uploaded": 0,
+    "storage_used_bytes_delta": 0,
+    "dedup_ratio": 0
+  }
+}

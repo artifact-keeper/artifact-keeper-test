@@ -1,0 +1,18 @@
+# Baseline-delta budget for opensearch-cost. Sourced KV.
+#
+# Measurement-first cost profile: the deliverable is the per-count OpenSearch
+# cores/RSS/index-bytes curve in results/opensearch-cost/opensearch-cost.{json,md}
+# (report.sh only knows backend+postgres, so the OpenSearch numbers live in the
+# side-artifact). The standard guarded metrics only hard-ceil the harness health
+# so a broken run is caught; the baseline-relative guards are wide.
+ERROR_RATE_ABS_MAX=0.05        # search/query errors during the query phase
+POOL_SAT_ABS_MAX=99            # backend db-pool (reindex reads the DB heavily)
+
+P95_REGRESSION_PCT=100
+P95_TOLERANCE_MS=2000
+THROUGHPUT_REGRESSION_PCT=90
+THROUGHPUT_TOLERANCE_MBPS=100
+RSS_REGRESSION_PCT=100
+RSS_TOLERANCE_BYTES=536870912  # 512 MiB
+TAIL_FAIRNESS_RATIO_PCT=200
+TAIL_TOLERANCE_RATIO=4.0

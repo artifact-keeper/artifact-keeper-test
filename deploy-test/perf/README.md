@@ -131,6 +131,61 @@ are unaffected.
 
 ---
 
+## `opensearch-cost` profile (search-index cost model)
+
+`profiles/opensearch-cost/` profiles OpenSearch resource cost vs stored ARTIFACT
+COUNT (the COUNT-driven component, unlike scan/dtrack which are rate/count-of-
+SBOM driven). It stacks a new `opensearch` overlay (`profiles/opensearch.yml`,
+opensearchproject/opensearch:2.19.1, the product pin), and for each rung in
+`COUNTS` (default 10k/100k/500k): DB-direct-seeds the artifacts, runs a full
+`POST /api/v1/admin/reindex` bulk index capturing INGEST cores, records the
+index store bytes, then fires a `/search/quick` mix capturing STEADY-STATE QUERY
+cores — separately. Cores/RSS via host-side cgroup accounting. Headline:
+`results/opensearch-cost/opensearch-cost.{json,md}`.
+
+```bash
+bash harness/run.sh opensearch-cost --backend-image <IMG> --slot 5 --baseline
+# quick: COUNTS="10000 50000" QUERY_SECS=15 bash harness/run.sh opensearch-cost --backend-image <IMG> --slot 5
+```
+
+Empirical finding (baseline-main): index bytes scale linearly (~300 B/artifact:
+3/30/149 MiB at 10k/100k/500k); OS RSS grows with count (1.1 → 1.7 GiB);
+INGEST is an O(N) one-time bulk at ~1.5-2 cores (duration 1s/5s/23s); steady
+QUERY CPU stays low (<0.05 cores mean) but query LATENCY grows sharply with
+count (p50 129ms → 1.3s → 2.1s). The manifest disables the DTF-base rate limiter
+so the query-CPU sample isn't polluted by 429s. NB: the reindex measures the
+bulk-cutover ingest cost; per-upload single-doc indexing is a separate cheap
+async op. The broad prefix query is a worst-case (matches all seeded docs); a
+selective query is faster.
+
+---
+
+## `dtrack-cost` profile (Dependency-Track cost model)
+
+`profiles/dtrack-cost/` profiles Dependency-Track's fixed heavy-JVM RSS floor +
+cores + its Postgres DB growth vs the number of SBOMs/components tracked. It
+stacks a new `dependency-track` overlay (`profiles/dependency-track.yml`,
+dependencytrack/apiserver:4.14.2 + a `dependency_track` DB on the shared
+Postgres), provisions a permissioned API key from the default admin at run time
+(the init-dtrack login→team→grant→key flow), measures the IDLE JVM floor, then
+uploads synthetic CycloneDX SBOMs (`COMPONENTS_PER_BOM` each) in cumulative
+`RUNG_BOMS` rungs, capturing DT cores/RSS during ingest + the dependency_track
+DB size. Headline: `results/dtrack-cost/dtrack-cost.{json,md}`.
+
+```bash
+bash harness/run.sh dtrack-cost --backend-image <IMG> --slot 5 --baseline
+# quick: RUNG_BOMS="3 5" COMPONENTS_PER_BOM=50 IDLE_SECS=15 SETTLE_SECS=25 bash harness/run.sh dtrack-cost --backend-image <IMG> --slot 5
+```
+
+NVD/OSV mirroring is OFF (network/hours-heavy), so this measures INGEST +
+STORAGE; the vuln-ANALYSIS CPU (mirror sync + matching) is a separate periodic
+cost reported as unexercised. DT boots slowly (schema migration; ~90s
+healthcheck start_period).
+
+See `COST-MODEL.md` for the consolidated four-component cost model.
+
+---
+
 ## Shared-harness contract (read this before writing a Phase 2b profile)
 
 A profile is a directory `profiles/<name>/` with three files. The harness

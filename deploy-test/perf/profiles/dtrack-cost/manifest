@@ -1,0 +1,57 @@
+# PTF profile manifest: dtrack-cost   (Phase 2b — Dependency-Track cost model)
+# Sourced KV by harness/run.sh.
+#
+# GOAL: profile the Dependency-Track component cost: its fixed heavy-JVM RSS
+# floor + cores + its Postgres DB growth as a function of the number of
+# SBOMs/components tracked. Per the cost-model recon: DT is a large fixed step
+# (~1.5-4 GiB JVM) the moment it is enabled, then a per-component slope; the
+# vuln-ANALYSIS CPU (NVD/OSV mirror + matching) is a separate periodic cost.
+#
+# APPROACH: stand up DT (dependency-track overlay) with auth off, measure the
+# IDLE JVM floor, then upload synthetic CycloneDX SBOMs (COMPONENTS_PER_BOM
+# components each) in cumulative rungs directly to DT's /api/v1/bom, measuring DT
+# cores/RSS during ingest + the dependency_track Postgres DB size after each
+# rung. NVD/OSV mirroring is OFF (network/hours-heavy) so this measures INGEST +
+# STORAGE; the analysis path is reported as unexercised (honest, per the recon).
+#
+# HEADLINE (scenario-written): results/dtrack-cost/dtrack-cost.{json,md} —
+# idle JVM floor + per-rung DT cores pk/mean, RSS, and DT-Postgres DB bytes vs
+# component count. Cores/RSS via host-side cgroup cpu.stat accounting.
+#
+# GEN        : bash. PROFILES: storage.filesystem + the dependency-track overlay.
+# RUNS/WARMUP: 1 / 0.
+GEN="bash"
+SCENARIO="scenario.sh"
+PROFILES="storage.filesystem dependency-track"
+THRESHOLDS="thresholds"
+RUNS="1"
+WARMUP="0"
+
+# ---- workload knobs referenced by run.sh (must be set) ----------------------
+CONCURRENCY="1"
+FORMATS="generic"
+SWEEP_SIZE_MB="1"
+REQUESTS_PER_CELL="1"
+BIGFILE_SIZE_MB="1"
+BIGFILE_COUNT="0"
+DEDUP_COUNT="0"
+
+# ---- dtrack host port (overlay publishes DT on 127.0.0.1:${DTRACK_PORT}) -----
+# ports.sh does not mint a DT port; a PTF profile never co-schedules, so a fixed
+# port is collision-safe. 8093 sits outside every PTF/DTF block. Exported so it
+# reaches the compose subprocess AND the scenario.
+export DTRACK_PORT="${DTRACK_PORT:-8093}"
+
+# ---- dtrack-cost scenario knobs ---------------------------------------------
+# RUNG_BOMS: BOMs uploaded per rung (CUMULATIVE milestones). Each BOM is one DT
+#   project with COMPONENTS_PER_BOM components -> total components grow per rung.
+export RUNG_BOMS="${RUNG_BOMS:-10 40 150}"
+# COMPONENTS_PER_BOM: components in each synthetic CycloneDX SBOM.
+export COMPONENTS_PER_BOM="${COMPONENTS_PER_BOM:-100}"
+# IDLE_SECS: how long to sample DT idle (post-boot) for the fixed JVM floor.
+export IDLE_SECS="${IDLE_SECS:-25}"
+# SETTLE_SECS: wait after a batch upload for DT to finish async BOM processing
+#   (sampled throughout so the ingest CPU is captured).
+export SETTLE_SECS="${SETTLE_SECS:-40}"
+# STATS_HZ: cgroup sampler period (seconds).
+export STATS_HZ="${STATS_HZ:-1}"

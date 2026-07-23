@@ -1,0 +1,61 @@
+# PTF profile manifest: opensearch-cost   (Phase 2b — search-index cost model)
+# Sourced KV by harness/run.sh.
+#
+# GOAL: profile the OpenSearch component cost as a function of stored ARTIFACT
+# COUNT (unlike scan-cost, which scales with rate). Per the cost-model recon
+# (scratchpad-costmodel-recon.md): OpenSearch cost splits into (a) INGEST =
+# O(N) bulk indexing (the /admin/reindex cutover cost, + a cheap async
+# single-doc index per artifact create) and (b) on-disk INDEX bytes + query CPU
+# that grow with stored count. This profile seeds the standard scale rungs,
+# runs a full bulk reindex per rung capturing INGEST CPU, records the resulting
+# index bytes, then fires a fixed search-query mix capturing STEADY-STATE QUERY
+# CPU — separately, per rung.
+#
+# HEADLINE (scenario-written, not the shared report): results/opensearch-cost/
+# opensearch-cost.{json,md} — per-count OpenSearch cores pk/mean (ingest phase +
+# query phase), RSS, index bytes, docs. Cores/RSS via host-side cgroup cpu.stat
+# accounting (same method validated in scan-cost).
+#
+# GEN        : bash (a seed -> reindex -> query control loop, not an HTTP flood).
+# PROFILES   : storage.filesystem + the opensearch overlay (adds the OpenSearch
+#              node + backend OPENSEARCH_URL). Order: storage first, opensearch
+#              second; compose.metrics.yml is appended by run.sh last.
+# RUNS/WARMUP: 1 / 0 — a scaling curve wants one sustained multi-rung run.
+GEN="bash"
+SCENARIO="scenario.sh"
+PROFILES="storage.filesystem opensearch"
+THRESHOLDS="thresholds"
+RUNS="1"
+WARMUP="0"
+
+# ---- workload knobs referenced by run.sh (must be set) ----------------------
+CONCURRENCY="1"
+FORMATS="generic"
+SWEEP_SIZE_MB="1"
+REQUESTS_PER_CELL="1"
+BIGFILE_SIZE_MB="1"
+BIGFILE_COUNT="0"
+DEDUP_COUNT="0"
+
+# ---- disable the DTF-base rate limiter for the query phase -------------------
+# compose.base.yml defaults RATE_LIMIT_ENABLED=true; a warm search index serves
+# hundreds of qps and trips the limiter (429s pollute the query-CPU measurement).
+# A cost profile measures OpenSearch query CPU, not the backend's rate gate.
+export RATE_LIMIT_ENABLED="${RATE_LIMIT_ENABLED:-false}"
+
+# ---- opensearch-cost scenario knobs (exported so the scenario sees them) -----
+# COUNTS: the ARTIFACT-COUNT scale rungs to measure (each is seeded fresh, bulk-
+#   reindexed, then query-loaded). This is the cost DRIVER for OpenSearch.
+export COUNTS="${COUNTS:-10000 100000 500000}"
+# REPOS: how many repositories the seeded artifacts spread across (round-robin).
+export SEED_REPOS="${SEED_REPOS:-10}"
+# SEED_FORMAT: repository_format for the seeded rows.
+export SEED_FORMAT="${SEED_FORMAT:-generic}"
+# QUERY_SECS / QUERY_CONCURRENCY: steady-state search load window + concurrency
+#   used to measure query CPU at each count.
+export QUERY_SECS="${QUERY_SECS:-30}"
+export QUERY_CONCURRENCY="${QUERY_CONCURRENCY:-4}"
+# REINDEX_TIMEOUT: max seconds to wait for a bulk reindex to reach doc==count.
+export REINDEX_TIMEOUT="${REINDEX_TIMEOUT:-1200}"
+# STATS_HZ: cgroup sampler period (seconds).
+export STATS_HZ="${STATS_HZ:-1}"

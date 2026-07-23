@@ -1,0 +1,94 @@
+# =============================================================================
+# profiles/dependency-track.yml — SBOM/vuln dimension = OWASP Dependency-Track
+# =============================================================================
+# Stands up the Dependency-Track apiserver (dependencytrack/apiserver:4.14.2, the
+# product docker-compose.yml pin) that the backend submits SBOMs to after a scan
+# (backend/src/services/dependency_track_service.rs). DT keeps its own schema in
+# a SEPARATE `dependency_track` database on the SAME Postgres (created by the
+# dtrack-db-init one-shot), exactly like the product compose.
+#
+# Used by the PTF `dtrack-cost` profile to measure DT's cores + RSS + its
+# Postgres DB growth as a function of the number of SBOMs/components tracked.
+#
+# MEASUREMENT-RIG DELIBERATE CHOICES (documented, not production posture):
+#   * The profile drives DT's BOM-ingest API directly (PUT /api/v1/bom) to
+#     isolate DT's ingest+storage cost. DT enforces PERMISSIONS even with auth
+#     off, so the profile provisions a permissioned API key from the default
+#     admin at run time (the same login -> team -> grant -> key flow as
+#     docker/init-dtrack.sh) and uploads with X-Api-Key. Auth stays ON (the
+#     product default) — production-faithful.
+#   * NVD/OSV mirroring is left OFF (default). The vuln-analysis CPU (mirror sync
+#     + per-BOM matching) is a large, network- and hours-heavy periodic cost the
+#     rig can't exercise offline; the profile measures INGEST + STORAGE and
+#     reports the analysis path as unexercised (see the profile's report).
+#
+# DT is the classic heavy-JVM footprint (~1.5-4 GiB RSS idle); it boots slowly
+# (schema migration on first start), hence the long healthcheck start_period.
+# The apiserver image has no curl, so the profile reaches DT on host port
+# ${DTRACK_PORT} (exported by the manifest) and reads DB size via the pg
+# container.
+#
+# Required vars (run.sh exports): DTF_SLOT. Manifest exports: DTRACK_PORT.
+# Optional: DTRACK_APISERVER_IMAGE, DTRACK_JAVA_OPTS.
+# =============================================================================
+services:
+  # Create DT's separate database on the shared Postgres (DT creates its SCHEMA,
+  # not the database). Idempotent: ignores "already exists".
+  dtrack-db-init:
+    image: postgres:16-alpine
+    container_name: ak-dtf${DTF_SLOT}-dtrack-dbinit
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export PGPASSWORD=registry
+        psql -h postgres -U registry -d artifact_registry -tc \
+          "SELECT 1 FROM pg_database WHERE datname='dependency_track'" | grep -q 1 \
+          || psql -h postgres -U registry -d artifact_registry -c "CREATE DATABASE dependency_track"
+        echo "dtrack-db-init: dependency_track database ready"
+    restart: "no"
+    networks: [dtf]
+
+  dependency-track-apiserver:
+    image: ${DTRACK_APISERVER_IMAGE:-dependencytrack/apiserver:4.14.2}
+    container_name: ak-dtf${DTF_SLOT}-dtrack-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dtrack-db-init:
+        condition: service_completed_successfully
+    environment:
+      ALPINE_DATABASE_MODE: external
+      ALPINE_DATABASE_URL: jdbc:postgresql://postgres:5432/dependency_track
+      ALPINE_DATABASE_DRIVER: org.postgresql.Driver
+      ALPINE_DATABASE_USERNAME: registry
+      ALPINE_DATABASE_PASSWORD: registry
+      ALPINE_DATA_DIRECTORY: /data
+      # auth ON (product default); the profile provisions a permissioned API key
+      # from the default admin at run time and uploads BOMs with X-Api-Key.
+      ALPINE_ENFORCE_AUTHENTICATION: "true"
+      EXTRA_JAVA_OPTIONS: ${DTRACK_JAVA_OPTS:-}
+    volumes:
+      - dtrack_data:/data
+    ports:
+      - "127.0.0.1:${DTRACK_PORT:?set DTRACK_PORT}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/version | grep -q version || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 40
+      start_period: 90s
+    networks: [dtf]
+    restart: unless-stopped
+
+  # Wire the backend at DT too (so the topology matches production even though
+  # the cost profile drives DT directly). Harmless when unused.
+  backend:
+    environment:
+      DEPENDENCY_TRACK_URL: http://dependency-track-apiserver:8080
+
+volumes:
+  dtrack_data:
+    name: ak-dtf${DTF_SLOT}_dtrack

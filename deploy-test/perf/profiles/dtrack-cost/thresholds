@@ -1,0 +1,17 @@
+# Baseline-delta budget for dtrack-cost. Sourced KV.
+#
+# Measurement-first cost profile: the deliverable is the DT idle-floor + per-rung
+# cores/RSS/DB-bytes curve in results/dtrack-cost/dtrack-cost.{json,md} (report.sh
+# only knows backend+postgres, so DT's numbers live in the side-artifact). The
+# standard guarded metrics are wide; only harness health is hard-ceiled.
+ERROR_RATE_ABS_MAX=0.10        # DT BOM-upload PUTs (accepted async)
+POOL_SAT_ABS_MAX=99
+
+P95_REGRESSION_PCT=200
+P95_TOLERANCE_MS=5000
+THROUGHPUT_REGRESSION_PCT=90
+THROUGHPUT_TOLERANCE_MBPS=100
+RSS_REGRESSION_PCT=200
+RSS_TOLERANCE_BYTES=1073741824  # 1 GiB (DT is a fat JVM)
+TAIL_FAIRNESS_RATIO_PCT=400
+TAIL_TOLERANCE_RATIO=8.0
