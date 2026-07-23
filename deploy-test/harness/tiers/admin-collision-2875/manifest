@@ -1,0 +1,25 @@
+# DTF tier manifest: admin-collision-2875
+# Profile-set: filesystem / single. No SSO stack needed -- the oracle seeds the
+# federated principal directly in the DB (docker exec psql) and drives the real
+# startup code path by restarting the backend container.
+#
+# WHAT IT GUARDS (#2875): startup `provision_admin_user` (backend/src/main.rs)
+# must never mutate a FEDERATED (SSO) identity when maintaining the built-in
+# local admin. The built-in admin is keyed on username='admin'; before the fix,
+# a federated user holding that username (natural under SKIP_ADMIN_PROVISIONING,
+# or when the IdP preferred_username is 'admin') was hijacked on the next
+# restart: its auth_provider was flipped to 'local' and the built-in admin
+# password stamped onto it, merging the two identities into one admin account
+# (cross-identity privilege escalation / account takeover).
+#
+# Discriminating oracle (DB truth, not HTTP codes):
+#   The only 'admin' row is a FEDERATED user (auth_provider='oidc', external_id
+#   set, is_admin=true, no password). Restart the backend to run
+#   provision_admin_user, then assert that row is UNCHANGED.
+#     * GREEN on the fixed image: existence check ignores federated admins and
+#       the guarded upsert refuses to clobber -> row stays oidc, external_id
+#       intact, password still NULL.
+#     * RED on a pre-#2875 image: the row is flipped to auth_provider='local'
+#       and a password_hash is stamped on -> the identities are merged.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
