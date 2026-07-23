@@ -1,0 +1,28 @@
+# DTF tier manifest: backup-custom-name  (#2790 / PR #2840)
+# Profile-set: filesystem / single. The backup archive's storage key is chosen
+# by BackupService before any bytes are written and is recorded in the `backups`
+# row's `storage_path`; the naming behaviour is backend-agnostic, so this runs
+# on the default filesystem overlay and is asserted directly from the DB row.
+#
+# The feature/bug (#2790): CreateBackupRequest gained an optional `name` field
+# so operators can label an archive instead of the fixed `{uuid}.tar.gz`. The
+# name is sanitized ([A-Za-z0-9._-]; path separators, '..', whitespace, control
+# chars rejected) and a short unique suffix appended so distinct backups sharing
+# a label never collide. When no name is given the historical `{uuid}` name is
+# preserved. Pre-#2790 the `name` field does not exist, so it is ignored: a
+# custom name never reaches the filename and an unsafe name is silently accepted
+# (the archive still lands under the default uuid name).
+#
+# Oracle (oracle.sh) is the discriminating gate:
+#   * POST /api/v1/admin/backups {"name":"<label>"} -> the created `backups`
+#     row's storage_path filename must contain "<label>".
+#     Pre-#2790: storage_path is `.../{uuid}.tar.gz` (no label) -> FAIL.
+#   * POST /api/v1/admin/backups {"name":"<unsafe>"} (path separator / '..')
+#     must be rejected 400.
+#     Pre-#2790: the unknown field is ignored and the request is accepted -> FAIL.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + several admin
+# create-backup calls back-to-back; the base default (ON) could throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

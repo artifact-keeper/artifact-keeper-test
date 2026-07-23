@@ -1,0 +1,33 @@
+# DTF tier manifest: debian-encoded-separator  (#2562 / PR #2838)
+# Profile-set: filesystem / single. The proxy path-normalization belt runs in
+# the Debian remote-proxy handler before any upstream fetch; it is storage- and
+# upstream-agnostic. The tier creates a Debian REMOTE repo pointing at a
+# deliberately unreachable (non-resolving `.invalid`) upstream, so a request the
+# belt lets through fails fast at the fetch with 502 Bad Gateway, while a request
+# the belt rejects returns 404 — the observable that discriminates the fix.
+#
+# The bug (#2562): the Debian remote-proxy gate (normalized_debian_relpath) did
+# not reject percent-encoded path separators (%2f/%2F for '/', %5c/%5C for '\').
+# A nonstandard upstream that decodes them could split the P2 gate from the
+# fetch. The fix adds a default-on belt that refuses any request whose
+# (once-decoded) proxy path carries an encoded separator, mirroring the existing
+# control-byte belt.
+#
+# Because axum percent-decodes the catch-all path segment once, a client must
+# DOUBLE-encode (%252f / %255c) for the handler to see a literal %2f / %5c; that
+# is exactly the normalization/traversal probe the belt targets.
+#
+# Oracle (oracle.sh) is the discriminating gate (empty P2 filter, so the only
+# thing that can reject the encoded probe is the #2562 belt):
+#   ENCODED  — GET a dists path containing %252f (and %255c) -> 404 (belt deny).
+#              Pre-#2562: the belt is absent, the request passes the (empty)
+#              filter and reaches the unreachable upstream -> 502 -> FAIL.
+#   LEGIT    — GET a normal dists/binary-<arch> path -> NOT 404 (it reaches the
+#              fetch and 502s on the unreachable upstream), proving the belt does
+#              not blanket-reject and the 404 above is specifically the belt.
+#
+# RATE_LIMIT_ENABLED=false: admin login + repo create + a handful of proxy GETs
+# back-to-back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
