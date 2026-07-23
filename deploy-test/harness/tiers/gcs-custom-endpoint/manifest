@@ -1,0 +1,23 @@
+# DTF tier manifest: gcs-custom-endpoint
+# Profile-set: gcs-emulator / single. A fake-gcs-server emulator (the GCS analog
+# of the isolation tier's MinIO), on which the custom-endpoint support added by
+# #2646 / PR #2842 is exercised end to end.
+#
+# Guards #2646 / PR #2842: the GCS storage backend can now target a custom
+# endpoint (GCS_ENDPOINT) so it runs against a local emulator instead of real
+# Google storage. The storage.gcs-emulator profile boots fake-gcs-server, pre-
+# creates the bucket, and sets STORAGE_BACKEND=gcs + GCS_ENDPOINT + the SSRF
+# allowlist. The oracle creates a maven repo (inherits the stack's gcs backend),
+# uploads an artifact, and downloads it back, asserting the round-trip against
+# the emulator.
+#
+# RED on a pre-#2646 image: GCS_ENDPOINT is ignored -> the backend targets
+# https://storage.googleapis.com with ADC/metadata auth -> upload/download
+# cannot reach the emulator and fails. GREEN: emulator round-trip succeeds.
+#
+# RATE_LIMIT_ENABLED=false: matches the isolation tier (a few admin PUT/GET back
+# to back through one admin); a tier that disables a shipped control does so
+# explicitly, per design 2.2.
+PROFILES="storage.gcs-emulator"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
