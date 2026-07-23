@@ -1,0 +1,26 @@
+# DTF tier manifest: maven-grouped-name  (#2723 / PR #2837)
+# Profile-set: filesystem / single. The catalog `packages.name` is written by
+# the upload finalizer from the completed session's coordinates; it is
+# storage-agnostic, so this runs on the default filesystem overlay and is
+# asserted directly from the DB row.
+#
+# The bug (#2723): a Maven/Gradle artifact pushed through the GENERIC chunked
+# upload flow (POST /api/v1/uploads -> PATCH chunk -> PUT .../complete), rather
+# than the dedicated Maven PUT handler, has no replicated POM metadata, so the
+# catalog `packages` row was keyed on the bare artifact name (the filename),
+# splitting a single component across grouped listings. The fix derives the
+# grouped `groupId:artifactId` name from the artifact's GAV path for
+# Maven/Gradle repos.
+#
+# Oracle (oracle.sh) is the discriminating gate:
+#   * generic chunked-upload a .jar to a maven/local repo at a GAV path, then
+#     read the `packages` row's `name`.
+#     Fixed:     name == "groupId:artifactId".
+#     Pre-#2723: name == the bare filename ("<artifactId>-<version>.jar") -> FAIL.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + a chunked upload
+# (session create + chunk PATCH + complete) back-to-back; the base default (ON)
+# could throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

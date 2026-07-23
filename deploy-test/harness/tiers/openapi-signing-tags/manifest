@@ -1,0 +1,28 @@
+# DTF tier manifest: openapi-signing-tags  (#2721 / PR #2836)
+# Profile-set: filesystem / single. The served OpenAPI document is generated in
+# the backend process from the utoipa path macros; it is storage-agnostic, so
+# this runs on the default filesystem overlay. No seed data is needed — the
+# oracle only fetches the running instance's OpenAPI JSON.
+#
+# The bug (#2721): the utoipa `#[utoipa::path]` macro for `sign_artifact`
+# (POST /api/v1/signing/artifacts/{artifact_id}/sign) omitted `tag = "signing"`,
+# so the exported operation carried `tags: []`. Spectral's error-severity
+# `operation-tags` rule fails the artifact-keeper-api SDK generation pipeline on
+# any untagged operation, so the SDKs were skipped and the exported spec had to
+# be hand-patched. The fix adds `tag = "signing"`.
+#
+# Oracle (oracle.sh) is the discriminating gate: fetch the served
+# /api/v1/openapi.json and assert the sign operation's `tags` array is
+# non-empty. Pre-#2721 the array is empty -> the oracle fails; on the fixed
+# image it carries "signing" -> the oracle passes.
+#
+# The OpenAPI JSON is served at /api/v1/openapi.json whenever swagger is
+# enabled; the base compose leaves ENVIRONMENT unset, which the backend treats
+# as "development", so the spec route is mounted by default.
+#
+# RATE_LIMIT_ENABLED=false: a single admin login + a couple of unauthenticated
+# GETs; the base default (ON) would be fine here, but keep parity with the other
+# backfill tiers so a re-run under load never throttles the probe.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

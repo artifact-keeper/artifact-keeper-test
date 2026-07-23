@@ -1,0 +1,31 @@
+# DTF tier manifest: cran-rubygems-download-url  (#2754 / PR #2839)
+# Profile-set: filesystem / single. The advertised coordinates are computed at
+# index-serve time from the artifact's stored filename; this is storage-agnostic
+# and the download route resolves by filename suffix, so this runs on the
+# default filesystem overlay.
+#
+# The bug (#2754): CRAN PACKAGES and RubyGems specs.4.8.gz indices carry only
+# name/version, and the client reconstructs the download filename
+# ({name}_{version}.tar.gz / {name}-{version}.gem). A package pushed through the
+# generic chunked-upload flow is stored at its bare filename with the WHOLE
+# basename as `name` and a `sha256-<prefix>` fallback `version`, so the emitted
+# coordinates made the client reconstruct an unresolvable path -> 404 even
+# though the artifact was present. The fix derives the advertised coordinates
+# from the actual stored filename.
+#
+# Oracle (oracle.sh) is the discriminating gate. For BOTH formats it does a
+# real generic (bare-path) chunked upload, reads the SERVED index, reconstructs
+# the client download path from the index coordinates, and GETs it:
+#   CRAN     — read src/contrib/PACKAGES (DCF text), rebuild
+#              {Package}_{Version}.tar.gz, GET it.
+#   RubyGems — read specs.4.8.gz (Marshal 4.8, gzip), rebuild
+#              {name}-{version}.gem from the advertised coordinates, GET it.
+#   Fixed:     the reconstructed path resolves 200.
+#   Pre-#2754: the index advertises the bare basename + sha256 fallback, so the
+#              reconstructed path 404s -> FAIL.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + two generic chunked
+# uploads (session + chunk + complete) + index/download GETs back-to-back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
