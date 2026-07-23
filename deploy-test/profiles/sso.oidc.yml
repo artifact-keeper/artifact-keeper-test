@@ -1,0 +1,97 @@
+# =============================================================================
+# profiles/sso.oidc.yml -- sso dimension = oidc (headless mock IdP)  [DTF]
+# =============================================================================
+# Adds a tiny stateless mock OpenID Connect provider (`mock-oidc`) so the
+# oidc-group-sync tier can drive AK's REAL OIDC login -> callback flow with no
+# browser and assert group-sync behaviour against the DB. This fills the DTF's
+# OIDC coverage gap: SAML has the `sso` tier (Keycloak + XSW probe), OIDC had
+# nothing -- which is how the 1.6.1 group-sync regression (#2759) shipped.
+#
+# The overlay:
+#   * ADDS `mock-oidc` -- harness/tiers/oidc-group-sync/fixtures/mock_oidc.py,
+#     a stdlib-only python http server (no pip install). It serves discovery +
+#     JWKS + /token (RS256 id_token from a STATIC embedded RSA-2048 key) and a
+#     stateless /authorize that 302s a signed-claims `code` back to AK. It sits
+#     on a per-slot 172.28/16 static IP so AK's create-time OIDC issuer SSRF
+#     validation (validate_oidc_issuer -> validate_outbound_sso_url) and the
+#     per-fetch guard (validate_oidc_fetch_url) allowlist it via 172.16/12, the
+#     same escape-hatch discipline upstreams.mockpypi.yml uses.
+#   * PUBLISHES the mock to the slot's spare host port ${TRIVY_PORT} (8250+N;
+#     this tier runs no scanner, exactly as sso.saml.yml borrows it for
+#     Keycloak). The mock's `authorization_endpoint` is advertised at that host
+#     URL so the ORACLE (playing the browser) can follow AK's login redirect to
+#     it. `token_endpoint`/`jwks_uri`/`issuer` stay on the docker-internal host
+#     `http://mock-oidc` that AK reaches server-side.
+#   * PATCHES backend onto the same `mockoidc` net + sets the SSO private-IP
+#     escape hatch (SSO_ALLOW_PRIVATE_IPS + AK_SSRF_ALLOW_PRIVATE_CIDRS=
+#     172.16/12) so both the issuer-save and the discovery/token/JWKS fetches
+#     against `http://mock-oidc/` are accepted. Cloud-metadata / loopback /
+#     link-local stay hard-blocked regardless (issue #2380).
+#
+# Why the host/internal split matters: in OIDC the authorization_endpoint is
+# user-agent-facing (the oracle hits it) while token_endpoint + jwks_uri are
+# backend-facing (AK hits them server-side). One container answers both; the
+# discovery document just advertises the right hostname per endpoint. `iss`
+# equals MOCK_ISSUER = the AK provider issuer_url, so AK's set_issuer check and
+# the id_token `iss` claim match exactly.
+#
+# Required vars (exported by run.sh): DTF_SLOT (per-slot subnet + static IP so
+# concurrent slots never collide), TRIVY_PORT (host publish + advertised
+# authorize URL), DTF_DIR (mount the mock script).
+# =============================================================================
+services:
+  mock-oidc:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-oidc
+    command: ["python3", "/app/mock_oidc.py"]
+    environment:
+      MOCK_PORT: "80"
+      # issuer_url AK stores + fetches server-side; also the id_token `iss`.
+      MOCK_ISSUER: "http://mock-oidc"
+      # Browser/oracle-facing authorize endpoint (the slot's published port).
+      MOCK_AUTHORIZE_URL: "http://127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}/authorize"
+      # Fixture defaults; the oracle overrides sub/email/groups per login via
+      # query params appended to /authorize, so no restart is needed per case.
+      MOCK_OIDC_SUB: "dtf-oidc-user"
+      MOCK_OIDC_EMAIL: "dtf-oidc-user@dtf.test"
+      MOCK_OIDC_GROUPS: ""
+    volumes:
+      - "${DTF_DIR}/harness/tiers/oidc-group-sync/fixtures/mock_oidc.py:/app/mock_oidc.py:ro"
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockoidc:
+        ipv4_address: 172.28.${DTF_SLOT}.60
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-oidc:
+        condition: service_healthy
+    environment:
+      # SSO trust class: let the issuer-save + discovery/token/JWKS fetches
+      # reach the mock on 172.16/12. Scoped to the mock's subnet only, mirroring
+      # upstreams.mockpypi.yml. Metadata/loopback/link-local stay blocked.
+      SSO_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockoidc: {}
+
+networks:
+  # backend <-> mock-oidc. 172.16/12 subnet so the mock IdP is allowlisted by
+  # AK_SSRF_ALLOW_PRIVATE_CIDRS at issuer-save and fetch time.
+  mockoidc:
+    name: ak-dtf${DTF_SLOT}-mockoidc
+    ipam:
+      config:
+        - subnet: 172.28.${DTF_SLOT}.0/24

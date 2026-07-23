@@ -1,0 +1,33 @@
+# DTF tier manifest: oidc-group-sync
+# Profile-set: filesystem / single + sso=oidc (headless mock IdP in-compose).
+#
+# Fills the DTF's OIDC coverage gap. SAML has the `sso` tier (Keycloak + XSW
+# probe); OIDC had ZERO coverage, which is how the 1.6.1 OIDC group-sync
+# regression (#2759) shipped. This tier drives AK's real OIDC login -> (mock
+# authorize redirect) -> callback flow with no browser and asserts the
+# resulting group state in the DB (docker exec psql).
+#
+# Oracle cases (discriminating: assert membership rows, not just HTTP codes):
+#   1. Happy path -- claim ["gitlab-devs"], map_groups_to_groups=true, no
+#      pre-existing group -> AK auto-creates group gitlab-devs
+#      (external_source='oidc') and attaches the user. GREEN on release/1.6.x.
+#   2. #2759 guard -- operator pre-creates a NULL-external_source group
+#      platform-admins; OIDC claim includes platform-admins, provider trust OFF
+#      (default) -> user NOT attached (no membership row). GREEN on the fixed
+#      image; RED (attached) on a pre-#2759 image, which is the discriminator.
+#   3. Fix-C opt-in (pending #2823) -- case 2 with trust_group_names=true ->
+#      user IS attached to the operator group. The field does not exist on
+#      release/1.6.x; the oracle probes for it (create+read-back) and SKIPS
+#      (pending #2823) when absent, becoming a hard assertion once #2823 ships.
+#   4. Cross-provider invariant -- a second OIDC provider owns other-oidc-grp
+#      (external_source='oidc', provider 2); provider 1 emits that claim -> user
+#      NOT attached to provider-2's group (cross-provider refusal, independent
+#      of trust). GREEN on release/1.6.x.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives many admin + SSO logins back to
+# back through one admin; the base default (ON) would throttle them. A tier that
+# must disable a shipped control does so explicitly, per design 2.2 (same as the
+# isolation and sso tiers).
+PROFILES="storage.filesystem sso.oidc"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

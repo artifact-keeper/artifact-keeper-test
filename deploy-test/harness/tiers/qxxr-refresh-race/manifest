@@ -1,0 +1,39 @@
+# DTF tier manifest: qxxr-refresh-race  (GHSA-qxxr)
+# Profile-set: filesystem / single (the walking-skeleton topology; the refresh
+# rotation race this tier gates is storage-independent — it lives entirely in
+# the auth service's consume-and-rotate SQL).
+#
+# Bug (GHSA-qxxr): the interactive refresh-token rotation
+# (POST /api/v1/auth/refresh) marks the presented token single-use with
+#   UPDATE refresh_token_jti SET consumed_at = NOW() WHERE jti = $1 AND consumed_at IS NULL
+# but never inspected `rows_affected`. Two refreshes of the SAME token that both
+# read `consumed_at IS NULL` before either UPDATE commits therefore BOTH proceed
+# to mint a fresh successor token family. The single-use rotation degrades into a
+# lost-update / replay race: one login yields two live token families. Fixed by
+# making consume-and-rotate atomic (exactly one winner claims the row; the
+# losers 401 "already used") with a benign-double-submit carve-out that does NOT
+# revoke the family on a concurrent duplicate submit — only a genuine replay of
+# an already-consumed token nukes the family.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (A) RACE INVARIANT — fire N concurrent /api/v1/auth/refresh with the SAME
+#       refresh token, over several rounds (fresh login each round). GREEN: EXACTLY
+#       ONE round-winner returns 200, every other returns 401. RED (baseline): two
+#       or more return 200 (multiple successor families minted). This is the
+#       load-bearing gate — winners != 1 in any round fails it.
+#   (B) NON-REVOCATION control — the concurrent winner's NEW refresh token still
+#       works once (a follow-up single refresh -> 200). Proves a benign concurrent
+#       double-submit did NOT revoke the family.
+#   (C) GENUINE-REPLAY control — after a legitimate rotation T0->T1 and consuming
+#       T1, replaying the ORIGINAL T0 -> 401 AND the whole family is revoked (T1
+#       now 401 too, and refresh_token_jti has ZERO non-revoked rows for the
+#       family via docker exec psql). Proves real replay still nukes the family.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives many back-to-back logins + bursts
+# of concurrent refreshes through a single origin; the base default (ON) would
+# throttle the concurrency burst and mask the race. A tier that must disable a
+# shipped control does so explicitly (design 2.2, same as isolation / sso /
+# ci-token-basic).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

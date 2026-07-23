@@ -1,0 +1,31 @@
+# DTF tier manifest: 5f2q-upload-scope  (GHSA-5f2q / 1.6.1)
+# Profile-set: filesystem / single. The chunked-upload token-scope gap this
+# tier proves is storage-independent — the missing check is in the /api/v1/
+# uploads/* handlers, ahead of any storage backend.
+#
+# The bug (GHSA-5f2q): the chunked-upload verbs (POST /api/v1/uploads init,
+# PATCH /:id append, PUT /:id/complete, DELETE /:id cancel) enforced repo-RBAC
+# and token repo-scope but NO token ACTION-scope. A READ-scoped API token
+# (scopes=["read"]) whose OWNER holds repo write could therefore push: the
+# read-only ceiling that gates every format write path was simply never
+# consulted on the JSON `/uploads` flow. The fix calls `auth.require_scope(...)`
+# on each verb (write for init/append/complete, delete for cancel) so a
+# read-scoped token is refused 403 "Token does not have required scope: write".
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL)  a WRITE-scoped token -> create_session 201 (legit path unchanged;
+#              also yields the session the read-token boundary probes reuse).
+#   (BOUNDARY) the READ-scoped token (owner holds repo write) on create_session /
+#              upload_chunk / complete -> 403 (GREEN, "required scope: write");
+#              cancel -> 403 (needs "delete"). On the vulnerable baseline these
+#              return 2xx (RED — the push/append/cancel SUCCEEDS). A DB assert
+#              confirms the read-token create left NO upload_sessions row on the
+#              fixed image (0), while baseline persists one.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + a user create +
+# user login + two token mints + several back-to-back upload verbs; the base
+# default (ON) would throttle them. A tier that must disable a shipped control
+# does so explicitly (design 2.2, as isolation/sso/ci-token-basic do).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

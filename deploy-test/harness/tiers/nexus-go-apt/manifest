@@ -1,0 +1,26 @@
+# DTF tier manifest: nexus-go-apt  (issue #2784)
+# Profile-set: filesystem / single + upstreams=nexus (same real-Nexus topology
+# as the `migration` tier: a live Sonatype Nexus 3 migration source next to the
+# backend on the slot's own DTF network; health-gated ~2-3 min boot).
+#
+# WHAT THIS DISCRIMINATES (#2784): Nexus `go` (golang) and `apt` repositories
+# failed to migrate — Go module deps never landed in Artifacts/Packages/search,
+# and apt repos were rejected as an unsupported format. The #2784 fix added the
+# apt->debian + golang->go format mapping, a Go module-proxy parser, and
+# OpenSearch/index_artifact threading. The oracle seeds a real Nexus `go` proxy
+# repo (a real module + its .info/.mod/.zip) and a real `apt` hosted repo (a
+# .deb), runs a REAL AK migration, and asserts:
+#   * the go source migrates to an AK repo with format='go' and its module
+#     artifacts land in the artifacts table AND are queryable (search + the Go
+#     @v/list Packages API) — pre-#2784 the go repo is rejected/empty.
+#   * the apt source migrates to an AK repo with format='debian' (Partial
+#     compat) — pre-#2784 apt is rejected as unsupported.
+# NON-ZERO-WHILE-BUG: oracle exits 0 only when both legs migrate + resolve.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repeated migration
+# REST calls + search/Packages reads back-to-back through one admin user, and
+# matches the migration tier's rig posture (§2.2: a tier that must relax a
+# shipped control does so explicitly; base default stays ON).
+PROFILES="storage.filesystem upstreams.nexus"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

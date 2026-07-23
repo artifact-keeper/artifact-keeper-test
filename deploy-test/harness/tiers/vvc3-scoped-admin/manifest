@@ -1,0 +1,37 @@
+# DTF tier manifest: vvc3-scoped-admin  (GHSA-vvc3, 1.6.1 security release)
+# Profile-set: filesystem / single (the walking-skeleton topology; the auth
+# defect this tier gates is storage-independent).
+#
+# The bug (GHSA-vvc3): an API token inherits its OWNER's `is_admin` flag
+# regardless of the token's own scopes. A READ-scoped Personal Access Token
+# minted by an admin therefore sails through the admin gate (`admin_middleware`
+# checks only `is_admin`, never the token's action-scope ceiling). Any admin who
+# hands a "read-only" automation token to CI has, unknowingly, handed out full
+# admin: that token can create users, install plugins, mutate signing keys.
+#
+# The fix (1.6.1): admin routes require the presenting credential to actually
+# CARRY an admin-class scope (`admin` / `*`). Interactive logins and CI/federated
+# JWTs (scopes = None, action-unrestricted) keep full admin; an API token is held
+# to its minted scope allowlist, so a read-scoped admin token is refused with 403.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (A) BOUNDARY  a READ-scoped (`read:artifacts`) API token owned by an admin,
+#       on the admin routes POST /api/v1/users and GET /api/v1/users -> 403, and
+#       the DB shows the create never happened. On the baseline this returns 2xx
+#       and the user row IS created (the privilege-escalation bypass = RED).
+#   (B) POSITIVE  an ADMIN-scoped (`*`) API token owned by the same admin on the
+#       SAME route -> 2xx (admin automation still works), and an interactive
+#       admin Bearer JWT -> 2xx. Proves the fix is scope-aware, not a blanket
+#       "API tokens can never be admin" hammer, and the pipeline still grants
+#       real admin (the tier is not a hollow always-403).
+#   (C) NEGATIVE  a plain non-admin JWT on the same admin route -> 403. Proves
+#       the admin gate itself is intact.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + two token mints +
+# a user create + a user login + several back-to-back admin-route probes through
+# one admin/user; the base default (ON) would throttle them. A tier that must
+# disable a shipped control does so explicitly (design 2.2, same as the isolation
+# / ci-token-basic / sso tiers).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

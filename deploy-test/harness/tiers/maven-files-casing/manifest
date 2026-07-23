@@ -1,0 +1,25 @@
+# DTF tier manifest: maven-files-casing  (#2706 / #2707)
+# Profile-set: s3 / single. A real shared object store (MinIO) — the ONLY
+# topology on which the Maven flat-key companion-attribution class manifests.
+# On a filesystem backend each repo physically owns its key space, so the
+# camelCase-vs-snake_case files[] lookup is short-circuited (flat_key_readable
+# returns true unconditionally) and the bug cannot be observed. Same MinIO
+# topology as tiers/isolation.
+#
+# The bug (#2706): the 1.6.0 Maven flat-key attribution resolves a row-less
+# legacy GAV companion (.pom/.module/-sources.jar) via its parent artifact's
+# metadata files[] array. The upload handler WRITES those entries in camelCase
+# (`storageKey`), but the resolver originally matched snake_case (`storage_key`),
+# so on CLOUD backends the owner's own GET of the companion 404'd. The fix reads
+# COALESCE(f->>'storageKey', f->>'storage_key') + backfills.
+#
+# Oracle (oracle.sh) is the discriminating gate:
+#   POSITIVE  — owner GET of a row-less companion attributed ONLY via the
+#               parent's camelCase files[] -> 200 (FAILS pre-#2706, PASSES on rc)
+#   ISOLATION — a FOREIGN repo GET of the same shared flat key -> 404
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + several back-to-back
+# Maven PUTs; the base default (ON) would throttle them. Matches tiers/isolation.
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

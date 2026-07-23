@@ -1,0 +1,42 @@
+# DTF tier manifest: qcmj-webhook-authz  (GHSA-qcmj, 1.6.1 security release)
+# Profile-set: filesystem / single (the walking-skeleton topology; the webhook
+# authorization defect is storage-independent).
+#
+# The bug (GHSA-qcmj), two facets:
+#   1. Soft management gate. Webhook management verbs (delete / enable / disable
+#      / test / rotate-secret / redeliver) authorized on `is_admin OR creator OR
+#      repo-accessible`. Creating a webhook is admin-only, so the exploitable
+#      path is "repo-accessible": ANY non-admin who merely holds a role on the
+#      repository a webhook is attached to can disable/delete/rotate it — a
+#      cross-actor BOLA over an egress+signing integration. (A non-admin creator,
+#      reachable only via a legacy/seeded row, is the same soft-gate hole.)
+#   2. Secret disclosure. rotate-secret returned the raw signing `secret` in its
+#      response body.
+#
+# The fix (1.6.1): management verbs require admin (repo-access + non-admin-creator
+# no longer suffice) -> 403; rotate-secret returns only id / secret_digest /
+# expiry, never the raw secret.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (A) BOUNDARY  a repo-accessible non-admin, and a non-admin creator (seeded),
+#       calling disable / rotate-secret / delete -> 403, with the DB proving the
+#       webhook was NOT mutated (still enabled, digest unchanged, row present).
+#       Baseline: 2xx and the webhook IS mutated (RED).
+#   (B) CONTROL   an admin disable + rotate on a dedicated webhook -> 2xx (proves
+#       management still works; the tier is not a hollow always-403).
+#   (C) NON-DISCLOSURE  the admin rotate-secret 200 body carries id/secret_digest/
+#       expiry but NO raw `secret` field. Baseline: the raw `secret` is present
+#       (RED).
+#
+# Webhook signing (and therefore rotate-secret) needs AK_WEBHOOK_SECRET_KEY; the
+# shared compose base does not set it, so this oracle injects the key via a
+# tier-local compose override and recreates ONLY the backend service on the same
+# compose project (labels intact -> the harness `down -v` still reclaims it).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + a user create +
+# user login + several webhook creates and back-to-back management probes; the
+# base default (ON) would throttle them. A tier that must disable a shipped
+# control does so explicitly (design 2.2, same as isolation / ci-token-basic).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

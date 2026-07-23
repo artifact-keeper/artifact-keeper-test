@@ -1,0 +1,39 @@
+# DTF tier manifest: ldaps  (issue #2782)
+# Profile-set: filesystem / single + an LDAPS server (osixia/openldap with a
+# fresh self-signed TLS cert, CN/SAN = ldap.dtf.local).
+#
+# #2782 (regressed since 1.2.0): per-provider LDAPS TLS options — each LDAP
+# provider can supply a custom CA certificate OR opt into skipping cert
+# verification (insecure_skip_verify), secure-by-default. The fix adds the
+# per-provider `insecure_skip_verify` + `ca_certificate` columns and honors
+# them at bind.
+#
+# Discriminating oracle (drives the admin SSO-LDAP API + the REAL
+# /auth/sso/ldap/{id}/login bind against the live self-signed LDAPS server):
+#   * SCHEMA/round-trip: create/update accepts + persists insecure_skip_verify
+#     and ca_certificate (API echo + DB columns via psql).
+#   * NEGATIVE (secure by default): insecure_skip_verify=false, no CA -> the
+#     bind against the self-signed LDAPS is REJECTED (login fails, cert not
+#     trusted).
+#   * POSITIVE: the SAME topology with insecure_skip_verify=true -> bind
+#     SUCCEEDS (200 + token); and false + the correct ca_certificate -> bind
+#     SUCCEEDS (trust established).
+#   * DYNAMIC: flipping a provider false->true flips its login fail->success
+#     (proves the per-provider column is honored at bind, not a global toggle).
+#   * REAL-BIND sanity: a wrong password on a working provider -> 401 (not a
+#     blanket accept).
+# Pre-#2782 there is no per-provider skip/CA option, so the positive controls
+# cannot pass -> discriminating. The 1.6.1-rc image HAS the fix (verified: the
+# ldap_configs table carries both columns) -> this tier is EXPECTED TO PASS.
+#
+# NOTE: the connectivity `/ldap/{id}/test` endpoint only does a TCP probe (it
+# does NOT do a TLS handshake), so it does NOT discriminate on cert trust; the
+# oracle uses the actual login bind, which does.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + several provider
+# create/update + LDAP logins back-to-back through one admin; the base default
+# (ON) would throttle them. Disabled explicitly per design section 2.2 (same as
+# the sso / proxy-egress tiers).
+PROFILES="storage.filesystem sso.ldap"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

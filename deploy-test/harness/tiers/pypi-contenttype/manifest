@@ -1,0 +1,33 @@
+# DTF tier manifest: pypi-contenttype  (issue #2801)
+# Profile-set: filesystem / single + a canned PyPI simple-index upstream that
+# serves a VALID PEP 691 JSON body with a LYING `Content-Type:
+# application/octet-stream`.
+#
+# The #2801 class: the PyPI simple-index proxy render TRUSTS the upstream
+# Content-Type. When a member/remote upstream returns a simple-index body whose
+# Content-Type is neither JSON (application/vnd.pypi.simple.v1+json) nor
+# text/html — e.g. a proxy mangling it to application/octet-stream — AK serves
+# the RAW upstream bytes un-rewritten: it (1) leaks the offsite
+# `files.pythonhosted.org` download URL and (2) hands uv a Content-Type it
+# rejects. The fix sniffs the BODY (JSON vs HTML) instead of trusting the
+# header, rewrites download URLs through the repo, and 502s on binary garbage.
+#
+# Oracle (discriminating, over BOTH the direct remote AND a virtual over it):
+# request /pypi/<repo>/simple/<pkg>/ with uv's Accept
+# (application/vnd.pypi.simple.v1+json) and assert the response Content-Type is
+# a REAL simple-index type (v1+json or text/html), NOT application/octet-stream,
+# AND the body contains NO offsite files.pythonhosted / mock-host download URL
+# (all file URLs rewritten under /pypi/<repo>/...).
+#
+# NOTE: the 1.6.1-rc image does NOT yet carry #2801, so this oracle is EXPECTED
+# TO FAIL on it (octet-stream Content-Type + leaked URL). That failing-on-the-
+# bug run is the proof the oracle discriminates; it flips to PASS on the fix
+# image.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo create + a few
+# proxy fetches back-to-back through one admin; the base default (ON) would
+# throttle them. A tier that must disable a shipped control does so explicitly,
+# per design section 2.2 (same as the proxy-egress / isolation tiers).
+PROFILES="storage.filesystem upstreams.mockpypi"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

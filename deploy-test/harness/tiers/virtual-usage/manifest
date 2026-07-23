@@ -1,0 +1,30 @@
+# DTF tier manifest: virtual-usage  (issue #2785)
+# Profile-set: filesystem / single (walking-skeleton topology; the aggregation
+# guarantee this tier gates is storage-independent).
+#
+# Feature (#2785): a virtual repository's aggregated view over its member leaves
+# is the DEDUPLICATED union of those leaves — content shared by two members is
+# counted ONCE, not double-counted as sum(member_a)+sum(member_b) — AND a virtual
+# repository is EDITABLE after creation: its member set can be changed (add /
+# remove a member), gated by `repository:admin` on the virtual parent.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (A) DEDUP UNION — two local repos A,B each hold the SAME shared artifact bytes
+#       plus a unique artifact. A virtual V over {A,B} reports the shared
+#       coordinate EXACTLY ONCE and its aggregated size == the deduplicated union
+#       (shared counted once), strictly LESS than the naive per-repo sum. Proven
+#       against the aggregated content API and cross-checked against the DB
+#       (distinct-checksum union vs raw sum) and the per-repo usage API.
+#       Pre-#2785 the aggregate double-counts (== raw sum) or the listing errors.
+#   (B) EDITABLE — as a repo-admin, POST a new member and DELETE it back: both
+#       2xx and the change PERSISTS (DB + members API). As a member-repo writer
+#       who is NOT repo-admin, the same mutations are refused 403 (the admin
+#       gate, not mere access). Pre-#2785 the edit 404s/500s.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + a non-admin user
+# create/login + several maven PUTs + repeated repository/member API calls back
+# to back through one admin; the base default (ON) would throttle them. A tier
+# that must disable a shipped control does so explicitly (design 2.2).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

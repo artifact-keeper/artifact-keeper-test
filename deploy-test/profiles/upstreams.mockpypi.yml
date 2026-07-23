@@ -1,0 +1,70 @@
+# =============================================================================
+# profiles/upstreams.mockpypi.yml — upstreams=mockpypi overlay (PyPI #2801)
+# =============================================================================
+# Adds a tiny canned PyPI simple-index upstream (`mock-pypi`) for the
+# pypi-contenttype tier (#2801). The mock serves a VALID PEP 691 JSON body but
+# with a LYING `Content-Type: application/octet-stream` — the exact condition
+# under which a header-trusting proxy render leaks the offsite
+# `files.pythonhosted.org` download URL and hands the client a media type uv
+# rejects. See harness/tiers/pypi-contenttype/fixtures/mock_pypi.py.
+#
+# The overlay:
+#   * ADDS  `mock-pypi` — a stdlib-only python http server (no pip install),
+#     serving the canned index for any path. It sits on a per-slot 172.16/12
+#     subnet so AK's create-time SSRF upstream-URL validation allowlists it
+#     (172.16/12), the same escape-hatch discipline proxy.squid.yml uses.
+#   * PATCHES backend onto the same `mockpypi` net + sets the private-IP escape
+#     hatch (UPSTREAM_ALLOW_PRIVATE_IPS + AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16/12)
+#     so the remote-repo create against `http://mock-pypi/` is accepted and the
+#     backend can actually fetch the mock's simple index.
+#
+# Required vars (run.sh exports them): DTF_SLOT (per-slot subnet + static IP so
+# concurrent slots never collide), DTF_DIR (mount the mock script).
+# =============================================================================
+services:
+  mock-pypi:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-pypi
+    command: ["python3", "/app/mock_pypi.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_PKG: "dtfpkg"
+      # The lie: a valid PEP 691 JSON body served as octet-stream (#2801).
+      MOCK_CTYPE: "application/octet-stream"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/pypi-contenttype/fixtures/mock_pypi.py:/app/mock_pypi.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockpypi:
+        ipv4_address: 172.28.${DTF_SLOT}.50
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-pypi:
+        condition: service_healthy
+    environment:
+      # Let the create-time SSRF check + the fetch reach the mock on 172.16/12.
+      # Scoped to 172.16/12 only (the mock's subnet), mirroring proxy.squid.yml.
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockpypi: {}
+
+networks:
+  # backend <-> mock-pypi. 172.16/12 subnet so the mock upstream is allowlisted
+  # by AK_SSRF_ALLOW_PRIVATE_CIDRS at repo-create time.
+  mockpypi:
+    name: ak-dtf${DTF_SLOT}-mockpypi
+    ipam:
+      config:
+        - subnet: 172.28.${DTF_SLOT}.0/24

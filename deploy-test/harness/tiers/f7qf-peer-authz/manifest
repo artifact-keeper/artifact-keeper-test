@@ -1,0 +1,36 @@
+# DTF tier manifest: f7qf-peer-authz  (GHSA-f7qf / 1.6.1)
+# Profile-set: filesystem / single (the walking-skeleton topology). The peer
+# data-plane authorization gap this tier proves is storage-independent — the
+# missing check sits in the /api/v1/peers/* handlers, ahead of any storage I/O.
+#
+# The bug (GHSA-f7qf): the peer/federation data-plane MUTATING routes were
+# nested under `auth_middleware` (authentication) but carried NO authorization
+# guard. Any AUTHENTICATED non-admin could drive federation transfer/chunk/
+# connection state: init a transfer session, mark a peer unreachable, or write
+# chunk-availability rows. The fix adds `auth.require_admin()?` to the 9
+# mutating handlers so a non-admin is refused with 403 BEFORE the handler body
+# runs. The paired read GETs (e.g. GET /:id/connections) stay non-admin
+# readable — the fix must not over-restrict them.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   BOUNDARY  a non-admin token on POST /:id/transfer/init,
+#             POST /:id/connections/:target/unreachable, and
+#             PUT  /:id/chunks/:artifact_id -> 403 (GREEN). On the vulnerable
+#             baseline the request reaches the handler (2xx/404/500, NOT 403) =
+#             the bypass. 403 (authz denied) is distinguished from 404/500
+#             (handler reached) — that distinction is the whole tier.
+#   CONTROL   admin on the same route -> passes authz (200/404/500, not 403);
+#             a non-admin read GET /:id/connections -> 200 (not over-restricted);
+#             anon on a mutating route -> 401 (auth_middleware still guards).
+#   NOTE      ids are freshly-minted UUIDs (no peer need exist): the authz check
+#             fires ahead of the handler body, so existence is irrelevant to the
+#             boundary. `update_network_profile` is deliberately avoided — it is
+#             a dead route (500s at path extraction), unrelated to this authz gap.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + a user create +
+# user login + a token mint + several back-to-back peer probes through one
+# admin/user pair; the base default (ON) would throttle them. A tier that must
+# disable a shipped control does so explicitly (design 2.2, as isolation/sso do).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
