@@ -1,0 +1,34 @@
+# Baseline-delta budget for download-concurrency. Sourced KV.
+# Percentage metrics compare against baselines/<version>/download-concurrency.json;
+# *_ABS_* metrics are absolute hard ceilings. A baseline-relative metric fires
+# REGRESSION only when it breaches BOTH its percentage budget AND its absolute
+# tolerance band (the rig noise floor). Every value is overridable via PTF_<NAME>.
+#
+# All guarded metrics reflect the MAX-concurrency level (C=100): the k6 scenario
+# maps the C=100 per-level percentiles into the headline app.latency_ms, so p95,
+# throughput, and the p99/p50 tail ratio are all "at max concurrency".
+#
+# Downloads are lighter + faster than uploads, so p95 bands are tighter; but the
+# p99/p50 TAIL under 100-way concurrency is inherently jumpy, so it carries a WIDE
+# band (this profile's headline robustness question: does the tail blow up?).
+P95_REGRESSION_PCT=20          # fail if download p95 @C100 > baseline * 1.20 ...
+P95_TOLERANCE_MS=40            #   ... AND it rose by more than 40 ms
+THROUGHPUT_REGRESSION_PCT=15   # fail if @C100 MB/s < baseline * 0.85 ...
+THROUGHPUT_TOLERANCE_MBPS=40   #   ... AND it dropped by more than 40 MB/s
+RSS_REGRESSION_PCT=20          # fail if peak backend RSS > baseline * 1.20 ...
+RSS_TOLERANCE_BYTES=134217728  #   ... AND it rose by more than 128 MiB
+TAIL_FAIRNESS_RATIO_PCT=30     # fail if (p99/p50)@C100 > baseline ratio * 1.30 ...
+TAIL_TOLERANCE_RATIO=1.00      #   ... AND the ratio rose by more than 1.00 (wide: 100-way tail is jumpy)
+ERROR_RATE_ABS_MAX=0.01        # hard ceiling on download error rate
+POOL_SAT_ABS_MAX=95            # hard ceiling on db-pool saturation under concurrency
+
+# ---- cache behavior (INFORMATIONAL — not a hard verdict guard) --------------
+# The proxy-cache hit/miss counter ak_proxy_cache_lookups_total{result} is emitted
+# ONLY on the PROXY-repo pull path (backend metrics_service::record_proxy_cache_lookup,
+# called from proxy_service.rs); a LOCAL download never registers it, so Layer C
+# reports it n/a for this workload. This profile's cache signal is therefore the
+# cold-vs-warm read latency delta captured in Layer A (scenario dl_cold vs dl_warm
+# Trends, printed by handleSummary). Guarding a cache-hit-ratio as a hard verdict
+# would require a report.sh guard (harness change) + a proxy upstream (flaky for a
+# stable baseline); both are deliberately out of scope for the committed profile.
+# CACHE_HIT_RATIO_MIN_POINTS=5   # (reserved) min hit-rate drop vs baseline if ever guarded

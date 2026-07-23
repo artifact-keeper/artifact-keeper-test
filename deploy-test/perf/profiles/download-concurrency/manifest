@@ -1,0 +1,46 @@
+# PTF profile manifest: download-concurrency   (Phase 2b — k6 path)
+# Speed + robustness dimension: download tail latency + throughput + cache
+# behavior under increasing concurrent download load (design doc §6.3).
+# Sourced KV by harness/run.sh. See README "Shared-harness contract".
+#
+# GEN=k6 is the reference generator here: k6 gives clean per-level concurrency
+# percentiles + native tail stats, which is exactly what this profile measures.
+GEN="k6"
+SCENARIO_K6="scenario.js"
+PROFILES="storage.filesystem"
+
+# Backend config for the run. compose.base.yml interpolates ${RATE_LIMIT_ENABLED}
+# from the environment (default true); run.sh sources this manifest BEFORE
+# `compose up`, so an `export` here reaches the compose interpolation without
+# touching any shared harness file. A concurrency profile drives all load from a
+# SINGLE load-generator IP (the k6 container), which the per-IP download limiter
+# (routes.rs: "Stricter per-IP bucket ...") throttles to 429 at C>=10 — you would
+# measure the limiter, not the download plane. Exempt it so the sweep measures the
+# service (standard perf-test practice; the rig's E2E/perf convention, memory
+# release-gate-flake-dns). Override with RATE_LIMIT_ENABLED=true to instead
+# profile behavior UNDER the limiter.
+export RATE_LIMIT_ENABLED="${RATE_LIMIT_ENABLED:-false}"
+THRESHOLDS="thresholds"
+RUNS="4"      # trimmed mean drops 1 hi + 1 lo -> mean of the middle 2
+WARMUP="1"    # first (cold-backend) pass discarded; headline is warm steady-state
+
+# ---- workload knobs ---------------------------------------------------------
+# Only knobs the harness actually forwards into the k6 container matter here.
+# perf_run_k6 forwards: VUS = max(CONCURRENCY); SIZE_BYTES = SWEEP_SIZE_MB*1MiB;
+# THROTTLE_MS (deliberate-regression knob). So:
+#   CONCURRENCY    -> the k6 VU budget; its MAX is the top of the ladder.
+#   SWEEP_SIZE_MB  -> per-artifact download size.
+# The remaining sweep knobs below are read by the harness for VUS/ITERATIONS
+# math but the scenario is DURATION-driven per level; the concurrency LADDER,
+# seed count, and per-level duration are scenario.js defaults (the harness does
+# NOT forward arbitrary env, so these are documentation of the operative values
+# baked into scenario.js: CONC_LADDER=1,10,50,100  SEED_COUNT=60  LEVEL_SECONDS=8
+# COLDWARM_SECONDS=12  ZIPF_POW=2.5). Override them by editing scenario.js env
+# defaults, not here.
+CONCURRENCY="1 10 50 100"   # -> VUS=100 (top of the ladder); ladder = these levels
+FORMATS="generic"
+SWEEP_SIZE_MB="2"           # -> 2 MiB artifacts (real transfer, cheap to seed)
+REQUESTS_PER_CELL="30"      # harness ITERATIONS math only; ladder is time-boxed
+BIGFILE_SIZE_MB="0"
+BIGFILE_COUNT="0"
+DEDUP_COUNT="0"
