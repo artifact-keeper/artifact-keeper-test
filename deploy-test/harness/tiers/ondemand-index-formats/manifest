@@ -1,0 +1,35 @@
+# DTF tier manifest: ondemand-index-formats  (#2589)
+# Profile-set: filesystem / single. The advertised download URL is computed at
+# metadata-serve time from the artifact's stored filename; this is
+# storage-agnostic and the download route resolves by filename suffix, so this
+# runs on the default filesystem overlay.
+#
+# Follow-up to #2587 (rpm primary.xml) and #2754 (cran PACKAGES / rubygems
+# specs.4.8.gz). Those closed the REPO-WIDE indices. This tier covers the
+# name-addressed metadata endpoints of the OTHER suffix-resolved formats whose
+# on-demand response advertises a download URL reconstructed from
+# `{name}-{version}` instead of the stored object's real filename:
+#   * Ansible Galaxy v3 collection_info  -> `.download_url`
+#   * Puppet Forge v3 module_info        -> `.current_release.file_uri`
+#
+# The bug: a collection/module pushed through the generic chunked-upload flow is
+# stored at its bare filename with the WHOLE basename as `name` and a
+# `sha256-<prefix>` fallback `version`. The metadata endpoint reconstructs
+# `{namespace}-{name}-{version}.tar.gz` / `{owner}-{name}-{version}.tar.gz`,
+# advertising a path the suffix-resolving download route can never serve -> 404
+# even though the artifact is present and discoverable by name. The fix
+# (proxy_helpers::served_download_filename) derives the advertised filename from
+# the stored object path.
+#
+# Oracle (oracle.sh) is the discriminating gate. For BOTH formats it does a real
+# generic (bare-path) chunked upload, reads the SERVED metadata JSON, extracts
+# the advertised download URL, and GETs it:
+#   Fixed:     advertised URL is the stored basename -> 200.
+#   Pre-#2589: advertised URL is `{name}-{version}` (name=basename,
+#              version=sha256 fallback) -> 404.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + two generic chunked
+# uploads (session + chunk + complete) + metadata/download GETs back-to-back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

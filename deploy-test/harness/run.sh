@@ -260,12 +260,13 @@ case "$CMD" in
     # #2801, ldaps #2782), then the 1.7.0 backfill batch-1 tiers
     # (openapi-signing-tags #2721, maven-grouped-name #2723,
     # debian-encoded-separator #2562, cran-rubygems-download-url #2754,
-    # backup-custom-name #2790).
+    # backup-custom-name #2790, ondemand-index-formats #2589).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
              virtual-no-transfer proxy-upstream-url oidc-group-sync \
              openapi-signing-tags maven-grouped-name debian-encoded-separator cran-rubygems-download-url backup-custom-name \
+             ondemand-index-formats \
              oidc-env-config gcs-custom-endpoint; do
       run_tier "$t" || overall=1
     done
