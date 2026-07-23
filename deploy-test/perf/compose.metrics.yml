@@ -1,0 +1,57 @@
+# =============================================================================
+# perf/compose.metrics.yml — PTF additive overlay: unauth /metrics + pg_stat
+# =============================================================================
+# Stacked ON TOP of DTF's compose.base.yml + a storage overlay by
+# perf/harness/run.sh. It adds the two things PTF's collector needs and DTF's
+# base intentionally omits:
+#
+#   1. backend: METRICS_PORT set -> the backend starts its SECOND, unauthenticated
+#      Prometheus listener (backend/src/main.rs, config field metrics_port /
+#      env METRICS_PORT). We bind it to a fixed in-container port (9464, the
+#      Prometheus convention) and publish it on the slot's host METRICS_PORT
+#      (8350+N, from lib/ports.sh) so collect.sh can scrape
+#      http://127.0.0.1:${METRICS_PORT}/metrics at ~1 Hz with no re-auth.
+#      NOTE: the `${METRICS_PORT}` on the host side interpolates from the shell
+#      (the slot's 8350+N); the container env METRICS_PORT is the literal 9464.
+#      Compose interpolation never reads a service's own `environment:` block,
+#      so there is no collision between the two.
+#
+#   2. postgres: pg_stat_statements preloaded so Layer C can pull the slow-query
+#      / top-query hotspot snapshot (collect.sh runs CREATE EXTENSION + SELECT).
+#
+# Required vars (run.sh exports them from the claimed slot): PERF_SLOT (project
+# name is ak-perf<N> via -p), METRICS_PORT.
+# =============================================================================
+# This overlay ALSO re-namespaces the containers/network/volume from DTF's
+# ak-dtf<N> to ak-perf<N>. compose.base.yml hardcodes container_name/network/
+# volume as ak-dtf${DTF_SLOT}-*; PTF runs with -p ak-perf<N> and DTF_SLOT set,
+# and these later-file scalar overrides win the merge — so a PTF slot is fully
+# isolated from (and detectable separately by lib/ports.sh's ak-perf<N>- grep)
+# a real DTF slot of the same index. compose.base.yml stays untouched (reused).
+services:
+  postgres:
+    container_name: ak-perf${PERF_SLOT:?set PERF_SLOT}-db
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+      - "-c"
+      - "pg_stat_statements.max=10000"
+
+  backend:
+    container_name: ak-perf${PERF_SLOT:?set PERF_SLOT}-backend
+    environment:
+      # Turns on the unauthenticated /metrics listener (opt-in; off in DTF base).
+      METRICS_PORT: "9464"
+    ports:
+      - "127.0.0.1:${METRICS_PORT:?set METRICS_PORT}:9464"
+
+networks:
+  dtf:
+    name: ak-perf${PERF_SLOT}-net
+
+volumes:
+  dtf_data:
+    name: ak-perf${PERF_SLOT}_data

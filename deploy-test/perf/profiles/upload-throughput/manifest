@@ -1,0 +1,28 @@
+# PTF profile manifest: upload-throughput   (Phase 1 — implemented)
+# The analog of a DTF tier manifest. Sourced KV by harness/run.sh.
+#
+# GEN       : generator kind — bash (curl concurrency, big-file MB/s) or k6.
+# SCENARIO  : the scenario file in this dir (scenario.sh for bash).
+# PROFILES  : DTF storage overlay(s) to reuse (space-separated basenames under ../../profiles/).
+# THRESHOLDS: baseline-delta budget file in this dir.
+# RUNS      : measured repetitions; the reported number is the MEDIAN (+1 warm-up).
+GEN="bash"
+SCENARIO="scenario.sh"
+PROFILES="storage.filesystem"
+THRESHOLDS="thresholds"
+RUNS="3"
+
+# ---- workload sweep (consumed by scenario.sh) -------------------------------
+# sweep phase: concurrency sweep at SWEEP_SIZE_MB, REQUESTS_PER_CELL per cell,
+#   iterated over FORMATS -> percentiles + tail-fairness (#2598).
+# bigfile phase: BIGFILE_COUNT x BIGFILE_SIZE_MB at C=1 -> raw MB/s.
+# dedup phase: DEDUP_COUNT identical uploads -> Layer-D dedup (#2601).
+# Defaults are tuned to complete warm-up + 3 iterations in a few minutes on a
+# shared rig slot; scale REQUESTS_PER_CELL / sizes up for a quiesced baseline.
+CONCURRENCY="1 4 16"
+FORMATS="generic maven"
+SWEEP_SIZE_MB="4"
+REQUESTS_PER_CELL="18"
+BIGFILE_SIZE_MB="64"
+BIGFILE_COUNT="2"
+DEDUP_COUNT="8"

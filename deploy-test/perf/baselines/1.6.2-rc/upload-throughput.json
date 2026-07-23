@@ -1,0 +1,70 @@
+{
+  "profile": "upload-throughput",
+  "version": "1.6.2-rc",
+  "backend_image": "artifact-keeper-backend:1.6.2-rc",
+  "run_id": "perf-upload-throughput-3-1784820656",
+  "started_at": "2026-07-23T15:31:13Z",
+  "iterations": 3,
+  "duration_s": 4.56,
+  "workload": {
+    "max_concurrency": 16,
+    "requests": 150,
+    "sweep_size_bytes": 4194304,
+    "formats": "generic maven"
+  },
+  "app": {
+    "requests": 150,
+    "errors": 0,
+    "error_rate": 0.00000,
+    "throughput_rps": 32.89,
+    "throughput_mbps": 165.56,
+    "bigfile_mbps": 180.75,
+    "latency_ms": {
+      "p50": 56.630,
+      "p90": 112.867,
+      "p95": 126.795,
+      "p99": 154.037,
+      "max": 413.127
+    },
+    "tail_at_max_conc": {
+      "p50": 84.398,
+      "p99": 141.956,
+      "p99_over_p50": 1.532
+    }
+  },
+  "resource": {
+    "backend": {
+      "cpu_pct_peak": 174.4,
+      "cpu_pct_mean": 80.6,
+      "rss_bytes_peak": 519045120,
+      "rss_bytes_mean": 499681417,
+      "block_read_bytes": 8190,
+      "block_write_bytes": 239000000
+    },
+    "postgres": {
+      "cpu_pct_peak": 53.8,
+      "rss_bytes_peak": 247254221
+    }
+  },
+  "backend_internal": {
+    "http_mean_ms_server": 65.9,
+    "db_pool": {
+      "active_peak": 2,
+      "max": 50,
+      "saturation_pct_peak": 4.0
+    },
+    "in_flight_peak": 10,
+    "responses_5xx": 0,
+    "webhook_backlog_peak": null,
+    "pg_stat": {
+      "slow_queries": 0,
+      "top_query_mean_ms": 12.413262992857145,
+      "top_query": "INSERT INTO packages (repository_id, name, version, description, size_bytes, met"
+    }
+  },
+  "storage": {
+    "bytes_uploaded": 754974720,
+    "storage_used_bytes_delta": 79691776,
+    "dedup_ratio": 9.47
+  }
+}

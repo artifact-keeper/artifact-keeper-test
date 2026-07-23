@@ -1,0 +1,10 @@
+# Baseline-delta budget for upload-throughput. Sourced KV.
+# Percentage metrics compare against baselines/<version>/upload-throughput.json;
+# *_ABS_* metrics are absolute hard ceilings (baseline-independent).
+# Verdict = OR over all guarded metrics: any breach => REGRESSION (non-zero exit).
+P95_REGRESSION_PCT=15          # fail if app.latency_ms.p95 > baseline * 1.15
+THROUGHPUT_REGRESSION_PCT=10   # fail if app.throughput_mbps < baseline * 0.90
+RSS_REGRESSION_PCT=20          # fail if resource.backend.rss_bytes_peak > baseline * 1.20
+TAIL_FAIRNESS_RATIO_PCT=25     # fail if (p99/p50)@C16 > baseline ratio * 1.25  (#2598)
+ERROR_RATE_ABS_MAX=0.01        # hard ceiling on app.error_rate
+POOL_SAT_ABS_MAX=95            # hard ceiling on backend_internal.db_pool.saturation_pct_peak
