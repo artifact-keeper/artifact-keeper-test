@@ -1,0 +1,70 @@
+# PTF profile manifest: metadata-scale   (Phase 2b — targets perf issue #2521)
+# The analog of a DTF tier manifest. Sourced KV by harness/run.sh.
+#
+# WHAT THIS PROFILE MEASURES
+#   #2521 = "whole-repo package metadata regenerated SYNCHRONOUSLY". Several
+#   format index endpoints rebuild the entire repository index from ALL of the
+#   repo's artifact rows on every request, with no cache. This profile seeds ONE
+#   repo to K artifacts at a few K values, then triggers that whole-repo regen
+#   and measures how its latency scales with K. Growing latency vs artifact
+#   count == the #2521 synchronous-regen scaling problem, quantified.
+#
+# THE REGEN TRIGGER (recon-grounded, target-backend @1.6.2-rc)
+#   GET /rpm/{repo_key}/repodata/repomd.xml  (rpm.rs:483 repomd_xml)
+#     -> collect_repodata_artifacts -> list_rpm_artifacts:
+#          SELECT ... FROM artifacts a LEFT JOIN artifact_metadata am
+#          WHERE a.repository_id = $1 AND a.is_deleted = false
+#          ORDER BY a.name, a.version, a.path, a.id       -- O(K) fetch, NO path filter
+#     -> generate_repomd_xml_content: builds primary.xml + filelists.xml +
+#          other.xml from ALL K rows and sha256-checksums each             -- O(K) CPU
+#   No auth required, no cache: every GET re-does the full O(K) work. Chosen over
+#   Debian Packages (that query filters `path LIKE 'pool/%'`, so seed.sh's row
+#   shape would be excluded and would NOT scale) and Maven metadata (per-GAV, not
+#   whole-repo). RPM's fetch has NO path filter, so seed.sh rows participate fully.
+#
+# GEN        : bash generator (curl timing of the regen GET). k6 not used here.
+# SCENARIO   : the GEN=bash scenario in this dir.
+# PROFILES   : DTF storage overlay to reuse. filesystem is enough — the regen
+#              reads the DB, not the object store, so no blobs are needed.
+# THRESHOLDS : baseline-delta budget + noise-floor band file in this dir.
+# RUNS/WARMUP: measured repetitions (trimmed-mean combined) + discarded warm-ups.
+GEN="bash"
+SCENARIO="scenario.sh"
+PROFILES="storage.filesystem"
+THRESHOLDS="thresholds"
+RUNS="5"
+WARMUP="1"
+
+# ---- legacy workload knobs (kept so run.sh's fixed export list is satisfied) --
+# This profile does NOT do concurrency/size/dedup sweeps; these are placeholders.
+# (run.sh exports exactly this set; the metadata-scale knobs below are read by
+# the scenario re-sourcing THIS manifest, see scenario.sh.)
+CONCURRENCY="1"
+FORMATS="rpm"
+SWEEP_SIZE_MB="0"
+REQUESTS_PER_CELL="0"
+BIGFILE_SIZE_MB="0"
+BIGFILE_COUNT="0"
+DEDUP_COUNT="0"
+
+# ---- metadata-scale knobs (consumed by scenario.sh) -------------------------
+# SCALE_K_VALUES     : repo sizes (artifact counts) to seed + measure regen at.
+#                      Seeding is CUMULATIVE into ONE repo (regen is per-repo),
+#                      so these must be ascending. The largest K is the "at
+#                      scale" condition the guarded p95 reflects.
+# SCALE_FORMAT       : the seeded repository_format whose whole-repo index
+#                      regenerates on GET (must be a valid seed.sh enum; rpm).
+# REGEN_PATH         : the regen GET path under /{format}/{repo_key}/ to hit.
+# REGEN_REQUESTS_PER_K: GETs per K per iteration -> per-K percentile. Enough
+#                      total samples (len(K)*this) that the overall p95 lands in
+#                      the largest-K bucket (so p95 == large-scale regen latency).
+# SEED_REPOS         : keep 1 so ALL K artifacts land in the single measured repo.
+# These knobs are configured HERE in the manifest (edit the values). They are NOT
+# env-overridable: run.sh sources this manifest into its own exported shell, so an
+# env-provided SCALE_* would be clobbered before the scenario runs. (The PTF_*
+# threshold overrides in thresholds still work -- report.sh applies those last.)
+SCALE_K_VALUES="1000 10000 50000"
+SCALE_FORMAT="rpm"
+REGEN_PATH="repodata/repomd.xml"
+REGEN_REQUESTS_PER_K="6"
+SEED_REPOS="1"

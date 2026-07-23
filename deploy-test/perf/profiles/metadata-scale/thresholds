@@ -1,0 +1,47 @@
+# Baseline-delta budget for metadata-scale (#2521 synchronous whole-repo regen).
+# Sourced KV. Percentage metrics compare against
+# baselines/<version>/metadata-scale.json; *_ABS_* are absolute hard ceilings.
+# A baseline-relative metric fires REGRESSION only when it breaches BOTH its
+# percentage budget AND its absolute noise-floor band (Phase 2a hardening).
+# Every value is overridable at run time via the matching PTF_<NAME> env var.
+#
+# METRIC MAPPING FOR THIS PROFILE (see scenario.sh header):
+#   app.latency_ms.p95  == regen latency at the LARGEST K (the "at scale"
+#                          condition; the top-K GETs dominate the p95 tail).
+#                          This is the headline #2521 guard: the whole-repo
+#                          regen must not get >20% slower at scale release-over-
+#                          release.
+#   tail p99/p50 @maxC   == the tail spread of the largest-K regen (is regen
+#                          getting spikier as the repo grows).
+#   peak backend RSS     == guards unbounded in-memory index build: repomd
+#                          builds primary+filelists+other for ALL K rows in
+#                          memory, so a regression that buffers more per row
+#                          shows here.
+#   throughput (MB/s)    == NOT meaningful here: the regen response is a tiny
+#                          index-of-indexes (~KB) regardless of K while the work
+#                          is O(K), so "bytes/s" is noise. Deliberately relaxed
+#                          (huge band) so it never flaps the verdict.
+
+# --- headline: regen latency at scale ----------------------------------------
+P95_REGRESSION_PCT=20          # fail if p95 regen latency > baseline * 1.20 ...
+P95_TOLERANCE_MS=150           #   ... AND it rose by more than 150 ms (regen has
+                               #       wider run-to-run variance than a fixed upload)
+
+# --- in-memory build guard ---------------------------------------------------
+RSS_REGRESSION_PCT=20          # fail if peak backend RSS > baseline * 1.20 ...
+RSS_TOLERANCE_BYTES=134217728  #   ... AND it rose by more than 128 MiB
+
+# --- tail spread of the largest-K regen --------------------------------------
+TAIL_FAIRNESS_RATIO_PCT=30     # fail if (p99/p50)@maxK > baseline ratio * 1.30 ...
+TAIL_TOLERANCE_RATIO=0.80      #   ... AND the ratio rose by more than 0.80
+                               #       (wide: a per-K GET count is small, so the
+                               #        ratio is inherently jittery)
+
+# --- throughput: deliberately neutralized (regen output bytes are ~constant) --
+THROUGHPUT_REGRESSION_PCT=90   # effectively off ...
+THROUGHPUT_TOLERANCE_MBPS=100000  #   ... AND a band no regen response can breach
+
+# --- hard ceilings (baseline-independent) ------------------------------------
+ERROR_RATE_ABS_MAX=0.01        # every regen GET must return 2xx (a 5xx at scale
+                               # = the regen fell over under its own O(K) weight)
+POOL_SAT_ABS_MAX=95            # the O(K) fetch must not saturate the DB pool
