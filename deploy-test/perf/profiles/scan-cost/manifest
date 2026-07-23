@@ -1,0 +1,101 @@
+# PTF profile manifest: scan-cost   (Phase 2b — scan-stack resource cost model)
+# The analog of a DTF tier manifest. Sourced KV by harness/run.sh.
+#
+# GOAL: profile the COST of the vulnerability-scan stack (scanner-adapter +
+# Trivy + in-backend grype) as a function of the scan-submission RATE, to feed a
+# per-component cost model (baseline backend+pg + scan tier). Per the cost-model
+# recon (scratchpad-costmodel-recon.md): scan compute = f(upload rate x scan
+# time), fire-and-forget and hard-capped at ~MAX_CONCURRENT_SCAN_EXTRACTIONS (4)
+# concurrent, NOT a function of stored artifact count. This profile drives REAL
+# uploads + REAL scans (grype + Trivy find real CVEs in the fixture) and captures
+# per-container CPU cores + peak RSS for the scan sidecar, at several rates plus
+# a repo-wide-rescan burst that saturates the concurrency cap.
+#
+# HEADLINE OUTPUT (written by the scenario, NOT the standard report): a
+# per-rate table of scan-stack peak/mean CPU cores + peak RSS + scans/min +
+# scan latency + in-flight-vs-cap, at results/scan-cost/scan-cost.{json,md}.
+# The standard metrics.json/report.md still capture the BACKEND under scan load
+# (Layer B backend+pg, Layer A upload latency) via the shared harness.
+#
+# GEN        : bash. This profile is bash-only (no k6 variant): the load is a
+#              scan-submission + poll control loop, not a raw HTTP flood.
+# SCENARIO   : the GEN=bash scenario file in this dir.
+# PROFILES   : DTF storage overlay + the EXISTING scanner overlay. Order matters:
+#              storage.filesystem first, then scanners.trivy (adds the trivy /
+#              scanner-adapter sidecar + points backend TRIVY_ADAPTER_URL/TRIVY_URL
+#              at it). compose.metrics.yml is appended by run.sh last.
+# THRESHOLDS : cost profiles are measurement-first; the budget only hard-ceils
+#              upload error-rate + pool saturation so a broken run is caught. The
+#              scan-stack cost numbers live in the side-artifact, not the verdict.
+# RUNS       : 1. A cost curve wants ONE sustained, representative multi-rate run,
+#              not a trimmed-mean of 5 (each run is minutes of real scanning +
+#              a vuln-DB pre-warm). Override with --runs / PTF_RUNS if desired.
+# WARMUP     : 0. The scenario self-warms the Trivy vuln DB (docker exec
+#              --download-db-only, like the DTF supply-chain oracle) so the
+#              measured scans hit a warm DB; a full warm-up iteration would just
+#              double the runtime.
+GEN="bash"
+SCENARIO="scenario.sh"
+PROFILES="storage.filesystem scanners.trivy"
+THRESHOLDS="thresholds"
+RUNS="1"
+WARMUP="0"
+
+# ---- scanner-adapter host port ----------------------------------------------
+# scanners.trivy.yml publishes the adapter on 127.0.0.1:${TRIVY_PORT}:8090. The
+# PTF slot allocator (harness/lib/ports.sh) does NOT mint a TRIVY_PORT (it is a
+# DTF-only var), and this profile measures the adapter via `docker stats` on the
+# CONTAINER (the backend reaches it in-network as trivy:8090), so the host
+# publish is only needed to satisfy the overlay's `${TRIVY_PORT:?}`. A PTF
+# profile never co-schedules with another slot (rocky CPU-wedge discipline), so
+# a single fixed port is collision-safe; override if you must. 8290 sits outside
+# every PTF (8300+N http / 8350+N metrics) and DTF (8250+N trivy / 8200+N http)
+# block. Exported here so it reaches the compose subprocess.
+export TRIVY_PORT="${TRIVY_PORT:-8290}"
+
+# ---- workload knobs referenced by run.sh (must be set: run.sh computes
+#      SWEEP_BYTES_ENV=SWEEP_SIZE_MB*1MiB and exports the sweep block) ---------
+# These describe the UPLOAD side (the artifacts the scans run over). Small: the
+# fixture is a real vulnerable npm tarball, so scan compute (grype DB match +
+# trivy fs) dominates, not transfer.
+CONCURRENCY="1"
+FORMATS="generic"
+SWEEP_SIZE_MB="1"
+REQUESTS_PER_CELL="1"
+BIGFILE_SIZE_MB="1"
+BIGFILE_COUNT="0"
+DEDUP_COUNT="0"
+
+# ---- scan-cost scenario knobs (consumed by scenario.sh) ---------------------
+# NOTE: run.sh only exports the standard sweep block (CONCURRENCY, FORMATS, ...)
+# to the scenario, so these scan knobs are `export`ed here to reach the scenario
+# subprocess, and each is env-overridable (`${VAR:-default}`) so a run can shrink
+# them, e.g.  SCAN_RATES="12" SUSTAIN_SECS="20" bash run.sh scan-cost ...
+#
+# SCAN_RATES: space-separated scan-submission rates in submissions/min to sweep
+#   as steady-state phases (models "a sustained N-uploads/min scan-on-upload
+#   customer"). Each phase sustains SUSTAIN_SECS at that rate.
+export SCAN_RATES="${SCAN_RATES:-6 30 120}"
+# SUSTAIN_SECS: how long to hold each steady rate while sampling (>= a couple of
+#   scan-completions so scans/min + latency stabilise).
+export SUSTAIN_SECS="${SUSTAIN_SECS:-60}"
+# POOL_ARTIFACTS: size of the pre-uploaded artifact pool each phase draws from
+#   (re-triggered with force=true; scans are the cost, uploads are cheap).
+export POOL_ARTIFACTS="${POOL_ARTIFACTS:-12}"
+# BURST_ARTIFACTS: pool uploaded then rescanned all-at-once (repo-wide rescan)
+#   to saturate the ~4 concurrency cap and read the peak-cores plateau + drain.
+export BURST_ARTIFACTS="${BURST_ARTIFACTS:-24}"
+# FIXTURE_PACKAGES: per-scan WEIGHT. The fixture is a tree of this many known-
+#   vulnerable npm packages; grype/trivy match every one against their vuln DBs,
+#   so per-scan CPU (and thus the measurable adapter/backend cores) scales with
+#   it. A single lockfile is too light to measure; 250 gives seconds of real
+#   scanner CPU per scan. Raise for a heavier per-scan cost, lower to go faster.
+export FIXTURE_PACKAGES="${FIXTURE_PACKAGES:-250}"
+# STATS_HZ: docker-stats sampling period (seconds) for the scan-stack sampler.
+export STATS_HZ="${STATS_HZ:-1}"
+# TRIVY_WARM: pre-download the Trivy vuln DB into the adapter before measuring
+#   (1=on). Off only for an offline rig where the DB is pre-baked.
+export TRIVY_WARM="${TRIVY_WARM:-1}"
+# EXPECTED_CAP: the backend MAX_CONCURRENT_SCAN_EXTRACTIONS default, recorded in
+#   the report so in-flight-peak can be read against it (informational).
+export EXPECTED_CAP="${EXPECTED_CAP:-4}"

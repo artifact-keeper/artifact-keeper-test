@@ -1,0 +1,71 @@
+{
+  "profile": "scan-cost",
+  "version": "baseline-main",
+  "backend_image": "ak-backend:baseline-main",
+  "run_id": "perf-scan-cost-5-1784837487",
+  "started_at": "2026-07-23T20:11:27Z",
+  "iterations": 1,
+  "combine": "trimmed",
+  "duration_s": 233.25,
+  "workload": {
+    "max_concurrency": 1,
+    "requests": 24,
+    "sweep_size_bytes": 1048576,
+    "formats": "generic"
+  },
+  "app": {
+    "requests": 24,
+    "errors": 0,
+    "error_rate": 0,
+    "throughput_rps": 0.1,
+    "throughput_mbps": 0,
+    "bigfile_mbps": 0,
+    "latency_ms": {
+      "p50": 5.427,
+      "p90": 7.409,
+      "p95": 8.314,
+      "p99": 15.673,
+      "max": 21.563
+    },
+    "tail_at_max_conc": {
+      "p50": 5.427,
+      "p99": 15.673,
+      "p99_over_p50": 2.888
+    }
+  },
+  "resource": {
+    "backend": {
+      "cpu_pct_peak": 121.7,
+      "cpu_pct_mean": 6,
+      "rss_bytes_peak": 158334976,
+      "rss_bytes_mean": 57466496,
+      "block_read_bytes": 213000,
+      "block_write_bytes": 16400
+    },
+    "postgres": {
+      "cpu_pct_peak": 10.3,
+      "rss_bytes_peak": 86119547
+    }
+  },
+  "backend_internal": {
+    "http_mean_ms_server": 6,
+    "db_pool": {
+      "active_peak": 2,
+      "max": 50,
+      "saturation_pct_peak": 4
+    },
+    "in_flight_peak": 1,
+    "responses_5xx": 0,
+    "webhook_backlog_peak": null,
+    "pg_stat": {
+      "slow_queries": 0,
+      "top_query_mean_ms": 4.015144,
+      "top_query": "INSERT INTO scan_findings (scan_result_id, artifact_id, severity, title, descrip"
+    }
+  },
+  "storage": {
+    "bytes_uploaded": 360864,
+    "storage_used_bytes_delta": 15036,
+    "dedup_ratio": 24
+  }
+}

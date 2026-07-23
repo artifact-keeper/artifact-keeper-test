@@ -1,0 +1,30 @@
+# Baseline-delta budget for scan-cost. Sourced KV.
+#
+# scan-cost is a MEASUREMENT-FIRST cost profile: the deliverable is the per-rate
+# scan-stack CPU-cores / RSS curve in the side-artifact (results/scan-cost/
+# scan-cost.{json,md}), NOT a pass/fail verdict on the shared harness metrics.
+# So the standard guarded metrics (Layer A/B on the BACKEND) are given wide
+# baseline bands, and only two hard ceilings actually gate:
+#   * upload error-rate: uploads must succeed, else the scans have nothing to
+#     run over and the cost numbers are meaningless.
+#   * db-pool saturation: a saturated pool means the run was contended and the
+#     cost sample is noisy.
+# The scan-stack cost itself is asserted (rate-vs-cores) inside the scenario's
+# side-artifact, not here, because report.sh only knows backend+postgres.
+#
+# Every value is overridable at run time via the matching PTF_<NAME> env var.
+
+# --- hard ceilings (baseline-independent) ---
+ERROR_RATE_ABS_MAX=0.02        # uploads must essentially all succeed
+POOL_SAT_ABS_MAX=95            # backend db-pool must not saturate during the run
+
+# --- baseline-relative guards: WIDE bands (backend-under-scan-load is not the
+#     headline; these only catch gross backend regressions across versions) ---
+P95_REGRESSION_PCT=50          # upload p95 (backend, not scan) — loose
+P95_TOLERANCE_MS=500
+THROUGHPUT_REGRESSION_PCT=50   # upload MB/s is tiny here (1 MiB fixtures) — loose
+THROUGHPUT_TOLERANCE_MBPS=50
+RSS_REGRESSION_PCT=40          # backend RSS under scan orchestration
+RSS_TOLERANCE_BYTES=268435456  # 256 MiB band
+TAIL_FAIRNESS_RATIO_PCT=100    # single-concurrency uploads — tail not meaningful
+TAIL_TOLERANCE_RATIO=2.0

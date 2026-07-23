@@ -98,6 +98,39 @@ are emitted by this build (those fields are `null`, reported as n/a).
 
 ---
 
+## `scan-cost` profile (scan-stack resource cost model)
+
+`profiles/scan-cost/` profiles the vulnerability-scan stack
+(scanner-adapter + Trivy + in-backend grype) resource cost vs the scan-submission
+RATE, to feed a per-component cost model (baseline backend+pg + scan tier). It
+stacks the existing `scanners.trivy` overlay, enables real scans over a REAL
+vulnerable fixture (grype/trivy find genuine CVEs), sweeps steady rates
+(`SCAN_RATES`) + a repo-wide-rescan burst, and captures per-container CPU cores
++ RSS via **cgroup `cpu.stat` accounting** (host-side, so it works on the
+shell-less hardened backend image and catches short bursty scan CPU that
+`docker stats` sampling misses). Headline side-artifact:
+`results/scan-cost/scan-cost.{json,md}` — a per-rate table of scan-stack
+cores/RSS/scans-min/in-flight-vs-cap; the standard `metrics.json`/`report.md`
+still capture the backend under scan load.
+
+```bash
+bash harness/run.sh scan-cost --backend-image <IMG> --slot 5 --baseline
+# quick: FIXTURE_PACKAGES=150 SCAN_RATES="10 60" SUSTAIN_SECS=20 POOL_ARTIFACTS=6 \
+#        BURST_ARTIFACTS=12 bash harness/run.sh scan-cost --backend-image <IMG> --slot 5
+```
+
+Empirical finding (baseline-main, filesystem/lockfile scan path): the adapter's
+dominant cost is a **fixed ~1.2 GiB RSS (the Trivy vuln DB), flat across rate**;
+adapter CPU is trivial (<0.02 cores) because lockfile scans are CPU-light; the
+scan **CPU** cost lives in the BACKEND orchestration and scales with rate
+(~0.06 cores @6/min → ~0.76 cores peak at burst). The heavy-CPU container-IMAGE
+scan path (trivy image = layer unpack + OS-package scan) needs an OCI push driver
+and is the next increment. NB: `scans/min`/in-flight under-read at high rate
+because the repo scans list collapses `not_applicable` rows — the cgroup cores
+are unaffected.
+
+---
+
 ## Shared-harness contract (read this before writing a Phase 2b profile)
 
 A profile is a directory `profiles/<name>/` with three files. The harness
