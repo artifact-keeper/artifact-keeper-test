@@ -18,16 +18,38 @@
 # throttle them. Matches the isolation tier / proof rig. (Base default stays ON;
 # a tier disabling a shipped control does so explicitly, per design 2.2.)
 #
-# UPGRADE_OLD_IMAGE: the pre-#2574 "legacy deployment" backend the stack is first
-# stood up on. It must be a clean migration ANCESTOR of the candidate (its applied
-# migrations are an exact-checksum prefix of the candidate's set) so the in-place
-# volume upgrade runs the candidate's NEW migrations instead of erroring on a
-# divergent history. nexus2457-v157base (release/1.5.x line, migrations 151-154,
-# NO maven_flat_object_owner attribution table) is that ancestor for the fixed
-# candidate v158-4fix (adds attribution migration 155). See MATRIX-ROW.md for the
-# image-lineage rationale and why base-2504 (the isolation coder's pre-#2504
-# image) canNOT be used as the OLD image here.
+# UPGRADE_ORIGINS (#2688): the ordered set of "legacy deployment" backends the
+# stack is stood up on in PHASE 1, one full in-place swap per origin. Each entry
+# is "image|label|note". An origin must be a migration ANCESTOR the candidate can
+# reconcile in PHASE 2 (either an exact-checksum prefix, OR a diverged release
+# history the candidate's repair_release_1_5_x_divergence step reconciles) so the
+# in-place volume upgrade runs the candidate's NEW migrations instead of erroring.
+#
+#   * v1.5.6-origin — released 1.5.6 (max migration slot 153, NO divergence, NO
+#     maven_flat_object_owner attribution table). The candidate's repair step
+#     NO-OPS and the migrator applies 154..HEAD fresh: the "no-op / no-divergence"
+#     case (issue #2688). A clean boot proves the repair correctly does nothing.
+#   * v1.5.7-origin — nexus2457-v157base (release/1.5.x, migrations 151-154, NO
+#     attribution table): the historical default and load-bearing #2574/#2584
+#     row-less-Maven payload.
+#   * v1.5.8-origin — released 1.5.8 (slots 154 AND 155 diverged: the attribution
+#     table shipped as 155 on release/1.5.x and was renumbered to 163 on main).
+#     The candidate must reconcile the 155->163 renumber and apply 168 fresh.
+#
+# base-2504 (the isolation coder's pre-#2504 image) still CANNOT be an OLD image
+# here — it is not a clean-reconcilable ancestor. See MATRIX-ROW.md.
+#
+# The v1.5.6/v1.5.8 images are the real published release images the release-gate
+# S3 runners already have access to (ghcr.io/artifact-keeper/artifact-keeper-
+# backend:<ver>). UPGRADE_OLD_IMAGE stays defined for backward-compat: overriding
+# it alone (with no UPGRADE_ORIGINS) drives the single-origin legacy behavior.
+# UPGRADE_ONLY="v1.5.6-origin v1.5.8-origin" narrows a local run by label.
 PROFILES="storage.s3"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
 UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ak-backend:nexus2457-v157base}"
+UPGRADE_ORIGINS=(
+  "ghcr.io/artifact-keeper/artifact-keeper-backend:1.5.6|v1.5.6-origin|max slot 153, no divergence; repair no-ops, migrator applies 154..HEAD fresh"
+  "${UPGRADE_OLD_IMAGE}|v1.5.7-origin|slot 154, pre-attribution base; #2574/#2584 row-less-Maven payload"
+  "ghcr.io/artifact-keeper/artifact-keeper-backend:1.5.8|v1.5.8-origin|slots 154+155 diverged; candidate reconciles 155->163 renumber + applies 168 fresh"
+)
