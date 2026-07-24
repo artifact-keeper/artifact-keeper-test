@@ -1,0 +1,27 @@
+# DTF tier manifest: search-gin-2871
+# Profile-set: filesystem / single. No SSO or object storage needed -- the
+# oracle drives the real public HTTP search path (/search/quick, /search/advanced)
+# plus DB truth (docker exec psql) against the artifacts.search_vector column.
+#
+# WHAT IT GUARDS (#2871, PF-009, epic #2516): artifact full-text search used to
+# filter on an inline functional predicate
+#   to_tsvector('english', name || ' ' || path || ' ' || COALESCE(version,''))
+#     @@ to_tsquery('english', $1)
+# with nothing on `artifacts` matching it, so every /search request Parallel
+# Seq Scanned the table recomputing to_tsvector per row (twice, counting the
+# pagination COUNT). The fix adds a trigger-maintained `search_vector tsvector`
+# column, a partial GIN index (WHERE is_deleted=false), and rewrites both search
+# queries + the COUNT to filter on the stored column.
+#
+# Discriminating oracle (both DB truth AND behavior):
+#   * The stored column, its BEFORE INSERT/UPDATE trigger, and the partial GIN
+#     index must exist. On a pre-#2871 image the `search_vector` column does not
+#     exist, so these checks RED-fail; on the fixed image they GREEN-pass.
+#   * Semantics must be preserved exactly: quick and advanced search return the
+#     SAME ordered result set for the same term, the advanced total count is
+#     exact, prefix match is honored, a tsquery-metacharacter term returns an
+#     empty result with HTTP 200 (not 500), unrelated artifacts are excluded,
+#     and a freshly uploaded artifact is immediately searchable with its stored
+#     search_vector populated by the trigger.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"

@@ -1,0 +1,35 @@
+# DTF tier manifest: download-async-events
+# Profile-set: filesystem / single. No SSO/S3 needed -- the oracle drives the
+# real hosted-download hot path (maven GET) over HTTP and reads DB ground truth
+# via docker exec psql.
+#
+# WHAT IT GUARDS (#2522, download-path slice): the successful-download epilogue
+# used to AWAIT a `download_statistics` INSERT and an audit INSERT on the
+# catalog pool BEFORE the byte stream returned, coupling byte-plane latency and
+# availability to DB-pool pressure. The fix moves both writes OFF the
+# synchronous hot path -- `record_download` spawns the stats INSERT and
+# `audit_fire_and_forget` spawns the audit INSERT -- so the stream returns
+# without awaiting them, while the writes still eventually land (log-and-swallow
+# on failure, matching the existing fire-and-forget intent).
+#
+# OBSERVABLE CONTRACT (discriminating oracle, DB truth + served bytes):
+#   Every successful GET of a hosted artifact
+#     (1) returns 200 with the exact uploaded bytes, AND
+#     (2) eventually writes exactly one `download_statistics` row per GET.
+#   Because the write is now asynchronous, (2) is verified by POLLING the row
+#   count with a short bounded retry (the async-timing caveat) rather than
+#   reading it immediately after the response -- an immediate read can legitimately
+#   observe the row not-yet-landed on the fixed image. HEAD requests still record
+#   ZERO rows (no body served), which the oracle also asserts.
+#
+#   * GREEN on the fixed image: N GETs serve the right bytes and the row count
+#     eventually reaches N within the retry budget; a HEAD adds no row.
+#   * RED (contract violated): if a regression drops the spawned write (the task
+#     never runs, panics, or is silently discarded) the count never reaches N and
+#     the poll times out -> FAIL; if the download path breaks, the served bytes
+#     mismatch -> FAIL. Set DTF_RED_SIM=1 to exercise this discriminating path
+#     locally: it drives the "downloads" as HEAD probes (body served but no stat
+#     row) so the count can never reach N, turning the oracle RED on demand.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

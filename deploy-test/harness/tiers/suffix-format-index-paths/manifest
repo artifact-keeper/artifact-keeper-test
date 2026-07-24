@@ -1,0 +1,36 @@
+# DTF tier manifest: suffix-format-index-paths  (#2589)
+# Profile-set: filesystem / single. The advertised download URL is computed at
+# metadata-serve time from the artifact's stored path; this is storage-agnostic
+# and the download route resolves by filename suffix, so the default filesystem
+# overlay exercises it fully.
+#
+# WHAT IT GUARDS (#2589, follow-up to #2587/#2754):
+#   The suffix-resolved formats whose JSON metadata advertises an EXPLICIT,
+#   directly-followed download URL — RubyGems (gem_info/versions `gem_uri`),
+#   Ansible Galaxy (`download_url`) and Puppet Forge (`file_uri`) — reconstruct
+#   that URL from the package coordinates `{name}(-{version}).ext`. A package
+#   pushed through the generic (bare-path) upload flow is stored at an arbitrary
+#   path whose basename need NOT equal the reconstructed filename, so the
+#   advertised URL pointed at a path the suffix-resolving download route (the
+#   #2587 exact-path fallback) could never serve -> the client follows the
+#   advertised link and 404s even though the artifact is present. This is the
+#   RPM `primary.xml` `<location>` bug (#2587) generalized to these formats: the
+#   fix advertises the artifact's actual stored basename.
+#
+# Discriminating oracle (oracle.sh): for each format, generic (bare-path)
+# chunked-upload an artifact at a path whose basename differs from the canonical
+# `{name}(-{version}).ext`, read the SERVED metadata document, extract the
+# advertised download URL VERBATIM, and GET it.
+#   Fixed (#2589): the advertised URL carries the real stored basename -> 200.
+#   Pre-#2589:     the advertised URL is the reconstructed canonical filename,
+#                  which the bare-path artifact is not stored under -> 404 -> FAIL.
+# A companion assertion confirms the canonical reconstructed path (what a
+# pre-fix build would have advertised) 404s, pinning that the advertised URL and
+# the served route are the SAME object only on the fixed build.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + three generic
+# chunked uploads (session + chunk + complete) + metadata/download GETs
+# back-to-back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
