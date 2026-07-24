@@ -219,6 +219,17 @@ trivy:
   image:
     repository: aquasec/trivy
     tag: "0.62.1"
+  # Vulnerability DB: pull from ghcr.io/aquasecurity/trivy-db (anonymous) and
+  # pre-seed it with an init container so the DB is present before the server
+  # accepts scans. The gate cluster's anonymous mirror.gcr.io pulls returned
+  # UNAUTHORIZED; ghcr anonymous is the reliably-reachable source per the chart
+  # values comments. repository + preseed together is the chart's documented
+  # "make the fetch reliable" combination. The Java DB (javaRepository) is left
+  # empty so Trivy uses its built-in ghcr default. skipUpdate stays false.
+  db:
+    repository: ghcr.io/aquasecurity/trivy-db
+    preseed:
+      enabled: true
   persistence:
     size: 2Gi
   resources:
