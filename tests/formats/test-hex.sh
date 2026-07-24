@@ -55,9 +55,18 @@ EOF
 # VERSION file
 echo "3" > "$WORK_DIR/VERSION"
 
+# CHECKSUM member. Real `mix hex.publish` outer tarballs always carry a CHECKSUM
+# member (an uppercase 64-hex sha256 over the release blob). Since backend #2648
+# the hosted read path (signed protobuf registry) fail-closes with HTTP 500 when
+# it is missing, so the outer tarball MUST include it. The backend validates the
+# format only (64 ASCII hex chars, case-insensitive), so a sha256 over the other
+# members is an acceptable CHECKSUM. See artifact-keeper-test#289.
+CS=$(cat "$WORK_DIR/VERSION" "$WORK_DIR/metadata.config" "$CONTENTS_TAR" | shasum -a 256 | awk '{print toupper($1)}')
+printf '%s' "$CS" > "$WORK_DIR/CHECKSUM"
+
 # Outer tarball
 HEX_TARBALL="$WORK_DIR/${PACKAGE_NAME}-${PACKAGE_VERSION}.tar"
-tar cf "$HEX_TARBALL" -C "$WORK_DIR" VERSION metadata.config contents.tar.gz
+tar cf "$HEX_TARBALL" -C "$WORK_DIR" VERSION CHECKSUM metadata.config contents.tar.gz
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
@@ -87,19 +96,31 @@ fi
 # Query package info
 # -----------------------------------------------------------------------
 begin_test "Query package info"
-pkg_resp=$(curl -sf -H "$(format_auth_header)" \
+# Capture the HTTP status AND body (sibling idiom: -w '\n%{http_code}', split
+# with tail/sed). The old `curl -sf` swallowed the body on any >=400 and left
+# pkg_resp empty, so a backend 500 (e.g. the #2648 read path fail-closing on a
+# CHECKSUM-less tarball) was mis-reported as "package not found". Surfacing the
+# status makes a server error a real failure with the response body attached.
+pkg_http=$(curl -s -w '\n%{http_code}' -H "$(format_auth_header)" \
   "${BASE_URL}/hex/${REPO_KEY}/packages/${PACKAGE_NAME}" 2>/dev/null) || true
+pkg_status=$(echo "$pkg_http" | tail -1)
+pkg_resp=$(echo "$pkg_http" | sed '$d')
 
-if [ -z "$pkg_resp" ]; then
-  # Try the /api/packages endpoint
-  pkg_resp=$(curl -sf -H "$(format_auth_header)" \
+# Fall back to the /api/packages route only on a genuine 404, never on a 5xx
+# (which must surface, not be papered over by a second probe).
+if [ "$pkg_status" = "404" ]; then
+  pkg_http=$(curl -s -w '\n%{http_code}' -H "$(format_auth_header)" \
     "${BASE_URL}/hex/${REPO_KEY}/api/packages/${PACKAGE_NAME}" 2>/dev/null) || true
+  pkg_status=$(echo "$pkg_http" | tail -1)
+  pkg_resp=$(echo "$pkg_http" | sed '$d')
 fi
 
-if [ -n "$pkg_resp" ] && echo "$pkg_resp" | grep -q "$PACKAGE_NAME"; then
+if [ "$pkg_status" -ge 500 ] 2>/dev/null; then
+  fail "package query returned HTTP ${pkg_status} (server error)" "$pkg_resp"
+elif [ "$pkg_status" = "200" ] && echo "$pkg_resp" | grep -q "$PACKAGE_NAME"; then
   pass
 else
-  fail "package ${PACKAGE_NAME} not found in registry"
+  fail "package ${PACKAGE_NAME} not found in registry (HTTP ${pkg_status})" "$pkg_resp"
 fi
 
 # -----------------------------------------------------------------------
@@ -161,8 +182,13 @@ echo "3" > "$WORK_DIR/VERSION"
 
 tar czf "$WORK_DIR/contents.tar.gz" -C "$PKG_DIR" lib
 
+# CHECKSUM member (required by the read path since backend #2648; see the v1
+# upload above for the full rationale, artifact-keeper-test#289).
+CS=$(cat "$WORK_DIR/VERSION" "$WORK_DIR/metadata.config" "$WORK_DIR/contents.tar.gz" | shasum -a 256 | awk '{print toupper($1)}')
+printf '%s' "$CS" > "$WORK_DIR/CHECKSUM"
+
 HEX_TARBALL_V2="$WORK_DIR/${PACKAGE_NAME}-${PACKAGE_VERSION_V2}.tar"
-tar cf "$HEX_TARBALL_V2" -C "$WORK_DIR" VERSION metadata.config contents.tar.gz
+tar cf "$HEX_TARBALL_V2" -C "$WORK_DIR" VERSION CHECKSUM metadata.config contents.tar.gz
 
 v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -X PUT \
