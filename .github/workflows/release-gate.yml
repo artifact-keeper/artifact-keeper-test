@@ -89,6 +89,16 @@ on:
         type: boolean
         default: false
 
+# Serialize gate runs that target the same backend image so two runs
+# of one candidate do not interleave across the single shared ARC pool
+# (~29 cluster jobs). The key is the candidate tag, so distinct
+# candidates keep their own group and are unaffected; cancel-in-progress
+# is false so an in-flight gate finishes (including teardown) rather
+# than being cancelled mid-deploy and leaking a namespace.
+concurrency:
+  group: release-gate-${{ inputs.backend_tag }}
+  cancel-in-progress: false
+
 env:
   NAMESPACE_CPU: ${{ vars.TEST_NAMESPACE_CPU || '4000m' }}
   NAMESPACE_MEMORY: ${{ vars.TEST_NAMESPACE_MEMORY || '8Gi' }}
@@ -119,7 +129,11 @@ jobs:
   # routine gate runs against non-release builds are unaffected.
   # -------------------------------------------------------------------
   version-set-integrity:
-    runs-on: ak-e2e-runners
+    # Registry/input validation only: helm template renders the chart
+    # locally and curl checks image tags on public ghcr.io. No kubectl,
+    # no kubeconfig, no cluster mutation, so it runs on a hosted runner
+    # and stays available even when the ARC pool is saturated or down.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2028,7 +2042,11 @@ jobs:
   collect-results:
     needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
-    runs-on: ak-e2e-runners
+    # Result rollup only: aggregates needs[].result and downloads JUnit
+    # artifacts. No cluster access. Runs on a hosted runner so a
+    # cancelled or timed-out run terminates the rollup cleanly instead
+    # of leaving it queued behind a saturated or offline ARC pool.
+    runs-on: ubuntu-latest
     steps:
       - name: Download all test artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
