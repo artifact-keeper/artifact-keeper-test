@@ -109,11 +109,15 @@ backend:
     # Blob GC is opt-in (BLOB_GC_ENABLED defaults false → the admin
     # storage-gc endpoint dry-runs and never reclaims). Enable it so the
     # v1.3.0 OCI GC reclaim gate (test-oci-gc-mark-sweep.sh, #1660) can prove
-    # an unreferenced blob is actually deleted. The admin-triggered orchestrator
-    # runs mark+sweep at grace 0 (immediate), so a short sweep grace only
-    # affects the scheduler path; keep it short for determinism.
+    # an unreferenced blob is actually deleted. Keep the sweep grace short so
+    # the reclaim is observable inside the gate's poll window.
     BLOB_GC_ENABLED: "true"
     BLOB_GC_SWEEP_GRACE_SECS: "5"
+    # OCI blob GC runs only via the scheduler cron (GC_SCHEDULE, default
+    # hourly); the gate's oci-gc test polls for ~30s, so mark+sweep must fire
+    # every few seconds for the grace=5 reclaim to be observable. 6-field cron
+    # (sec min hour dom mon dow) = every 10 seconds. See artifact-keeper-test#284.
+    GC_SCHEDULE: "*/10 * * * * *"
     # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys
