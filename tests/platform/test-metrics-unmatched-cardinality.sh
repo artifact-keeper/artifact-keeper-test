@@ -56,9 +56,13 @@ JUNK_PATHS=(
 )
 NUM_PROBES=${#JUNK_PATHS[@]}
 
-# Fetch /metrics text (public endpoint; no auth needed).
+# Fetch the Prometheus metrics text. The backend serves metrics only at
+# /api/v1/admin/metrics behind admin auth; the old unauthenticated /metrics
+# path was removed (see tests/security/redteam/test-15-metrics-auth.sh). We
+# reuse the suite's admin token via auth_header() (auth_admin ran above).
 fetch_metrics() {
-  curl -sf --max-time 15 "${BASE_URL}/metrics" 2>/dev/null
+  curl -sf --max-time 15 -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/admin/metrics" 2>/dev/null
 }
 
 # Sum ak_http_requests_total across every series whose label set contains
@@ -80,7 +84,7 @@ begin_test "Metrics endpoint is available"
 if fetch_metrics > /dev/null 2>&1; then
   pass
 else
-  fail "GET /metrics returned error"
+  fail "GET /api/v1/admin/metrics returned error"
 fi
 
 # =========================================================================
@@ -101,7 +105,7 @@ METRICS="$(fetch_metrics || true)"
 if [ -n "$METRICS" ]; then
   pass
 else
-  fail "GET /metrics returned an empty body after probing"
+  fail "GET /api/v1/admin/metrics returned an empty body after probing"
 fi
 
 # =========================================================================
