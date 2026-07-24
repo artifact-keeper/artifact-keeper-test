@@ -134,6 +134,25 @@ AK_BACKEND_BRANCH_MAIN="\
   oci_gc_two_phase \
 "
 
+# virtual_member_partial_update_contract: marks a backend whose
+# PUT /:key/members uses the PRE-#2795 PARTIAL-UPDATE contract (update the
+# listed members' priorities in place, leave unlisted members untouched).
+#
+# Unlike every additive flag above, this is an UPPER-bounded contract: it was
+# REMOVED when full-set-replace semantics landed (artifact-keeper#2795, on the
+# 1.3.0 line), so it is present on 1.1.x / 1.2.x-era backends and ABSENT on
+# main (whose backend already has replace semantics). Because MAIN is defined
+# as a superset of the 1.2.x bundle, we cannot express "in 1.2.x but NOT main"
+# by adding the token inside the literal 1_1_X / 1_2_X blocks above (it would
+# flow into MAIN through inheritance). Instead we append it to the 1.1.x and
+# 1.2.x bundles HERE, after MAIN has already been assigned its (token-free)
+# value, so MAIN never captures it.
+#
+# Gates tests/repos/test-virtual-members-concurrent-put.sh. The replacement
+# assertions for replace semantics are pending artifact-keeper#2899.
+AK_BACKEND_BRANCH_1_1_X="$AK_BACKEND_BRANCH_1_1_X virtual_member_partial_update_contract"
+AK_BACKEND_BRANCH_1_2_X="$AK_BACKEND_BRANCH_1_2_X virtual_member_partial_update_contract"
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------

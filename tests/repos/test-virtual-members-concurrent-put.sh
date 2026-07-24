@@ -73,6 +73,13 @@
 #
 # KNOWN GAP / TRACKING ISSUE
 # --------------------------
+# CONTRACT SUPERSEDED: everything below assumes the pre-#2795 partial-update
+# PUT semantics. Backend PR artifact-keeper#2795 changed PUT /:key/members to
+# full-set replace, which invalidates these invariants (see the contract gate
+# near begin_suite). The suite is gated off on current backends pending the
+# replace-semantics decision in artifact-keeper#2899; the notes below are
+# retained as the historical rationale for the partial-update assertions.
+#
 # Once the backend wraps the loop in a single transaction, a stronger
 # assertion becomes meaningful: the final state across A, B, C should
 # match exactly one writer's payload semantics for the contested rows.
@@ -94,6 +101,50 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "virtual-members-concurrent-put"
 auth_admin
 setup_workdir
+
+# ---------------------------------------------------------------------------
+# Contract gate (artifact-keeper#2899).
+#
+# This suite was written against the PRE-#2795 PARTIAL-UPDATE PUT semantics:
+# PUT /:key/members updated priorities on the listed existing members and left
+# unlisted members untouched. That is what makes the race meaningful (two
+# writers touch an overlapping member set) and what every invariant below
+# assumes: V keeps all 3 members, the uncontested rows A=10 and C=300 survive,
+# and the per-iteration reset PUT sets only row B without dropping A and C.
+#
+# Backend PR artifact-keeper#2795 changed PUT /:key/members to FULL-SET REPLACE:
+# the request body becomes the complete member set. Under replace, writer 1's
+# {A,B} body drops C, writer 2's {B,C} body drops A, and the reset-B-only setup
+# PUT would drop A and C entirely, so none of these invariants hold and the race
+# harness itself is invalid. The correct replace-semantics assertions (and
+# whether the update loop should be atomic at all) are the subject of the
+# semantics decision tracked in artifact-keeper#2899.
+#
+# Gate the whole suite behind virtual_member_partial_update_contract, a flag
+# that is enabled ONLY for 1.1.x / 1.2.x-era backends (see feature-flags.sh:
+# it lives in the 1.1.x and 1.2.x bundles, NOT main). The release-gate workflow
+# derives AK_BACKEND_BRANCH from the backend tag: a 1.1.x tag maps to
+# release/1.1.x, a 1.2.x tag to release/1.2.x, and EVERYTHING ELSE (every 1.3+
+# tag, including 1.6.3) maps to 'main'. main-bundle backends already have the
+# #2795 replace semantics, so the flag is absent there and this suite auto-skips
+# on all current gates, running only against 1.1.x / 1.2.x-era backends where
+# the partial-update contract actually held.
+#
+# (virtual_member_strict_contract, used by the sibling shape-assertion test, is
+# the WRONG flag here: it is additive/present-from-1.2.0-onward, so it is
+# enabled on main and would let this suite run its obsolete assertions and fail.)
+#
+# The 5xx / non-200 checks are not cleanly separable from the partial-update
+# reset+race harness, so the entire suite is gated rather than a subset of it.
+# The replacement assertions for replace semantics are pending
+# artifact-keeper#2899.
+begin_test "Backend supports the partial-update virtual-member contract"
+if require_feature "virtual_member_partial_update_contract"; then
+  pass
+else
+  end_suite
+  exit 0
+fi
 
 LOCAL_A="test-vmcp-a-${RUN_ID}"
 LOCAL_B="test-vmcp-b-${RUN_ID}"
