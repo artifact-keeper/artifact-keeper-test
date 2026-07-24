@@ -263,6 +263,19 @@ _feature_min_version() {
     # only run against a 1.2.0+ backend and stay out of the in-flight
     # 1.1.9 release-gate. Tracks artifact-keeper-test#92, #93, #94, #95.
     "virtual_member_strict_contract") echo "1.2.0" ;;
+    # virtual_member_partial_update_contract: the PRE-#2795 partial-update
+    # PUT /:key/members contract (update listed members in place, leave others
+    # untouched). This is an UPPER-bounded contract, removed when full-set
+    # replace landed (artifact-keeper#2795, on the 1.3.0 line), so it is present
+    # ONLY on 1.1.x / 1.2.x-era backends. It is authoritatively gated by the
+    # branch-aware AK_FEATURES layer (feature-flags.sh: in the 1.1.x/1.2.x
+    # bundles, NOT main). The min-version probe model here cannot express an
+    # upper bound, so on the local-dev fallback path (AK_FEATURES unset) we use
+    # an unreachable sentinel to conservatively SKIP on modern backends rather
+    # than run obsolete assertions; set AK_FEATURES to force a run against a
+    # genuine 1.1.x/1.2.x backend. Gates
+    # tests/repos/test-virtual-members-concurrent-put.sh (artifact-keeper#2899).
+    "virtual_member_partial_update_contract") echo "99.0.0" ;;
     # Auth/Epic-11 features. Targeted for v1.1.9 because security-flavoured
     # work (rotation + token revocation on deactivate) is likely to land on
     # the release/1.1.x maintenance branch as a backport rather than wait

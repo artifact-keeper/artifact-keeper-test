@@ -120,14 +120,26 @@ setup_workdir
 # whether the update loop should be atomic at all) are the subject of the
 # semantics decision tracked in artifact-keeper#2899.
 #
-# Gate the whole suite behind virtual_member_strict_contract, matching the
-# sibling tests/repos/test-virtual-repo-member-bulk-update.sh, so it auto-skips
-# on current backends until #2899 lands and the assertions can be rewritten for
-# replace semantics. The 5xx / non-200 checks are not cleanly separable from the
-# partial-update reset+race harness, so the entire suite is gated rather than a
-# subset of it.
+# Gate the whole suite behind virtual_member_partial_update_contract, a flag
+# that is enabled ONLY for 1.1.x / 1.2.x-era backends (see feature-flags.sh:
+# it lives in the 1.1.x and 1.2.x bundles, NOT main). The release-gate workflow
+# derives AK_BACKEND_BRANCH from the backend tag: a 1.1.x tag maps to
+# release/1.1.x, a 1.2.x tag to release/1.2.x, and EVERYTHING ELSE (every 1.3+
+# tag, including 1.6.3) maps to 'main'. main-bundle backends already have the
+# #2795 replace semantics, so the flag is absent there and this suite auto-skips
+# on all current gates, running only against 1.1.x / 1.2.x-era backends where
+# the partial-update contract actually held.
+#
+# (virtual_member_strict_contract, used by the sibling shape-assertion test, is
+# the WRONG flag here: it is additive/present-from-1.2.0-onward, so it is
+# enabled on main and would let this suite run its obsolete assertions and fail.)
+#
+# The 5xx / non-200 checks are not cleanly separable from the partial-update
+# reset+race harness, so the entire suite is gated rather than a subset of it.
+# The replacement assertions for replace semantics are pending
+# artifact-keeper#2899.
 begin_test "Backend supports the partial-update virtual-member contract"
-if require_feature "virtual_member_strict_contract"; then
+if require_feature "virtual_member_partial_update_contract"; then
   pass
 else
   end_suite
