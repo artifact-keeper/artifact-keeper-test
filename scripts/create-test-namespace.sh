@@ -8,7 +8,12 @@
 # and waits for the backend to become healthy.
 #
 # Environment variables:
-#   GHCR_DOCKER_CONFIG     - Base64-encoded Docker config for ghcr.io pull secret
+#   GHCR_DOCKER_CONFIG       - Base64-encoded Docker config for ghcr.io pull secret
+#   SCANNER_TRIVY_PULL_TOKEN - Optional. When set (and --full-stack), injected as
+#                              scannerAdapter.env.TRIVY_USERNAME/TRIVY_PASSWORD via
+#                              helm --set-string so the scanner-adapter's in-process
+#                              Trivy authenticates its ghcr vuln-DB pull (#293).
+#                              Never written to a values file.
 
 set -euo pipefail
 
@@ -136,6 +141,25 @@ HELM_CMD=(helm upgrade --install "$RELEASE_NAME" "$CHART_DIR"
 
 if [ -n "$EXTRA_VALUES" ]; then
   HELM_CMD+=(--values "${REPO_ROOT}/${EXTRA_VALUES}")
+fi
+
+# Authenticated Trivy DB pull for the scanner-adapter (artifact-keeper-test#293).
+# The scanner-adapter's in-process Trivy pulls its vuln DB from ghcr; when the
+# Trivy SERVER has already pulled anonymously from the same ghcr endpoint, ghcr
+# denies the adapter's anonymous token, so the adapter needs its own
+# credentials. The token is injected here from the environment (SCANNER_TRIVY_-
+# PULL_TOKEN, set by the workflow) and NEVER stored in a values file. helm
+# --set deep-merges per key with the -f values file, and the chart's
+# scanner-adapter-deployment.yaml ranges over the whole scannerAdapter.env map,
+# so the TRIVY_DB_REPOSITORY / SCANNER_TRIVY_INSECURE keys already in
+# values-test-full.yaml survive. --set-string forces the token to a string and
+# is appended last so it wins over any values-file key. Other callers that do
+# not set the token env simply get no injection (no-op).
+if [ -n "${SCANNER_TRIVY_PULL_TOKEN:-}" ]; then
+  HELM_CMD+=(
+    --set-string scannerAdapter.env.TRIVY_USERNAME=x-access-token
+    --set-string "scannerAdapter.env.TRIVY_PASSWORD=${SCANNER_TRIVY_PULL_TOKEN}"
+  )
 fi
 
 "${HELM_CMD[@]}"

@@ -442,6 +442,15 @@ jobs:
           BACKEND_TAG: ${{ inputs.backend_tag }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
           WEB_TAG: ${{ inputs.web_tag }}
+          # Authenticated Trivy DB pull for the scanner-adapter (#293). ghcr
+          # denies the adapter's anonymous registry token for the trivy-db pull
+          # once the Trivy server has already pulled anonymously from the same
+          # ghcr endpoint, so give the adapter's in-process Trivy its own
+          # credentials. The workflow's automatic GITHUB_TOKEN authenticates the
+          # (public) ghcr pull; create-test-namespace.sh injects it as
+          # scannerAdapter.env.TRIVY_USERNAME/TRIVY_PASSWORD via helm
+          # --set-string (never a values file). GitHub masks the token in logs.
+          SCANNER_TRIVY_PULL_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/create-test-namespace.sh
           # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
