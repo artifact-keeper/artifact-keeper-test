@@ -205,10 +205,11 @@ else
 fi
 
 # Load-bearing dedup assertion: byte-identical artifacts get DISTINCT scan ids
-# by design. The checksum-dedup path copies scan A's results into a new row for
-# artifact B flagged is_reused=true with source_scan_id == scan A's id. We
-# assert that reuse linkage on B's completed scan row rather than id equality.
-begin_test "Second scan on identical bytes is flagged reused from scan A"
+# by design. The checksum-dedup path copies A's results into a new row for
+# artifact B flagged is_reused=true with source_scan_id pointing at the matching
+# A scan. We assert that reuse linkage on B's completed scan row rather than id
+# equality.
+begin_test "Second scan on identical bytes is flagged reused from one of scan A's scans"
 if ! $SCANNER_AVAILABLE; then
   skip "scanner unavailable"
 elif [ -z "$ARTIFACT_B_ID" ] || [ -z "$SCAN_A_ID" ]; then
@@ -218,20 +219,34 @@ else
   if [ -z "$SCAN_B_ID" ]; then
     fail "scan B did not reach terminal state within ${SCAN_TIMEOUT}s on identical bytes"
   else
-    # Fetch B's scan rows and look for a completed/clean row that is flagged
-    # is_reused=true AND whose source_scan_id points back at scan A.
+    # Capture the full SET of A's completed/clean scan ids, not just SCAN_A_ID.
+    # With several scanners live (dependency, grype, trivy-fs, ...) artifact A
+    # has one completed row per scan_type and their completion order is
+    # nondeterministic, so SCAN_A_ID (trigger_and_wait's arbitrary .items[0])
+    # is only ONE of them. Cross-artifact dedup links PER scan_type -- B's
+    # reused dependency scan points at A's dependency scan specifically, which
+    # may not be the row SCAN_A_ID happened to capture -- so B's source_scan_id
+    # must be checked for membership in A's whole completed-id set, not equality
+    # with a single id. See artifact-keeper-test#291.
+    a_scans=$(api_get "/api/v1/security/artifacts/${ARTIFACT_A_ID}/scans" 2>/dev/null || true)
+    a_completed_ids=$(echo "$a_scans" | jq -c '
+      [ .items[]? | select((.status // "" | ascii_downcase) as $s
+        | $s == "completed" or $s == "clean") | .id ]' 2>/dev/null || echo "[]")
+    # B must have a completed/clean row flagged is_reused=true whose
+    # source_scan_id is one of A's completed scan ids.
     b_scans=$(api_get "/api/v1/security/artifacts/${ARTIFACT_B_ID}/scans" 2>/dev/null || true)
-    reuse_match=$(echo "$b_scans" | jq -r --arg src "$SCAN_A_ID" '
+    reuse_match=$(echo "$b_scans" | jq -r --argjson aset "$a_completed_ids" '
       [ .items[]?
         | select((.status // "" | ascii_downcase) as $s
                  | $s == "completed" or $s == "clean")
-        | select((.is_reused == true) and ((.source_scan_id // "") == $src)) ]
+        | select(.is_reused == true)
+        | select(.source_scan_id as $ssid | ($aset | index($ssid)) != null) ]
       | length' 2>/dev/null || echo "0")
     if [ "${reuse_match:-0}" -ge 1 ] 2>/dev/null; then
-      echo "  scan B id=${SCAN_B_ID} reused from scan A id=${SCAN_A_ID} (is_reused=true, source_scan_id=${SCAN_A_ID})"
+      echo "  scan B id=${SCAN_B_ID} reused from one of A's completed scans (is_reused=true, source_scan_id in ${a_completed_ids})"
       pass
     else
-      fail "expected artifact B to have a completed scan flagged is_reused=true with source_scan_id=${SCAN_A_ID} (dedup did not link back to scan A)" \
+      fail "expected artifact B to have a completed scan flagged is_reused=true whose source_scan_id is one of A's completed scan ids ${a_completed_ids} (dedup did not link back to scan A)" \
         "$(echo "$b_scans" | jq -c '(.items // []) | map({id,scan_type,status,is_reused,source_scan_id})')"
     fi
   fi
