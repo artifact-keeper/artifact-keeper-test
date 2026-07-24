@@ -125,8 +125,12 @@ begin_test "Download conda package"
 DL_URL="${CONDA_URL}/${SUBDIR}/${CONDA_FILENAME}"
 DL_FILE="${WORK_DIR}/downloaded.tar.bz2"
 if curl -sf -H "$(format_auth_header)" -o "$DL_FILE" "$DL_URL"; then
-  # Verify it is a valid bzip2 file
-  if file "$DL_FILE" | grep -qi "bzip2\|bz2"; then
+  # Verify it is a valid bzip2 file. Use `bzip2 -t` (integrity test) rather than
+  # `file`: the gate runner image does not ship the `file` utility, so the old
+  # `file ... | grep bzip2` check errored out and mis-reported a valid download.
+  # bzip2 is provably present (the fixture is built with `tar cjf`). See
+  # artifact-keeper-test#294.
+  if bzip2 -t "$DL_FILE"; then
     pass
   else
     fail "downloaded file is not a valid bzip2 archive"
