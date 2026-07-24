@@ -244,6 +244,24 @@ trivy:
       cpu: "1"
       memory: 2Gi
 
+# Container-image scans run in the scanner-adapter's in-process Trivy, which
+# does NOT read the trivy.db.* server settings above (#281 fixed only the Trivy
+# server, used for filesystem/SBOM scans). Point the adapter's own Trivy at the
+# anonymous ghcr DB so image scans do not hit the rate-limited mirror.gcr.io.
+#
+# The chart's scanner-adapter-deployment.yaml renders these with
+# `range $key, $value := .Values.scannerAdapter.env`, i.e. it iterates the
+# whole map, and Helm deep-merges this override into the chart's default
+# scannerAdapter.env per key. The chart default sets SCANNER_TRIVY_INSECURE:
+# "true" (the adapter reaches the AK registry over the plain-HTTP in-cluster
+# Service); it would survive the merge on its own, but we replicate it here so
+# the override is self-describing. TRIVY_DB_REPOSITORY is the additive key.
+# See artifact-keeper-test#285.
+scannerAdapter:
+  env:
+    TRIVY_DB_REPOSITORY: "ghcr.io/aquasecurity/trivy-db"
+    SCANNER_TRIVY_INSECURE: "true"
+
 secrets:
   jwtSecret: "ak-ci-nonprod-q7z6wharZXoYYW3BI1ZPSdbMDyXrXS6DiCajP8IPCHg4Bjgb"
 
