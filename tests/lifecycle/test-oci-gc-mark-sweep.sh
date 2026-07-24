@@ -86,7 +86,9 @@ blob_status() {
 }
 
 # Push a config blob + a layer blob, then a manifest referencing them. Echoes
-# the manifest PUT status. Globals set: LAYER_DIGEST (of the given layer file).
+# the manifest PUT status. Runs in a command-substitution subshell at every
+# call site, so it exports nothing to the parent; callers recompute the layer
+# digest themselves with the same formula used below.
 push_image() {
   local image="$1" layer_file="$2" tag="$3"
   local cfg='{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}'
@@ -97,7 +99,6 @@ push_image() {
   cfg_size=$(wc -c < "$cfg_file" | tr -d ' ')
   layer_digest="sha256:$(shasum -a 256 "$layer_file" | awk '{print $1}')"
   layer_size=$(wc -c < "$layer_file" | tr -d ' ')
-  LAYER_DIGEST="$layer_digest"
 
   push_blob "$image" "$cfg_file" "$cfg_digest" >/dev/null
   push_blob "$image" "$layer_file" "$layer_digest" >/dev/null
@@ -146,7 +147,10 @@ printf 'gc-layer-b2-%s\n' "$RUN_ID" > "${WORK_DIR}/layer-b2.bin"
 
 begin_test "Push image A (layer B1)"
 st=$(push_image "$IMG_A" "${WORK_DIR}/layer-b1.bin" "$TAG")
-B1_DIGEST="$LAYER_DIGEST"
+# push_image runs in a command-substitution subshell, so the LAYER_DIGEST it
+# sets never reaches this parent shell. Recompute B1's digest here in the
+# parent using the same formula push_image uses, so it is defined under set -u.
+B1_DIGEST="sha256:$(shasum -a 256 "${WORK_DIR}/layer-b1.bin" | awk '{print $1}')"
 if [ "$st" = "201" ] || [ "$st" = "200" ]; then
   pass
 else
@@ -158,7 +162,8 @@ fi
 
 begin_test "Push image B (layer B2, stays referenced)"
 st=$(push_image "$IMG_B" "${WORK_DIR}/layer-b2.bin" "$TAG")
-B2_DIGEST="$LAYER_DIGEST"
+# Same subshell caveat as B1: recompute B2's digest in the parent shell.
+B2_DIGEST="sha256:$(shasum -a 256 "${WORK_DIR}/layer-b2.bin" | awk '{print $1}')"
 if [ "$st" = "201" ] || [ "$st" = "200" ]; then
   pass
 else
