@@ -223,15 +223,21 @@ trivy:
   image:
     repository: aquasec/trivy
     tag: "0.62.1"
-  # Vulnerability DB: pull from ghcr.io/aquasecurity/trivy-db (anonymous) and
-  # pre-seed it with an init container so the DB is present before the server
-  # accepts scans. The gate cluster's anonymous mirror.gcr.io pulls returned
-  # UNAUTHORIZED; ghcr anonymous is the reliably-reachable source per the chart
-  # values comments. repository + preseed together is the chart's documented
+  # Vulnerability DB: pull from the org mirror ghcr.io/artifact-keeper/trivy-db
+  # and pre-seed it with an init container so the DB is present before the
+  # server accepts scans. Upstream ghcr.io/aquasecurity/trivy-db proved
+  # unreliable from the gate cluster: anonymous pulls hit rate-limit denials
+  # once two components (the Trivy server and the scanner-adapter) both pull,
+  # and authenticating with GITHUB_TOKEN did not help because ghcr's token
+  # exchange denies an artifact-keeper token for another org's package
+  # (aquasecurity), which is what failed on attempts 4-6. The org mirror is
+  # org-controlled and public; its refresh automation is tracked in
+  # arc-runners#7. repository + preseed together is the chart's documented
   # "make the fetch reliable" combination. The Java DB (javaRepository) is left
   # empty so Trivy uses its built-in ghcr default. skipUpdate stays false.
+  # See artifact-keeper-test#300.
   db:
-    repository: ghcr.io/aquasecurity/trivy-db
+    repository: ghcr.io/artifact-keeper/trivy-db
     preseed:
       enabled: true
   persistence:
@@ -247,7 +253,15 @@ trivy:
 # Container-image scans run in the scanner-adapter's in-process Trivy, which
 # does NOT read the trivy.db.* server settings above (#281 fixed only the Trivy
 # server, used for filesystem/SBOM scans). Point the adapter's own Trivy at the
-# anonymous ghcr DB so image scans do not hit the rate-limited mirror.gcr.io.
+# org mirror ghcr.io/artifact-keeper/trivy-db so image scans do not hit the
+# rate-limited mirror.gcr.io or the unreliable upstream aquasecurity DB.
+# Upstream ghcr.io/aquasecurity/trivy-db proved unreliable from the gate
+# cluster: anonymous pulls hit rate-limit denials once both the Trivy server
+# and this adapter pull, and GITHUB_TOKEN was denied by ghcr's token exchange
+# for another org's package (attempts 4-6). The mirror is org-controlled and
+# public; its refresh automation is tracked in arc-runners#7. The #293 workflow
+# token injection (scannerAdapter.env.TRIVY_USERNAME/TRIVY_PASSWORD via helm
+# --set) is left in place: it is harmless and valid for a same-org package.
 #
 # The chart's scanner-adapter-deployment.yaml renders these with
 # `range $key, $value := .Values.scannerAdapter.env`, i.e. it iterates the
@@ -256,10 +270,10 @@ trivy:
 # "true" (the adapter reaches the AK registry over the plain-HTTP in-cluster
 # Service); it would survive the merge on its own, but we replicate it here so
 # the override is self-describing. TRIVY_DB_REPOSITORY is the additive key.
-# See artifact-keeper-test#285.
+# See artifact-keeper-test#300 (mirror switch) and #285 (original override).
 scannerAdapter:
   env:
-    TRIVY_DB_REPOSITORY: "ghcr.io/aquasecurity/trivy-db"
+    TRIVY_DB_REPOSITORY: "ghcr.io/artifact-keeper/trivy-db"
     SCANNER_TRIVY_INSECURE: "true"
 
 secrets:
