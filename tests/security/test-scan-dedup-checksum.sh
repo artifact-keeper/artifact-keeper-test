@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # test-scan-dedup-checksum.sh -- Scan reuse via checksum dedup
 #
-# Covers Epic 2 sub-task 2.4 (artifact-keeper-test#67), the parts the gate
-# CAN observe today. The `is_reused` boolean is deferred to v1.2.0
-# (artifact-keeper#907); without it, the test focuses on the load-bearing
-# storage contract:
+# Covers Epic 2 sub-task 2.4 (artifact-keeper-test#67). The load-bearing
+# cross-artifact dedup contract:
 #
-#   Two uploads of byte-identical artifacts MUST share a single scan_results
-#   row. A second upload + scan-trigger MUST NOT add a duplicate
-#   completed scan for the same content hash. The find_reusable_scan
-#   short-circuit returns the prior scan id, and the per-artifact scan
-#   list reflects the SAME id across both artifacts.
+#   Two byte-identical artifacts get DISTINCT scan ids by design. When the
+#   second artifact is scanned, the checksum-dedup path copies the prior
+#   scan's results into a NEW scan row flagged is_reused=true with
+#   source_scan_id pointing at the first artifact's scan. We therefore assert
+#   the reuse linkage (is_reused=true, source_scan_id == scan A's id) rather
+#   than id equality across the two artifacts. The is_reused boolean shipped
+#   in v1.2.0 (artifact-keeper#907), so it is now asserted directly.
 #
 # What this test does NOT assert (deferred)
-#   - is_reused == true on the second scan response (artifact-keeper#907)
 #   - scanner_version on either row (artifact-keeper#902)
 #   - scan_result_id pinning (artifact-keeper#906)
 #
@@ -205,10 +204,11 @@ else
   fail "checksums differ: A=${ARTIFACT_A_SHA} B=${ARTIFACT_B_SHA} (fixture was not deterministic)"
 fi
 
-# Load-bearing dedup assertion: second scan trigger MUST resolve to the SAME
-# scan_id as the first. The find_reusable_scan path short-circuits to the
-# prior row instead of creating a new scan_results entry.
-begin_test "Second scan on identical bytes returns same scan_id (no duplicate row)"
+# Load-bearing dedup assertion: byte-identical artifacts get DISTINCT scan ids
+# by design. The checksum-dedup path copies scan A's results into a new row for
+# artifact B flagged is_reused=true with source_scan_id == scan A's id. We
+# assert that reuse linkage on B's completed scan row rather than id equality.
+begin_test "Second scan on identical bytes is flagged reused from scan A"
 if ! $SCANNER_AVAILABLE; then
   skip "scanner unavailable"
 elif [ -z "$ARTIFACT_B_ID" ] || [ -z "$SCAN_A_ID" ]; then
@@ -217,11 +217,23 @@ else
   SCAN_B_ID=$(trigger_and_wait "$ARTIFACT_B_ID")
   if [ -z "$SCAN_B_ID" ]; then
     fail "scan B did not reach terminal state within ${SCAN_TIMEOUT}s on identical bytes"
-  elif [ "$SCAN_A_ID" = "$SCAN_B_ID" ]; then
-    echo "  reused scan id=${SCAN_A_ID} across artifacts ${ARTIFACT_A_ID} and ${ARTIFACT_B_ID}"
-    pass
   else
-    fail "dedup bypassed: scan A id=${SCAN_A_ID} but scan B id=${SCAN_B_ID} for byte-identical artifacts (find_reusable_scan did not short-circuit)"
+    # Fetch B's scan rows and look for a completed/clean row that is flagged
+    # is_reused=true AND whose source_scan_id points back at scan A.
+    b_scans=$(api_get "/api/v1/security/artifacts/${ARTIFACT_B_ID}/scans" 2>/dev/null || true)
+    reuse_match=$(echo "$b_scans" | jq -r --arg src "$SCAN_A_ID" '
+      [ .items[]?
+        | select((.status // "" | ascii_downcase) as $s
+                 | $s == "completed" or $s == "clean")
+        | select((.is_reused == true) and ((.source_scan_id // "") == $src)) ]
+      | length' 2>/dev/null || echo "0")
+    if [ "${reuse_match:-0}" -ge 1 ] 2>/dev/null; then
+      echo "  scan B id=${SCAN_B_ID} reused from scan A id=${SCAN_A_ID} (is_reused=true, source_scan_id=${SCAN_A_ID})"
+      pass
+    else
+      fail "expected artifact B to have a completed scan flagged is_reused=true with source_scan_id=${SCAN_A_ID} (dedup did not link back to scan A)" \
+        "$(echo "$b_scans" | jq -c '(.items // []) | map({id,scan_type,status,is_reused,source_scan_id})')"
+    fi
   fi
 fi
 
