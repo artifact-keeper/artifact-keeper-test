@@ -158,6 +158,54 @@ BACKEND_SVC="http://artifact-keeper-backend.${NAMESPACE}.svc.cluster.local:8080"
 echo "Waiting for backend to become healthy..."
 "${REPO_ROOT}/tests/lib/wait-for-ready.sh" "$BACKEND_SVC" 120
 
+# ---------------------------------------------------------------------------
+# Pre-seed the scanner-adapter's Trivy vulnerability DB (artifact-keeper-test#306)
+#
+# ghcr throttles the cluster's ANONYMOUS token allowance during the deploy
+# image-pull burst, so the scanner-adapter's first DB pull can fail with
+# "DENIED: invalid token" even though the identical anonymous pull from the
+# public org mirror ghcr.io/artifact-keeper/trivy-db succeeds once the burst
+# subsides (verified inside the adapter image on the cluster: ~102MB in ~6s,
+# anonymous, from the mirror). Rather than let a scan fail later, pull the DB
+# now with retries into the pod's emptyDir cache, so scan-time trivy never
+# touches the network.
+#
+# This lands where scans look: the adapter reads its cache dir from
+# SCANNER_TRIVY_CACHE_DIR (default /home/scanner/.cache/trivy) and runs every
+# scan with `--cache-dir <that dir>` (backend docker/scanner-adapter/config.go:69
+# + scan.go:67/328); the download below uses the same env/default and the same
+# `image --download-db-only` form as the adapter's own DownloadDB (scan.go:206).
+# TRIVY_DB_REPOSITORY is read from the pod env (set from values-test-full.yaml)
+# with the mirror as a hardcoded fallback; trivy honours that env natively. No
+# credentials are involved: the mirror is public and pulled anonymously.
+# ---------------------------------------------------------------------------
+if [ "$FULL_STACK" = true ]; then
+  echo "Pre-seeding scanner-adapter Trivy vulnerability DB..."
+  ADAPTER_POD=$(kubectl -n "$NAMESPACE" get pods \
+    -l app.kubernetes.io/component=scanner-adapter \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [ -z "$ADAPTER_POD" ]; then
+    echo "ERROR: no scanner-adapter pod found (label app.kubernetes.io/component=scanner-adapter) in namespace ${NAMESPACE}" >&2
+    exit 1
+  fi
+  db_seeded=false
+  for attempt in $(seq 1 10); do
+    echo "  Trivy DB preseed attempt ${attempt}/10 (pod ${ADAPTER_POD})..."
+    if kubectl -n "$NAMESPACE" exec "$ADAPTER_POD" -- sh -c \
+        'TRIVY_DB_REPOSITORY="${TRIVY_DB_REPOSITORY:-ghcr.io/artifact-keeper/trivy-db}" trivy image --download-db-only --cache-dir "${SCANNER_TRIVY_CACHE_DIR:-/home/scanner/.cache/trivy}"'; then
+      db_seeded=true
+      echo "  Trivy DB preseed succeeded on attempt ${attempt}/10"
+      break
+    fi
+    echo "  attempt ${attempt}/10 failed (likely ghcr anonymous-token throttling during the deploy pull burst); retrying in 30s"
+    sleep 30
+  done
+  if [ "$db_seeded" != true ]; then
+    echo "ERROR: scanner-adapter Trivy DB preseed failed after 10 attempts; ghcr anonymous-token throttling did not clear within ~5m. Image scans will fail without a cached DB. See artifact-keeper-test#306." >&2
+    exit 1
+  fi
+fi
+
 echo ""
 echo "Test environment ready."
 echo "BACKEND_URL=${BACKEND_SVC}"
