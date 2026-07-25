@@ -89,19 +89,30 @@ concurrency:
 
 jobs:
   # -------------------------------------------------------------------
-  # Fixture A: Trivy scaled to zero -> the required image scanner is ABSENT.
+  # Fixture A: the container-image Trivy scanner is ABSENT.
   #
-  # Deploy the full stack (Trivy + Grype) but override trivy.replicaCount=0 so
-  # the Trivy pod is unschedulable. A scan of the vulnerable canary then fans
-  # out to Grype only: the scan_type=image (Trivy) row is never produced.
+  # MECHANISM (artifact-keeper-test#312): the scan_type=image (container Trivy)
+  # scan does NOT run in the Trivy SERVER deployment; it executes in the
+  # scanner-adapter (backend image_scanner.rs talks to the Harbor scanner-
+  # adapter). The old form of this fixture set trivy.replicaCount=0, which no
+  # longer removes the image scanner (#288/#301/#307/#310 moved image scans into
+  # the adapter), so the gate correctly completed image scans and rightly
+  # refused to fail -- tripping EXPECT_FAILURE=1. We now deploy the full stack
+  # normally (the adapter must be up so create-test-namespace.sh's #307 DB
+  # preseed can exec into it) and then scale the scanner-adapter to zero, so the
+  # backend can no longer produce a completed scan_type=image row.
   #
-  # The gate's REQUIRED-SCANNER PRESENCE assertion (default REQUIRED_IMAGE_
-  # SCANNERS="image grype") MUST fail because `image` produced no completed
-  # row -- even though Grype found dozens of CVEs. EXPECT_FAILURE=1 inverts the
-  # exit code so this job reports green when the gate correctly rejects the
-  # broken backend, and red if the gate went soft on an absent scanner.
+  # grype still runs (the backend spawns the grype binary in-process, so it is
+  # unaffected by the adapter), so the gate's REQUIRED-SCANNER PRESENCE
+  # assertion (default REQUIRED_IMAGE_SCANNERS="image grype") fails specifically
+  # on the absent `image` scanner -- even though grype found dozens of CVEs.
+  # EXPECT_FAILURE=1 inverts the exit code so this job reports green when the
+  # gate correctly rejects the broken backend, and red if the gate went soft on
+  # an absent scanner.
   # -------------------------------------------------------------------
   pin-gate-fails-on-trivy-zero:
+    # Check name kept stable (branch-protection reference); the mechanism is now
+    # "scanner-adapter scaled to zero", see the comment block above and #312.
     name: Gate must reject Trivy scaled to zero (fixture A)
     runs-on: ak-e2e-runners
     timeout-minutes: 15
@@ -126,45 +137,50 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
-      - name: Deploy backend with trivy.replicaCount=0
+      - name: Deploy full stack (adapter up so the DB preseed can run)
         id: deploy
         run: |
-          RUN_ID="self-trivy-zero-${{ github.run_id }}-${{ github.run_attempt }}"
+          RUN_ID="self-adapter-zero-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
           chmod +x scripts/create-test-namespace.sh
-          # --full-stack normally enables Trivy. Override the replica
-          # count to zero via a fixture-only values file so the chart
-          # still installs but the scanner pod is unschedulable. The
-          # backend's scan then never produces a scan_type=image row.
+          # Deploy the full stack normally. The scanner-adapter MUST be running
+          # at deploy time so create-test-namespace.sh's Trivy DB preseed (#307),
+          # which execs into the adapter pod, can complete -- otherwise the
+          # deploy fails before the fixture can do its work. We remove the image
+          # scanner in a SEPARATE step below, AFTER the deploy finishes.
           #
-          # The values file path is relative-to-repo-root because
-          # create-test-namespace.sh prepends REPO_ROOT to --values.
-          mkdir -p helm/.self-test-fixtures
-          cat > helm/.self-test-fixtures/values-trivy-zero.yaml <<'YAML'
-          trivy:
-            enabled: true
-            replicaCount: 0
-          YAML
-          # Target the rolling dev tag on PRs / main. The self-test is
-          # checking gate semantics, not release-image integrity; using
-          # :dev means we exercise the latest backend behavior. If a
-          # specific tag's gate semantics need pinning later, this can
-          # become a workflow_dispatch input.
+          # Target the rolling dev tag on PRs / main. The self-test is checking
+          # gate semantics, not release-image integrity; :dev exercises the
+          # latest backend behavior.
           ./scripts/create-test-namespace.sh \
             --run-id "${RUN_ID}" \
             --backend-tag "dev" \
             --web-tag "dev" \
-            --full-stack \
-            --values helm/.self-test-fixtures/values-trivy-zero.yaml
+            --full-stack
           echo "namespace=test-${RUN_ID}" >> "$GITHUB_OUTPUT"
           echo "backend_url=http://artifact-keeper-backend.test-${RUN_ID}.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for backend ready (Trivy is intentionally absent)
+      - name: Wait for backend ready
         run: |
           chmod +x tests/lib/wait-for-ready.sh
           ./tests/lib/wait-for-ready.sh "${{ steps.deploy.outputs.backend_url }}" 300
 
-      - name: Run image efficacy gate against Trivy-zero fixture; expect failure
+      - name: Remove the image scanner (scale scanner-adapter to zero)
+        run: |
+          NS="${{ steps.deploy.outputs.namespace }}"
+          # The container-image Trivy scan (scan_type=image) executes in the
+          # scanner-adapter, not the Trivy server. Scale the adapter to zero so
+          # the backend can no longer produce a completed scan_type=image row.
+          # This runs AFTER the deploy (and its #307 DB preseed, which needs the
+          # adapter pod) has finished. See artifact-keeper-test#312.
+          kubectl -n "$NS" scale deployment \
+            -l app.kubernetes.io/component=scanner-adapter --replicas=0
+          # Wait for the adapter pods to terminate so the canary scan cannot
+          # race a still-Running pod. Tolerate "no resources" once they are gone.
+          kubectl -n "$NS" wait --for=delete pod \
+            -l app.kubernetes.io/component=scanner-adapter --timeout=120s || true
+
+      - name: Run image efficacy gate against adapter-down fixture; expect failure
         env:
           BASE_URL: ${{ steps.deploy.outputs.backend_url }}
           RUN_ID: ${{ steps.deploy.outputs.run_id }}
@@ -172,10 +188,11 @@ jobs:
           mkdir -p "$JUNIT_OUTPUT_DIR"
           chmod +x tests/release-gate/test-pinned-cve-image.sh
           # EXPECT_FAILURE=1 in env. end_suite() reads it and inverts the
-          # exit code. With Trivy scaled to zero the scan_type=image row is
-          # absent, so the gate's required-scanner PRESENCE assertion fails
-          # and this script exits 0 (gate rejected the broken backend, as
-          # expected). If the gate went soft on an absent scanner, it exits 1.
+          # exit code. With the scanner-adapter scaled to zero the scan_type=
+          # image row is absent, so the gate's required-scanner PRESENCE
+          # assertion fails and this script exits 0 (gate rejected the broken
+          # backend, as expected). If the gate went soft on an absent scanner,
+          # it exits 1.
           ./tests/release-gate/test-pinned-cve-image.sh
 
       - name: Capture scanner diagnostics
@@ -183,10 +200,12 @@ jobs:
         run: |
           NS="${{ steps.deploy.outputs.namespace }}"
           mkdir -p /tmp/test-logs
-          kubectl -n "$NS" get pods > /tmp/test-logs/pods-trivy-zero.txt 2>&1 || true
-          kubectl -n "$NS" describe deploy trivy > /tmp/test-logs/describe-trivy-zero.txt 2>&1 || true
+          kubectl -n "$NS" get pods > /tmp/test-logs/pods-adapter-zero.txt 2>&1 || true
+          kubectl -n "$NS" describe deployment \
+            -l app.kubernetes.io/component=scanner-adapter \
+            > /tmp/test-logs/describe-adapter-zero.txt 2>&1 || true
           kubectl -n "$NS" logs -l app=artifact-keeper-backend \
-            --tail=500 > /tmp/test-logs/backend-trivy-zero.log 2>&1 || true
+            --tail=500 > /tmp/test-logs/backend-adapter-zero.log 2>&1 || true
 
       - name: Teardown
         if: always()
