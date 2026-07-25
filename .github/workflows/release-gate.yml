@@ -442,15 +442,14 @@ jobs:
           BACKEND_TAG: ${{ inputs.backend_tag }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
           WEB_TAG: ${{ inputs.web_tag }}
-          # Authenticated Trivy DB pull for the scanner-adapter (#293). ghcr
-          # denies the adapter's anonymous registry token for the trivy-db pull
-          # once the Trivy server has already pulled anonymously from the same
-          # ghcr endpoint, so give the adapter's in-process Trivy its own
-          # credentials. The workflow's automatic GITHUB_TOKEN authenticates the
-          # (public) ghcr pull; create-test-namespace.sh injects it as
-          # scannerAdapter.env.TRIVY_USERNAME/TRIVY_PASSWORD via helm
-          # --set-string (never a values file). GitHub masks the token in logs.
-          SCANNER_TRIVY_PULL_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No Trivy DB pull token is injected here. #298 passed the deploy job's
+          # automatic GITHUB_TOKEN as SCANNER_TRIVY_PULL_TOKEN, but that token
+          # has a ~1h TTL and expires before late gate jobs (pinned-cve-image-gate
+          # runs ~90min after deploy); ghcr then rejects the expired credential
+          # outright ("DENIED: invalid token") with no anonymous fallback. The
+          # scanner-adapter now pulls the public org mirror
+          # ghcr.io/artifact-keeper/trivy-db (#300/#301) anonymously, which needs
+          # no auth. See artifact-keeper-test#304.
         run: |
           chmod +x scripts/create-test-namespace.sh
           # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
