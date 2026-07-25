@@ -1129,17 +1129,18 @@ jobs:
   # -------------------------------------------------------------------
   security-tests:
     needs: deploy
-    # continue-on-error: test-scan-completes.sh asserts on Grype scanner
-    # finishing with findings. Grype on the v1.1.x backend image fails
-    # deterministically because the vulnerability DB is not pre-seeded
-    # in the Dockerfile and our network-restricted ARC runner pods can't
-    # fetch grype.anchore.io at scan time. The quality gate is
-    # LAST-scanner-wins (policy_service reads LIMIT 1 ORDER BY created_at
-    # DESC), so Trivy success satisfies block_unscanned and the practical
-    # security posture is unaffected. Tracked for fix in v1.1.10:
-    # artifact-keeper#1001 (pre-seed Grype DB in Dockerfile). The other
-    # 44 security tests in the suite still run and gate the release.
-    continue-on-error: true
+    # BLOCKING (#2700). This suite is a hard release gate: it runs every
+    # security/*.sh test EXCEPT the single waivered Grype scan below, and any
+    # failure fails the release (wired into collect-results with the stricter
+    # `!= 'success'` predicate). continue-on-error was removed here: it used to
+    # mask the ENTIRE 45-test suite so a real security regression could ride
+    # through green (unfreeze-bar audit 2026-07-18, "the security suite cannot
+    # fail a release").
+    #
+    # The one genuinely-flaky test — test-scan-completes.sh — is carved out via
+    # `--exclude` and re-run soft in the `security-grype-scan-completes` job,
+    # which carries a NAMED WAIVER (owner + expiry). See that job for the
+    # rationale and the expiry. Nothing else in the suite is waivered.
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security'
     runs-on: ak-e2e-runners
     timeout-minutes: 20
@@ -1207,11 +1208,16 @@ jobs:
           echo "Runner pod IP: ${POD_IP}"
           echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
 
-      - name: Run security tests
+      - name: Run security tests (blocking; waivered Grype scan excluded)
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
           chmod +x scripts/run-suite.sh
-          ./scripts/run-suite.sh --suite security --run-id "${RUN_ID}"
+          # test-scan-completes.sh is the single waivered Grype-flake; it runs
+          # soft in the security-grype-scan-completes job. Everything else here
+          # hard-gates the release.
+          ./scripts/run-suite.sh --suite security \
+            --exclude test-scan-completes.sh \
+            --run-id "${RUN_ID}"
 
       - name: Upload test results
         if: always()
@@ -1222,6 +1228,68 @@ jobs:
           # JSON breadcrumbs (e.g. scan-completes-final-resp.json) reach
           # the operator. With *.xml glob the dump dies silently and the
           # gate's failure rendering is a one-line message attribute.
+          path: /tmp/test-results/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # WAIVERED soft job: the one known-flaky Grype scan (#2700).
+  #
+  # test-scan-completes.sh asserts a scan reaches `completed` cleanly. Grype on
+  # some backend image lines fails deterministically because the vulnerability
+  # DB is not pre-seeded in the Dockerfile and the network-restricted ARC runner
+  # pods cannot fetch grype.anchore.io at scan time. The quality gate is
+  # LAST-scanner-wins (policy_service reads LIMIT 1 ORDER BY created_at DESC), so
+  # Trivy success satisfies block_unscanned; the practical security posture is
+  # unaffected. Grype image-scan EFFICACY is still hard-gated elsewhere by the
+  # blocking `pinned-cve-image-gate` (alpine:3.4 canary, per-scanner floor), so
+  # this waiver does NOT create a Grype blind spot.
+  #
+  # NAMED WAIVER
+  #   owner:   release-engineering (@brandon.geraci)
+  #   reason:  Grype vuln-DB not pre-seeded in backend image; ARC runners are
+  #            network-restricted and cannot fetch grype.anchore.io at scan time.
+  #   tracked: artifact-keeper#1001 (pre-seed Grype DB in Dockerfile)
+  #   expires: 2026-10-01  --  on/after this date, either land #1001 and delete
+  #            this job (folding test-scan-completes.sh back into the blocking
+  #            security-tests suite by dropping the --exclude), or re-justify and
+  #            extend the expiry in a PR. Do NOT let it drift silently.
+  # -------------------------------------------------------------------
+  security-grype-scan-completes:
+    needs: deploy
+    # WAIVER (expires 2026-10-01, artifact-keeper#1001): soft by design so the
+    # documented Grype-DB flake cannot block a release. Excluded from the
+    # collect-results blocking predicate; its outcome is shown in the summary.
+    continue-on-error: true
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'security'
+    runs-on: ak-e2e-runners
+    timeout-minutes: 20
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+      # 300s: test-scan-completes.sh polls to SCAN_TIMEOUT=180; the default 120s
+      # wrapper would SIGKILL it before it writes JUnit XML. See security-tests.
+      TEST_TIMEOUT: '300'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run waivered Grype scan-completion test (soft)
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          ./scripts/run-suite.sh --suite security \
+            --filter test-scan-completes.sh \
+            --run-id "${RUN_ID}"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-security-grype-scan-completes
           path: /tmp/test-results/
           if-no-files-found: ignore
 
@@ -2035,7 +2103,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, security-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, security-tests, security-grype-scan-completes, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
     if: always()
     runs-on: ak-e2e-runners
     steps:
@@ -2054,7 +2122,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes compatibility-tests stress-tests resilience-tests mesh-tests; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -2077,6 +2145,7 @@ jobs:
               auth-tests) status="${{ needs.auth-tests.result }}" ;;
               admin-tests) status="${{ needs.admin-tests.result }}" ;;
               security-tests) status="${{ needs.security-tests.result }}" ;;
+              security-grype-scan-completes) status="${{ needs.security-grype-scan-completes.result }}" ;;
               compatibility-tests) status="${{ needs.compatibility-tests.result }}" ;;
               stress-tests) status="${{ needs.stress-tests.result }}" ;;
               resilience-tests) status="${{ needs.resilience-tests.result }}" ;;
@@ -2099,16 +2168,20 @@ jobs:
           if-no-files-found: ignore
 
       - name: Gate check - fail if any required suite did not succeed
-        # stress-tests and security-tests are intentionally excluded from
-        # this rollup. Both have continue-on-error: true (see the comments
-        # above each job) so their outcome can be 'failure' on
-        # known-flaky / known-infra-debt scenarios without blocking the
-        # release gate:
+        # security-tests is now BLOCKING (#2700). It is enforced with the
+        # stricter `!= 'success'` predicate (like the silent-success gates) so a
+        # 'skipped' outcome cannot mask a security regression -- guarded by the
+        # suite-selection condition so a partial non-security invocation
+        # (inputs.test_suite != 'all'/'security'), where the job legitimately
+        # skips, still passes. The single known-flaky Grype scan was carved out
+        # into the soft, WAIVERED security-grype-scan-completes job (owner +
+        # expiry 2026-10-01, artifact-keeper#1001), which stays OFF this
+        # predicate. Grype image-scan efficacy remains hard-gated by
+        # pinned-cve-image-gate.
+        #
+        # stress-tests remains intentionally excluded (continue-on-error: true):
         #   - stress-tests: bcrypt-bound auth saturation under sustained
         #     load on shared ARC runners (artifact-keeper#991).
-        #   - security-tests: Grype DB not pre-seeded in v1.1.x backend
-        #     image; quality gate is last-scanner-wins so Trivy covers
-        #     the policy gate (artifact-keeper#1001).
         #
         # The three new silent-success gates (scan-completion-gate,
         # sbom-correctness-gate, pinned-cve-gate) use the STRICTER
@@ -2144,6 +2217,7 @@ jobs:
           needs.sbom-correctness-gate.result != 'success' ||
           needs.pinned-cve-gate.result != 'success' ||
           needs.pinned-cve-image-gate.result != 'success' ||
+          ((needs.security-tests.result != 'success') && (inputs.test_suite == 'all' || inputs.test_suite == 'security')) ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
           needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||

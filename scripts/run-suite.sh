@@ -2,11 +2,17 @@
 # run-suite.sh - Discover and run test scripts for a given suite
 #
 # Usage:
-#   ./run-suite.sh --suite <name> [--filter <pattern>] [--run-id <id>]
+#   ./run-suite.sh --suite <name> [--filter <pattern>] [--exclude <pat[,pat]>] [--run-id <id>]
 #
 # Discovers test scripts by globbing tests/<suite>/**/test-*.sh, applies an
-# optional filter pattern, then runs each script with a timeout. Prints a
-# summary and exits non-zero if any test failed.
+# optional include filter and/or an exclude list, then runs each script with a
+# timeout. Prints a summary and exits non-zero if any test failed.
+#
+# --filter  <pattern>      keep only scripts whose path contains <pattern>.
+# --exclude <pat[,pat...]> drop scripts whose path contains ANY comma-separated
+#                          substring. Used by the release gate to carve a single
+#                          known-flaky script (e.g. a waivered Grype scan) out of
+#                          an otherwise-blocking suite so the rest can hard-gate.
 #
 # Environment variables:
 #   TEST_TIMEOUT  - Per-test timeout in seconds (default: 120)
@@ -24,15 +30,17 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SUITE=""
 FILTER=""
+EXCLUDE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --suite)  SUITE="$2"; shift 2 ;;
-    --filter) FILTER="$2"; shift 2 ;;
-    --run-id) export RUN_ID="$2"; shift 2 ;;
+    --suite)   SUITE="$2"; shift 2 ;;
+    --filter)  FILTER="$2"; shift 2 ;;
+    --exclude) EXCLUDE="$2"; shift 2 ;;
+    --run-id)  export RUN_ID="$2"; shift 2 ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: run-suite.sh --suite <name> [--filter <pattern>] [--run-id <id>]"
+      echo "Usage: run-suite.sh --suite <name> [--filter <pattern>] [--exclude <pat[,pat]>] [--run-id <id>]"
       exit 1
       ;;
   esac
@@ -64,20 +72,46 @@ if [ ${#ALL_SCRIPTS[@]} -eq 0 ]; then
   exit 1
 fi
 
-# Apply filter if provided
+# Parse the exclude list (comma-separated substrings) once.
+EXCLUDE_PATS=()
+if [ -n "$EXCLUDE" ]; then
+  IFS=',' read -r -a EXCLUDE_PATS <<< "$EXCLUDE"
+fi
+
+# Apply include filter, then exclude list.
 SCRIPTS=()
+EXCLUDED=()
 for script in "${ALL_SCRIPTS[@]}"; do
-  if [ -n "$FILTER" ]; then
-    if [[ "$script" == *"$FILTER"* ]]; then
-      SCRIPTS+=("$script")
-    fi
-  else
-    SCRIPTS+=("$script")
+  # Include filter (substring): if set, script path must contain it.
+  if [ -n "$FILTER" ] && [[ "$script" != *"$FILTER"* ]]; then
+    continue
   fi
+  # Exclude list (substring): drop if it matches ANY exclude pattern.
+  skip_this=false
+  for pat in "${EXCLUDE_PATS[@]}"; do
+    [ -z "$pat" ] && continue
+    if [[ "$script" == *"$pat"* ]]; then
+      skip_this=true
+      break
+    fi
+  done
+  if [ "$skip_this" = true ]; then
+    EXCLUDED+=("$script")
+    continue
+  fi
+  SCRIPTS+=("$script")
 done
 
+if [ ${#EXCLUDED[@]} -gt 0 ]; then
+  echo "Excluded ${#EXCLUDED[@]} script(s) via --exclude '${EXCLUDE}':"
+  for script in "${EXCLUDED[@]}"; do
+    echo "  - $(basename "$script")"
+  done
+  echo ""
+fi
+
 if [ ${#SCRIPTS[@]} -eq 0 ]; then
-  echo "ERROR: no test scripts matched filter '${FILTER}'"
+  echo "ERROR: no test scripts matched filter '${FILTER}' after exclude '${EXCLUDE}'"
   exit 1
 fi
 
