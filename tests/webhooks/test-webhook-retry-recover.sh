@@ -87,9 +87,13 @@ EXPECT_ATTEMPTS="${EXPECT_ATTEMPTS:-1}"
 # Reject the first N POSTs, then recover on the (N+1)th. MUST be >= EXPECT_ATTEMPTS.
 WEBHOOK_FAIL_FIRST_N="${WEBHOOK_FAIL_FIRST_N:-${EXPECT_ATTEMPTS}}"
 # attempt-1 backoff ~30s base + up to one 30s tick + jitter + scheduler warmup +
-# producer latency => ~120s worst case for EXPECT_ATTEMPTS=1. 240s stays safely
-# under the 300s run-suite wrapper while leaving load headroom.
-WEBHOOK_RETRY_TIMEOUT="${WEBHOOK_RETRY_TIMEOUT:-240}"
+# producer latency => ~120s worst case for EXPECT_ATTEMPTS=1. Widened 240s -> 360s
+# (artifact-keeper-test#309): under full-suite congestion this failed once in nine
+# gate attempts when the first delivery landed ~23s late and the retry slid just
+# past the old 240s window; the scheduler itself is proven by the other eight
+# runs. 360s absorbs that congestion tail and matches the default this file's
+# header already documents.
+WEBHOOK_RETRY_TIMEOUT="${WEBHOOK_RETRY_TIMEOUT:-360}"
 WEBHOOK_RECEIVER_LOG="${WEBHOOK_RECEIVER_LOG:-/tmp/mock-webhook-receiver-${RUN_ID}.log}"
 RECEIVER_PID=""
 
@@ -234,7 +238,12 @@ else
     # Count only POSTs that belong to OUR repo so a sibling suite's delivery
     # cannot satisfy this gate.
     for _ in $(seq 1 30); do
-      seen=$(select_repo_posts | grep -c . 2>/dev/null || echo 0)
+      # awk 'END{print NR}' always prints exactly one line (0 on empty) and
+      # exits 0, unlike `grep -c . || echo 0` which emitted "0" AND echoed a
+      # second "0" on no matches, producing a two-line value that tripped the
+      # `[: 0` test warnings (artifact-keeper-test#309). Assignment-level `|| =0`
+      # keeps it single-valued if the jq pipeline itself fails under pipefail.
+      seen=$(select_repo_posts | awk 'END{print NR}') || seen=0
       [ "$seen" -gt 0 ] && break
       sleep 1
     done
@@ -291,7 +300,8 @@ else
   stable=0
   observed=0
   while [ "$elapsed" -lt "$WEBHOOK_RETRY_TIMEOUT" ]; do
-    observed=$(select_repo_posts | grep -c . 2>/dev/null || echo 0)
+    # Single-line-robust count (see the seen= site above, #309).
+    observed=$(select_repo_posts | awk 'END{print NR}') || observed=0
     if [ "$observed" -ge "$expected_entries" ]; then
       if [ "$observed" -eq "$prev_seen" ]; then
         stable=$(( stable + 1 ))
@@ -352,7 +362,8 @@ if [ "$SUITE_BLOCKED" = "true" ] || [ ! -s "$WEBHOOK_RECEIVER_LOG" ]; then
 else
   # Use the SECOND POST for OUR repo (entity_id filtered): the first POST is
   # the initial delivery (no retry header), the second is retry attempt 1.
-  repo_post_count=$(select_repo_records | grep -c . 2>/dev/null || echo 0)
+  # Single-line-robust count (see the seen= site above, #309).
+  repo_post_count=$(select_repo_records | awk 'END{print NR}') || repo_post_count=0
   if [ "$repo_post_count" -lt 2 ]; then
     fail "only ${repo_post_count} delivery POST(s) for repo ${REPO_KEY}; cannot check retry header (expected the first retry to have fired)"
   else
