@@ -118,6 +118,15 @@ backend:
     # every few seconds for the grace=5 reclaim to be observable. 6-field cron
     # (sec min hour dom mon dow) = every 10 seconds. See artifact-keeper-test#284.
     GC_SCHEDULE: "*/10 * * * * *"
+    # Registry host the backend embeds in grype scan-target refs. The backend
+    # composes the ref via resolve_registry_host, which prefers
+    # AK_GRYPE_REGISTRY_HOST, then PEER_PUBLIC_ENDPOINT, then the dev fallback
+    # http://localhost:8080 (backend grype_scanner.rs:334). Unset, the
+    # scanner-adapter is handed localhost refs it can never resolve (its own
+    # loopback), so image scans fail. fullnameOverride=artifact-keeper makes the
+    # backend Service "artifact-keeper-backend"; SCANNER_TRIVY_INSECURE=true
+    # already covers the plain-http pull. See artifact-keeper-test#308.
+    AK_GRYPE_REGISTRY_HOST: "http://artifact-keeper-backend:8080"
     # NOTE: TRIVY_URL and SCAN_WORKSPACE_PATH were previously set here, but
     # the chart's backend-deployment.yaml auto-injects them when
     # trivy.enabled=true. Setting them here too produces duplicate env keys
