@@ -1,0 +1,38 @@
+# DTF tier manifest: incremental-backup-since  (#2789 / feat/2789-incremental-backup-since)
+# Profile-set: filesystem / single. The backup archive is written by
+# BackupService before any bytes leave the process and is recorded on the
+# `backups` row's `storage_path`; the "changes since" behaviour is
+# backend-agnostic, so this runs on the default filesystem overlay and is
+# asserted directly from the archive contents (pulled with `docker cp`,
+# extracted with host tar/jq).
+#
+# The feature (#2789, part of the incremental-backups epic #2788): operators
+# want an incremental backup that captures only the changes made from a given
+# date/timestamp to now. CreateBackupRequest gained an optional `since` (an
+# RFC3339 timestamp); when set, only artifacts whose `updated_at >= since` are
+# included in the backup -- both the artifact bytes AND their rows in the
+# `database/artifacts.json` table dump inside the archive. When omitted the
+# whole registry is backed up, so existing full and incremental backups are
+# unchanged. Pre-#2789 the field does not exist, so it is ignored: an older
+# artifact is still fully backed up even when a `since` cutoff after it is given.
+#
+# Oracle (oracle.sh) is the discriminating gate. One maven/local repo is seeded
+# with two artifacts, "old" and "new"; the "old" artifact's updated_at is moved
+# to 2000-01-01 so a 2020-01-01 cutoff cleanly separates them:
+#   * POST /api/v1/admin/backups {"type":"incremental","since":"2020-..Z", ...}
+#     then execute -> the archive's database/artifacts.json contains the "new"
+#     artifact and NOT the "old" (backdated) artifact.
+#     Pre-#2789: since is ignored -> the old artifact is present -> FAIL.
+#   * Same assertion for {"type":"full","since":...}.
+#   * CONTROL: a backup with NO since still contains BOTH artifacts (the feature
+#     is additive; default behaviour is unchanged).
+#
+# repository_ids scopes each backup to the seeded repo so leftover/seed artifacts
+# never blur the old-vs-new signal; the `since` predicate is ANDed with it.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + a repo create, two
+# artifact uploads, and several admin create/execute-backup calls back to back;
+# the base default (ON) could throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
