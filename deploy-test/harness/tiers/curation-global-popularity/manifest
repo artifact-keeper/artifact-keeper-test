@@ -1,0 +1,51 @@
+# DTF tier manifest: curation-global-popularity  (#2949 / #2947 / 1.7.0)
+# Profile-set: filesystem / single. The typed popularity evaluator is DB+API-
+# side (curation_rules.config + the evaluate_typed_rules dispatch seam consumed
+# by POST /curation/packages/re-evaluate).
+#
+# The feature (#2949, integrated by #2947): a GLOBAL popularity rule combines a
+# download-count threshold with lexical typo-squat detection (Damerau-
+# Levenshtein / optimal-string-alignment, adjacent transposition = 1 edit).
+# Decision semantics are fail-open on the DATA SOURCE, fail-safe on the
+# DECISION: a missing/outage download count -> Flag("popularity unknown"),
+# never Block; a typo-squat name -> advisory Flag naming the likely target.
+#
+# CRITICAL — enforcement is at the STAGING-CATALOG / re-evaluate layer, NOT the
+# PEP 503 proxy download gate (pattern-only, skips typed rules). This oracle
+# drives packages through POST /curation/packages/re-evaluate and asserts on
+# the resulting CATALOG DECISION / status (review / approved) + rule_id, never
+# a proxy 403 on a pull.
+#
+# NO-EGRESS SCOPE (important): the pool stack has no external network egress,
+# so the live download-count source (HttpPopularitySource -> pypistats.org /
+# npm API) fails to PopularityResult::Unknown for every lookup. This tier
+# therefore asserts the DETERMINISTIC, egress-free behaviors only:
+#   (RULE)      global popularity {min_downloads:10000, typosquat_check:true,
+#               action:"flag"} -> 201 + rule_type echoed.
+#   (TYPOSQUAT) 'reqeusts' (Damerau-Levenshtein 1 of 'requests') -> Flag, and
+#               the reason NAMES 'requests' + says typo-squat -> status=review,
+#               rule_id=<rule>.
+#   (UNKNOWN)   a distinct low-signal name with Unknown source -> Flag
+#               ("popularity unknown"), fail-OPEN not block -> status=review
+#               (NOT blocked), rule_id=<rule>.
+#   (NA)        a `raw` (non-applicable) format -> NotApplicable pass-through:
+#               default_action=allow -> approved with rule_id NULL.
+#
+# OUT OF SCOPE / CAVEAT — the count-THRESHOLD arm (a Known download count below
+# min_downloads -> flag, or -> block under action:"block") cannot be exercised
+# here: it requires a Known count, i.e. a reachable/mocked download-count
+# source. With no egress every count is Unknown, so the threshold branch never
+# fires. Covering it needs a seeded/mock PopularitySource (an egress-enabled or
+# fixture-backed profile) and is deliberately left to that tier. The evaluator
+# unit tests (#2949, FakePopularitySource) already cover the below-threshold
+# flag/block arithmetic in-process.
+#
+# Discriminating: GREEN on the #2947/#2949 image (typo-squat + unknown-source
+# both land the package in `review` by the rule). RED on a pre-feature
+# baseline: the typed popularity rule is not enforced (config/rule_type
+# dropped), so neither package is routed to review and both stay approved.
+#
+# RATE_LIMIT_ENABLED=false: admin login plus ~12 back-to-back API/DB calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
