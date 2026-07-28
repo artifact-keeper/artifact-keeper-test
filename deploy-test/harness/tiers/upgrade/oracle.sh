@@ -177,5 +177,25 @@ else
 fi
 
 end_suite
+
+# --- issue #2688: additional upgrade ORIGIN legs ------------------------------
+# The legacy-rowless gate above is the primary #2574/#2584 row-6 assertion and
+# stays the hard pre-requisite: its own end_suite already `exit`ed non-zero (and
+# never reached here) on any failure. Now run two more PUBLISHED prior-release
+# origin legs on THIS slot, each in a subshell (its own JUnit suite, its own
+# `down -v` + reseed) so one leg cannot poison the other, and fold their
+# outcomes into the tier exit code.
+#   * v1.5.6-origin  no-divergence / no-op upgrade (no data loss)
+#   * v1.5.8-origin  migrations 154+155 idempotent + cross-tenant isolation holds
+UPGRADE_EXTRA_RC=0
+# shellcheck source=origin_cases.sh
+source "${HERE}/origin_cases.sh"
+( upgrade_case_v156_noop )       || UPGRADE_EXTRA_RC=1
+( upgrade_case_v158_mig154_155 ) || UPGRADE_EXTRA_RC=1
+if [ "$UPGRADE_EXTRA_RC" -ne 0 ]; then
+  echo "=== upgrade tier: an added origin leg (v1.5.6 / v1.5.8, issue #2688) FAILED ==="
+  exit 1
+fi
+
 # Teardown is left to run.sh (dtf_down / --keep). The upgraded candidate stack
 # stays up so --keep can inspect the post-upgrade state.

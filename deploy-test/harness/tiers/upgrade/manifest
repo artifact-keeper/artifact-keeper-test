@@ -31,3 +31,35 @@ PROFILES="storage.s3"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
 UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ak-backend:nexus2457-v157base}"
+
+# --- issue #2688: additional upgrade ORIGIN legs ------------------------------
+# oracle.sh runs two more origin legs (origin_cases.sh) AFTER the legacy-rowless
+# gate above, each a distinct JUnit suite that resets THIS slot (`down -v`),
+# re-seeds, and swaps to the candidate. Both origins are PUBLISHED prior-release
+# backend images (clean migration ancestors of the candidate, exactly like
+# UPGRADE_OLD_IMAGE) rather than rig-built ancestors:
+#
+#   UPGRADE_ORIGIN_156  a release PRE-dating the Maven cloud isolation
+#                       migrations. Its leg asserts a no-divergence / no-op
+#                       upgrade (candidate boots on the 1.5.6 volume with no
+#                       failed/divergent migration; an artifact seeded on 1.5.6
+#                       is byte-intact afterwards = no data loss).
+#   UPGRADE_ORIGIN_158  the release that already ships BOTH Maven cloud
+#                       isolation migrations: MIG_MAVEN_GUARD (154, the
+#                       #2504/#2507 cross-tenant read+write guard) and
+#                       MIG_MAVEN_ATTRIB (155, the #2574/#2584 pristine-state
+#                       attribution table). Its leg asserts those two migrations
+#                       apply idempotently across the upgrade (present exactly
+#                       once, success, installed_on unchanged = not re-run) and
+#                       that cross-tenant isolation still holds afterwards.
+#
+# Defaults point at the ghcr published backend tags (same repo as
+# helm/values-test.yaml). Override for a private mirror, an air-gapped pull, or
+# a migration renumber without editing origin_cases.sh. MIG_LEDGER_TABLE is the
+# sqlx migration ledger the idempotency check reads (columns version/success/
+# installed_on).
+UPGRADE_ORIGIN_156="${UPGRADE_ORIGIN_156:-ghcr.io/artifact-keeper/artifact-keeper-backend:1.5.6}"
+UPGRADE_ORIGIN_158="${UPGRADE_ORIGIN_158:-ghcr.io/artifact-keeper/artifact-keeper-backend:1.5.8}"
+MIG_MAVEN_GUARD="${MIG_MAVEN_GUARD:-154}"
+MIG_MAVEN_ATTRIB="${MIG_MAVEN_ATTRIB:-155}"
+MIG_LEDGER_TABLE="${MIG_LEDGER_TABLE:-_sqlx_migrations}"
