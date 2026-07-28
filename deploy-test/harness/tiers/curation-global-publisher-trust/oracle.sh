@@ -16,7 +16,11 @@
 #
 # Gates (one global rule, four seeded packages):
 #   (RULE)    create global publisher_trust rule -> 201 + rule_type echoed.
-#   (ATTEST)  attested-trusted NumFOCUS pypi pkg -> approved, rule_id=<rule>.
+#   (ATTEST)  attested-trusted NumFOCUS pypi pkg -> REVIEW, rule_id=<rule>.
+#             Attestation envelopes are not cryptographically verified yet
+#             (#2955), so structural presence of a provenance blob (which is
+#             forgeable) must yield review — never approved (presence is not
+#             trust) and never a blanket block of legit attested packages.
 #   (SPOOF)   self-asserted "NumFOCUS" (no attestation) -> blocked (spoof
 #             resistant), rule_id=<rule>.  <-- primary discriminator.
 #   (UNKNOWN) applicable format, no publisher -> review, rule_id=<rule>.
@@ -105,14 +109,14 @@ else
   fail "re-evaluate seam did not run: status=${API_STATUS}" "resp=${RECOUNT}"
 fi
 
-# --- (ATTEST) verified provenance -> approved by the rule --------------------
-begin_test "ATTEST: attested NumFOCUS pypi pkg -> approved, decided by the rule"
-S="$(pkg_status cpt-attested)"; RID="$(pkg_ruleid cpt-attested)"
-if [ "$S" = "approved" ] && [ "$RID" = "$RULE_ID" ]; then
+# --- (ATTEST) present-but-unverified provenance -> review (never trust) ------
+begin_test "ATTEST: attested-but-unverified NumFOCUS pypi pkg -> REVIEW (presence != trust, #2955)"
+S="$(pkg_status cpt-attested)"; RID="$(pkg_ruleid cpt-attested)"; RSN="$(pkg_reason cpt-attested)"
+if [ "$S" = "review" ] && [ "$RID" = "$RULE_ID" ] && echo "$RSN" | grep -qi "not cryptographically verified"; then
   pass
 else
-  fail "attested-trusted package not allowed by the rule: status='${S}' rule_id='${RID}' (expected approved + rule_id=${RULE_ID}; pre-feature -> approved via default with rule_id NULL)" \
-       "reason=$(pkg_reason cpt-attested)"
+  fail "attested-but-unverified package not routed to review: status='${S}' rule_id='${RID}' (expected review by rule ${RULE_ID}; the attestation-theater bug trusts a forgeable provenance blob and yields approved)" \
+       "reason=${RSN}"
 fi
 
 # --- (SPOOF) self-asserted name is NOT trusted -> blocked (primary) ----------
