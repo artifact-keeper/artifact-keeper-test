@@ -125,8 +125,19 @@ begin_test "Start mock webhook receiver"
 if ! command -v python3 >/dev/null 2>&1; then
   skip "python3 not available"
 else
+  # WEBHOOK_FAIL_MATCH scopes the forced failure to THIS test's own repository.
+  # The webhook created below has no repository_id, so it is global and the
+  # backend fans every repository.created event out to it, including those from
+  # the dozen-odd sibling suites that run against the same backend in the
+  # release gate. Without this scoping a sibling's delivery routinely arrived
+  # first and consumed the single forced 500, this test's own delivery was
+  # answered 200, no retry row was ever written, and the test failed after
+  # waiting out WEBHOOK_RETRY_TIMEOUT reporting that the retry scheduler had not
+  # delivered. REPO_KEY appears in the delivery body, so matching on it makes
+  # the injection hit exactly the delivery under measurement.
   WEBHOOK_RECEIVER_PORT="$WEBHOOK_RECEIVER_PORT" \
     WEBHOOK_FAIL_FIRST_N="$WEBHOOK_FAIL_FIRST_N" \
+    WEBHOOK_FAIL_MATCH="$REPO_KEY" \
     WEBHOOK_RECEIVER_LOG="$WEBHOOK_RECEIVER_LOG" \
     python3 "$(dirname "$0")/../lib/mock-webhook-receiver.py" \
     >/tmp/mock-webhook-receiver-${RUN_ID}.stderr 2>&1 &
