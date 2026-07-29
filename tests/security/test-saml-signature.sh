@@ -458,4 +458,18 @@ point of this suite."
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Cleanup: delete the ephemeral provider (best-effort, does not change the
+# suite result). This is load-bearing on a SHARED gate backend: an enabled
+# SSO provider left behind disables LOCAL login for every non-admin user
+# backend-wide (auth.rs local-login SSO policy), so a leftover fixture from
+# this suite would poison any later suite/test that logs a plain user in with
+# a password ("Local login is disabled when SSO is configured", 401).
+# ---------------------------------------------------------------------------
+if [ -n "${PROVIDER:-}" ] && [ "$PROVIDER" != "null" ]; then
+  curl -s -o /dev/null $CURL_TIMEOUT -X DELETE \
+    "${BASE_URL}/api/v1/admin/sso/saml/${PROVIDER}" \
+    -H "$(auth_header)" 2>/dev/null || true
+fi
+
 end_suite
