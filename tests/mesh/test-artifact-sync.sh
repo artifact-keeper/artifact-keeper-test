@@ -54,7 +54,7 @@ PEER1_API_KEY=""
 export BASE_URL="$PEER1_URL"
 export ADMIN_TOKEN="$PEER1_TOKEN"
 if resp=$(api_post "/api/v1/auth/tokens" \
-    "{\"name\":\"sync-key-${RUN_ID}\",\"scopes\":[\"read\",\"write\"]}" 2>/dev/null); then
+    "{\"name\":\"sync-key-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" 2>/dev/null); then
   PEER1_API_KEY=$(echo "$resp" | jq -r '.token // empty') || true
 fi
 export BASE_URL="$ORIG_BASE_URL"

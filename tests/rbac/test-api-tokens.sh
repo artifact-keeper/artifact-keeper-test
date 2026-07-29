@@ -19,7 +19,7 @@ TOKEN_NAME="e2e-apitoken-${RUN_ID}"
 
 begin_test "Create API token"
 if resp=$(api_post "/api/v1/auth/tokens" \
-    "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read\",\"write\"]}" 2>/dev/null); then
+    "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" 2>/dev/null); then
   API_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
   TOKEN_ID=$(echo "$resp" | jq -r '.id // .token_id // empty') || true
   if [ -n "$API_TOKEN" ] && [ "$API_TOKEN" != "null" ]; then

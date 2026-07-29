@@ -43,11 +43,11 @@ API_TOKEN=""
 TOKEN_ID=""
 if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
   if resp=$(api_post "/api/v1/users/${USER_ID}/tokens" \
-      "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read\",\"write\"]}" 2>/dev/null); then
+      "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" 2>/dev/null); then
     API_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
     TOKEN_ID=$(echo "$resp" | jq -r '.id // .token_id // empty') || true
   elif resp=$(api_post "/api/v1/auth/tokens" \
-      "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read\",\"write\"],\"user_id\":\"${USER_ID}\"}" 2>/dev/null); then
+      "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"],\"user_id\":\"${USER_ID}\"}" 2>/dev/null); then
     API_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
     TOKEN_ID=$(echo "$resp" | jq -r '.id // .token_id // empty') || true
   fi

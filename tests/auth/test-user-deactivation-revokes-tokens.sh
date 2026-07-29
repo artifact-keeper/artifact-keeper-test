@@ -61,7 +61,7 @@ else
     tok_resp=$(curl -sf $CURL_TIMEOUT -X POST \
       -H "Authorization: Bearer ${USER_TOKEN}" \
       -H "Content-Type: application/json" \
-      -d '{"name":"e2e-deact","scopes":["read","write"]}' \
+      -d '{"name":"e2e-deact","scopes":["read:artifacts","write:artifacts"]}' \
       "${BASE_URL}/api/v1/auth/tokens" 2>/dev/null) || true
     API_TOKEN=$(echo "$tok_resp" | jq -r '.token // empty')
     API_TOKEN_ID=$(echo "$tok_resp" | jq -r '.id // empty')

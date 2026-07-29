@@ -160,7 +160,7 @@ if [ -z "${SA_READ_ID:-}" ] || [ "$SA_READ_ID" = "null" ]; then
   fail "read SA missing -- token mint is a precondition, not optional"
 else
   if resp=$(api_post "/api/v1/service-accounts/${SA_READ_ID}/tokens" \
-      "{\"name\":\"ghsa-read-tok-${RUN_ID}\",\"scopes\":[\"read\"]}" 2>/dev/null); then
+      "{\"name\":\"ghsa-read-tok-${RUN_ID}\",\"scopes\":[\"read:artifacts\"]}" 2>/dev/null); then
     SA_READ_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // empty')
     if [ -n "$SA_READ_TOKEN" ] && [ "$SA_READ_TOKEN" != "null" ]; then
       pass
@@ -180,7 +180,7 @@ if [ -z "${SA_WRITE_ID:-}" ] || [ "$SA_WRITE_ID" = "null" ]; then
   fail "write SA missing -- token mint is a precondition, not optional"
 else
   if resp=$(api_post "/api/v1/service-accounts/${SA_WRITE_ID}/tokens" \
-      "{\"name\":\"ghsa-write-tok-${RUN_ID}\",\"scopes\":[\"read\",\"write\"]}" 2>/dev/null); then
+      "{\"name\":\"ghsa-write-tok-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" 2>/dev/null); then
     SA_WRITE_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // empty')
     if [ -n "$SA_WRITE_TOKEN" ] && [ "$SA_WRITE_TOKEN" != "null" ]; then
       pass

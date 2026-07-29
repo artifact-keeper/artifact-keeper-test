@@ -40,7 +40,7 @@ fi
 begin_test "Create API token for user"
 if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
   if resp=$(api_post "/api/v1/users/${USER_ID}/tokens" \
-      "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read\"]}" 2>/dev/null); then
+      "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read:artifacts\"]}" 2>/dev/null); then
     TOKEN_VALUE=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
     TOKEN_ID=$(echo "$resp" | jq -r '.id // .token_id // empty') || true
     if [ -n "$TOKEN_ID" ] && [ "$TOKEN_ID" != "null" ]; then
@@ -51,7 +51,7 @@ if [ -n "${USER_ID:-}" ] && [ "$USER_ID" != "null" ]; then
   else
     # Try alternative: create token via the auth endpoint on behalf of user
     if resp=$(api_post "/api/v1/auth/tokens" \
-        "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read\"],\"user_id\":\"${USER_ID}\"}" 2>/dev/null); then
+        "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"read:artifacts\"],\"user_id\":\"${USER_ID}\"}" 2>/dev/null); then
       TOKEN_VALUE=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
       TOKEN_ID=$(echo "$resp" | jq -r '.id // .token_id // empty') || true
       if [ -n "$TOKEN_ID" ] && [ "$TOKEN_ID" != "null" ]; then

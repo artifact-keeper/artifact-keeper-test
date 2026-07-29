@@ -41,7 +41,7 @@ fi
 begin_test "Create scoped token"
 if [ -n "${SA_ID:-}" ]; then
   if resp=$(api_post "/api/v1/service-accounts/${SA_ID}/tokens" \
-      "{\"name\":\"e2e-token-${RUN_ID}\",\"scopes\":[\"read\"]}" 2>/dev/null); then
+      "{\"name\":\"e2e-token-${RUN_ID}\",\"scopes\":[\"read:artifacts\"]}" 2>/dev/null); then
     SA_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // empty') || true
     if [ -n "$SA_TOKEN" ] && [ "$SA_TOKEN" != "null" ]; then
       pass
