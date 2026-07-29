@@ -157,6 +157,7 @@ run_tier() {
   # shellcheck disable=SC1090
   source "$manifest"
   [ -n "${RATE_LIMIT_ENABLED:-}" ] && export RATE_LIMIT_ENABLED
+  [ -n "${UPSTREAM_ALLOW_PRIVATE_IPS:-}" ] && export UPSTREAM_ALLOW_PRIVATE_IPS
   if [ -z "$PROFILES" ] || [ -z "$ORACLE" ]; then
     echo "!! manifest for '${tier}' must set PROFILES and ORACLE" >&2
     exit 4

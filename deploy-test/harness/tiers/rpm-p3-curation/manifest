@@ -1,0 +1,48 @@
+# DTF tier manifest: rpm-p3-curation  (#2358 / 1.7.0 RPM curation Phase-3)
+# Profile-set: filesystem / single. Curated snapshot versions + signed,
+# immutable @N publication serving is DB + storage-side and storage-agnostic.
+#
+# The feature (#2358): an approved RPM curation set is frozen into a monotonic
+# `repository_version`, PUBLISHED as AK-signed repodata, and served under
+# `/rpm/{key}/@N/`. Once published the snapshot is IMMUTABLE (re-publish is
+# refused; the served metadata is a frozen blob, not re-generated from the live
+# approved set) and its repomd.xml.asc is REAL OpenPGP that verifies over the
+# served repomd.xml under the served repomd.xml.key.
+#
+# Oracle (discriminating):
+#   (CREATE+PUBLISH) admin POST /curation/repos/{key}/versions -> 201, then
+#                    .../versions/{n}/publish -> 200. On a pre-#2358 image the
+#                    routes do not exist (404) -> RED.
+#   (SERVE)          GET /rpm/{key}/@N/repodata/{repomd.xml,.asc,.key} -> 200,
+#                    repomd indexes primary/filelists/other, .asc is PGP armor,
+#                    .key is an OpenPGP public-key block.
+#   (SIG-REAL)       the served .asc carries a CRC24 armor line AND (when gpg is
+#                    present) gpg --verify of the .asc over the served repomd.xml
+#                    under the imported .key SUCCEEDS. Signature is not theater.
+#   (IMMUTABLE-PUB)  a second publish of the same version -> 409 Conflict.
+#   (IMMUTABLE-META) approve a NEW package into the SAME staging repo AFTER
+#                    publish, WITHOUT cutting/publishing a new version; re-GET
+#                    @N/repodata/primary.xml.gz -> byte-identical to the first
+#                    fetch. A live-regenerating serve path would leak the new
+#                    package into the published snapshot -> RED.
+#   (FROZEN-IDENTITY) the supply-chain gate. `curation_packages` is a LIVE table
+#                    (a routine re-sync upserts the same row). After publishing
+#                    @N, rewrite the live row's checksum + upstream path to point
+#                    at attacker bytes, exactly as a poisoned re-sync would. GET
+#                    @N/packages/{nevra}.rpm must NEVER serve the mutated bytes:
+#                    it serves the ORIGINAL frozen bytes or fails closed with an
+#                    integrity error, and any X-Checksum-SHA256 it advertises is
+#                    the FROZEN hash, never the evil one. A serve path that
+#                    resolves checksum/location from the live row is RED here.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus ~20
+# back-to-back API + repodata calls; the base default (ON) would throttle them.
+#
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the FROZEN-IDENTITY gate needs a real HTTP
+# origin for the @N package fetch, so the oracle runs a throwaway nginx on the
+# DTF docker network. It is only reachable at a private address, which the
+# outbound SSRF guard rejects by default.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

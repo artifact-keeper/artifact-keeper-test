@@ -57,6 +57,11 @@ services:
       STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
       # DEFAULT ON — deliberate change from today's gate overlay.
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      # DEFAULT OFF (production posture: the SSRF guard rejects private/internal
+      # upstream IPs). A tier whose oracle stands up a MOCK upstream on the DTF
+      # docker network must opt in via its manifest, because that mock is only
+      # reachable at a private address.
+      UPSTREAM_ALLOW_PRIVATE_IPS: ${UPSTREAM_ALLOW_PRIVATE_IPS:-false}
     ports:
       - "127.0.0.1:${HTTP_PORT:?set HTTP_PORT}:8080"
       - "127.0.0.1:${GRPC_PORT:?set GRPC_PORT}:9090"
