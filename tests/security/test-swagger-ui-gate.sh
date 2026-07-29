@@ -97,10 +97,22 @@ elif [ "$status_noauth" = "401" ] || [ "$status_noauth" = "403" ]; then
 elif [ "$status_noauth" = "200" ]; then
   # Public OpenAPI spec is common and not necessarily a security issue.
   # Verify it does not contain internal-only information.
+  #
+  # The predicate must not match the word "internal" bare: the spec
+  # legitimately contains it in public contexts -- every 500 response's
+  # RFC 9110 reason phrase "Internal server error", the documented
+  # `is_internal` schema field, and doc prose (e.g. "internal connection
+  # strings" in a redaction description). The old bare-word grep failed on
+  # all of those. Likewise `private.*endpoint`/`admin.*secret` with an
+  # unbounded wildcard are meaningless against a single-line JSON document
+  # (any "private" anywhere before any "endpoint" matched). Instead match
+  # genuine internal-only markers: vendor x-internal extensions, explicit
+  # internal-only/internal-use labels, /internal/ route paths, and
+  # tightly-bounded private-endpoint / admin-secret phrases.
   spec_body=$(curl -s $CURL_TIMEOUT \
     "${BASE_URL}/api/v1/openapi.json" 2>/dev/null) || true
 
-  if echo "$spec_body" | grep -qi "internal\|private.*endpoint\|admin.*secret"; then
+  if echo "$spec_body" | grep -qiE '"x-internal"|internal[ -](only|use)|do not (expose|document)|"/[^"]*internal[^"]*":|private[^"]{0,50}endpoint|admin[^"]{0,50}secret'; then
     fail "OpenAPI spec is public and contains internal-only references"
   else
     skip "OpenAPI spec is publicly accessible (common for API documentation)"

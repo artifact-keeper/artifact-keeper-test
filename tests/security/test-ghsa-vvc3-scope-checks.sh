@@ -17,7 +17,9 @@
 #       - 403 on the eight previously-deferred format publish handlers
 #         (ansible, chef, cocoapods, jetbrains, pub, puppet, sbt, vscode)
 #         now that #2417 completes the GHSA-vvc3 rollout
-#       - 403 body contains "Token does not have required scope: write"
+#       - 403 body is a recognized denial (scope-layer or repository-authz
+#         layer -- see assert_403_denied; the exact layer that answers first
+#         is an implementation detail that has already changed once, #2993)
 #   - SA token with scope=["read","write"]:
 #       - succeeds (2xx) on the same write endpoints
 #   - JWT user-session token (admin):
@@ -26,6 +28,16 @@
 #       JWT/bearer (Conan users/authenticate, OCI /v2/token docker-login) must
 #       inherit the token's action-scope ceiling -> 403 on a subsequent write;
 #       a read+write token exchanges into a credential that CAN write (2xx).
+#
+# Fixture note (#2603 G1 deny-by-default writes): repository writes are
+# DENY-BY-DEFAULT at the principal layer -- a rules-less repository does not
+# fall open, and `is_public` never confers a write. A service account with no
+# grant is therefore 403'd by the repository-authorization layer before the
+# token scope gate is ever consulted, which would let a broken scope gate
+# hide behind the principal denial (and 403s the positive controls). The
+# fixture below grants each SA an explicit repo-scoped read+write permission
+# on the target repos so the TOKEN SCOPE is the deciding layer: read-scope
+# token -> 403 from the scope gate, read+write token -> 2xx.
 #
 # Pairs with: artifact-keeper PR #1219 + #2417 + #2430, GHSA-vvc3-h39c-mrq5.
 # The eight deferred handlers previously lived in the companion
@@ -51,7 +63,6 @@ SA_READ_ID=""
 SA_WRITE_ID=""
 SA_READ_TOKEN=""
 SA_WRITE_TOKEN=""
-SCOPE_ERROR_MSG="Token does not have required scope: write"
 
 # Eight previously-deferred format publish handlers now gated by #2417.
 # Each row: <label>|<repo_format>|<method>|<path-after-BASE_URL>|<mode>
@@ -193,6 +204,63 @@ else
 fi
 
 # -------------------------------------------------------------------------
+# Grant repo-scoped write permissions to the SA principals (#2603 G1).
+#
+# Repository writes are deny-by-default at the principal layer: without an
+# applicable fine-grained rule or a role assignment carrying the action, ANY
+# write is 403'd by the repository-authorization layer regardless of what the
+# token's scopes say -- so the scope gate under test would never be the
+# deciding layer, and the read+write positive controls could not succeed.
+# Grant each SA an explicit read+write rule on the write-target repos so:
+#   - the read-scope token is denied BY THE SCOPE GATE (the GHSA-vvc3 layer),
+#   - the read+write token (and its #2430 exchanged credentials) can write.
+# A failed grant hard-fails: downstream denials would otherwise come from the
+# permission layer and silently stop exercising the scope gate.
+# -------------------------------------------------------------------------
+
+grant_sa_repo_write() { # <sa_id> <repo_key>
+  local sa_id="$1" repo_key="$2" repo_id
+  repo_id=$(api_get "/api/v1/repositories/${repo_key}" 2>/dev/null | jq -r '.id // empty')
+  if [ -z "$repo_id" ] || [ "$repo_id" = "null" ]; then
+    return 1
+  fi
+  api_post "/api/v1/permissions" \
+    "{\"principal_type\":\"service_account\",\"principal_id\":\"${sa_id}\",\"target_type\":\"repository\",\"target_id\":\"${repo_id}\",\"actions\":[\"read\",\"write\"]}" \
+    > /dev/null 2>&1
+}
+
+begin_test "Grant read-scope SA repo-write permission on write-target repos (#2603 fixture)"
+if [ -z "${SA_READ_ID:-}" ] || [ "$SA_READ_ID" = "null" ]; then
+  fail "read SA missing -- cannot grant fixture permissions"
+else
+  grant_failures=""
+  for _grant_key in "$NPM_REPO" "$PYPI_REPO" "$OCI_REPO" \
+      "${DEFERRED_REPO_KEY[@]}"; do
+    if ! grant_sa_repo_write "$SA_READ_ID" "$_grant_key"; then
+      grant_failures="${grant_failures} ${_grant_key}"
+    fi
+  done
+  if [ -z "$grant_failures" ]; then
+    pass
+  else
+    fail "could not grant read-SA write permission on:${grant_failures}"
+  fi
+fi
+
+begin_test "Grant write-scope SA repo-write permission on oci repo (#2603 fixture)"
+if [ -z "${SA_WRITE_ID:-}" ] || [ "$SA_WRITE_ID" = "null" ]; then
+  fail "write SA missing -- cannot grant fixture permissions"
+else
+  # The write-SA positive controls all land on the OCI repo (direct and via
+  # the #2430 exchanged credentials), so that is the only grant it needs.
+  if grant_sa_repo_write "$SA_WRITE_ID" "$OCI_REPO"; then
+    pass
+  else
+    fail "could not grant write-SA write permission on ${OCI_REPO}"
+  fi
+fi
+
+# -------------------------------------------------------------------------
 # Helper: send a request with a bearer token, capture both status and body.
 # Writes the body to ${WORK_DIR}/last-body so we can grep for the scope
 # error message without juggling temp files at every call site.
@@ -218,25 +286,37 @@ call_with_token() {
   curl "${args[@]}" 2>/dev/null || echo "000"
 }
 
-assert_403_with_scope_msg() {
+# Assert the write attempt was DENIED with a 403 carrying a recognized
+# denial body. The load-bearing discriminator for the GHSA-vvc3 class is the
+# STATUS: a wrong-scope token that is ACCEPTED (2xx, or anything non-403)
+# hard-fails here. The body check no longer pins one exact scope-layer
+# string: which layer answers first (scope gate vs the #2603 G1
+# deny-by-default repository authorization) is an implementation detail that
+# has already flipped once (#2993 reordered/renamed the scope on artifact
+# write paths), and the scope NAME itself changed from bare `write` to
+# colon-form `write:artifacts`. Accepted denial shapes:
+#   - "Token does not have required scope"  (scope gate; middleware/auth.rs
+#     and oci_v2.rs; scope name deliberately not pinned)
+#   - "You do not have permission to perform this action on this repository"
+#     (fine-grained/role repository authorization, repo_visibility_middleware)
+#   - "... not have access to this repository"  (repo-access ceiling: #504
+#     token repo scope "Token does not have access to this repository" and
+#     the OCI DENIED body "You do not have access to this repository")
+# A 403 with any OTHER body still fails so unexpected denial shapes surface
+# for triage instead of being silently absorbed.
+assert_403_denied() {
   local label="$1"
   local status="$2"
   local body_file="${WORK_DIR}/last-body"
   if [ "$status" != "403" ]; then
-    fail "${label}: expected 403, got HTTP ${status}"
+    fail "${label}: expected 403 denial, got HTTP ${status}: $(head -c 200 "$body_file" 2>/dev/null)"
     return 1
   fi
-  # Strict contract: response body MUST contain the exact backend scope-
-  # error substring. The earlier lowercase-"scope" fallback loosened this
-  # so a 403 with body "out of scope" or "Insufficient scope" would
-  # silently pass, which masks the message-shape part of the contract
-  # the GHSA fix actually pins (middleware/auth.rs emits the literal
-  # string verbatim). Keep only the exact substring match.
-  if grep -q "$SCOPE_ERROR_MSG" "$body_file" 2>/dev/null; then
+  if grep -Eq "Token does not have required scope|You do not have permission to perform this action on this repository|not have access to this repository" "$body_file" 2>/dev/null; then
     pass
     return 0
   fi
-  fail "${label}: got 403 but body missing canonical scope error '${SCOPE_ERROR_MSG}': $(head -c 200 "$body_file" 2>/dev/null)"
+  fail "${label}: got 403 but body is not a recognized denial: $(head -c 200 "$body_file" 2>/dev/null)"
   return 1
 }
 
@@ -258,13 +338,13 @@ begin_test "Read-scope SA token rejected on POST /api/v1/permissions"
 status=$(call_with_token "$SA_READ_TOKEN" POST "/api/v1/permissions" \
   "application/json" \
   "{\"name\":\"ghsa-perm-${RUN_ID}\",\"description\":\"should not be created\"}")
-assert_403_with_scope_msg "POST /api/v1/permissions" "$status"
+assert_403_denied "POST /api/v1/permissions" "$status"
 
 begin_test "Read-scope SA token rejected on POST /api/v1/groups"
 status=$(call_with_token "$SA_READ_TOKEN" POST "/api/v1/groups" \
   "application/json" \
   "{\"name\":\"ghsa-group-${RUN_ID}\",\"description\":\"should not be created\"}")
-assert_403_with_scope_msg "POST /api/v1/groups" "$status"
+assert_403_denied "POST /api/v1/groups" "$status"
 
 # Format-handler push paths. These three (npm, pypi, oci) are the canonical
 # write surfaces referenced in the GHSA advisory. We don't need a valid
@@ -283,7 +363,7 @@ npm_payload='{"name":"ghsa-test-pkg","versions":{},"_attachments":{}}'
 status=$(call_with_token "$SA_READ_TOKEN" PUT \
   "/npm/${NPM_REPO}/ghsa-test-pkg" \
   "application/json" "$npm_payload")
-assert_403_with_scope_msg "npm publish" "$status"
+assert_403_denied "npm publish" "$status"
 
 begin_test "Read-scope SA token rejected on pypi upload (POST /pypi/{repo}/)"
 # Empty multipart is fine: scope check runs before multipart parser.
@@ -295,13 +375,13 @@ status=$(curl -s -o "$body_file" -w '%{http_code}' $CURL_TIMEOUT \
   -F "name=ghsa-test" \
   -F "version=0.0.1" \
   "${BASE_URL}/pypi/${PYPI_REPO}/" 2>/dev/null) || status=000
-assert_403_with_scope_msg "pypi upload" "$status"
+assert_403_denied "pypi upload" "$status"
 
 begin_test "Read-scope SA token rejected on oci blob upload (POST /v2/.../blobs/uploads/)"
 status=$(call_with_token "$SA_READ_TOKEN" POST \
   "/v2/${OCI_REPO}/ghsa-test/blobs/uploads/" \
   "application/octet-stream" "")
-assert_403_with_scope_msg "oci blob upload" "$status"
+assert_403_denied "oci blob upload" "$status"
 
 # -------------------------------------------------------------------------
 # Previously-deferred format publish handlers (#2417). These eight formats
@@ -335,7 +415,7 @@ for row in "${DEFERRED_ROWS[@]}"; do
   d_path="${d_path_tpl//\{REPO\}/$d_key}"
   begin_test "Read-scope SA token rejected on ${d_label} publish (${d_method} ${d_path_tpl})"
   status=$(publish_scope_status "$d_method" "$d_path" "$d_mode" "$d_ctype")
-  assert_403_with_scope_msg "${d_label} publish" "$status"
+  assert_403_denied "${d_label} publish" "$status"
 done
 
 # pub_registry also gates the upload-URL preflight (#2417 D2): a read token
@@ -344,7 +424,7 @@ begin_test "Read-scope SA token rejected on pub upload-URL preflight (GET .../ve
 status=$(call_with_token "$SA_READ_TOKEN" GET \
   "/pub/${DEFERRED_REPO_KEY[pub]}/api/packages/versions/new" \
   "application/json" "")
-assert_403_with_scope_msg "pub upload-URL preflight" "$status"
+assert_403_denied "pub upload-URL preflight" "$status"
 
 # -------------------------------------------------------------------------
 # #2430: token-exchange action-scope laundering.
@@ -358,12 +438,13 @@ assert_403_with_scope_msg "pub upload-URL preflight" "$status"
 #
 # We then present the exchanged credential as a Bearer on an OCI blob-upload
 # init (a write) and assert:
-#   - read-only  -> 403 "Token does not have required scope: write"  (was 201/202)
+#   - read-only  -> 403 scope-gate denial  (was 201/202 before #2430)
 #   - read+write -> 202 Accepted  (positive control: exchange still works)
 #
-# The OCI repo is public, so require_oci_repo_write_access does not 404/deny
-# the request before the scope gate; the action-scope ceiling is the only
-# thing standing between the read-only exchanged credential and a write.
+# Both SAs hold an explicit read+write rule on the OCI repo (see the #2603
+# fixture grants above), so require_oci_repo_write_access passes at the
+# principal layer and the action-scope ceiling is the only thing standing
+# between the read-only exchanged credential and a write.
 # -------------------------------------------------------------------------
 
 CONAN_REPO="ghsa-conan-${RUN_ID}"
@@ -407,7 +488,7 @@ if [ -z "$RO_CONAN_JWT" ] || ! printf '%s' "$RO_CONAN_JWT" | grep -q '\.'; then
   fail "conan exchange did not return a JWT for the read-only token: ${RO_CONAN_JWT:0:120}"
 else
   status=$(oci_push_status "$RO_CONAN_JWT")
-  assert_403_with_scope_msg "conan-exchanged RO JWT on OCI write" "$status"
+  assert_403_denied "conan-exchanged RO JWT on OCI write" "$status"
 fi
 
 # --- Docker /v2/token exchange: read-only must NOT launder up to write ---
@@ -417,7 +498,7 @@ if [ -z "$RO_OCI_BEARER" ]; then
   fail "docker-login exchange did not return a bearer for the read-only token"
 else
   status=$(oci_push_status "$RO_OCI_BEARER")
-  assert_403_with_scope_msg "docker-login-exchanged RO bearer on OCI write" "$status"
+  assert_403_denied "docker-login-exchanged RO bearer on OCI write" "$status"
 fi
 
 # --- Positive controls: read+write exchanges still WORK on the write path ---
