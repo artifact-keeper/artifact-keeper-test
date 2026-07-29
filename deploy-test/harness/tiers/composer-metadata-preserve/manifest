@@ -1,0 +1,42 @@
+# DTF tier manifest: composer-metadata-preserve  (issue #2846)
+# Profile-set: filesystem / single. No upstream needed — the whole gate is a
+# local hosted Composer publish + served-metadata read.
+#
+# The #2846 class: an uploaded Composer package's valid composer.json
+# properties are STRIPPED from the served metadata. Two clobber points on the
+# publish -> packages.json path:
+#   1. `ComposerJson` (formats/composer.rs) is a fixed-field struct, so any
+#      schema property it does not model (`bin`, `extra`, `scripts`,
+#      `minimum-stability`, ...) is dropped when composer.json is parsed and
+#      re-serialized into stored metadata.
+#   2. `merge_composer_metadata` (api/handlers/composer.rs) copied only a fixed
+#      nine-key allowlist into each version entry, dropping everything else even
+#      if it had been stored.
+# The reporter (external, TheClonker) hit this with composer-plugin packages:
+# the missing `extra.class` makes `composer install` fail with
+# "composer-plugin packages should have a class defined in their extra key",
+# and the missing `bin` breaks vendor/bin symlinks.
+#
+# The fix preserves EVERY valid composer.json property end-to-end
+# (`#[serde(flatten)]` catch-all on the struct + a builder-owned DENYLIST in
+# the merge that copies all non-reserved keys), so `bin`/`extra`/`scripts`/...
+# survive into both the root packages.json inline entries and the p2 metadata.
+#
+# Oracle (discriminating): publish v1.0.0 then v2.0.0 of one composer-plugin
+# package, each carrying `bin` + `extra` (+ scripts / minimum-stability), then
+# read the served packages.json and assert BOTH versions are present AND each
+# still advertises its `bin` and `extra.class`.
+#   Fixed:     both versions present, bin + extra preserved  -> PASS.
+#   Pre-#2846: bin + extra stripped from every entry         -> FAIL.
+#
+# NOTE: the pre-fix backend image is EXPECTED TO FAIL this oracle (stripped
+# properties). That failing run is the proof the oracle discriminates; it flips
+# to PASS on the #2846 fix image.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo create + two
+# uploads + metadata reads back-to-back through one admin; the shipped default
+# (ON) would throttle the burst. A tier that must relax a shipped control does
+# so explicitly (same as the proxy-egress / isolation / pypi-contenttype tiers).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

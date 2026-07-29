@@ -1,0 +1,32 @@
+# DTF tier manifest: age-gate-review-reopen  (#2939 / 1.7.0)
+# Profile-set: filesystem / single. The age-gate review state machine is
+# DB+API-side; the enforcement it drives is the npm proxy metadata filter, so
+# the tier needs upstream egress to registry.npmjs.org (same dependency as the
+# other proxy tiers). Storage-independent -> filesystem only.
+#
+# The feature (#2939): age-gate reviews were TERMINAL. Once an admin approved or
+# rejected a held package version there was no way to revisit the decision. This
+# adds `POST /api/v1/admin/age-gate/reviews/{id}/reopen` (terminal -> pending)
+# and makes the existing approve/reject re-decidable from a terminal state
+# (approve a rejected review to unblock; reject an approved review to re-block).
+# Because the proxy download/metadata path re-reads the review status on every
+# request, transitioning a review flips what the proxy serves on the very next
+# pull.
+#
+# Oracle (discriminating):
+#   (REOPEN-ROUTE) POST .../reviews/{id}/reopen on an approved review -> 200 and
+#                  status flips to `pending`. On a pre-#2939 image the route does
+#                  not exist: Axum returns an empty-body 404 -> RED.
+#   (ENFORCE)      the npm packument the proxy serves flips in lock-step with the
+#                  review decision: approved version SERVED, after reopen it is
+#                  BLOCKED again, after reject still BLOCKED, after a re-approve
+#                  (re-decide a rejected review) SERVED again. Pre-#2939 the
+#                  reopen/re-decide calls fail so the decision can never be
+#                  revisited -> RED.
+#   (AUTHZ)        anonymous reopen -> 401 (admin-gated, parity with approve).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus ~12
+# back-to-back API/proxy calls; the base default (ON) would throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
