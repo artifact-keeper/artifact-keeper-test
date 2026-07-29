@@ -29,12 +29,30 @@
 #   it self-provisions a provider via the admin API and exercises the accept
 #   (signed) / explicit-reject (forged) contract directly over HTTP.
 #
+#   3. The forged payload was UNSIGNED-only, so the file advertised itself as a
+#      #2449 (XSW) regression guard while never sending an XSW payload.
+#      Rejecting an assertion with NO signature is strictly easier than
+#      defeating signature wrapping: the #2449 verifier checked the signature
+#      correctly (so the unsigned forgery was rejected) but then read claims
+#      from the WHOLE document last-wins, so a validly-signed BENIGN assertion
+#      wrapping an UNSIGNED ADMIN assertion escalated to admin. An
+#      XSW-vulnerable backend passed this gate. When the DTF signer probe is
+#      available, the gate now also POSTs the `xsw_dual` and `xsw_dup_id`
+#      wrapping payloads and requires the same explicit 4xx rejection.
+#   4. The forged-rejection assertion soft-skipped to green when SAML was
+#      clearly mounted but no ACS could be driven. It now hard-fails under
+#      RELEASE_GATE=1 in that case, and it discovers the real provider-scoped
+#      ACS (/api/v1/auth/sso/saml/{id}/acs) before falling back to guesses.
+#
 # Skip semantics (load-bearing):
 #   The forged-rejection assertion only skips when the backend genuinely does
-#   not expose a SAML ACS endpoint at all (SAML not compiled/mounted in this
-#   deploy). It NEVER skips-to-green on a crash, and it NEVER treats a 500 as a
-#   pass. The signed positive control skips only when the DTF signer probe
-#   cannot be built (no Rust toolchain) -- a genuine tooling limit, not a bug.
+#   not ship SAML at all (no admin SAML API AND a non-2xx providers endpoint,
+#   with no ACS at any known path). If SAML IS mounted but no ACS is reachable,
+#   it HARD-FAILS under RELEASE_GATE=1 -- a security gate that cannot reach the
+#   thing it guards must not report green. It NEVER skips-to-green on a crash,
+#   and it NEVER treats a 500 as a pass. The signed positive control and the XSW
+#   cases skip only when the DTF signer probe cannot be built (no Rust
+#   toolchain) -- a genuine tooling limit, not a bug.
 
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -158,6 +176,22 @@ body_has_session() {
 #   - 5xx (crash on attacker input) -> FAIL
 #   - 200 / session-bearing 3xx     -> FAIL (forged assertion accepted)
 #   - anything else (bare 200/3xx)  -> FAIL (not an explicit rejection)
+#
+# ASSUMPTION (3xx handling) -- deliberately errs SAFE:
+#   Every 3xx is treated as a FAIL, including a bare 302. AK's ACS is a
+#   JSON-API-style endpoint: it ACCEPTS with 200/307 + a token/session payload
+#   and REJECTS with a 4xx JSON error (see deploy-test/harness/tiers/sso/
+#   oracle.sh, which asserts 401 for every rejected XSW/forged case and 307 for
+#   an accepted one). So on AK a 3xx from the ACS means "assertion consumed,
+#   session established" -- an ACCEPT, i.e. a real failure.
+#   Some web-SSO SPs instead reject by 302-redirecting back to a login/error
+#   page. If a FUTURE AK ACS ever adopts that style, this branch would
+#   false-FAIL a correct backend and MUST be revisited -- but the fix is NOT to
+#   blanket-allow 3xx: that would turn accept-via-3xx (the actual #2449
+#   escalation shape, which redirects on success) into a false PASS. Any future
+#   loosening has to DISCRIMINATE, e.g. follow the redirect and assert the
+#   landing page is unauthenticated / no session cookie was set, or assert on
+#   the Location target. Until a live ACS confirms otherwise, 3xx stays FAIL.
 assert_forged_rejected() {
   local label="$1" acs="$2" st="$3" body="$4"
   if body_has_session "$body"; then
@@ -194,6 +228,32 @@ ensure_probe() {
   [ -x "$PROBE_BIN" ] && PROBE_READY=true
 }
 
+# craft_probe <case> <name_id> [extra probe args...] -> base64 SAMLResponse
+# Thin wrapper over the DTF probe's craft CLI, mirroring
+# deploy-test/harness/tiers/sso/oracle.sh:craft(). The inner assertion is signed
+# with PROVIDER_KEY, whose self-signed cert was registered as the provider
+# `certificate`, so the backend verifies with the exact key we sign with.
+craft_probe() {
+  local case="$1" nid="$2"; shift 2
+  local rid
+  rid="$(provider_request_id "$PROVIDER")"
+  "$PROBE_BIN" craft --key "$PROVIDER_KEY" \
+    --issuer "$IDP_ENTITY" --audience "$SP_ENTITY_ID" \
+    --request-id "$rid" --name-id "$nid" --case "$case" "$@" 2>/dev/null || true
+}
+
+# list_saml_provider_ids -> newline-separated UUID-shaped provider ids advertised
+# by the public providers endpoint (shape-agnostic: array, {providers:[...]},
+# {data:[...]} all work). Used to build the provider-scoped ACS path in the
+# no-admin-API fallback, where we cannot register our own provider.
+list_saml_provider_ids() {
+  curl -s $CURL_TIMEOUT -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/auth/sso/providers" 2>/dev/null \
+    | jq -r '[.. | objects | .id? // empty] | unique | .[]' 2>/dev/null \
+    | grep -Eio '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+    | head -5 || true
+}
+
 # ---------------------------------------------------------------------------
 # 1. SSO providers endpoint responds (5xx is now a failure, not a pass)
 # ---------------------------------------------------------------------------
@@ -201,6 +261,7 @@ begin_test "SSO providers endpoint responds"
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -H "$(auth_header)" \
   "${BASE_URL}/api/v1/auth/sso/providers" 2>/dev/null) || status="000"
+PROVIDERS_STATUS="$status"
 if [ "$status" = "404" ]; then
   skip "SSO providers endpoint does not exist on this deployment"
 elif [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 500 ] 2>/dev/null; then
@@ -217,8 +278,23 @@ PROVIDER=""
 PROVIDER_CERT="${WORK}/idp_cert.pem"
 PROVIDER_KEY="${WORK}/idp_key.pem"
 
+SAML_ADMIN_API=false
+if saml_admin_api_available; then SAML_ADMIN_API=true; fi
+
+# SAML_PRESENT: does this deployment ship SAML at all? Either the admin
+# provisioning route is mounted, or the public providers endpoint answered 2xx
+# (the SSO subsystem is compiled in and serving). This distinguishes "SAML is
+# not in this build" (a legitimate skip) from "SAML is here but the gate could
+# not reach its ACS" (a gate blind spot -- see the fallback branch below).
+SAML_PRESENT=false
+if [ "$SAML_ADMIN_API" = true ]; then
+  SAML_PRESENT=true
+elif [ "$PROVIDERS_STATUS" -ge 200 ] 2>/dev/null && [ "$PROVIDERS_STATUS" -lt 300 ] 2>/dev/null; then
+  SAML_PRESENT=true
+fi
+
 begin_test "Provision an ephemeral SAML provider (real IdP fixture) via admin API"
-if ! saml_admin_api_available; then
+if [ "$SAML_ADMIN_API" != true ]; then
   skip "admin SAML provider API (/api/v1/admin/sso/saml) not mounted on this backend line; falling back to generic-ACS forged-rejection check"
 else
   # Prefer the DTF signer probe's keypair (lets us also mint a SIGNED positive).
@@ -279,6 +355,50 @@ if [ -n "$PROVIDER" ] && [ "$PROVIDER" != "null" ]; then
   body=$(post_acs_body "$ACS_URL" "$FORGED_B64")
   assert_forged_rejected "provider ACS" "$ACS_URL" "$st" "$body"
 
+  # ---- XSW NEGATIVES (the actual #2449 defect class) ----
+  #
+  # Why the UNSIGNED case above is NOT sufficient on its own: rejecting an
+  # assertion with NO signature is strictly easier than defeating XSW. The
+  # #2449 bug was a verifier that DID check the signature (so it rejected the
+  # unsigned forgery just fine) but then extracted claims from the WHOLE
+  # document, last-wins -- so a validly-signed BENIGN assertion wrapping an
+  # UNSIGNED ADMIN assertion authenticated as admin. An XSW-vulnerable backend
+  # passes an unsigned-only oracle. These cases send the real thing.
+  #
+  # Mirrors deploy-test/harness/tiers/sso/oracle.sh:177-194 (XSW 1 / XSW 2),
+  # minus the DB assertion (no psql from the k8s release-gate runner): here the
+  # contract is the HTTP one -- an explicit 4xx rejection, no session issued.
+  #
+  # Only the two REJECT-shaped variants run here. The attribute-splice variants
+  # (xsw_attr_before/after, xsw_ds_object, xsw_nameid_comment) are correct-
+  # behaviour 307s that authenticate a NON-admin, so they can only be judged by
+  # inspecting the resulting user's role in the DB -- that stays in the DTF sso
+  # tier, which has DB_CONTAINER. Sending them through assert_forged_rejected
+  # would false-FAIL a correct backend.
+  for xsw_case in xsw_dual xsw_dup_id; do
+    case "$xsw_case" in
+      xsw_dual)   xsw_desc="signed benign assertion with an appended UNSIGNED admin assertion (2449 core)" ;;
+      *)          xsw_desc="unsigned admin assertion reusing the SIGNED assertion's ID (duplicate-ID wrap)" ;;
+    esac
+    begin_test "XSW ${xsw_case}: ${xsw_desc} is explicitly rejected at provider ACS"
+    if [ "$PROBE_READY" != true ] || [ ! -s "$PROVIDER_KEY" ]; then
+      skip "XSW payloads need the DTF SAML signer (deploy-test/harness/tiers/sso/probe) to sign the inner benign assertion; no Rust toolchain on this runner. NOTE: this leaves the XSW class unexercised in this run -- the unsigned-forgery control below/above still runs hard, but it does NOT cover #2449."
+      continue
+    fi
+    VIC="saml-sig-${xsw_case}-victim-${SUF}"
+    ATT="saml-sig-${xsw_case}-attacker-${SUF}"
+    XSW_B64="$(craft_probe "$xsw_case" "$VIC" \
+      --groups Developers --attacker-name-id "$ATT" --admin-group "$ADMIN_GROUP")"
+    if [ -z "$XSW_B64" ]; then
+      fail "signer probe produced no ${xsw_case} payload (craft failed)" \
+           "Without the payload this gate cannot exercise the #2449 XSW class at all."
+      continue
+    fi
+    st=$(post_acs_status "$ACS_URL" "$XSW_B64")
+    body=$(post_acs_body "$ACS_URL" "$XSW_B64")
+    assert_forged_rejected "XSW ${xsw_case} @ provider ACS" "$ACS_URL" "$st" "$body"
+  done
+
 else
   # ---- FALLBACK: no provider (old backend line). Still a REAL reject check
   # against the generic ACS, with the corrected hard-fail oracle. Only a
@@ -286,7 +406,18 @@ else
   begin_test "Forged UNSIGNED assertion is explicitly rejected at ACS endpoint"
   NID="saml-sig-forged-${SUF}"
   FORGED_B64="$(forged_unsigned_b64 "$NID" "")"
-  ACS_PATHS=(
+  # The ACS route AK actually mounts is PROVIDER-SCOPED
+  # (/api/v1/auth/sso/saml/{id}/acs) -- the un-scoped generic paths below are
+  # legacy/other-backend-line guesses and 404 on a current build. Without the
+  # admin API we cannot register our own provider, so discover an existing
+  # provider id from the public providers endpoint and drive its real ACS.
+  # This is what keeps the assertion load-bearing instead of soft-skipping.
+  ACS_PATHS=()
+  DISCOVERED_IDS="$(list_saml_provider_ids)"
+  for pid in $DISCOVERED_IDS; do
+    ACS_PATHS+=("/api/v1/auth/sso/saml/${pid}/acs")
+  done
+  ACS_PATHS+=(
     "/api/v1/auth/sso/saml/acs"
     "/api/v1/auth/saml/acs"
     "/auth/saml/acs"
@@ -302,7 +433,27 @@ else
     assert_forged_rejected "generic ACS" "$acs" "$st" "$body"
     break
   done
-  if [ "$acs_tested" = false ]; then
+  if [ "$acs_tested" = false ] && [ "$SAML_PRESENT" = true ]; then
+    # SAML IS shipped on this deployment (providers endpoint 2xx and/or the
+    # admin SAML API is mounted) but the gate could not drive ANY ACS. That is
+    # not "capability not shipped" -- it is the gate being BLIND to the exact
+    # subsystem it exists to guard. Soft-skipping here is how a security gate
+    # reports green while never testing anything (#870/#871/#888 class), so
+    # under RELEASE_GATE=1 this is a hard failure.
+    _acs_detail="providers endpoint HTTP ${PROVIDERS_STATUS}; admin SAML API mounted=${SAML_ADMIN_API}
+discovered provider ids: $(echo "$DISCOVERED_IDS" | tr '\n' ' ')
+paths tried: ${ACS_PATHS[*]}
+Fix by making the ACS reachable to the gate (register a provider via
+/api/v1/admin/sso/saml, or add the deployment's real ACS path to ACS_PATHS).
+Do NOT downgrade this to a skip: the forged-rejection assertion is the whole
+point of this suite."
+    if [ "${RELEASE_GATE:-0}" = "1" ]; then
+      fail "SAML is mounted on this deployment but NO ACS endpoint could be driven; the forged-rejection assertion did not run" \
+           "$_acs_detail"
+    else
+      skip "SAML appears mounted but no ACS endpoint responded; RELEASE_GATE unset (local dev) so this degrades to a skip. In the gate this is a hard FAIL. ${_acs_detail}"
+    fi
+  elif [ "$acs_tested" = false ]; then
     skip "no SAML ACS endpoint mounted at any known path (SAML not compiled/mounted in this deploy)"
   fi
 fi
