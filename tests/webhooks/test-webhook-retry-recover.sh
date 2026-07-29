@@ -115,6 +115,30 @@ cleanup_and_finalize() {
 }
 trap cleanup_and_finalize EXIT
 
+# -------------------------------------------------------------------------
+# Skipped pending test#317.
+#
+# The forced-failure injection is not scoped to this test's own delivery. The
+# webhook created below is global (no repository_id), so the backend fans every
+# repository.created event out to it, and mock-webhook-receiver.py counts forced
+# failures with a single process-global counter. In the release gate about a
+# dozen suites create repositories against the same backend concurrently, so a
+# sibling's delivery routinely consumes the single forced 500. This test's own
+# delivery is then answered 200, no retry row is written, and the suite fails
+# after waiting out WEBHOOK_RETRY_TIMEOUT reporting that the retry scheduler did
+# not deliver, when the scheduler was fine.
+#
+# Because the injection lands on an arbitrary delivery, a PASS never established
+# that retry scheduling works either. Skipping therefore removes no real
+# coverage; it stops a non-discriminating suite from gating releases.
+#
+# Un-skip when the injection is armed against the repository UUID (the delivery
+# body carries entity_id = REPO_ID, which does not exist until after the repo is
+# created, so it cannot be supplied at receiver launch). Remove the matching row
+# from _CAPABILITY_EXEMPTIONS in tests/lib/common.sh at the same time.
+# -------------------------------------------------------------------------
+skip_suite "forced-failure injection is not scoped to this delivery; see test#317"
+
 auth_admin
 
 # -------------------------------------------------------------------------
@@ -125,19 +149,15 @@ begin_test "Start mock webhook receiver"
 if ! command -v python3 >/dev/null 2>&1; then
   skip "python3 not available"
 else
-  # WEBHOOK_FAIL_MATCH scopes the forced failure to THIS test's own repository.
-  # The webhook created below has no repository_id, so it is global and the
-  # backend fans every repository.created event out to it, including those from
-  # the dozen-odd sibling suites that run against the same backend in the
-  # release gate. Without this scoping a sibling's delivery routinely arrived
-  # first and consumed the single forced 500, this test's own delivery was
-  # answered 200, no retry row was ever written, and the test failed after
-  # waiting out WEBHOOK_RETRY_TIMEOUT reporting that the retry scheduler had not
-  # delivered. REPO_KEY appears in the delivery body, so matching on it makes
-  # the injection hit exactly the delivery under measurement.
+  # NOTE: #316 passed WEBHOOK_FAIL_MATCH="$REPO_KEY" here. That was wrong and is
+  # removed: the delivery body carries entity_id = the repository UUID, not the
+  # repo key (see select_repo_records below, which matches on REPO_ID), so the
+  # match never fired, nothing was eligible for forced failure, and every
+  # delivery was answered 200. The receiver still supports WEBHOOK_FAIL_MATCH;
+  # it must be armed with REPO_ID, which only exists after the repo is created.
+  # See test#317.
   WEBHOOK_RECEIVER_PORT="$WEBHOOK_RECEIVER_PORT" \
     WEBHOOK_FAIL_FIRST_N="$WEBHOOK_FAIL_FIRST_N" \
-    WEBHOOK_FAIL_MATCH="$REPO_KEY" \
     WEBHOOK_RECEIVER_LOG="$WEBHOOK_RECEIVER_LOG" \
     python3 "$(dirname "$0")/../lib/mock-webhook-receiver.py" \
     >/tmp/mock-webhook-receiver-${RUN_ID}.stderr 2>&1 &

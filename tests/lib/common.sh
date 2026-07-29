@@ -1262,6 +1262,13 @@ _CAPABILITY_EXEMPTIONS=(
   "wasm_plugin_fixture|no plugin list endpoint responded; backend deploy may not include the plugin overlay|211"
   # mesh: run-now sync trigger endpoint not shipped (sync worker, TODO #78.4)
   "mesh_run_now|sync run-now endpoint not shipped (HTTP 404)|211"
+  # webhooks: the forced-failure injection is not scoped to this test's own
+  # delivery, so the suite cannot discriminate. The webhook it creates is
+  # global (no repository_id) and the receiver counts forced failures with one
+  # process-global counter, so a sibling suite's delivery routinely consumes
+  # the single forced 500. See test#317; remove this row when the injection is
+  # armed against the repository UUID.
+  "webhook_retry_injection|forced-failure injection is not scoped to this delivery|317"
 )
 
 ## _match_capability_exemption REASON
