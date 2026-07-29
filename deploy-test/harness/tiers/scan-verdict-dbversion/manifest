@@ -1,0 +1,56 @@
+# DTF tier manifest: scan-verdict-dbversion  (artifact-keeper#2976)
+# Profile-set: filesystem + trivy scanner (parity with the inline-scan-proxy-
+# pypi-2954 tier). Grype is the effective CVE engine for filesystem wheels and
+# runs from the binary bundled in the runtime image; the tier probes that
+# binary's live version string via `docker exec`.
+#
+# WHAT IT GUARDS (#2976, follow-up LOW from the #2954/#2970 red-team):
+#   `proxy_scan_results` verdicts carry `scanner_version` provenance, and
+#   `verdict_is_fresh` was BUILT to invalidate a verdict when the live scanner
+#   version differs - but the serve-time call site passed `current_version=None`
+#   so the comparison never ran. A cached `clean` verdict for a content digest
+#   was therefore reused for the full DEDUP_TTL_DAYS (30d) window even after
+#   the CVE-DB advanced to newly know a CVE in those bytes: the proxy kept
+#   serving `200 X-AK-Scan: clean` from stale cache.
+#
+# The fix threads the live CVE-engine version (Grype's VersionCache-backed
+# `Scanner::version()`, the SAME string persisted as verdict provenance) into
+# `verdict_is_fresh` at serve time: a stored/live mismatch marks the verdict
+# stale and forces the re-scan branches (fail-closed: inline re-scan -> 403 on
+# vulnerable / 423 on inconclusive; never stale-clean).
+#
+# Discriminating oracle (oracle.sh), fail-closed, injected version delta:
+#   A true live CVE-DB bump is impractical in the harness, so the tier injects
+#   the delta from the OTHER side: it seeds a `clean` verdict row for a KNOWN-
+#   CVE wheel's digest (Jinja2-2.10, flagged by Grype) whose scanner_version is
+#   a stale sentinel (`grype-0.0.1-dtf`) that can never equal the live probe.
+#   * STALE-VERSION pull of that wheel ->
+#       Fixed (#2976):  provenance mismatch -> verdict stale -> inline re-scan
+#                       -> 403 scan_blocked, and the digest row is upserted to
+#                       `vulnerable` at the LIVE scanner version.
+#       Pre-fix (RED):  `current_version=None` -> TTL-only freshness -> the
+#                       poisoned stale-clean row serves the CVE wheel
+#                       200 X-AK-Scan: clean and the row stays `clean` at the
+#                       stale sentinel version.
+#   * SAME-VERSION control: a second known-CVE wheel (PyYAML-5.3.1) seeded
+#     `clean` AT the live probed version -> 200 X-AK-Scan: clean on BOTH
+#     images (the cache is honoured when provenance matches: no needless
+#     re-scan, and #2976 is a targeted invalidation, not a cache-off hammer).
+#   * PROBE-UNKNOWN leg: threading the version in is not sufficient on its own.
+#     `verdict_is_fresh` treats an UNKNOWN version (either side) as "not
+#     provably stale", and that fast path runs BEFORE the inline scan, so a
+#     cached `clean` verdict short-circuited the whole fail_closed gate whenever
+#     the probe failed (engine mid-upgrade: a >=60s window, i.e. exactly during
+#     the CVE-DB advance this issue is about; engine absent: permanent; probe
+#     past its 5s timeout under load). The tier stubs grype and restarts the
+#     backend (dropping the 1h in-process version cache), then asserts:
+#       control  a FRESH digest is 423, so the node is provably fail-closed;
+#       gate     the cached-clean digest is 423/403, NOT 200 X-AK-Scan: clean.
+#     Fail-open is deliberately untouched (its re-scan branch serves anyway).
+#
+# RATE_LIMIT_ENABLED=false: admin login + repo/security setup + several proxy
+# pulls back-to-back through one admin.
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+NEEDS_INTERNET="true"

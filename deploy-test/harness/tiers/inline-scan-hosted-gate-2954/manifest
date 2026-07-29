@@ -1,0 +1,34 @@
+# DTF tier manifest: inline-scan-hosted-gate-2954  (#2954)
+# Profile-set: filesystem / single. Entirely local (upload + policy + download),
+# no upstream fetch and no internet — the default filesystem profile exercises
+# it fully.
+#
+# WHAT IT GUARDS (#2954, Part 1 — hosted download gate):
+#   `PolicyService::evaluate_artifact` enforces block_unscanned / block_on_fail /
+#   max_severity, but before this fix it had exactly ONE caller — the promotion
+#   gate. The ~30 per-format download handlers only consulted the quarantine
+#   status via `quarantine_service::check_artifact_download`, so a hosted
+#   artifact under a `block_unscanned` (or findings) policy was still downloadable
+#   on the raw pull path — `block_unscanned` / `block_on_policy_violation` were a
+#   false affordance. The fix folds evaluate_artifact into the shared
+#   `check_artifact_download` choke point (new `enforce_download_gate`), lighting
+#   up every format at once.
+#
+# Discriminating oracle (oracle.sh):
+#   * hosted-blocked: a local maven repo with an uploaded jar AND a repo-scoped
+#     scan policy `block_unscanned=true`. The jar is unscanned, so
+#     GET the jar ->
+#       Fixed (#2954):   403 (evaluate_artifact denies on the download path).
+#       Pre-#2954:       200 (policy never consulted on download) -> FAIL.
+#   * hosted-nopolicy (REGRESSION GUARD): an identical local maven repo with an
+#     uploaded jar and NO scan policy. GET the jar -> 200 on BOTH images. This
+#     pins the blast-radius guardrail: folding policy into the shared choke point
+#     must NOT 403 downloads for repos that never opted into a scan policy
+#     (evaluate_artifact no-ops to allowed when no enabled policy matches).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus a dozen
+# back-to-back API + upload + download calls; the base default (ON) would
+# throttle them (same rationale as the curation-* tiers).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -1,0 +1,43 @@
+# DTF tier manifest: inline-scan-proxy-pypi-2954  (#2954)
+# Profile-set: filesystem + trivy scanner. Needs the bundled Grype engine
+# (seeded CVE-DB, shipped in the runtime image) AND outbound access to
+# pypi.org to fetch the probe wheels. The scanners.trivy profile stands up the
+# scanner-adapter for parity with production; Grype is the effective CVE engine
+# for filesystem wheels and runs from the bundled binary regardless — the
+# fail-closed verdict here is produced by Grype.
+#
+# WHAT IT GUARDS (#2954, Part 2 — PyPI proxy scan-on-fetch-and-block):
+#   Proxy-cached bytes are deliberately not written to `artifacts` (#1278/#1280),
+#   so the artifact_id-keyed scanner pipeline never scanned them: `scan_on_proxy`
+#   was a pure log warning (#1274) and a vulnerable wheel streamed straight
+#   through (200) on the very first `pip install`. The fix runs the leaf Grype
+#   scanner over the buffered upstream bytes (new ScannerService::scan_content
+#   over a synthetic in-memory Artifact, no DB row), persists a digest-keyed
+#   verdict (`proxy_scan_results`, migration 181), and blocks fail-closed.
+#
+# Discriminating oracle (oracle.sh), fail-closed:
+#   * CVE wheel (Jinja2-2.10-py2.py3-none-any.whl, Grype flags CVE-2019-10906 /
+#     CVE-2020-28493) GET ->
+#       Fixed (#2954):   403 scan_blocked, AND a `vulnerable` proxy_scan_results
+#                        row for its digest, AND a REPEAT GET is still 403
+#                        served from the verdict cache with NO second Grype scan
+#                        (no upstream re-fetch).
+#       Pre-#2954:       200 (unscanned wheel streamed through) -> FAIL.
+#   * Clean wheel (six-1.16.0-py2.py3-none-any.whl) GET -> 200 with
+#     `X-AK-Scan: clean` on BOTH images (pins that the gate only blocks
+#     vulnerable content).
+#   * CVE-engine-error discriminator: with Grype rendered non-functional (its
+#     binary swapped for an exit-1 stub), a fail-closed pull of a FRESH CVE
+#     wheel (PyYAML-5.3.1) ->
+#       Fixed:     423 (inconclusive), NO `clean` row persisted, and a re-pull
+#                  after Grype is restored RE-SCANS and 403s.
+#       Pre-fix:   200 (the always-on DependencyScanner's Ok(empty) on a binary
+#                  wheel masks the Grype error -> aggregates to `clean`), and a
+#                  poisoned `clean` row keeps it 200 even after Grype recovers.
+#
+# RATE_LIMIT_ENABLED=false: admin login + repo/config setup + several proxy
+# pulls back-to-back.
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+NEEDS_INTERNET="true"
