@@ -1,0 +1,45 @@
+# DTF tier manifest: bounded-download-dispatch
+# Profile-set: filesystem / single. No SSO/S3 needed -- the oracle drives the
+# real hosted-download hot path (maven GET) over HTTP, injects a slow
+# event-store sink via a pg_sleep trigger, and reads ground truth from
+# pg_stat_activity + download_statistics via docker exec psql.
+#
+# WHAT IT GUARDS (#2522, bounded half): the first #2522 slice moved the two
+# download side-effect writes (download_statistics INSERT, ARTIFACT_DOWNLOADED
+# audit INSERT) off the byte plane with a per-request `tokio::spawn`. That left
+# them UNBOUNDED: every download spawned a detached task holding a catalog-pool
+# connection, with no cap and no backpressure. Under a download flood with a
+# slow/failing event store, tasks + pool connections grow without bound
+# (pool max_connections is 50 by default -- a flood pins ~all of them on
+# telemetry INSERTs), and the exhausted pool couples back into serving. The fix
+# replaces the spawns with ONE bounded mpsc queue + a FIXED pool of flush
+# workers (default 2) that batch-INSERT, shedding (drop + metric) on overflow.
+#
+# OBSERVABLE CONTRACT (discriminating oracle):
+#   With the event store made slow (BEFORE INSERT pg_sleep trigger on
+#   download_statistics), a flood of F concurrent GETs must
+#     (1) all return 200 with the exact bytes, promptly (byte plane decoupled),
+#     (2) never hold more than WORKER_BOUND concurrent backends in an active
+#         `INSERT INTO download_statistics` (measured via pg_stat_activity
+#         sampling during the flood) -- the bounded property itself,
+#     (3) still land every row eventually once the sink recovers (bounded-retry
+#         poll; batch flush timing), and a HEAD must land zero rows.
+#
+#   * GREEN on the fixed image: max concurrent stats-INSERT backends stays at
+#     or below the flush-worker bound (2 workers; asserted <= 4 for margin).
+#   * RED on the unbounded (main-reference) image: each GET spawns its own
+#     INSERT which sleeps in the trigger, so the sampled concurrency climbs
+#     toward min(F, pool_max) >> 4 -> FAIL. This was validated red->green
+#     against a main-@a791799 image before the fix PR.
+#
+# LOSS-AMPLIFICATION LEGS (red-team follow-up on the fix itself): batching
+# must not turn one bad row into batch-wide loss. (a) A 601-char User-Agent
+# (vs VARCHAR(512)) is clamped at capture/insert-build, so a crafted request
+# can no longer 22001-fail the batched INSERT and drop co-batched rows — all
+# rows land, the long UA lands truncated to 512. (b) A row-level poison the
+# clamp cannot prevent (injected RAISE trigger) loses ONLY itself: the
+# split-batch fallback persists every innocent neighbor and the loss is
+# counted in ak_download_events_dropped_total{reason="flush_failed"}.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
