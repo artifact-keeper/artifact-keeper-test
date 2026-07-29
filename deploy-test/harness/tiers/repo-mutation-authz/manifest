@@ -1,0 +1,49 @@
+# DTF tier manifest: repo-mutation-authz  (#2603 G1 — mutation authz choke-point)
+# Profile-set: filesystem / single. The write-authorization gap is in the HTTP
+# auth layer (native `repo_visibility_middleware`, REST `require_repo_action`),
+# ahead of any storage backend, so it is storage-independent.
+#
+# The bug (#2603 G1, HIGH): repository mutation authorization conflated
+# *visibility* / *coarse membership* with an *action grant*. On a PUBLIC
+# repository that carries no fine-grained permission rules, the native format
+# write path skipped its membership branch entirely (`else if !is_public`), so
+# ANY authenticated caller could PUT/POST/DELETE artifacts — cross-tenant write
+# / supply-chain poisoning. The REST + chunked-upload + OCI paths shared the
+# same `is_public -> Ok` / rules-less fall-through. The fix routes every
+# mutation through the single canonical `check_repository_action` choke-point,
+# DENY-BY-DEFAULT: `is_public` confers a READ baseline only and never a write.
+#
+# Oracle (discriminating, RELEASE_GATE=1), on a PUBLIC rules-less maven repo:
+#   (CONTROL)  a developer-role MEMBER native maven PUT -> 201 (legit push
+#              unchanged; public read below stays 200 too).
+#   (BOUNDARY) an authenticated NON-member native maven PUT -> 403 (GREEN). On
+#              the vulnerable baseline this returns 201/200 (RED — the write
+#              SUCCEEDS on a repo the caller has no write grant on). A DB assert
+#              confirms the non-member PUT persisted NO artifacts row on the fix
+#              (0) vs one on baseline.
+#   (READ)     anonymous GET of the member-pushed artifact -> 200 (the public
+#              read baseline is intact; the fix restricts writes only).
+#
+# Git-LFS download-vs-upload discriminator (PUBLIC rules-less gitlfs repo, same
+# authenticated NON-member caller for both). The git-lfs `POST /objects/batch`
+# is a write HTTP method but the DOWNLOAD batch is the mandatory `git lfs pull`
+# negotiation (a read); only the UPLOAD batch is a write. A method-only mutation
+# gate 403s the whole POST and breaks download negotiation for read-only members
+# and public-repo non-members:
+#   (LFS-DOWNLOAD) non-member download batch -> 200 (GREEN). The over-restrictive
+#              method-only gate returns 403 (RED); the pre-#2603 baseline never
+#              gated batch at all. The fix classifies the batch POST as
+#              non-mutating so the handler self-gates.
+#   (LFS-UPLOAD)   non-member upload batch -> 403 (GREEN). The batch handler
+#              self-gates uploads through the same deny-by-default action
+#              choke-point, so the download exemption opens no upload hole
+#              (a hole would return 200, RED). download 200 vs upload 403 for the
+#              same caller/repo is the discriminator.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + two user creates
+# + two logins + a repo create + several back-to-back native PUT/GETs; the base
+# default (ON) would throttle them. A tier that must disable a shipped control
+# does so explicitly (design 2.2, as isolation/5f2q-upload-scope do).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

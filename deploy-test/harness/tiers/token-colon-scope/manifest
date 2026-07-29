@@ -1,0 +1,35 @@
+# DTF tier manifest: token-colon-scope  (#2989 / 1.7.0)
+# Profile-set: filesystem / single. The scope-vocabulary mismatch this tier
+# proves is storage-independent — the broken check is the pure scope match in
+# `scopes_grant_access`, ahead of any storage backend.
+#
+# The bug (#2989): repo-scoped tokens minted via POST /repositories/{key}/tokens
+# carry COLON-FORM scopes (`write:artifacts`, `read:artifacts`, ...) but the
+# artifact upload/mutation handlers enforced the BARE `write` scope via
+# `require_scope("write")`. The vocabularies never matched, so a legitimate
+# least-privilege `write:artifacts` repo-scoped token got 403 on upload (fails
+# closed — broken flow, not a hole).
+#
+# The fix: handlers require the resource-specific `write:artifacts`, and the
+# central matcher gains ONE new rule — a held BARE parent satisfies a
+# colon-form requirement (held `write` covers required `write:artifacts`).
+# Direction is broad-covers-specific ONLY: held `write:artifacts` satisfies
+# neither bare `write` (settings-class handlers) nor another resource's scope.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (MAIN)     repo-scoped `write:artifacts` token -> PUT artifact 201.
+#              RED on the pre-fix baseline (403 "required scope: write"),
+#              GREEN on the fix. A DB assert confirms the artifact row exists.
+#   (CONTROL)  personal bare `write` token -> PUT artifact 2xx on BOTH images
+#              (bare-parent rule keeps the legacy vocabulary working).
+#   (BOUNDARY) the same `write:artifacts` token -> PATCH /repositories/:key
+#              (settings write, bare `write` gate) -> 403 on BOTH images;
+#              -> upload to a DIFFERENT repo -> denied (repo binding intact);
+#              repo-scoped `read:artifacts` token -> upload 403 on BOTH images.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + user create +
+# user login + three token mints + several back-to-back uploads; the base
+# default (ON) would throttle them (same rationale as 5f2q-upload-scope).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

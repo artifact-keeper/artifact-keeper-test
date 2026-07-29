@@ -1,0 +1,40 @@
+# DTF tier manifest: redact-userinfo-leak  (issue #2926)
+# Profile-set: filesystem / single + upstreams=mock-redact (a tiny stdlib http
+# server that answers every artifact fetch with HTTP 500, on the slot's private
+# 172.16/12 subnet; health-gated instantly).
+#
+# WHAT THIS DISCRIMINATES (#2926): `redact_url_for_diagnostics`
+# (backend/src/services/proxy_service.rs) must strip `user:password@` userinfo
+# from an upstream URL before it is rendered into a client-facing diagnostic or
+# a user-visible log. A NuGet/Maven/etc. remote repo stores its upstream
+# credentials embedded in `upstream_url` (`http://user:pass@host/...`), and
+# AK builds the outbound fetch URL by concatenating that base
+# (`build_upstream_url` = `format!("{}/{}", base, path)`), so the userinfo
+# survives verbatim into the URL string AK then logs and folds into its
+# "Upstream returned error status 500: <url>" diagnostic. Pre-#2926 the
+# username + password leak into the backend log; the fix redacts them to the
+# bare `http://host/...` form (host retained, so the diagnostic stays useful).
+#
+# OBSERVABLE SURFACE = the backend LOG, not the client body. Every format
+# handler already remaps an upstream 5xx to a generic client message
+# ("Upstream temporarily unavailable; retry shortly"), and a transport failure
+# short-circuits to 404, so there is no clean client-facing *body* that carries
+# the raw URL in a live deployment. `redact_url_for_diagnostics`'s real
+# runtime leak surface is the "user-visible log" its own docstring names: the
+# "Fetching artifact from upstream: <url>" INFO line and the "Upstream returned
+# error status 500: <url>" 503-mapping WARN line. This tier drives a real proxy
+# fetch through a creds-bearing remote repo and asserts (docker logs of the
+# backend):
+#   * the configured username + password do NOT appear anywhere in the log; AND
+#   * the redacted host (`http://mock-redact/...`, userinfo stripped) DOES
+#     appear (proves the diagnostic path ran and redaction kept the host, i.e.
+#     it did not over-redact the whole URL).
+# NON-ZERO-WHILE-BUG: pre-#2926 the creds are present in the log, so the first
+# check fails; only the fixed image exits 0.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo create +
+# repeated proxy fetches back-to-back through one admin user (relax a shipped
+# control explicitly; base default stays ON).
+PROFILES="storage.filesystem upstreams.mock-redact"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

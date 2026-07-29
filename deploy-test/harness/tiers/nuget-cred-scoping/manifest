@@ -1,0 +1,45 @@
+# DTF tier manifest: nuget-cred-scoping  (issue #2925)
+# Profile-set: filesystem / single + upstreams=mocknuget (two stdlib http
+# servers on the slot's private 172.16/12 subnet: `mock-nuget-index` = the
+# configured upstream, `mock-nuget-foreign` = the other host its service index
+# names; both log the Authorization header of every request; health-gated
+# instantly).
+#
+# WHAT THIS DISCRIMINATES (#2925): a NuGet V3 remote proxy discovers its
+# RegistrationsBaseUrl / PackageBaseAddress resource bases from the upstream
+# *service index response*, then fetches from those bases carrying the repo's
+# configured upstream credentials (`apply_upstream_auth`, keyed by repo). A
+# malicious or compromised upstream service index can name an attacker host in
+# those resources, causing the proxy to send the configured credentials there
+# (credential exfiltration / SSRF-adjacent). The fix
+# (backend/src/api/handlers/nuget.rs `guard_upstream_base` + `same_upstream_origin`)
+# refuses any discovered base whose host+effective-port differs from the
+# configured `upstream_url` origin, with a 502, BEFORE any credentialed fetch.
+#
+# The oracle stands up two mock hosts, configures TWO remote nuget repos (both
+# with the same Basic upstream credentials):
+#   * nuget-foreign : upstream_url -> mock-nuget-index/foreign/index.json, whose
+#                     service index points the flat-container base at the FOREIGN
+#                     host (the exploit)
+#   * nuget-samehost: upstream_url -> mock-nuget-index/samehost/index.json, whose
+#                     service index points the base back at the index host itself
+#                     (the legitimate case)
+# then drives `GET /nuget/<repo>/v3/flatcontainer/testpkg/index.json` on each and
+# asserts:
+#   N1  the FOREIGN host received NO credentialed request (no `AUTH=Basic` line):
+#       the configured credentials were never sent off the configured host
+#   N2  AK REFUSED the off-host resolution with HTTP 502 (before any credentialed
+#       fetch), not 200
+#   N3  regression: the SAME-host resource still gets the credentials (index host
+#       logs a credentialed `/sh-flat/` request) and AK returns 200 -- the fix
+#       does not break legitimate same-host proxying
+# NON-ZERO-WHILE-BUG: pre-#2925 the foreign host receives `AUTH=Basic ...` and AK
+# returns 200, so N1 and N2 fail; only the fixed image exits 0. N3 passes on both
+# images and guards the fix against over-blocking.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo creates +
+# proxy fetches back-to-back through one admin user (relax a shipped control
+# explicitly; base default stays ON).
+PROFILES="storage.filesystem upstreams.mocknuget"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
