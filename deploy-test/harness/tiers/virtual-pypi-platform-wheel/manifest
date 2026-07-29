@@ -1,0 +1,48 @@
+# DTF tier manifest: virtual-pypi-platform-wheel  (issue #2937, reported #2748)
+# Profile-set: filesystem / single + a canned PyPI upstream (mock-pypi-platform)
+# that advertises two wheels of a locally-owned project.
+#
+# WHAT THIS DISCRIMINATES (#2937): the #1600 dependency-confusion guard isolates
+# a locally-owned PEP 503 name to its local owner, suppressing a lower-priority
+# Remote member of a virtual repo for that name. That suppression was NAME-level
+# coarse and broke a legitimate topology (#2748): the remote's platform/ABI-
+# distinct wheel of a version the local ALREADY owns (local ships the LINUX
+# `dtfwheel==2.0` wheel, remote ships the WINDOWS wheel of the SAME 2.0) was
+# suppressed too. The #2937 fix makes the guard DISTRIBUTION-granular:
+#   * Case A (union): a wheel of a version the local owner already provides,
+#     whose compat tag the owner does NOT already ship -> surfaced in the index
+#     AND downloadable (200).
+#   * Case B (stay suppressed): a version present only in the remote (1.9) ->
+#     omitted from the index AND 404 on download, unchanged from before, so the
+#     dependency-confusion boundary (#1600) is not regressed.
+#
+# The oracle seeds a LOCAL pypi repo owning the linux 2.0 wheel + a REMOTE over
+# the mock (windows 2.0 wheel = Case A, 1.9 = Case B), and a VIRTUAL with the
+# local at higher priority than the remote (so the guard engages). It asserts,
+# through the virtual: Case A appears in the simple index AND downloads 200,
+# while Case B is absent from the index AND downloads 404. A companion assertion
+# pins that the local owner's own linux wheel still resolves.
+#
+# RED/GREEN: pre-#2937 the name-coarse guard drops the whole remote member, so
+# the Case-A windows wheel is absent from the index and 404s on download -> the
+# Case-A assertions FAIL (RED). The #2937 fix unions it -> PASS (GREEN). The
+# Case-B assertions hold on BOTH images (safety/regression guard).
+#
+# #2967 R4 (CRITICAL content-type bypass): the mock ALSO serves a second project
+# (`dtfjson`) as an HTML body MISLABELED `Content-Type: application/json`. The
+# pre-R4 ownership filter trusted `ct.contains("json")`, echoed the HTML verbatim,
+# then sniffed it as HTML and ran the in-place `rewrite_upstream_urls` rewriter
+# (no ownership filter; its `[^>]*?` cannot cross the `>` inside a prior `title`
+# attribute) -> a RAW off-site href reaches pip AND a remote-only Case-B version
+# surfaces (the index/download asymmetry). RED on HEAD 40df41e: the off-site href
+# and the Case-B 2.0 appear in the rendered index. GREEN on the R4 fix: the filter
+# sniffs the BODY not the header, routes the HTML through the ownership rebuild,
+# fails closed otherwise -> only owned Case-A AK paths survive.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo/member creates
+# + a wheel upload + several simple-index/download GETs back-to-back through one
+# admin user; the base default (ON) would throttle them. Explicit per design
+# §2.2, matching the pypi-contenttype / proxy-egress / isolation tiers.
+PROFILES="storage.filesystem upstreams.mockpypi-platform"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

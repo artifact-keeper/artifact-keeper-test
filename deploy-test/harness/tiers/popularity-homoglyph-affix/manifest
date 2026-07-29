@@ -1,0 +1,63 @@
+# DTF tier manifest: popularity-homoglyph-affix  (#2956 / follow-up to #2952/#2949 / 1.7.0)
+# Profile-set: filesystem / single. Extends the typed `popularity` curation
+# rule's typo-squat arm with two evasion classes pure Damerau-Levenshtein
+# (max_distance<=2) misses:
+#   - Unicode-confusable (homoglyph) impersonation: >=3 confusable codepoint
+#     swaps (Cyrillic е U+0435 / ѕ U+0455 for Latin e/s) exceed max_distance
+#     while staying pixel-identical. #2956 folds names through NFKC + the
+#     UTS #39 confusable skeleton (unicode-security crate) and flags a
+#     skeleton collision with a popular name whose raw name differs, plus
+#     mixed-script identifiers as a standalone signal.
+#   - Affix reputation-riding: a popular base name wrapped in ANY boundary-
+#     delimited affix token ('python-requests', 'data-numpy', 'numpy2024',
+#     camelCase), matched in skeleton space, is len(affix)+1 edits away.
+#     #2956 flags it only while the CANDIDATE itself is low/unknown-download
+#     (affix_max_downloads gate) and not itself on the popular list — the
+#     false-positive guard for legitimately popular affixed names
+#     ('python-dateutil').
+#   - Mixed-script is proximity-gated: a multi-script name only flags when it
+#     also sits near a popular name in skeleton space; benign
+#     internationalized names must not flood review.
+#
+# Enforcement seam (unchanged from curation-global-popularity): the STAGING-
+# CATALOG re-evaluate layer (POST /curation/packages/re-evaluate ->
+# curation_packages.status/.rule_id/.evaluation_reason). Advisory Flag ->
+# review by default; no new enforcement path.
+#
+# NO-EGRESS SCOPE: every download count degrades to Unknown, so EVERY pypi
+# package lands in `review` with "popularity unknown" on both baseline and
+# fix. Status alone is therefore NOT discriminating — the oracle asserts on
+# the evaluation_reason CONTENT:
+#   (RULE)      global popularity rule (typosquat_check on, max_distance 2,
+#               defaults for homoglyph/affix) -> 201 + rule_type echoed.
+#   (HOMOGLYPH) 'rеquеѕts' (3 Cyrillic swaps of 'requests', D-L distance 3 >
+#               max_distance) -> review AND reason names 'requests' with a
+#               homoglyph/confusable justification.
+#   (AFFIX)     'python-requests' (prefix, distance 7, Unknown own
+#               downloads) -> review AND reason cites reputation-riding of
+#               'requests'.
+#   (GEN-AFFIX) 'data-numpy' (NON-allowlisted affix token — the 95%-evasion
+#               class from the #3005 red-team) -> review AND reason cites
+#               reputation-riding of 'numpy'.
+#   (HOMO-AFFIX)'nｕmpy-x' (fullwidth homoglyph + arbitrary affix; evaded
+#               raw-byte affix match, whole-name skeleton, AND mixed-script)
+#               -> review AND reason cites reputation-riding of 'numpy'.
+#   (LEGIT-FP)  'python-dateutil' (ON the popular seed list, itself a real
+#               package) -> reason carries NO lexical-squat signal (no
+#               typo-squat / homoglyph / mixed-script / reputation-riding) —
+#               the false-positive guard, expected green on baseline AND fix.
+#   (MIXED-FP)  'py中文tools' (multi-script, resembles nothing popular) ->
+#               reason carries NO mixed-script/lexical-squat signal — the
+#               proximity gate that stops the review-queue FP flood.
+#
+# Discriminating: GREEN on a #2956 image with the #3005 red-team fixes.
+# RED on current main (pre-#2956): squat names exceed max_distance<=2, so
+# their reasons are "popularity unknown" only — HOMOGLYPH/AFFIX/GEN-AFFIX/
+# HOMO-AFFIX gates fail. Also RED on the first #2956 iteration (bounded affix
+# allowlist + ungated mixed-script): GEN-AFFIX and HOMO-AFFIX produce no
+# signal and MIXED-FP is spuriously flagged.
+#
+# RATE_LIMIT_ENABLED=false: admin login plus ~12 back-to-back API/DB calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

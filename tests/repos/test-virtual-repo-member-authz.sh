@@ -10,7 +10,7 @@
 #   list_virtual_members     -> read-only (no require_scope("write"))
 #   get_cache_ttl (GET)      -> read-only (no require_scope("write"))
 #
-# A token created with scopes:["read"] (see existing pattern in
+# A token created with scopes:["read:artifacts"] (see existing pattern in
 # tests/rbac/test-scope-enforcement.sh, which provisions tokens via
 # POST /api/v1/auth/tokens) must therefore be 403'd on every write path
 # but 200'd on the two read paths. Anything else is the silent-success
@@ -43,7 +43,7 @@ RO_TOKEN_NAME="e2e-vauthz-readonly-${RUN_ID}"
 RO_TOKEN=""
 RO_TOKEN_ID=""
 if RO_RESP=$(api_post "/api/v1/auth/tokens" \
-    "{\"name\":\"${RO_TOKEN_NAME}\",\"scopes\":[\"read\"]}" 2>/dev/null); then
+    "{\"name\":\"${RO_TOKEN_NAME}\",\"scopes\":[\"read:artifacts\"]}" 2>/dev/null); then
   RO_TOKEN=$(echo "$RO_RESP" | jq -r '.token // .api_key // .key // empty') || true
   RO_TOKEN_ID=$(echo "$RO_RESP" | jq -r '.id // .token_id // empty') || true
 fi

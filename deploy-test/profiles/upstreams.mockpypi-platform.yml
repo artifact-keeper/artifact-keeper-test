@@ -1,0 +1,65 @@
+# =============================================================================
+# profiles/upstreams.mockpypi-platform.yml — upstreams=mockpypi-platform overlay
+# (PyPI #2937 / #2748)
+# =============================================================================
+# Sibling of upstreams.mockpypi.yml, but the canned upstream advertises TWO
+# wheels of a locally-owned project so the virtual-pypi-platform-wheel tier can
+# discriminate the #2937 distribution-granular ownership guard:
+#   * a WINDOWS wheel of a version the local owner already ships as a LINUX
+#     wheel  (Case A — safe to union), and
+#   * a whole other version present only in the remote (Case B — must stay
+#     suppressed).
+# See harness/tiers/virtual-pypi-platform-wheel/fixtures/mock_pypi_platform.py.
+#
+# Same escape-hatch discipline as upstreams.mockpypi.yml: the mock sits on a
+# per-slot 172.16/12 subnet and the backend gets UPSTREAM_ALLOW_PRIVATE_IPS +
+# AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16/12 so BOTH the create-time upstream-URL
+# check AND the download-time resolved-href SSRF check allowlist the mock.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-pypi:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-pypi
+    command: ["python3", "/app/mock_pypi_platform.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_PKG: "dtfwheel"
+      MOCK_OWNED: "2.0"
+      MOCK_REMOTE: "1.9"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/virtual-pypi-platform-wheel/fixtures/mock_pypi_platform.py:/app/mock_pypi_platform.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockpypi:
+        ipv4_address: 172.28.${DTF_SLOT}.50
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-pypi:
+        condition: service_healthy
+    environment:
+      # Let the create-time SSRF check AND the download-resolve SSRF check reach
+      # the mock on 172.16/12 (scoped to the mock's subnet only).
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockpypi: {}
+
+networks:
+  mockpypi:
+    name: ak-dtf${DTF_SLOT}-mockpypi
+    ipam:
+      config:
+        - subnet: 172.28.${DTF_SLOT}.0/24

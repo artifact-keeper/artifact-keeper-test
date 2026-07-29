@@ -1,0 +1,48 @@
+# DTF tier manifest: migration-authz  (#2603 G2 / 1.7.0)
+# Profile-set: filesystem / single (the walking-skeleton topology). The
+# migration authorization gap this tier proves is storage-independent — the
+# missing gate sits in the /api/v1/migrations/* routing layer, ahead of any
+# source-connection I/O or storage write.
+#
+# The bug (#2603 G2): the /api/v1/migrations/* nest was mounted under
+# `auth_middleware` (authentication) with per-handler authorization limited to
+# per-user ownership of the SOURCE connection — there was NO admin gate and NO
+# target-repository write authorization. A migration is an instance-provisioning
+# operator workflow: it imports whole repos/users/groups/permissions from an
+# external source and bulk-WRITES them into caller-named target repositories
+# (some of which the job itself creates). Under the vulnerable baseline any
+# AUTHENTICATED non-admin could register a source connection, create a migration
+# job whose config NAMES ARBITRARY TARGET REPOSITORIES, and start it — driving a
+# bulk import that populates/poisons repos they cannot write. The fix moves the
+# whole nest under `admin_middleware` (global-admin-only), matching the peer
+# (`/peers`), dependency-track and plugin admin surfaces, so a non-admin is
+# refused with 403 BEFORE the handler body runs (also placing the authz decision
+# ahead of any source-connection SSRF-validation / encryption).
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   BOUNDARY  a non-admin token on POST /migrations/connections, on
+#             POST /migrations (a job config NAMING a target repo the caller
+#             cannot write — the cross-repo-write case), on
+#             POST /migrations/:id/start, and on GET /migrations -> 403 (GREEN).
+#             On the vulnerable baseline each request reaches the handler
+#             (201/200/404, NOT 403): the non-admin registers a source, stages a
+#             job pointed at an arbitrary target repo, and starts the import.
+#             403 (authz denied at the nest) is distinguished from the handler
+#             being reached — that distinction is the whole tier.
+#   CONTROL   admin on the same mutating routes -> passes authz (201, not 403);
+#             admin GET /migrations -> 200 (the legitimate operator migration
+#             path is NOT broken); anon on a mutating route -> 401
+#             (admin_middleware authenticates before it authorizes).
+#   NOTE      the non-admin first creates its own source connection so the
+#             baseline `create_migration` owns a real connection id and stages a
+#             201 job naming the target repo; on the FIXED image that first step
+#             is already 403, so the chain never begins. Synthetic UUID fallbacks
+#             keep the start/GET probes valid when the fix denies the create.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + a user create +
+# user login + several back-to-back migration probes through one admin/user
+# pair; the base default (ON) would throttle them. A tier that must disable a
+# shipped control does so explicitly (mirrors f7qf-peer-authz / isolation / sso).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -1,0 +1,27 @@
+# DTF tier manifest: maven-grouped-name-keyset  (#2723)
+# Profile-set: filesystem / single.
+#
+# Sibling of `maven-grouped-name` (which gates the catalog WRITE path:
+# packages.name == groupId:artifactId). This tier gates the second half of
+# #2723 -- the LISTING path. Hosted/virtual Maven grouped listings
+# (`GET .../artifacts?group_by=maven_component`) are now served through the
+# package-catalog SQL keyset (bounded memory), replacing the prior
+# fetch-everything-then-group-in-memory path that never advertised a cursor.
+#
+# Oracle (oracle.sh) is the discriminating gate. After uploading two Maven
+# artifacts under distinct groupId:artifactId to a hosted maven repo, it walks
+# the grouped listing one component per page via the opaque `?cursor=`:
+#   * Fixed (#2723): page 1 carries a non-null `next_cursor`/`has_more=true`,
+#     and following the cursor returns the SECOND, distinct component keyed on
+#     `groupId:artifactId`, in stable ascending order.
+#   * Pre-#2723 listing: the in-memory grouped path emits NO `next_cursor`
+#     (skip_serializing_if None) and ignores `?cursor=`, so the cursor page
+#     repeats the first component -> FAIL. (This holds even though the catalog
+#     `packages.name` is already grouped by the merged write-path fix, so the
+#     gate isolates the listing/keyset change specifically.)
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + two uploads + two
+# listing reads back-to-back; the base default (ON) could throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

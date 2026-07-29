@@ -48,7 +48,7 @@ begin_test "Create read-only API token"
 READ_TOKEN=""
 READ_TOKEN_ID=""
 if resp=$(api_post "/api/v1/auth/tokens" \
-    "{\"name\":\"${READ_TOKEN_NAME}\",\"scopes\":[\"read\"]}" 2>/dev/null); then
+    "{\"name\":\"${READ_TOKEN_NAME}\",\"scopes\":[\"read:artifacts\"]}" 2>/dev/null); then
   READ_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
   READ_TOKEN_ID=$(echo "$resp" | jq -r '.id // .token_id // empty') || true
   if [ -n "$READ_TOKEN" ] && [ "$READ_TOKEN" != "null" ]; then
@@ -165,7 +165,7 @@ begin_test "Create read-write API token"
 WRITE_TOKEN=""
 WRITE_TOKEN_ID=""
 if resp=$(api_post "/api/v1/auth/tokens" \
-    "{\"name\":\"${WRITE_TOKEN_NAME}\",\"scopes\":[\"read\",\"write\"]}" 2>/dev/null); then
+    "{\"name\":\"${WRITE_TOKEN_NAME}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" 2>/dev/null); then
   WRITE_TOKEN=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
   WRITE_TOKEN_ID=$(echo "$resp" | jq -r '.id // .token_id // empty') || true
   if [ -n "$WRITE_TOKEN" ] && [ "$WRITE_TOKEN" != "null" ]; then

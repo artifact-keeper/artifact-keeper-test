@@ -1,0 +1,56 @@
+# DTF tier manifest: ingest-tenant-fairness  (#2598)
+# Profile-set: filesystem / single. The gap is in the shared ingestion
+# concurrency seam (backend/src/util/bounded_archive.rs), ahead of any storage
+# backend, so filesystem is sufficient.
+#
+# WHAT IT GUARDS (#2598, follow-up to #2561): #2561 shipped a GLOBAL process-wide
+# semaphore (MAX_CONCURRENT_INGEST_EXTRACTIONS, default 8) that fast-fails excess
+# ingestion archive decodes with a 503. That cap is fair in aggregate but NOT per
+# tenant: one noisy tenant (repository) firing many concurrent uploads can hold
+# every global permit and starve other tenants, which then see 503s caused
+# entirely by a neighbour. #2598 adds a per-tenant sub-limit on top of the global
+# cap at the SAME acquire seam (fairness key = repository), so one tenant can
+# never consume the whole global budget; the remainder always stays available to
+# other tenants. `repo_visibility_middleware` attributes each format request to
+# its repository, so every extractor inherits the fairness with no per-handler
+# change.
+#
+# Deterministic caps for this tier: global=2, per-tenant=1. With per-tenant=1 a
+# single repository holds at most ONE global permit at any instant, so of the two
+# global permits at least one is ALWAYS free for a different repository —
+# a deterministic GREEN for the cross-tenant probe. On a pre-#2598 image (no
+# per-tenant layer) the noisy repository can hold BOTH global permits, so the
+# neighbour's upload is shed with a 503 (RED).
+#
+# Discriminating oracle (RELEASE_GATE=1):
+#   (CONTROL)   a normal chart upload to repo A and to repo B each succeed
+#               (legit path unchanged).
+#   (FAIRNESS)  while repo A is saturated with a sustained burst of concurrent
+#               slow-to-decode chart uploads (each holds its decode permit while
+#               a large-but-under-budget filler inflates), a normal upload to
+#               repo B still SUCCEEDS (2xx) rather than 503.
+#                 * GREEN on the fixed image: A is capped at its per-tenant
+#                   sub-limit (1), leaving a global permit for B.
+#                 * RED on a pre-#2598 image: A holds both global permits and B
+#                   is starved (503).
+#
+# DETERMINISM CAVEAT: cross-tenant *starvation* is inherently timing-dependent
+# over HTTP (a decode permit is held only for the duration of the synchronous
+# decode). The GREEN direction this oracle asserts is deterministic — with
+# per-tenant=1 a neighbour permit is structurally always available on the fix,
+# independent of timing. The RED direction (that a pre-fix image starves B)
+# depends on A actually holding both global permits at the instant B probes; the
+# oracle drives that by keeping a sustained concurrent slow-upload burst against
+# A for the whole probe window and probing B several times, but a pre-fix image
+# under an unusually idle scheduler could still let a B probe slip through. The
+# tier is therefore a reliable GREEN gate for the fix and a strong (not
+# hermetic) RED signal for the regression.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus a burst of
+# concurrent uploads; the base default (ON) would throttle them and mask the
+# concurrency behaviour under test.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+export MAX_CONCURRENT_INGEST_EXTRACTIONS=2
+export MAX_CONCURRENT_INGEST_EXTRACTIONS_PER_TENANT=1

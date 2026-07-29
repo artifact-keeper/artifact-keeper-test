@@ -1,0 +1,32 @@
+# DTF tier manifest: backup-exclude-repos  (#2772 / feat/2772-backup-exclude-repos)
+# Profile-set: filesystem / single. The backup archive is written by
+# BackupService before any bytes leave the process and is recorded on the
+# `backups` row's `storage_path`; the exclude behaviour is backend-agnostic, so
+# this runs on the default filesystem overlay and is asserted directly from the
+# archive contents (pulled with `docker cp`, extracted with host tar/jq).
+#
+# The feature (#2772): airgapped / bandwidth-limited deployments want to keep
+# specific repositories OUT of full and incremental backups. CreateBackupRequest
+# gained an optional `exclude_repositories` (a list of repository ids); when set,
+# those repositories' artifacts are omitted from the backup -- both the artifact
+# bytes AND their rows in the `database/artifacts.json` table dump inside the
+# archive. When omitted (or empty) nothing is excluded, so existing full backups
+# are byte-for-byte unchanged. Pre-#2772 the field does not exist, so it is
+# ignored: an excluded repository is still fully backed up.
+#
+# Oracle (oracle.sh) is the discriminating gate. Two maven/local repos are
+# seeded, "keep" and "drop", each with one artifact:
+#   * POST /api/v1/admin/backups {"type":"full","exclude_repositories":[<drop>]}
+#     then execute -> the archive's database/artifacts.json contains the "keep"
+#     repo's artifact and NOT the "drop" repo's artifact.
+#     Pre-#2772: exclude is ignored -> the "drop" artifact is present -> FAIL.
+#   * Same assertion for {"type":"incremental",...}.
+#   * CONTROL: a backup with NO exclude still contains BOTH artifacts (the
+#     feature is additive; default behaviour is unchanged).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo creates,
+# artifact uploads, and several admin create/execute-backup calls back to back;
+# the base default (ON) could throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

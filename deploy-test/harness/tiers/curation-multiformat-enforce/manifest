@@ -1,0 +1,37 @@
+# DTF tier manifest: curation-multiformat-enforce  (#2930)
+# Profile-set: filesystem / single. The gate is entirely API + curation-rule
+# side and short-circuits BEFORE any outbound upstream fetch, so it needs no
+# live internet and no cloud overlay — the default filesystem profile exercises
+# it fully.
+#
+# WHAT IT GUARDS (#2930):
+#   `curation_enabled` is settable on every repository, but before this fix only
+#   the PyPI proxy pull path actually enforced a curation `block` rule. On the
+#   other ~26 proxy formats (npm, docker/oci, maven, cargo, nuget, ...) a block
+#   rule was silently inert — the blocked package streamed straight through. The
+#   fix wires the shared `enforce_curation` seam into each format handler's
+#   download/pull path, so a `block` rule 403s the pull across formats.
+#
+# Discriminating oracle (oracle.sh) — two independent formats:
+#   (NPM)    remote npm repo, curation_enabled, block rule package_pattern
+#            'left-pad'. GET the left-pad tarball ->
+#              Fixed (#2930):  403 {"error":"curation_blocked"} (gate fires
+#                              before the upstream fetch, no internet needed).
+#              Pre-#2930:      the gate is absent, so the request falls through
+#                              to the upstream proxy fetch -> NOT 403 (200 if
+#                              reachable, 404/502 otherwise) -> FAIL.
+#            A companion pull of a NON-blocked package (is-odd) must NOT be 403,
+#            pinning that curation only blocks the ruled package.
+#   (DOCKER) remote docker repo (public + anonymous), curation_enabled, block
+#            rule package_pattern 'library/hello-world'. An anonymous OCI token
+#            pull of GET + HEAD .../manifests/latest ->
+#              Fixed (#2930):  403 curation_blocked on both verbs.
+#              Pre-#2930:      NOT 403 -> FAIL.
+#            A NON-blocked image (library/alpine) must NOT be 403.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus ~15 back-to-
+# back API + proxy calls; the base default (ON) would throttle them. (Same
+# rationale as the curation-rule-types / isolation tiers.)
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

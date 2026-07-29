@@ -1,0 +1,26 @@
+# DTF tier manifest: inline-scan-fail-open-2954  (#2954)
+# Profile-set: filesystem + trivy scanner. Needs the bundled Grype engine
+# (seeded CVE-DB) AND outbound pypi.org access, same as
+# inline-scan-proxy-pypi-2954.
+#
+# WHAT IT GUARDS (#2954, Part 4 — fail-open must be LOUD, never silent):
+#   The default proxy_scan_action is fail-open (latency-first): a first pull of
+#   an unknown digest is served immediately WHILE an async Grype scan populates
+#   the digest-keyed verdict, and the NEXT pull of that digest is blocked if the
+#   verdict is vulnerable. Fail-open must never be a silent #1274-style gap:
+#   the served-unscanned response carries `X-AK-Scan: pending` (plus a warn +
+#   audit signal server-side).
+#
+# Discriminating oracle (oracle.sh), fail-open on a CVE wheel:
+#   * First pull  -> 200 with `X-AK-Scan: pending` (served, async scan kicked).
+#       Pre-#2954: 200 with NO X-AK-Scan header (silent unscanned serve) -> FAIL.
+#   * After the async verdict lands -> a `vulnerable` proxy_scan_results row.
+#   * Second pull -> 403 scan_blocked (the async verdict now blocks the digest).
+#       Pre-#2954: still 200 -> FAIL.
+#
+# RATE_LIMIT_ENABLED=false: admin login + setup + repeated pulls + a short poll
+# for the async verdict.
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+NEEDS_INTERNET="true"

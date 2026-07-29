@@ -1,0 +1,38 @@
+# =============================================================================
+# profiles/storage.s3-backup-bucket.yml — additive overlay for #2507
+# =============================================================================
+# Layers ON TOP OF profiles/storage.s3.yml (do NOT use standalone). It:
+#   * ADDS  a second createbucket sidecar that provisions `ak-backups`
+#   * PATCHES backend.environment with BACKUP_S3_BUCKET=ak-backups
+#   * ADDS  a completion gate on the new sidecar to backend.depends_on
+#
+# With this overlay a fixed backend (#2507) routes backup ARCHIVES to the
+# dedicated `ak-backups` bucket while artifacts stay in `ak-artifacts`. A
+# pre-#2507 backend ignores BACKUP_S3_BUCKET and writes the archive into
+# `ak-artifacts` (RED). Compose deep-merges the `backend` service across the
+# two -f files (environment + depends_on maps merge by key), so the base
+# storage.s3 S3_* config is preserved and only extended here.
+#
+# Usage (tier manifest): PROFILES="storage.s3 storage.s3-backup-bucket".
+# =============================================================================
+services:
+  createbucket-backups:
+    image: minio/mc:latest
+    container_name: ak-dtf${DTF_SLOT}-mc-backups
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/ak-backups &&
+      echo backup-bucket-ready
+      "
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      createbucket-backups:
+        condition: service_completed_successfully
+    environment:
+      BACKUP_S3_BUCKET: ak-backups

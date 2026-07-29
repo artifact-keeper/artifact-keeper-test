@@ -1,0 +1,88 @@
+# =============================================================================
+# profiles/upstreams.mocknuget.yml — upstreams=mocknuget overlay (#2925)
+# =============================================================================
+# Adds a two-host mock NuGet V3 topology for the nuget-cred-scoping tier
+# (#2925): a CONFIGURED upstream (`mock-nuget-index`) whose service index can
+# advertise resource bases on a DIFFERENT host, and that FOREIGN host
+# (`mock-nuget-foreign`) which records the Authorization header of every
+# request it receives. If AK sends the repo's configured upstream credentials
+# to the foreign host, the foreign container's log carries the leak.
+#
+# Same escape-hatch discipline as upstreams.mockpypi.yml:
+#   * ADDS  `mock-nuget-index` (host A) + `mock-nuget-foreign` (host B), both
+#     stdlib python http servers on the slot's private 172.16/12 subnet.
+#   * PATCHES backend onto the same `mocknuget` net + sets the private-IP escape
+#     hatch (UPSTREAM_ALLOW_PRIVATE_IPS + AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16/12)
+#     so remote-repo create against `http://mock-nuget-index/...` is accepted
+#     and both hosts are reachable. The #2925 origin check is host-name based,
+#     so mock-nuget-index != mock-nuget-foreign regardless of their private IPs.
+#
+# Required vars (run.sh exports them): DTF_SLOT (per-slot subnet + static IPs so
+# concurrent slots never collide), DTF_DIR (mount the mock script).
+# =============================================================================
+services:
+  mock-nuget-index:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-nuget-index
+    command: ["python3", "/app/mock_nuget.py"]
+    environment:
+      MOCK_PORT: "80"
+      ROLE: index
+      INDEX_HOST: mock-nuget-index
+      FOREIGN_HOST: mock-nuget-foreign
+    volumes:
+      - "${DTF_DIR}/harness/tiers/nuget-cred-scoping/fixtures/mock_nuget.py:/app/mock_nuget.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mocknuget:
+        ipv4_address: 172.30.${DTF_SLOT}.50
+
+  mock-nuget-foreign:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-nuget-foreign
+    command: ["python3", "/app/mock_nuget.py"]
+    environment:
+      MOCK_PORT: "80"
+      ROLE: foreign
+    volumes:
+      - "${DTF_DIR}/harness/tiers/nuget-cred-scoping/fixtures/mock_nuget.py:/app/mock_nuget.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mocknuget:
+        ipv4_address: 172.30.${DTF_SLOT}.51
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-nuget-index:
+        condition: service_healthy
+      mock-nuget-foreign:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mocknuget: {}
+
+networks:
+  mocknuget:
+    name: ak-dtf${DTF_SLOT}-mocknuget
+    ipam:
+      config:
+        - subnet: 172.30.${DTF_SLOT}.0/24

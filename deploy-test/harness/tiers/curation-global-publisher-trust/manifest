@@ -1,0 +1,50 @@
+# DTF tier manifest: curation-global-publisher-trust  (#2948 / #2947 / 1.7.0)
+# Profile-set: filesystem / single. The typed publisher_trust evaluator is
+# DB+API-side (curation_rules.config + the evaluate_typed_rules dispatch seam
+# consumed by POST /curation/packages/re-evaluate). Storage-independent; no
+# external egress required (publisher identity is read from the SEEDED package
+# metadata blob, not fetched).
+#
+# The feature (#2948, integrated by #2947): a GLOBAL publisher_trust rule maps
+# a package's publisher against a trusted-publisher allowlist. The publisher is
+# extracted from the artifact metadata blob and LABELED with its provenance —
+# an attestation record (present but NOT cryptographically verified until
+# #2955) vs self-asserted author/maintainer metadata (weak, spoofable). Under
+# `match: attestation` (the secure default), a self-asserted name on the
+# allowlist is NOT trusted, and a present-but-unverified attestation earns
+# review, never trust (presence is forgeable — attestation theater).
+#
+# CRITICAL — enforcement is at the STAGING-CATALOG / re-evaluate layer, NOT the
+# PEP 503 proxy download gate (that gate is pattern-only and skips typed
+# rules). So this oracle drives packages through POST /curation/packages/
+# re-evaluate and asserts on the resulting CATALOG DECISION / status
+# (approved / blocked / review) + rule_id, never a proxy 403 on a pull.
+#
+# Oracle (discriminating — decision seam, one global rule, four packages):
+#   RULE    global publisher_trust {trusted_publishers:["NumFOCUS"],
+#           match:"attestation", action:"block"}. 201 + rule_type echoed.
+#   ATTEST  pypi pkg with a merged provenance attestation bundle for the
+#           NumFOCUS GitHub org -> Flag (present-but-unverified attestation,
+#           pending #2955) -> status=review, rule_id=<rule>. Never approved
+#           (a planted provenance blob must not buy trust) and never a
+#           blanket block of legit attested packages.
+#   SPOOF   pypi pkg with self-asserted info.author="NumFOCUS" and NO
+#           attestation -> Block (spoof-resistant) -> status=blocked,
+#           rule_id=<rule>. The dependency-confusion shape a squatter uploads.
+#   UNKNOWN pypi pkg on an applicable format with no extractable publisher ->
+#           Flag("publisher unknown") -> status=review, rule_id=<rule>.
+#   NA      a `raw` (non-applicable) format -> NotApplicable pass-through ->
+#           default stance decides it (default_action=allow -> approved) with
+#           rule_id NULL: the global rule never judged it.
+#
+# Discriminating: GREEN on the fixed #2947/#2948 image (review/blocked/review
+# /approved-NULL from ONE rule + pass-through). RED on a pre-feature baseline
+# (the typed rule is not enforced, the SPOOF stays unblocked) AND on the
+# attestation-theater build (ATTEST is approved on a forgeable provenance
+# blob instead of review).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus ~15
+# back-to-back API/DB calls; the base default (ON) would throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

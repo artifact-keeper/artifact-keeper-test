@@ -1,0 +1,65 @@
+# =============================================================================
+# profiles/upstreams.mock-redact.yml — upstreams=mock-redact overlay (#2926)
+# =============================================================================
+# Adds a tiny stdlib-only upstream (`mock-redact`) that answers every artifact
+# fetch with HTTP 500, for the redact-userinfo-leak tier (#2926). A real 5xx (as
+# opposed to a transport failure, which short-circuits to 404) drives AK's
+# `validate_upstream_status` into a client-facing ServiceUnavailable diagnostic
+# body that echoes the configured upstream URL. When the remote repo's
+# `upstream_url` carries `user:password@` userinfo, that body is where the
+# credentials leak pre-#2926.
+#
+# The overlay (same escape-hatch discipline as upstreams.mockpypi.yml):
+#   * ADDS  `mock-redact` — a stdlib python http server on the slot's private
+#     172.16/12 subnet, serving 500 for any path (200 only on /__readyz).
+#   * PATCHES backend onto the same `mockredact` net + sets the private-IP
+#     escape hatch (UPSTREAM_ALLOW_PRIVATE_IPS + AK_SSRF_ALLOW_PRIVATE_CIDRS=
+#     172.16/12) so the remote-repo create against `http://<creds>@mock-redact/`
+#     is accepted and the backend can reach the mock.
+#
+# Required vars (run.sh exports them): DTF_SLOT (per-slot subnet + static IP so
+# concurrent slots never collide), DTF_DIR (mount the mock script).
+# =============================================================================
+services:
+  mock-redact:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-redact
+    command: ["python3", "/app/mock_upstream_500.py"]
+    environment:
+      MOCK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/redact-userinfo-leak/fixtures/mock_upstream_500.py:/app/mock_upstream_500.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockredact:
+        ipv4_address: 172.29.${DTF_SLOT}.50
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-redact:
+        condition: service_healthy
+    environment:
+      # Let the create-time SSRF check + the fetch reach the mock on 172.16/12.
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockredact: {}
+
+networks:
+  # backend <-> mock-redact. 172.16/12 subnet so the mock upstream is allowlisted
+  # by AK_SSRF_ALLOW_PRIVATE_CIDRS at repo-create time.
+  mockredact:
+    name: ak-dtf${DTF_SLOT}-mockredact
+    ipam:
+      config:
+        - subnet: 172.29.${DTF_SLOT}.0/24

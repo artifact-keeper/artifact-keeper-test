@@ -1,0 +1,47 @@
+# DTF tier manifest: quota-admission-o1  (#2516 slice S2 / 1.7.0)
+# Profile-set: filesystem / single. Quota admission is DB+service-side; the
+# oracle drives the real chunked-upload HTTP path plus DB truth (docker exec
+# psql) against `repository_usage_ledger`. No egress, no object storage.
+#
+# PERF FIX UNDER TEST (#2516/F1, slice S2): quota admission
+# (`RepositoryService::check_quota_locked`) used to `SELECT ... FOR UPDATE` the
+# repository's `repository_usage_ledger` row and then IGNORE it, re-running a
+# live 3-way `SUM(size_bytes)` over artifacts + proxy_cache_artifacts +
+# oci_blobs on EVERY quota-enabled upload — an O(rows) aggregate inside the
+# lock's critical section, serializing all same-repo uploads behind it at large
+# repo sizes. Since migration 182 (main), row-level triggers on the three
+# source tables keep the ledger counters exact in every write's own
+# transaction. The fix makes admission O(1) by TRUSTING those counters: it
+# locks the ledger row, decides off `hosted+proxy+oci`, and performs the
+# artifact INSERT in the same transaction (the trigger applies the charge
+# inside the held lock — admission itself writes NO counter). Deletes are
+# decremented by the trigger too; the 30-min reconciler stays as a drift
+# safety net only.
+#
+# Reference image = current main WITH migration 182 (triggers present, but
+# admission still re-SUMs the live tables).
+#
+# Oracle:
+#   (CHARGE)   after one admitted upload the ledger row's hosted_bytes equals
+#              EXACTLY the uploaded size — charged once, by the trigger. GREEN
+#              on both images; RED on any fix that stacks a manual admission
+#              charge on top of the trigger (double-count = +2x per upload).
+#   (O1-ADMIT) THE discriminating gate: with the maintained counters set to
+#              quota-full and the live tables well under quota, the next
+#              upload is rejected (413 at the session preflight or 507 at the
+#              locked complete admission). Pre-fix admission re-SUMs the live
+#              tables, ignores the authoritative counters, and ADMITS -> RED.
+#   (ENFORCE)  with counters at truth: a fitting upload -> 200, an over-quota
+#              upload -> 507 (the "fast but leaky" worse-bug guard; GREEN on
+#              both images).
+#   (RELEASE)  deleting an artifact decrements hosted_bytes in the delete's
+#              own transaction (mig-182 trigger) and the freed space is
+#              admissible by the very next upload — never below the live sum
+#              (no phantom free space). GREEN on both post-182 images; guards
+#              the F2 regression.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus ~20
+# back-to-back API calls; the base default (ON) would throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

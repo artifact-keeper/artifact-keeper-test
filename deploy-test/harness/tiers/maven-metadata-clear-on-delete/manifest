@@ -1,0 +1,29 @@
+# DTF tier manifest: maven-metadata-clear-on-delete  (#2845)
+# Profile-set: filesystem / single. The bug is storage-agnostic (it lives in
+# the Maven download path's "serve the stored maven-metadata.xml in preference
+# to dynamic generation" rule), so it manifests on the default filesystem
+# overlay and needs no shared object store.
+#
+# The bug (#2845): `mvn deploy` uploads a verbatim group/artifact
+# `maven-metadata.xml` alongside each artifact. The Maven download handler
+# serves that stored document in preference to dynamically generating it from
+# the live artifact rows (a deliberately-uploaded document is authoritative for
+# its owner). When a version is deleted through the web UI / delete API, the
+# artifact rows are soft-deleted but the stored `maven-metadata.xml` is left in
+# place — so the served metadata keeps advertising the removed version in
+# `<versions>`/`<latest>`/`<release>`, and a client resolves a version that now
+# 404s. The fix clears the stored document on delete so the next GET regenerates
+# the version list from the live (non-deleted) rows.
+#
+# Oracle (oracle.sh) is the discriminating gate:
+#   * publish two release versions + the verbatim maven-metadata.xml listing
+#     both, delete one version, then GET the group/artifact maven-metadata.xml.
+#     Fixed (#2845): the deleted version is ABSENT from <versions> and
+#                    <latest>/<release> point at the surviving version.
+#     Pre-#2845:     the deleted version is STILL listed -> FAIL.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + several back-to-back
+# Maven PUTs and DELETEs; the base default (ON) would throttle them.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

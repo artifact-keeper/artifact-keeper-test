@@ -1,0 +1,25 @@
+# DTF tier manifest: storage-prefix-rollup  (#2601, epic #2056 P2)
+# Profile-set: filesystem / single. The per-prefix rollup is materialized from
+# the catalog tables and read via the repositories API; nothing here is
+# backend-specific, so the default filesystem overlay suffices.
+#
+# The feature (#2601): a folder/path-tree storage usage rollup — a second
+# materialization `repository_path_storage_stats` keyed by (repository, path
+# prefix), refreshed with the existing storage-stats pass (schedule + GC), and
+# a new endpoint GET /api/v1/repositories/{key}/storage/tree?prefix=&depth=.
+#
+# Oracle (oracle.sh) is the discriminating gate:
+#   * create a repo, upload a nested file layout via the API, then POST
+#     /api/v1/admin/storage-gc (the fix makes admin-triggered GC also refresh
+#     the materialized stats, so the oracle has a deterministic trigger)
+#   * GET .../storage/tree -> on the PRE-FIX image the route does not exist
+#     (404) => RED. On the fixed image => 200 with correct per-prefix totals.
+#   * assert nested-prefix rollup figures (root/libs/libs/app) and a dedup
+#     case (one CAS object referenced from two subtrees: logical=3x,
+#     physical=1x at the root; sum(children.physical) > root.physical).
+#   * regression: the repo-level /storage endpoint (#2559 P1) still serves.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives a dozen API calls back-to-back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

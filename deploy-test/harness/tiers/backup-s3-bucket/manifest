@@ -1,0 +1,31 @@
+# DTF tier manifest: backup-s3-bucket  (#2507)
+# Profile-set: s3 (MinIO) + the additive storage.s3-backup-bucket overlay, which
+# provisions a SECOND bucket `ak-backups` and sets BACKUP_S3_BUCKET=ak-backups on
+# the backend. #2507 lets operators keep backup archives in a different S3 bucket
+# from artifact storage (different lifecycle/retention policy).
+#
+# The feature (#2507): backup_service.rs routes the backup ARCHIVE read/write
+# path to a dedicated StorageService when BACKUP_S3_BUCKET is set (S3 backend
+# only); source artifacts and restores still use the primary bucket. When unset
+# behavior is byte-identical (archives live in the primary bucket).
+#
+# Oracle (oracle.sh) is the discriminating gate. It exercises the real object
+# store, so it must run on the S3 profile — the routing is unobservable on
+# filesystem (BACKUP_S3_BUCKET is an S3-only concept and resolves to "reuse
+# primary" there):
+#   * Create + execute a backup, then the archive object (.tar.gz) must appear
+#     in the `ak-backups` bucket.
+#     Pre-#2507: BACKUP_S3_BUCKET is ignored, the archive lands in `ak-artifacts`
+#     and `ak-backups` stays empty -> FAIL.
+#   * The `ak-artifacts` bucket must contain NO backup archive under backups/.
+#     Pre-#2507: the archive is there -> FAIL.
+#
+# The bucket is inspected with a transient `minio/mc` container joined to the
+# minio container's network namespace (DB_CONTAINER gives the slot prefix).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + create/execute
+# back-to-back; the base default (ON) could throttle them. Matches the S3
+# proof rig / isolation tier.
+PROFILES="storage.s3 storage.s3-backup-bucket"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

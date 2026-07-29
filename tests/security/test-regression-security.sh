@@ -47,7 +47,7 @@ TOKEN_NAME_592="revlist-tok-${RUN_ID}"
 API_TOKEN_592=""
 if [ -n "${USER_ID_592:-}" ] && [ "$USER_ID_592" != "null" ]; then
   if resp=$(api_post "/api/v1/users/${USER_ID_592}/tokens" \
-      "{\"name\":\"${TOKEN_NAME_592}\",\"scopes\":[\"read\"]}" 2>/dev/null); then
+      "{\"name\":\"${TOKEN_NAME_592}\",\"scopes\":[\"read:artifacts\"]}" 2>/dev/null); then
     API_TOKEN_592=$(echo "$resp" | jq -r '.token // .api_key // .key // empty') || true
     TOKEN_ID_592=$(echo "$resp" | jq -r '.id // .token_id // empty') || true
     if [ -n "$TOKEN_ID_592" ] && [ "$TOKEN_ID_592" != "null" ]; then

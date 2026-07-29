@@ -1,0 +1,43 @@
+# DTF tier manifest: ledger-triggers-authoritative  (issue #2992)
+# Profile-set: filesystem / single. The whole gate is local: format-handler
+# uploads plus direct catalog-table mutations, checked against the
+# repository_usage_ledger counters in Postgres.
+#
+# The #2992 class: `repository_usage_ledger` (migration 171) was maintained by
+# almost none of the write paths — ~90 `INSERT INTO artifacts` sites in the
+# format handlers, the proxy-cache catalog writers and ~21 `oci_blobs` writers
+# (plus ~30 scattered soft/hard delete sites) mutate the source tables without
+# touching the ledger, so the stored counters drift until the background
+# reconciler happens to run. Anything that trusts those counters (the planned
+# O(1) quota admission repoint) then over-admits against stale bytes, and a
+# decrement of never-charged bytes floors below reality (phantom free quota).
+#
+# The fix (migration 183): row-level AFTER triggers on `artifacts`,
+# `proxy_cache_artifacts` and `oci_blobs` charge/decrement the matching ledger
+# component inside the mutating statement's own transaction, for every present
+# and future write path, with a one-time true-up backfill.
+#
+# Oracle (discriminating): the invariant "ledger == authoritative live SUM
+# after every mutation".
+#   * upload a Maven jar through the format handler (a path that never calls
+#     the enforced admission code) -> hosted_bytes must equal the live
+#     filtered SUM (> 0). Pre-183: ledger row absent/zero            -> FAIL.
+#   * raw INSERT / soft-delete / hard DELETE on `artifacts` -> ledger tracks
+#     each step exactly and never goes below reality/negative.
+#   * raw INSERT into `proxy_cache_artifacts` / `oci_blobs` -> each charges
+#     its own component.
+#   Fixed (183): every check holds                                    -> PASS.
+#
+# NOTE: the pre-fix backend image is EXPECTED TO FAIL this oracle (stale
+# ledger after the handler upload). That failing run is the proof the oracle
+# discriminates; it flips to PASS on the #2992 trigger migration.
+#
+# Regression leg: quota admission behaviour is UNCHANGED by #2992 (main keeps
+# its live-SUM admission): an under-quota enforced upload is 201 and an
+# over-quota one is 507 on both images.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo creates +
+# several uploads back-to-back through one admin.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

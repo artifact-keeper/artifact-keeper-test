@@ -74,7 +74,7 @@ else
   resp=$(curl -sf $CURL_TIMEOUT -X POST \
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d '{"name":"e2e-readonly","scopes":["read"]}' \
+    -d '{"name":"e2e-readonly","scopes":["read:artifacts"]}' \
     "${BASE_URL}/api/v1/auth/tokens" 2>/dev/null) || true
   READ_TOKEN=$(echo "$resp" | jq -r '.token // empty')
   READ_TOKEN_ID=$(echo "$resp" | jq -r '.id // empty')
