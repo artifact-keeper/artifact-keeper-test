@@ -1,0 +1,43 @@
+# DTF tier manifest: artifact-quarantine-listing  (#2940)
+# Profile-set: filesystem / single (the walking-skeleton topology; the artifact
+# listing DTO is storage-independent — quarantine state lives on the
+# `artifacts` row, not in the storage backend).
+#
+# The gap (#2940): the repository artifacts listing endpoint
+# (`GET /api/v1/repositories/:key/artifacts`) returned every artifact WITHOUT
+# its per-artifact quarantine state, so a client/operator/UI could not tell
+# which listed artifacts are held for security review (auto-quarantined /
+# admin-quarantined / rejected). Quarantine is a core download control (a
+# held artifact's download is blocked) but it was invisible in the listing.
+#
+# The fix (#2940): the listing item (`ArtifactResponse`) carries an
+# always-present `quarantine_status` (and a `quarantine_until` expiry when a
+# timed hold is set), populated from the same `artifacts` row already selected
+# by the listing query — no extra join, no per-row (N+1) lookup. Held
+# artifacts report `"quarantined"`; artifacts with no quarantine state report
+# the explicit `"not_quarantined"`. The human-readable *reason* is deliberately
+# NOT in the listing (it stays behind the authenticated, visibility-checked
+# `GET /api/v1/quarantine/{id}`, #2912), so the anonymous-reachable public
+# listing discloses only the state, never the reason.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (A) DISCRIMINATOR  after an admin quarantines an uploaded artifact, its
+#       listing item carries quarantine_status == "quarantined". Baseline
+#       (pre-fix): the field is ABSENT from the listing item -> RED.
+#   (B) CONTROL        a normal (un-held) artifact in the same listing carries
+#       quarantine_status == "not_quarantined" (proves the tier is not a hollow
+#       always-quarantined string). Baseline: field absent -> RED.
+#   (C) GROUNDED       the DB row for the held artifact really reads
+#       quarantine_status='quarantined' AND GET /quarantine/{id} reports
+#       is_blocked=true, so the listing string reflects a real control, not a
+#       cosmetic label.
+#   (D) NON-DISCLOSURE the anonymous listing on the public repo surfaces the
+#       state but carries NO quarantine_reason field (preserves #2912).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login + two uploads + a
+# quarantine + several listing reads back-to-back; the base default (ON) would
+# throttle them. A tier that must disable a shipped control does so explicitly
+# (design 2.2, same as isolation / ci-token-basic / qcmj-webhook-authz).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
