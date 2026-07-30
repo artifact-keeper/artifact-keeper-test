@@ -288,10 +288,31 @@ scannerAdapter:
 secrets:
   jwtSecret: "ak-ci-nonprod-q7z6wharZXoYYW3BI1ZPSdbMDyXrXS6DiCajP8IPCHg4Bjgb"
 
-# Disabled services: not needed for scanning test runs
+# Dependency-Track: enabled so security-tests can exercise the SBOM
+# upload + findings sync path. The chart's bootstrap init container
+# performs the admin force-password-change + team-key provisioning
+# and writes the API key to /shared/dtrack-api-key on the backend
+# pod's shared volume. The release-gate security-tests job extracts
+# that key via `kubectl exec` and exports DEPENDENCY_TRACK_API_KEY
+# (#200).
+#
+# Resource sizing matches helm/values-smoke-with-deps.yaml -- the
+# UI/API pod is much lighter than DT's analyzer pool, and we only
+# need API connectivity for the integration suite.
 dependencyTrack:
-  enabled: false
+  enabled: true
+  # Admin password used by the bootstrap init container's force-
+  # password-change + login flow. Non-empty is the only requirement.
+  adminPassword: "TestDtrack!2026secure"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
 
+# Disabled services: not needed for scanning test runs
 edge:
   enabled: false
 
