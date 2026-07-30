@@ -2254,6 +2254,75 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
+  # DTF probe provisioning (artifact-keeper-test#323) — build the tier
+  # probes on a NETWORK-CAPABLE runner so the required tiers never do.
+  #
+  # The `sso` tier signs its SAML assertions with a small Rust payload
+  # generator (deploy-test/harness/tiers/sso/probe) that uses the SAME
+  # crate the backend verifies with, so the signatures are byte-
+  # compatible. It used to be compiled by the oracle itself at gate
+  # time, which (a) violated this workflow's "required tiers make no
+  # external network calls" invariant — the build pulls ~195 crates from
+  # crates.io — and (b) simply fails on the ak-docker-runners dind pool,
+  # which has no Rust toolchain and no registry egress. On the
+  # 1.7.0-rc.2 gate that failed build was reported as a SAML security
+  # regression on a candidate whose XSW protection was verified intact.
+  #
+  # So the probe is built HERE, once, on a hosted runner, as a fully
+  # STATIC musl binary (no glibc/loader dependency on the dind host) and
+  # handed to the tier as an artifact. The tier's build_probe() finds an
+  # executable binary and no-ops; under RELEASE_GATE=1 it refuses to
+  # cargo-build at all, so the invariant is enforced, not just intended.
+  # The probe SOURCE remains the signer of record — only the moment of
+  # compilation moved.
+  #
+  # Target arch: x86_64 only, matching the ak-docker-runners pool. The
+  # staging step below asserts the runner really is x86_64 and fails
+  # loudly if not, rather than shipping a binary that cannot exec. If
+  # the pool ever gains arm64 runners, add aarch64-unknown-linux-musl to
+  # the matrix here and select by `uname -m` when staging.
+  # -------------------------------------------------------------------
+  build-dtf-probes:
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Add the musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Build the SAML XSW payload generator (static musl)
+        working-directory: deploy-test/harness/tiers/sso/probe
+        run: |
+          set -euo pipefail
+          # --locked: build the exact dependency versions committed in the
+          # probe's Cargo.lock, so the signer the gate uses is reproducible.
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          BIN=target/x86_64-unknown-linux-musl/release/dtf-saml-xsw-probe
+          mkdir -p "${GITHUB_WORKSPACE}/dtf-probes"
+          cp "$BIN" "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe"
+          chmod +x "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe"
+          file "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe"
+          # Fail here, not on the dind pool, if the binary is not actually
+          # static — a dynamically-linked probe would blow up at tier time
+          # and read as an sso failure.
+          if ! file "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe" | grep -q 'statically linked'; then
+            echo "::error::the SAML XSW probe is not statically linked; it will not run on the dind pool"
+            exit 1
+          fi
+
+      - name: Upload the DTF probe binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dtf-probes
+          path: dtf-probes/
+          if-no-files-found: error
+          retention-days: 7
+
+  # -------------------------------------------------------------------
   # Deployment Test Framework gate (artifact-keeper#2697) — REQUIRED.
   #
   # Runs the DTF compose tiers (deploy-test/harness) against the EXACT
@@ -2284,7 +2353,11 @@ jobs:
   # Required tiers depend only on the candidate image plus local
   # containers (postgres/minio/keycloak/squid) — no external network
   # calls that could flake the gate. Tiers with heavier external
-  # dependencies run soft in dtf-advisory below.
+  # dependencies run soft in dtf-advisory below. Anything a required
+  # tier needs from the network is PROVISIONED by build-dtf-probes
+  # above and handed in as an artifact (artifact-keeper-test#323); the
+  # sso tier, the one former violator, now refuses to build its probe
+  # when RELEASE_GATE=1.
   #
   # The legacy-data `upgrade` tier is deliberately NOT wired: its
   # UPGRADE_OLD_IMAGE (ak-backend:nexus2457-v157base) is a rig-local
@@ -2304,7 +2377,7 @@ jobs:
   # see the invocation-paths comment at the top of this file.
   # -------------------------------------------------------------------
   dtf-gate:
-    needs: version-set-integrity
+    needs: [version-set-integrity, build-dtf-probes]
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
     runs-on: ak-docker-runners
     timeout-minutes: 45
@@ -2341,6 +2414,35 @@ jobs:
           # (workflow_dispatch, repo/org secret) paths -- #2701.
           chmod +x deploy-test/harness/ghcr-docker-auth.sh
           ./deploy-test/harness/ghcr-docker-auth.sh
+
+      # Hand the sso tier its prebuilt signer. Only the group that runs the
+      # tier needs it, so the other legs skip the download entirely.
+      - name: Download the prebuilt DTF probes
+        if: contains(matrix.tiers, 'sso')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dtf-probes
+          path: /tmp/dtf-probes
+
+      - name: Stage the SAML XSW probe for the sso tier
+        if: contains(matrix.tiers, 'sso')
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          if [ "$ARCH" != "x86_64" ]; then
+            echo "::error::runner arch is ${ARCH} but build-dtf-probes only builds x86_64;" \
+                 "add the matching musl target to that job before running the sso tier here"
+            exit 1
+          fi
+          DEST=deploy-test/harness/tiers/sso/probe/target/release
+          mkdir -p "$DEST"
+          install -m 0755 /tmp/dtf-probes/dtf-saml-xsw-probe "${DEST}/dtf-saml-xsw-probe"
+          file "${DEST}/dtf-saml-xsw-probe"
+          # Prove it actually execs on THIS host before the tier depends on it,
+          # so a bad binary is an obvious provisioning error here rather than a
+          # confusing SAML failure inside the oracle.
+          "${DEST}/dtf-saml-xsw-probe" keygen "$(mktemp -d)" >/dev/null
+          echo ">> SAML XSW probe staged and smoke-checked at ${DEST}/dtf-saml-xsw-probe"
 
       - name: Run DTF tiers (${{ matrix.group }}) against the pinned candidate
         run: |

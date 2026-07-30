@@ -57,25 +57,28 @@ auth_admin   # sets ADMIN_TOKEN from ADMIN_USER/ADMIN_PASS
 OWNER_ID="$(create_test_user_with_retry "$OWNER" "$OWNER_PASS" "${OWNER}@t.test")" || true
 if [ -z "$OWNER_ID" ] || [ "$OWNER_ID" = "null" ]; then
   begin_test "setup: create token-owner user"
-  fail "could not create owner user ${OWNER}"
+  infra_fail "could not create owner user ${OWNER}"
   end_suite
 fi
 
 OWNER_TOKEN="$(login_as "$OWNER" "$OWNER_PASS")" || true
 if [ -z "$OWNER_TOKEN" ]; then
   begin_test "setup: login token-owner user"
-  fail "could not log in as ${OWNER}"
+  infra_fail "could not log in as ${OWNER}"
   end_suite
 fi
 
 # Mint an API token for the owner (read+write scopes; non-admin-safe).
+# Colon-form vocabulary (#2989/#2996): the bare "read"/"write" parents were
+# removed from the backend's ALLOWED_SCOPES, so minting them 400s
+# VALIDATION_ERROR and this setup would silently die with an empty token.
 TOKEN_RESP="$(curl -s $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/tokens" \
   -H "Authorization: Bearer ${OWNER_TOKEN}" -H 'Content-Type: application/json' \
-  -d '{"name":"ci-token-basic-probe","scopes":["read","write"]}' 2>/dev/null || true)"
+  -d '{"name":"ci-token-basic-probe","scopes":["read:artifacts","write:artifacts"]}' 2>/dev/null || true)"
 API_TOKEN="$(echo "$TOKEN_RESP" | jq -r '.token // empty' 2>/dev/null || true)"
 if [ -z "$API_TOKEN" ]; then
   begin_test "setup: mint owner API token"
-  fail "POST /api/v1/auth/tokens did not return a token" "${TOKEN_RESP:0:200}"
+  infra_fail "POST /api/v1/auth/tokens did not return a token; the tier never probed a format endpoint" "${TOKEN_RESP:0:300}"
   end_suite
 fi
 
@@ -83,7 +86,7 @@ fi
 if ! api_post "/api/v1/repositories" \
   "{\"key\":\"${REPO}\",\"name\":\"${REPO}\",\"format\":\"maven\",\"repo_type\":\"local\",\"is_public\":false}" >/dev/null 2>&1; then
   begin_test "setup: create private maven repo"
-  fail "could not create private repo ${REPO}"
+  infra_fail "could not create private repo ${REPO}"
   end_suite
 fi
 # Grant the owner developer(write) on the repo so the token carries write there.

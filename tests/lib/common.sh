@@ -105,7 +105,35 @@ _TEST_START=0
 _PASS_COUNT=0
 _FAIL_COUNT=0
 _SKIP_COUNT=0
+_INFRA_COUNT=0
 _JUNIT_CASES=""
+
+# ---------------------------------------------------------------------------
+# INFRA/SETUP outcome (artifact-keeper-test#323)
+# ---------------------------------------------------------------------------
+# A blocking gate must never report its OWN broken setup as a product finding.
+# `fail` = an oracle assertion about the candidate fired (a product verdict).
+# `infra_fail` = the harness could not even evaluate the tier (probe build
+# failed, token mint returned empty/4xx, a fixture precondition was not met,
+# the deploy was unreachable). Both are RED — a required tier that cannot run
+# cannot certify, so we stay fail-closed — but they must be LABELED apart so an
+# operator is never trained to wave a red gate through.
+#
+# EXIT CODE: 11. NOT 2-7 (harness/run.sh already owns those for its own
+# pre-oracle failures: bad arg / missing overlay / missing manifest / missing
+# corpus / no free slot / stack never healthy) and NOT 10 (run-tiers.sh's
+# unpullable-candidate infra exit). 11 is the first free code, so an oracle's
+# INFRA outcome is unambiguous in the tier summary.
+#
+# Under the DTF the code comes from the harness's single source of truth
+# (deploy-test/harness/lib/exit_codes.sh, exported DTF_DIR); the literal below
+# is the standalone fallback for the plain corpus suites and MUST match it.
+if [ -n "${DTF_DIR:-}" ] && [ -f "${DTF_DIR}/harness/lib/exit_codes.sh" ]; then
+  # shellcheck source=/dev/null
+  source "${DTF_DIR}/harness/lib/exit_codes.sh"
+else
+  DTF_EXIT_INFRA=11
+fi
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -1130,6 +1158,7 @@ begin_suite() {
   _PASS_COUNT=0
   _FAIL_COUNT=0
   _SKIP_COUNT=0
+  _INFRA_COUNT=0
   _JUNIT_CASES=""
   echo "========================================"
   echo "  Suite: ${_SUITE_NAME}"
@@ -1195,6 +1224,43 @@ fail() {
     echo "$body" | sed 's/^/    /'
   fi
   # NOTE: does NOT exit. end_suite handles the final exit code.
+}
+
+infra_fail() {
+  # Usage: infra_fail <msg> [body]
+  #
+  # Record an INFRA/SETUP failure: the harness could not evaluate this tier, so
+  # nothing has been learned about the candidate. Same JUnit shape as fail()
+  # (the case is RED in every dashboard) but the message is prefixed so the
+  # report reads as a harness problem, and end_suite exits DTF_EXIT_INFRA
+  # instead of the assertion-failure code. Like fail(), it does NOT exit —
+  # callers keep the existing `begin_test; infra_fail "..."; end_suite` shape.
+  local msg="${1:-setup failed}"
+  local body="${2:-}"
+  local duration=$(( $(date +%s) - _TEST_START ))
+  _INFRA_COUNT=$(( _INFRA_COUNT + 1 ))
+  _FAIL_COUNT=$(( _FAIL_COUNT + 1 ))
+  local xml_name xml_suite xml_msg
+  xml_name=$(_xml_escape "$_TEST_NAME")
+  xml_suite=$(_xml_escape "$_SUITE_NAME")
+  xml_msg=$(_xml_escape "INFRA/SETUP FAILURE (harness could not evaluate the tier — NOT a product verdict): ${msg}")
+  if [ -n "$body" ]; then
+    local safe_body="${body//]]>/]]]]><![CDATA[>}"
+    _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
+    <failure message=\"${xml_msg}\" type=\"infra\"><![CDATA[${safe_body}]]></failure>
+  </testcase>
+"
+  else
+    _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
+    <failure message=\"${xml_msg}\" type=\"infra\"/>
+  </testcase>
+"
+  fi
+  echo "  INFRA/SETUP FAILURE: ${msg} (${duration}s)"
+  echo "    (the harness could not evaluate this tier — NOT a product verdict)"
+  if [ -n "$body" ]; then
+    echo "$body" | sed 's/^/    /'
+  fi
 }
 
 skip() {
@@ -1415,6 +1481,17 @@ end_suite() {
 <testsuite name="${xml_suite}" tests="${total}" failures="${_FAIL_COUNT}" skipped="${_SKIP_COUNT}" time="${total_duration}">
 ${_JUNIT_CASES}</testsuite>
 EOF
+
+  # INFRA/SETUP outcome takes precedence over everything below (#323): if the
+  # harness could not evaluate the tier, the run carries no information about
+  # the candidate — neither a regression verdict nor an EXPECT_FAILURE proof.
+  # Still non-zero (fail-closed: a required tier that cannot run cannot
+  # certify), just correctly labeled.
+  if [ "${_INFRA_COUNT:-0}" -gt 0 ]; then
+    echo "  INFRA/SETUP FAILURE (harness could not evaluate the tier — NOT a product verdict)"
+    echo "  ${_INFRA_COUNT} setup/environment failure(s); exiting ${DTF_EXIT_INFRA}"
+    exit "$DTF_EXIT_INFRA"
+  fi
 
   # EXPECT_FAILURE self-test mode: inverts the exit code so an author can
   # point the suite at a known-broken backend (e.g. semaphore disabled) and

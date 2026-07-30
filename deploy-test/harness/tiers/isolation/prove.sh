@@ -10,8 +10,43 @@
 # can be wired directly into a required CI job.
 #   - Against a fixed image (isolation holds): exit 0.
 #   - Against a pre-fix image (leaks): exit 1.
+#   - Setup/fixture could not be established (wrong topology, login failed, a
+#     precondition matched no rows): exit $EXIT_INFRA — the candidate is
+#     UNJUDGED, and the tier reports INFRA/SETUP rather than a regression.
+#
+# STORAGE KEY SCHEME (#2624). The backend defaults to
+# StorageKeyScheme::RepoScoped: a cloud-backed write lands on
+# `maven/{repository_id}/{path}`, so the SAME Maven coordinate in two repos is
+# two physically distinct objects and no tenant can name another's key. The
+# legacy `Flat` scheme (STORAGE_KEY_SCHEME=flat|legacy) shares one
+# `maven/{path}` namespace, where cross-tenant collision IS reachable and the
+# ledger-first guard (`guard_flat_key_writable`) must refuse a foreign-owned
+# key at the door.
+#
+# The invariant this gate asserts is the same under both: NO cross-tenant read,
+# NO cross-tenant corruption. What differs is the mechanism, so the two
+# scheme-specific WRITE checks (B, E) branch on $KEY_SCHEME. Asserting the flat
+# door-refuse (403) under repo-scoped is not merely redundant, it is wrong: it
+# demands a 403 on a tenant's write to her OWN repo just because another repo
+# uses the same coordinate, which would be a namespace-squatting DoS and a
+# cross-tenant existence oracle. Sections A/C/D/F are scheme-independent and
+# run unchanged in both modes.
 set -uo pipefail
 BASE="$1"; DBC="$2"; LABEL="$3"
+
+# Exit code for "the harness could not evaluate this gate" — must match
+# DTF_EXIT_INFRA / harness/lib/exit_codes.sh, and is mapped straight through by
+# tiers/isolation/oracle.sh (artifact-keeper-test#323).
+EXIT_INFRA=11
+
+# Which physical key layout the candidate is running. Mirrors
+# backend/src/storage/keys.rs StorageKeyScheme::from_env: only "flat"/"legacy"
+# select the shared namespace; anything else (including unset, the shipped
+# default) is repo-scoped.
+case "${STORAGE_KEY_SCHEME:-}" in
+  flat|legacy) KEY_SCHEME="flat" ;;
+  *)           KEY_SCHEME="repo-scoped" ;;
+esac
 # Parametrized so the gate matches whatever ADMIN_PASSWORD the compose sets.
 ADMPASS="${ADMIN_PASS:-TestRunner!2026secure}"
 APASS="AlicePass!2026x"
@@ -25,6 +60,14 @@ OWNCOORD="com/alice/lib/2.0-$SUF/lib-2.0-$SUF.jar"
 
 FAILS=0
 fail_leak(){ echo "   !!! GATE-FAIL: $1"; FAILS=$((FAILS+1)); }
+# The gate could not be SET UP (fixture/topology/precondition). Not a verdict
+# about the candidate — abort immediately with the INFRA code so the tier is
+# reported as "harness could not evaluate", never as a regression (#323).
+abort_infra(){
+  echo "   !!! GATE-INFRA: $1"
+  echo "   !!! (setup/fixture failure — the candidate is UNJUDGED on this gate)"
+  exit "$EXIT_INFRA"
+}
 
 jqr(){ jq -r "$1" 2>/dev/null; }
 login(){ curl -s -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
@@ -39,7 +82,8 @@ code(){ # METHOD PATH TOKEN [BODY] [CT]
 body(){ curl -s -X "$1" "$BASE$2" -H "Authorization: Bearer $3"; }
 
 echo "############ GATE: $LABEL  ($BASE) ############"
-TOK=$(login admin "$ADMPASS"); [ -z "$TOK" ] && { echo "admin login FAILED"; exit 1; }
+echo "-- storage key scheme: $KEY_SCHEME (STORAGE_KEY_SCHEME='${STORAGE_KEY_SCHEME:-<unset, backend default>}')"
+TOK=$(login admin "$ADMPASS"); [ -z "$TOK" ] && abort_infra "admin login to $BASE failed (no access_token); the gate never ran"
 
 # alice
 curl -s -X POST "$BASE/api/v1/users" -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
@@ -55,7 +99,7 @@ docker exec "$DBC" psql -U registry -d artifact_registry -tAc "
   SELECT u.id, r.id, repo.id FROM users u, roles r, repositories repo
   WHERE u.username='alice-$SUF' AND r.name='developer' AND repo.key='$MVA'
   ON CONFLICT DO NOTHING;" >/dev/null
-ATOK=$(login "alice-$SUF" "$APASS"); [ -z "$ATOK" ] && { echo "alice login FAILED"; exit 1; }
+ATOK=$(login "alice-$SUF" "$APASS"); [ -z "$ATOK" ] && abort_infra "alice-$SUF login failed (no access_token); the gate never ran"
 
 # Fail-closed precondition: this gate is meaningless on a filesystem backend
 # (each repo physically owns its key space, so the cross-tenant class cannot
@@ -64,8 +108,7 @@ SB=$(docker exec "$DBC" psql -U registry -d artifact_registry -tAc \
   "SELECT DISTINCT storage_backend FROM repositories WHERE key IN ('$MVA','$MVB');" 2>/dev/null | tr -d '[:space:]')
 echo "-- backend storage_backend of repos: '$SB'"
 if [ "$SB" = "filesystem" ] || [ -z "$SB" ]; then
-  echo "   !!! GATE-ABORT: repos are on storage_backend='$SB'; this gate must run on a shared object store (s3/gcs/azure)."
-  exit 2
+  abort_infra "repos are on storage_backend='$SB'; this gate must run on a shared object store (s3/gcs/azure)"
 fi
 
 # admin uploads the private secret into MVB at COORD
@@ -97,14 +140,43 @@ WC=$(code PUT "/maven/$MVA/$COORD" "$ATOK" "$EVIL")
 echo "   alice PUT $MVA/$COORD (colliding key) => HTTP $WC"
 AFTER=$(body GET "/maven/$MVB/$COORD" "$TOK")
 echo "   admin GET $MVB/$COORD after alice's write => '$AFTER'"
+# The invariant, in BOTH schemes: MVB's bytes must survive alice's colliding
+# write. That is the corruption gate and it is unconditional.
 if [ "$AFTER" != "$SECRET" ]; then
   fail_leak "B: MVB poisoned by cross-tenant WRITE (now '$AFTER')"
-elif [ "$WC" = "200" ] || [ "$WC" = "201" ]; then
-  # bytes survived, but the write should have been refused at the door; an
-  # accepted colliding write into a foreign flat key is a latent poisoning bug.
-  fail_leak "B: colliding cross-repo WRITE accepted (WC=$WC); MVB bytes intact this run but the guard did not refuse"
+elif [ "$KEY_SCHEME" = "flat" ]; then
+  # FLAT/LEGACY layout only: alice's write targets MVB's SHARED physical key,
+  # so surviving bytes are not enough — the ledger-first guard
+  # (guard_flat_key_writable) must refuse the foreign-owned key at the door, or
+  # the next write wins the race and poisons MVB.
+  if [ "$WC" = "200" ] || [ "$WC" = "201" ]; then
+    fail_leak "B(flat): colliding cross-repo WRITE into a FOREIGN flat key accepted (WC=$WC); MVB bytes intact this run but the guard did not refuse"
+  else
+    echo "   B OK (flat): REFUSED at the door (WC=$WC); MVB bytes intact"
+  fi
 else
-  echo "   B OK: REFUSED (WC=$WC); MVB bytes intact"
+  # REPO-SCOPED (shipped default, #2624): alice's PUT is addressed
+  # maven/{MVA_id}/$COORD and MVB's object is maven/{MVB_id}/$COORD, so a 201
+  # is a correct write to her OWN repo and there is no foreign key to refuse.
+  # Demanding a 403 here would forbid two tenants from ever sharing a Maven
+  # coordinate (squatting DoS + existence oracle), so the door-refuse check is
+  # deliberately NOT applied. Instead assert the property that actually makes
+  # the collision harmless: the two writes resolved to DISTINCT physical keys.
+  echo "   B OK (repo-scoped): MVB bytes intact after alice's own-repo write (WC=$WC)"
+  KEY_A=$(docker exec "$DBC" psql -U registry -d artifact_registry -tAc \
+    "SELECT a.storage_key FROM artifacts a JOIN repositories r ON r.id=a.repository_id
+      WHERE r.key='$MVA' AND a.storage_key LIKE '%$COORD' LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
+  KEY_B=$(docker exec "$DBC" psql -U registry -d artifact_registry -tAc \
+    "SELECT a.storage_key FROM artifacts a JOIN repositories r ON r.id=a.repository_id
+      WHERE r.key='$MVB' AND a.storage_key LIKE '%$COORD' LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
+  echo "   B keys: MVA='$KEY_A'  MVB='$KEY_B'"
+  if [ -z "$KEY_A" ] || [ -z "$KEY_B" ]; then
+    abort_infra "B: could not read back both repos' storage_key rows for $COORD (MVA='$KEY_A' MVB='$KEY_B'); the key-separation assertion has no fixture"
+  elif [ "$KEY_A" = "$KEY_B" ]; then
+    fail_leak "B: the same coordinate resolved to the SAME physical key in two repos ('$KEY_A') under the repo-scoped scheme — #2624 key separation is broken"
+  else
+    echo "   B OK: colliding coordinate resolved to two DISTINCT physical keys (no shared object to poison)"
+  fi
 fi
 
 echo
@@ -152,21 +224,57 @@ echo "   D3 alice GET own $MVA/$OWNCOORD.sha1 => HTTP $OWNCK (expect 200, comput
 [ "$OWNCK" = "200" ] || fail_leak "D3: alice's OWN checksum regressed (OWNCK=$OWNCK)"
 
 echo
-echo "== E. WRITE soft-delete carve-out =="
+echo "== E. WRITE soft-delete carve-out (poison-on-resurrect) =="
+# The class: B soft-deletes an artifact (row hidden, PHYSICAL object persists).
+# If a foreign tenant can then write "into" that carved-out state, restoring
+# B's row resurrects the ATTACKER's bytes under B's name.
 SDCOORD="com/victim/mod/3.0-$SUF/mod-3.0-$SUF.jar"; SDB="VICTIM-BYTES-$SUF"
+SDPOISON="ALICE-POISON-$SUF"
 echo "   [setup] admin PUT $MVB/$SDCOORD => $(code PUT "/maven/$MVB/$SDCOORD" "$TOK" "$SDB")"
-# soft-delete B's row (physical object persists)
+# Soft-delete B's row by its ACTUAL stored key. The old hard-coded flat literal
+# ('maven/$SDCOORD') matches ZERO rows under the repo-scoped default, so the
+# carve-out state never materialised and E asserted against a fixture that did
+# not exist. Look the key up instead, and hard-require the UPDATE to bite.
+SDKEY=$(docker exec "$DBC" psql -U registry -d artifact_registry -tAc \
+  "SELECT a.storage_key FROM artifacts a JOIN repositories r ON r.id=a.repository_id
+    WHERE r.key='$MVB' AND a.storage_key LIKE '%$SDCOORD' LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
+echo "   [setup] MVB's actual stored key for the victim coord: '$SDKEY'"
+[ -z "$SDKEY" ] && abort_infra "E: MVB has no artifacts row for $SDCOORD; the soft-delete fixture cannot be built"
 docker exec "$DBC" psql -U registry -d artifact_registry -tAc \
-  "UPDATE artifacts SET is_deleted=true WHERE storage_key='maven/$SDCOORD';" >/dev/null
+  "UPDATE artifacts SET is_deleted=true WHERE storage_key='$SDKEY';" >/dev/null
 DELCNT=$(docker exec "$DBC" psql -U registry -d artifact_registry -tAc \
-  "SELECT count(*) FROM artifacts WHERE storage_key='maven/$SDCOORD' AND is_deleted=true;")
+  "SELECT count(*) FROM artifacts WHERE storage_key='$SDKEY' AND is_deleted=true;" 2>/dev/null | tr -d '[:space:]')
 echo "   [setup] soft-deleted B rows at key: $DELCNT"
-SDC=$(code PUT "/maven/$MVA/$SDCOORD" "$ATOK" "ALICE-POISON-$SUF")
+# PRECONDITION, not an assertion about the candidate: with 0 soft-deleted rows
+# there is no carve-out to attack and everything below is vacuous.
+[ "${DELCNT:-0}" -gt 0 ] || abort_infra "E: soft-delete matched 0 rows at '$SDKEY'; the carve-out state never existed, so E would assert nothing"
+
+SDC=$(code PUT "/maven/$MVA/$SDCOORD" "$ATOK" "$SDPOISON")
 echo "   E1 alice PUT colliding $MVA/$SDCOORD (B soft-deleted) => HTTP $SDC"
-if [ "$SDC" = "201" ] || [ "$SDC" = "200" ]; then
-  fail_leak "E: poison-on-resurrect allowed (alice PUT into soft-deleted foreign key accepted, SDC=$SDC)"
+if [ "$KEY_SCHEME" = "flat" ]; then
+  # FLAT: alice's write lands on B's own carved-out key — it must be refused.
+  if [ "$SDC" = "201" ] || [ "$SDC" = "200" ]; then
+    fail_leak "E(flat): poison-on-resurrect allowed (alice PUT into soft-deleted FOREIGN flat key accepted, SDC=$SDC)"
+  else
+    echo "      E OK (flat): REFUSED at the door (poison-on-resurrect blocked, SDC=$SDC)"
+  fi
 else
-  echo "      E OK: REFUSED (poison-on-resurrect blocked, SDC=$SDC)"
+  echo "      E note (repo-scoped): alice's PUT addresses her own maven/{MVA_id}/... key, so 2xx is correct here"
+fi
+# E2 — the outcome that matters in BOTH schemes: restore B's row and confirm
+# the resurrected artifact still serves B's ORIGINAL bytes, not alice's poison.
+# This is the actual "poison-on-resurrect" property; it is asserted regardless
+# of key scheme, so E stays load-bearing on the shipped default.
+docker exec "$DBC" psql -U registry -d artifact_registry -tAc \
+  "UPDATE artifacts SET is_deleted=false WHERE storage_key='$SDKEY';" >/dev/null
+SDAFTER=$(body GET "/maven/$MVB/$SDCOORD" "$TOK")
+echo "   E2 admin GET $MVB/$SDCOORD after restoring the row => '$SDAFTER'"
+if [ "$SDAFTER" = "$SDPOISON" ]; then
+  fail_leak "E: POISON-ON-RESURRECT — restoring B's soft-deleted row served alice's bytes ('$SDAFTER')"
+elif [ "$SDAFTER" = "$SDB" ]; then
+  echo "      E OK: resurrected artifact still serves B's ORIGINAL bytes (no poison)"
+else
+  fail_leak "E: resurrected artifact served neither B's original bytes nor a clean denial (got '$SDAFTER')"
 fi
 
 echo

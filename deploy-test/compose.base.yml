@@ -55,6 +55,14 @@ services:
       PORT: "8080"
       # Overlays flip this (storage.*.yml). Base default = filesystem.
       STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
+      # Physical object-key layout on cloud backends (backend
+      # storage/keys.rs). Empty = the shipped default (repo-scoped,
+      # `maven/{repo_id}/{path}` — #2624); "flat"/"legacy" selects the
+      # superseded shared `maven/{path}` namespace. Passed through so a tier
+      # can exercise the legacy layout on purpose (the isolation oracle's
+      # flat-only door-refuse assertions branch on the same variable);
+      # unset/empty behaves exactly as before.
+      STORAGE_KEY_SCHEME: ${STORAGE_KEY_SCHEME:-}
       # DEFAULT ON — deliberate change from today's gate overlay.
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
       # DEFAULT OFF (production posture: the SSRF guard rejects private/internal

@@ -215,7 +215,7 @@ fc_case_token_channel() {
     || { echo "could not resolve admin user id to mint a token"; return 1; }
   local tok
   tok="$(api_post "/api/v1/users/${uid}/tokens" \
-    "{\"name\":\"dtf-conda-${RUN_ID}\",\"scopes\":[\"read\",\"write\"]}" \
+    "{\"name\":\"dtf-conda-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" \
     | jq -r '.token // empty')"
   [ -n "$tok" ] || { echo "token mint returned no token"; return 1; }
   echo "  minted token prefix=${tok:0:8}..."

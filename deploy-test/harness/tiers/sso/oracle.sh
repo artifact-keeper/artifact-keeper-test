@@ -40,12 +40,42 @@ SP_ENTITY_ID="artifact-keeper"
 SUF="$(date +%s)-${DTF_SLOT:-x}"
 KC_PORT="${TRIVY_PORT:-}"   # Keycloak host port (slot spare), see sso.saml.yml
 
-# --- build / locate the payload generator -----------------------------------
+# --- locate (do NOT build) the payload generator ----------------------------
+# The probe is PROVISIONED, not built here. The release gate's required tiers
+# must depend only on the candidate image plus local containers — no external
+# network — and building this crate pulls ~195 transitive crates from
+# crates.io. On the dind runner pool (no Rust toolchain, no registry egress)
+# that build simply fails, which is how this tier false-failed the 1.7.0-rc.2
+# gate as a "SAML regression" while the candidate's XSW protection was intact.
+#
+# The static musl binary is now built by the `build-dtf-probes` job in
+# .github/workflows/release-gate.yml and downloaded into
+# probe/target/release/ before the tier runs, so build_probe is a no-op in CI.
+# Locally, an existing target/release build or a DTF_SAML_XSW_PROBE override is
+# used as-is, and a cargo build is only ever attempted OUTSIDE the gate, when a
+# toolchain is actually present. The probe SOURCE stays the signer of record —
+# only the moment of compilation moved. (artifact-keeper-test#323)
 PROBE_DIR="${HERE}/probe"
-PROBE_BIN="${PROBE_DIR}/target/release/dtf-saml-xsw-probe"
+PROBE_BIN="${DTF_SAML_XSW_PROBE:-${PROBE_DIR}/target/release/dtf-saml-xsw-probe}"
 build_probe() {
-  if [ -x "$PROBE_BIN" ]; then return 0; fi
-  echo ">> building SAML XSW payload generator (cargo release, cached after first run)..."
+  if [ -x "$PROBE_BIN" ]; then
+    echo ">> using prebuilt SAML XSW payload generator: ${PROBE_BIN}"
+    file "$PROBE_BIN" 2>/dev/null | sed 's/^/>>   /' || true
+    return 0
+  fi
+  if [ "${RELEASE_GATE:-0}" = "1" ]; then
+    # Invariant guard: never reach the network from a required tier. A missing
+    # prebuilt binary in the gate is a provisioning failure to be fixed in the
+    # workflow, not something to paper over with a crates.io build.
+    echo "!! no prebuilt probe at ${PROBE_BIN} and RELEASE_GATE=1:" >&2
+    echo "!! refusing to cargo-build inside a required tier (no-external-network invariant)." >&2
+    return 1
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "!! no prebuilt probe at ${PROBE_BIN} and no cargo toolchain on PATH" >&2
+    return 1
+  fi
+  echo ">> building SAML XSW payload generator (local cargo release, non-gate run)..."
   ( cd "$PROBE_DIR" && cargo build --release ) || return 1
   [ -x "$PROBE_BIN" ]
 }
@@ -118,15 +148,23 @@ begin_suite "sso-saml-xsw-2449"
 
 # ---- bootstrap -------------------------------------------------------------
 if ! build_probe; then
-  begin_test "build SAML XSW payload generator (bergshamra signer)"
-  fail "cargo build of tiers/sso/probe failed; cannot craft signed assertions"
+  # INFRA, not a verdict: with no payload generator the oracle cannot craft a
+  # single SAML assertion, so it never exercises the XSW protection at all.
+  # Reporting this as a regression is how a clean candidate got a RED "SAML
+  # break" on the 1.7.0-rc.2 gate (#323).
+  begin_test "provision SAML XSW payload generator (bergshamra signer)"
+  infra_fail "no usable SAML XSW probe binary; the tier crafted no assertions and evaluated nothing" \
+             "expected: ${PROBE_BIN}
+provisioned by: the 'build-dtf-probes' job in .github/workflows/release-gate.yml
+                (static musl build, downloaded into probe/target/release/)
+override with:  DTF_SAML_XSW_PROBE=/path/to/dtf-saml-xsw-probe"
   end_suite
 fi
 
 TOK="$(login "${ADMIN_USER:-admin}" "$ADMPASS")"
 if [ -z "$TOK" ]; then
   begin_test "admin login"
-  fail "admin login to ${BASE_URL} failed (no access_token)"
+  infra_fail "admin login to ${BASE_URL} failed (no access_token); the SAML flow was never driven"
   end_suite
 fi
 
@@ -140,7 +178,7 @@ begin_test "provision SAML provider (ephemeral IdP cert, require_signed_assertio
 if [ -n "$PROVIDER" ] && [ "$PROVIDER" != "null" ]; then
   pass
 else
-  fail "could not create SAML provider via /api/v1/admin/sso/saml"
+  infra_fail "could not create SAML provider via /api/v1/admin/sso/saml; no XSW variant was ever presented"
   end_suite
 fi
 
