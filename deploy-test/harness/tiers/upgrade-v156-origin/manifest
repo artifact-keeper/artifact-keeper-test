@@ -1,0 +1,28 @@
+# DTF tier manifest: upgrade-v156-origin (#2688 — the no-divergence no-op case)
+# Profile-set: filesystem / single. Migration-ledger tier; the storage-shape
+# upgrade class lives in the `upgrade` tier.
+#
+# Origin: the published v1.5.6 image. v1.5.6 predates the release/1.5.x
+# renumbered slots (v1.5.7 shipped storage_key_index at 154; v1.5.8 shipped
+# maven_flat_object_attribution at 155), so its applied ledger — max version
+# 153 — is an exact checksum PREFIX of main's chain. Upgrading from it must be
+# a pure no-op for the #2686 startup repair (repair_release_1_5_x_divergence
+# must NOT fire): the migrator simply applies main's 154+ fresh, the applied
+# prefix keeps its original installed_on timestamps, and seeded data survives.
+#
+# This is the control case for upgrade-v158-origin: it catches BOTH a repair
+# that spuriously fires on a clean ancestor ledger AND any future edit to a
+# shipped <=153 migration file (which would break every 1.5.x upgrade with a
+# VersionMismatch at that slot — the candidate would never reach healthy).
+#
+# Same two-phase oracle-driven compose pattern as tiers/upgrade.
+#
+# RATE_LIMIT_ENABLED=false: several back-to-back logins in seed + oracle.
+#
+# UPGRADE_OLD_IMAGE: the published, immutable v1.5.6 tag. The oracle asserts
+# the origin-ledger signature (max version 153, slot 154 absent) before
+# phase 2, so any other image fails loudly.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ghcr.io/artifact-keeper/artifact-keeper-backend:1.5.6}"

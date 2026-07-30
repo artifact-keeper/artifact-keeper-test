@@ -54,6 +54,13 @@ services:
       # in dtf_trivycache after the first scan. Override to point at an in-cluster
       # mirror if ghcr egress is unavailable in CI.
       TRIVY_DB_REPOSITORY: ${TRIVY_DB_REPOSITORY:-ghcr.io/aquasecurity/trivy-db:2}
+      # Optional authenticated DB pull (#2697 CI gate): ghcr's ANONYMOUS token
+      # is throttled under runner-pool load (the artifact-keeper-test#306
+      # class), so the CI job exports the workflow GITHUB_TOKEN here. The trivy
+      # subprocess inherits both vars. Empty default = anonymous pull, i.e.
+      # local behaviour is unchanged.
+      TRIVY_USERNAME: ${TRIVY_USERNAME:-}
+      TRIVY_PASSWORD: ${TRIVY_PASSWORD:-}
     ports:
       - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:8090"
     volumes:

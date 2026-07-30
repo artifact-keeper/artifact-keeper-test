@@ -1,5 +1,39 @@
 name: Release Gate
 
+# ---------------------------------------------------------------------
+# Invocation paths (artifact-keeper#2701: dispatch-rehearsable gate)
+#
+#   workflow_call     - the REAL release path. artifact-keeper
+#                       release.yml calls this workflow with the
+#                       resolved candidate tag+digest and
+#                       `secrets: inherit`, which populates the
+#                       GHCR_DOCKER_CONFIG secret declared below from
+#                       the calling repo's secrets.
+#   workflow_dispatch - a manual REHEARSAL of the gate against an
+#                       arbitrary already-published candidate: supply
+#                       backend_tag (+ backend_digest to pin the exact
+#                       bytes, + test_suite to scope the run). The SAME
+#                       `${{ secrets.GHCR_DOCKER_CONFIG }}` expressions
+#                       used on the call path resolve against THIS
+#                       repo's (or the org's) secret of that name, so a
+#                       rehearsal authenticates to ghcr exactly like
+#                       the real gate. No per-path branching exists in
+#                       any job: one expression, two resolution sources.
+#
+# Rehearsal prerequisite: a repo- or org-level secret named
+# GHCR_DOCKER_CONFIG must be visible to artifact-keeper-test. Same
+# format as the release pipeline's copy: base64-encoded docker
+# config.json holding a PULL-SCOPE-ONLY ghcr.io credential
+# (read:packages, nothing else). If it is absent, dispatch runs fall
+# back to the job's GITHUB_TOKEN (public images only) in the DTF jobs
+# and to the documented public-only WARN path in the k8s smoke scripts.
+#
+# Access nuance: triggering workflow_dispatch requires write access to
+# artifact-keeper-test, so "who can rehearse" == "who can use the
+# pull-secret". Keep the credential pull-scope-only so that ceiling is
+# just image pulls; GitHub masks the secret in logs and no step here
+# ever echoes it (it is decoded straight to files).
+# ---------------------------------------------------------------------
 on:
   workflow_dispatch:
     inputs:
@@ -38,6 +72,7 @@ on:
           - security
           - compatibility
           - pullthrough
+          - dtf
         default: 'all'
       skip_teardown:
         description: Skip teardown (for debugging)
@@ -88,6 +123,17 @@ on:
         required: false
         type: boolean
         default: false
+    secrets:
+      GHCR_DOCKER_CONFIG:
+        description: >-
+          base64-encoded docker config.json with a pull-scope-only
+          ghcr.io credential. Populated by the caller via
+          `secrets: inherit` (artifact-keeper release.yml). Optional:
+          public-only tags work without it. On the workflow_dispatch
+          rehearsal path this declaration is not consulted; the same
+          secret name resolves from this repo's/org's secrets instead
+          (see the invocation-paths comment above).
+        required: false
 
 # Serialize gate runs that target the same backend image so two runs
 # of one candidate do not interleave across the single shared ARC pool
@@ -2180,10 +2226,204 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
+  # Deployment Test Framework gate (artifact-keeper#2697) — REQUIRED.
+  #
+  # Runs the DTF compose tiers (deploy-test/harness) against the EXACT
+  # candidate image the release pipeline resolved: backend_tag pinned by
+  # backend_digest (resolve-candidate-digest in artifact-keeper
+  # release.yml). Docker pulls `name:tag@sha256:...` content-addressed,
+  # and run-tiers.sh logs a digest-parity assertion after the pull, so
+  # the tiers provably exercise the bytes that will ship — never
+  # `:latest`, never a rebuild.
+  #
+  # BLOCKING: every leg of this matrix is a hard release gate, wired
+  # into collect-results with the stricter `!= 'success'` predicate
+  # (guarded by the suite-selection condition, same shape as the #2700
+  # blocking security suite). The REQUIRED tier set is:
+  #   core            — smoke (real push->pull->scan on a clean deploy)
+  #                     + isolation (cross-tenant on a real shared S3
+  #                     store; the #2504/#2574/#2584 class)
+  #   upgrade-origins — upgrade-v156-origin + upgrade-v158-origin
+  #                     (#2688 migration-ledger divergence; origins are
+  #                     the published immutable 1.5.6/1.5.8 ghcr tags)
+  #   security-authz  — the 1.6.1 advisory-class regression tiers
+  #                     (vvc3 scoped-admin keystone, qcmj webhook authz,
+  #                     f7qf peer authz, 5f2q upload scope, qxxr refresh
+  #                     race)
+  #   security-boundary — dos (rate-limit / worker-starvation), sso
+  #                     (SAML XSW class), proxy-egress (SSRF egress
+  #                     control)
+  # Required tiers depend only on the candidate image plus local
+  # containers (postgres/minio/keycloak/squid) — no external network
+  # calls that could flake the gate. Tiers with heavier external
+  # dependencies run soft in dtf-advisory below.
+  #
+  # The legacy-data `upgrade` tier is deliberately NOT wired: its
+  # UPGRADE_OLD_IMAGE (ak-backend:nexus2457-v157base) is a rig-local
+  # image with no published equivalent. The #2688 origin tiers cover the
+  # upgrade class with published origins.
+  #
+  # Runs on the dind pool (ak-docker-runners): the DTF harness is
+  # docker-compose based and the ak-e2e-runners k8s pods have no docker
+  # daemon. Needs only version-set-integrity (image-existence check),
+  # not the k8s deploy job — the DTF stands up its own stacks.
+  #
+  # Registry access: GHCR_DOCKER_CONFIG (the normal secret path, same as
+  # clean-install-smoke) with a GITHUB_TOKEN docker-login fallback for
+  # public images, via the shared deploy-test/harness/ghcr-docker-auth.sh
+  # helper. The same secret expression resolves on BOTH the
+  # workflow_call and workflow_dispatch paths (artifact-keeper#2701);
+  # see the invocation-paths comment at the top of this file.
+  # -------------------------------------------------------------------
+  dtf-gate:
+    needs: version-set-integrity
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    runs-on: ak-docker-runners
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: core
+            tiers: smoke isolation
+          - group: upgrade-origins
+            tiers: upgrade-v156-origin upgrade-v158-origin
+          - group: security-authz
+            tiers: vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race
+          - group: security-boundary
+            tiers: dos sso proxy-egress
+    env:
+      BACKEND_TAG: ${{ inputs.backend_tag }}
+      BACKEND_DIGEST: ${{ inputs.backend_digest }}
+      TIERS_LIST: ${{ matrix.tiers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Authenticate docker to ghcr
+        env:
+          GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Prefer the org pull-secret (private tags); fall back to the
+          # workflow token (public images). Identical on the real
+          # (workflow_call, secrets: inherit) and rehearsal
+          # (workflow_dispatch, repo/org secret) paths -- #2701.
+          chmod +x deploy-test/harness/ghcr-docker-auth.sh
+          ./deploy-test/harness/ghcr-docker-auth.sh
+
+      - name: Run DTF tiers (${{ matrix.group }}) against the pinned candidate
+        run: |
+          # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
+          # plain tag (same composition as the k8s deploy jobs above).
+          BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
+          IMG="ghcr.io/artifact-keeper/artifact-keeper-backend:${BACKEND_TAG_PINNED}"
+          chmod +x deploy-test/harness/run-tiers.sh deploy-test/harness/run.sh
+          read -r -a TIERS <<< "${TIERS_LIST}"
+          ./deploy-test/harness/run-tiers.sh --backend-image "${IMG}" "${TIERS[@]}"
+
+      - name: Upload DTF tier results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-dtf-${{ matrix.group }}
+          path: deploy-test/results/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # DTF advisory legs (artifact-keeper#2697) — SOFT, named waivers.
+  #
+  # Same harness, same pinned candidate digest, but continue-on-error
+  # and kept OFF the collect-results blocking predicate (the #2700
+  # waiver shape: owner + expiry, no silent drift).
+  #
+  # NAMED WAIVERS
+  #   supply-chain:
+  #     reason:  the scanner-adapter's in-process Trivy pulls its vuln
+  #              DB from ghcr at first scan; anonymous-token throttling
+  #              under runner-pool load is a documented flake
+  #              (artifact-keeper-test#306). The #2088 false-clean CLASS
+  #              is still hard-gated in this same workflow by the
+  #              blocking pinned-cve-image-gate, so this waiver creates
+  #              no scanner-efficacy blind spot. The leg wires an
+  #              authenticated DB pull (TRIVY_USERNAME/TRIVY_PASSWORD)
+  #              plus the org DB mirror; once it holds green across a
+  #              few releases, promote it into the required matrix.
+  #   heavy-topology (migration, native-client, format-conformance):
+  #     reason:  external upstreams (Nexus JVM boot, fedora/apt/docker
+  #              client image pulls) dominate runtime and flake-rate on
+  #              the shared dind pool; these have never run under ARC
+  #              load (deploy-test/ARCHITECTURE.md section 7).
+  #   owner:   release-engineering
+  #   expires: 2026-10-01 — on/after this date either promote the leg
+  #            into dtf-gate or re-justify the waiver in a PR.
+  # -------------------------------------------------------------------
+  dtf-advisory:
+    needs: version-set-integrity
+    continue-on-error: true
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    runs-on: ak-docker-runners
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: supply-chain
+            tiers: supply-chain
+          - group: heavy-topology
+            tiers: migration native-client format-conformance
+    env:
+      BACKEND_TAG: ${{ inputs.backend_tag }}
+      BACKEND_DIGEST: ${{ inputs.backend_digest }}
+      TIERS_LIST: ${{ matrix.tiers }}
+      # Published adapter image (major tag) + the org trivy-db mirror the
+      # k8s gate already uses (#301), instead of the local-build defaults.
+      SCANNER_ADAPTER_IMAGE: ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:1
+      TRIVY_DB_REPOSITORY: ghcr.io/artifact-keeper/trivy-db
+      # Authenticated DB pull so the adapter's trivy is not at the mercy
+      # of ghcr anonymous-token throttling (see waiver above). The DTF
+      # stack scans within minutes of job start, so the job-scoped token
+      # cannot expire mid-gate (the #305 k8s failure mode does not apply).
+      TRIVY_USERNAME: ${{ github.actor }}
+      TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Authenticate docker to ghcr
+        env:
+          GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Same shared auth path as dtf-gate above (#2701).
+          chmod +x deploy-test/harness/ghcr-docker-auth.sh
+          ./deploy-test/harness/ghcr-docker-auth.sh
+
+      - name: Run DTF advisory tiers (${{ matrix.group }}) against the pinned candidate
+        run: |
+          BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
+          IMG="ghcr.io/artifact-keeper/artifact-keeper-backend:${BACKEND_TAG_PINNED}"
+          chmod +x deploy-test/harness/run-tiers.sh deploy-test/harness/run.sh
+          read -r -a TIERS <<< "${TIERS_LIST}"
+          ./deploy-test/harness/run-tiers.sh --backend-image "${IMG}" "${TIERS[@]}"
+
+      - name: Upload DTF advisory tier results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-dtf-advisory-${{ matrix.group }}
+          path: deploy-test/results/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, security-tests, security-grype-scan-completes, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, security-tests, security-grype-scan-completes, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests, dtf-gate, dtf-advisory]
     if: always()
     # Result rollup only: aggregates needs[].result and downloads JUnit
     # artifacts. No cluster access. Runs on a hosted runner so a
@@ -2206,7 +2446,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes compatibility-tests stress-tests resilience-tests mesh-tests; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes compatibility-tests stress-tests resilience-tests mesh-tests dtf-gate dtf-advisory; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -2234,6 +2474,8 @@ jobs:
               stress-tests) status="${{ needs.stress-tests.result }}" ;;
               resilience-tests) status="${{ needs.resilience-tests.result }}" ;;
               mesh-tests) status="${{ needs.mesh-tests.result }}" ;;
+              dtf-gate) status="${{ needs.dtf-gate.result }}" ;;
+              dtf-advisory) status="${{ needs.dtf-advisory.result }}" ;;
             esac
             echo "| ${job} | ${status} |" >> "$GITHUB_STEP_SUMMARY"
           done
@@ -2252,6 +2494,14 @@ jobs:
           if-no-files-found: ignore
 
       - name: Gate check - fail if any required suite did not succeed
+        # dtf-gate (artifact-keeper#2697) is REQUIRED: it runs the DTF
+        # compose tiers against the digest-pinned candidate and uses the
+        # stricter `!= 'success'` predicate, guarded by the suite-selection
+        # condition (all/security/dtf) so a partial non-DTF invocation,
+        # where the job legitimately skips, still passes. dtf-advisory is
+        # SOFT (continue-on-error, named waivers with owner + expiry in the
+        # job comment) and stays OFF this predicate.
+        #
         # security-tests is now BLOCKING (#2700). It is enforced with the
         # stricter `!= 'success'` predicate (like the silent-success gates) so a
         # 'skipped' outcome cannot mask a security regression -- guarded by the
@@ -2302,6 +2552,7 @@ jobs:
           needs.pinned-cve-gate.result != 'success' ||
           needs.pinned-cve-image-gate.result != 'success' ||
           ((needs.security-tests.result != 'success') && (inputs.test_suite == 'all' || inputs.test_suite == 'security')) ||
+          ((needs.dtf-gate.result != 'success') && (inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf')) ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
           needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||
