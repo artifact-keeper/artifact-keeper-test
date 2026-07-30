@@ -1,0 +1,32 @@
+# DTF tier manifest: upgrade-v158-origin (#2688 — the "154+155" divergence case)
+# Profile-set: filesystem / single. This tier gates the MIGRATION-LEDGER
+# reconciliation path, not a storage class, so the cheap default topology is
+# correct (the storage-shape upgrade class is covered by the `upgrade` tier).
+#
+# Origin: the published v1.5.8 image. Its release/1.5.x ledger diverges from
+# main at exactly two slots:
+#   * 154 = artifacts_storage_key_index    (main carries this content at 157)
+#   * 155 = maven_flat_object_attribution  (main carries this content at 163)
+# while main uses 154/155/156 for entirely different migrations
+# (webhook_deliveries_claim / projects / upstream_feed_state). A candidate
+# without the #2686 startup repair (repair_release_1_5_x_divergence) aborts on
+# this ledger with Migration(VersionMismatch(154)) and never becomes healthy —
+# which is exactly how this oracle goes RED on a regressing candidate.
+#
+# Like the `upgrade` tier, the oracle drives a TWO-PHASE compose itself: stand
+# up on the v1.5.8 origin image, seed data, capture the origin ledger, then swap
+# ONLY the backend container to the candidate (--backend-image) against the SAME
+# postgres volume and assert the renumber-not-reapply reconciliation.
+#
+# RATE_LIMIT_ENABLED=false: the seed + oracle drive several back-to-back logins
+# through one admin; matches the `upgrade` tier. (Base default stays ON; a tier
+# disabling a shipped control does so explicitly, per design 2.2.)
+#
+# UPGRADE_OLD_IMAGE: the published, immutable v1.5.8 tag. The oracle asserts the
+# origin-ledger signature (154/155 at the release checksums' descriptions, max
+# version 155) before phase 2, so pointing this at any other image fails loudly
+# instead of silently testing a different upgrade path.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ghcr.io/artifact-keeper/artifact-keeper-backend:1.5.8}"
