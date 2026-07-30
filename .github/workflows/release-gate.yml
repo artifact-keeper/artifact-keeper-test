@@ -563,21 +563,49 @@ jobs:
           # on the backend pod template (iac chart _helpers.tpl
           # backend.selectorLabels), matching the deployment
           # artifact-keeper-backend the deploy step waits on.
+          #
+          # The backend is deployed by a DIGEST-PINNED ref
+          # (create-test-namespace.sh --backend-tag "<tag>@<digest>", see the
+          # deploy step above), so the pinned digest is recorded on the pod in
+          # two places, and EITHER one proves the running container is the
+          # pinned candidate content:
+          #
+          #   * .spec.containers[].image  -> the REQUESTED ref, e.g.
+          #       ".../artifact-keeper-backend:<tag>@sha256:<index>". Containerd's
+          #       pull is content-addressed: a pod admitted and running for a
+          #       "<repo>@sha256:<index>" ref can ONLY be a member of that exact
+          #       manifest index -- there is no way to substitute non-member
+          #       bytes. So spec.image carrying the pinned digest is a
+          #       cryptographic guarantee of bytes-tested==bytes-published
+          #       (artifact-keeper#2696), independent of arch.
+          #   * .status.containerStatuses[].imageID -> the RESOLVED ref. For a
+          #       MULTI-ARCH candidate this reports the per-arch PLATFORM child
+          #       digest (e.g. the amd64 child), which by construction differs
+          #       from the manifest-LIST digest that resolve-candidate-digest
+          #       passes here. A direct imageID match therefore only works when
+          #       the caller happens to pin a platform digest.
+          #
+          # Old logic matched imageID ONLY and false-failed every multi-arch
+          # release (artifact-keeper-test#321: 1.7.0-rc.2 pod imageID
+          # sha256:20eccbba is the amd64 child of the pinned index
+          # sha256:4a294a1c -- correct bytes, wrong assertion). Accept the
+          # pinned digest in EITHER field; fail only if NEITHER references it.
           IMGID=$(kubectl -n "${NAMESPACE}" get pods \
                     -l app.kubernetes.io/component=backend \
                     -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
-          echo "backend pod imageID: ${IMGID}"
-          echo "pinned digest:       ${BACKEND_DIGEST}"
-          # Substring match: the runtime may report the per-arch PLATFORM
-          # digest in imageID rather than the manifest-list digest passed
-          # here. If a drill shows that, the caller (resolve-candidate-digest
-          # in artifact-keeper#2696 PR 1) can instead pass the amd64
-          # platform digest; the pull itself is content-addressed either way.
-          case "${IMGID}" in
+          SPECIMG=$(kubectl -n "${NAMESPACE}" get pods \
+                    -l app.kubernetes.io/component=backend \
+                    -o jsonpath='{.items[0].spec.containers[0].image}')
+          echo "backend pod imageID:   ${IMGID}"
+          echo "backend requested img: ${SPECIMG}"
+          echo "pinned digest:         ${BACKEND_DIGEST}"
+          # The "::" separator keeps a match from spanning the two values; a
+          # sha256 digest never contains it.
+          case "${IMGID}::${SPECIMG}" in
             *"${BACKEND_DIGEST}"*)
-              echo "OK: pod imageID contains the pinned digest";;
+              echo "OK: pinned digest present in the pod imageID or the requested image ref";;
             *)
-              echo "::error::pod imageID ${IMGID} does not contain pinned ${BACKEND_DIGEST}"
+              echo "::error::neither pod imageID (${IMGID}) nor requested image (${SPECIMG}) references pinned ${BACKEND_DIGEST}"
               exit 1;;
           esac
 
