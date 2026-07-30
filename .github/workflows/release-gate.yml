@@ -2268,51 +2268,61 @@ jobs:
   # 1.7.0-rc.2 gate that failed build was reported as a SAML security
   # regression on a candidate whose XSW protection was verified intact.
   #
-  # So the probe is built HERE, once, on a hosted runner, as a fully
-  # STATIC musl binary (no glibc/loader dependency on the dind host) and
+  # So the probe is built HERE, once, on a network-capable runner and
   # handed to the tier as an artifact. The tier's build_probe() finds an
   # executable binary and no-ops; under RELEASE_GATE=1 it refuses to
   # cargo-build at all, so the invariant is enforced, not just intended.
   # The probe SOURCE remains the signer of record — only the moment of
   # compilation moved.
   #
+  # Linking: a fully static musl build is NOT viable — the signer's dep
+  # chain (bergshamra -> uppsala -> kryptering -> cryptoki -> cryptoki-sys)
+  # uses dlopen/libdl for its (unused) PKCS#11 path, which forces dynamic
+  # linking even on the musl target (artifact-keeper-test#325). Excising
+  # that path risks the probe's signature byte-compatibility with the
+  # backend verifier, so we keep the exact dep/feature set and build an
+  # ordinary glibc binary on the OLDEST supported glibc (ubuntu-22.04) for
+  # forward-compatibility with the dind pool — then VALIDATE BY EXECUTION
+  # (a local smoke-exec here, plus the arch-check and keygen smoke-exec at
+  # stage time on the actual dind runner) rather than by a static-link
+  # string check.
+  #
   # Target arch: x86_64 only, matching the ak-docker-runners pool. The
   # staging step below asserts the runner really is x86_64 and fails
-  # loudly if not, rather than shipping a binary that cannot exec. If
-  # the pool ever gains arm64 runners, add aarch64-unknown-linux-musl to
-  # the matrix here and select by `uname -m` when staging.
+  # loudly if not. If the pool ever gains arm64 runners, add an
+  # aarch64 build leg here and select by `uname -m` when staging.
   # -------------------------------------------------------------------
   build-dtf-probes:
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
 
-      - name: Add the musl target
-        run: rustup target add x86_64-unknown-linux-musl
-
-      - name: Build the SAML XSW payload generator (static musl)
+      - name: Build the SAML XSW payload generator
         working-directory: deploy-test/harness/tiers/sso/probe
         run: |
           set -euo pipefail
           # --locked: build the exact dependency versions committed in the
           # probe's Cargo.lock, so the signer the gate uses is reproducible.
-          cargo build --release --locked --target x86_64-unknown-linux-musl
-          BIN=target/x86_64-unknown-linux-musl/release/dtf-saml-xsw-probe
+          # Native glibc target (a static musl build is blocked by
+          # cryptoki-sys/dlopen; see the header note and #325).
+          cargo build --release --locked
+          BIN=target/release/dtf-saml-xsw-probe
           mkdir -p "${GITHUB_WORKSPACE}/dtf-probes"
           cp "$BIN" "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe"
           chmod +x "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe"
           file "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe"
-          # Fail here, not on the dind pool, if the binary is not actually
-          # static — a dynamically-linked probe would blow up at tier time
-          # and read as an sso failure.
-          if ! file "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe" | grep -q 'statically linked'; then
-            echo "::error::the SAML XSW probe is not statically linked; it will not run on the dind pool"
-            exit 1
-          fi
+          ldd  "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe" || true
+          # Validate by EXECUTION, not by a static-link string: prove the
+          # binary actually runs (mints an ephemeral IdP keypair) on this
+          # build host. The dind staging step repeats this smoke-exec on the
+          # real runner, so a glibc mismatch fails loudly and attributably
+          # there rather than as a confusing SAML "regression" in the oracle.
+          "${GITHUB_WORKSPACE}/dtf-probes/dtf-saml-xsw-probe" keygen "$(mktemp -d)" >/dev/null
+          echo ">> probe built and smoke-exec OK on the build host"
 
       - name: Upload the DTF probe binaries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
