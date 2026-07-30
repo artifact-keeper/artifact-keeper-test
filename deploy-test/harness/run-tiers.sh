@@ -20,14 +20,21 @@
 #
 # Failure-class labeling (triage aid, NOT a soft-fail): every non-zero tier
 # outcome is RED either way, but the summary distinguishes
-#   FAIL(tier)     oracle ran and asserted a real regression
+#   FAIL(tier)     oracle ran and asserted a real regression — the ONLY class
+#                  that is a statement about the candidate
+#   FAIL(infra)    oracle exit 11: the oracle started but could not evaluate
+#                  the tier (probe binary missing, token mint empty/4xx,
+#                  fixture precondition unmet, backend unreachable). The
+#                  candidate is UNJUDGED; fix the harness/environment and
+#                  re-run (artifact-keeper-test#323)
 #   FAIL(stack-up) run.sh exit 7: the compose stack never became healthy —
 #                  either the candidate does not boot on a clean deploy (real)
 #                  or a sidecar/infra pull flaked; the backend log tail printed
 #                  by run.sh is the discriminator
 #   FAIL(harness)  run.sh exit 2-6: bad tier name / missing overlay / corpus /
 #                  slot — a wiring bug in this repo, never the candidate
-# so a red gate can be triaged from the summary line alone.
+# so a red gate can be triaged from the summary line alone. See
+# harness/lib/exit_codes.sh for the full contract.
 #
 # Environment passthrough: everything run.sh honors (AK_TEST_ROOT,
 # SCANNER_ADAPTER_IMAGE, TRIVY_DB_REPOSITORY, UPGRADE_OLD_IMAGE, ...).
@@ -35,6 +42,8 @@
 set -uo pipefail
 
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/exit_codes.sh
+source "${HARNESS_DIR}/lib/exit_codes.sh"
 
 BACKEND_IMAGE_ARG=""
 TIERS=()
@@ -101,7 +110,7 @@ case "$BACKEND_IMAGE_ARG" in
 esac
 
 # --- Run the tiers sequentially ----------------------------------------------
-declare -a PASSED=() FAILED=()
+declare -a PASSED=() FAILED=() INFRA=()
 for tier in "${TIERS[@]}"; do
   echo ""
   echo "############################################################"
@@ -113,6 +122,11 @@ for tier in "${TIERS[@]}"; do
     PASSED+=("$tier")
   else
     case "$rc" in
+      "$DTF_EXIT_INFRA")
+        # #323: the oracle could not evaluate the tier. Tracked separately so
+        # the summary never attributes a harness/setup failure to the
+        # candidate. Still counted as RED below (fail-closed).
+        INFRA+=("${tier} (INFRA/SETUP: harness could not evaluate the tier — NOT a product verdict, rc=${rc})") ;;
       7) FAILED+=("${tier} (stack-up: candidate/sidecar never healthy, rc=7)") ;;
       2|3|4|5|6) FAILED+=("${tier} (harness: bad tier/overlay/corpus/slot, rc=${rc})") ;;
       *) FAILED+=("${tier} (tier: oracle asserted a regression, rc=${rc})") ;;
@@ -129,10 +143,22 @@ done
 for tier in "${FAILED[@]:-}"; do
   [ -n "$tier" ] && echo "  FAIL  ${tier}"
 done
+for tier in "${INFRA[@]:-}"; do
+  [ -n "$tier" ] && echo "  INFRA ${tier}"
+done
 
-if [ ${#FAILED[@]} -gt 0 ]; then
+if [ ${#INFRA[@]} -gt 0 ]; then
   echo ""
-  echo "!! ${#FAILED[@]} of ${#TIERS[@]} tier(s) FAILED — gate is RED" >&2
+  echo "!! ${#INFRA[@]} of ${#TIERS[@]} tier(s) hit an INFRA/SETUP FAILURE — the harness" >&2
+  echo "!! could not evaluate them, so the candidate is UNJUDGED on those tiers." >&2
+  echo "!! This is NOT a product verdict. Fix the harness/environment and re-run." >&2
+fi
+if [ ${#FAILED[@]} -gt 0 ] || [ ${#INFRA[@]} -gt 0 ]; then
+  echo ""
+  # Fail-closed: a required tier that cannot run cannot certify, so an
+  # INFRA/SETUP outcome is just as RED as an assertion failure — it is only
+  # LABELED differently (artifact-keeper-test#323).
+  echo "!! $(( ${#FAILED[@]} + ${#INFRA[@]} )) of ${#TIERS[@]} tier(s) did not pass — gate is RED" >&2
   exit 1
 fi
 echo ">> all ${#TIERS[@]} tier(s) passed — gate is GREEN"

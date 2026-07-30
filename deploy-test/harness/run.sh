@@ -19,7 +19,10 @@
 #   4. export BASE_URL / RELEASE_GATE=1 / ADMIN_PASS / DB_CONTAINER / BACKEND_IMAGE
 #   5. run the tier's oracle; collect JUnit into results/<tier>/
 #   6. tear down (down -v) unless --keep
-#   7. return non-zero if the oracle (any suite) failed
+#   7. return non-zero if the oracle (any suite) failed, distinguishing an
+#      oracle-asserted regression (exit 1) from an INFRA/SETUP failure the
+#      harness could not evaluate around (DTF_EXIT_INFRA — see
+#      harness/lib/exit_codes.sh); both are RED, only one is a product verdict
 #
 # Consolidated scope (bricks 0/1/2/3/4/5/6/7): the `smoke` (filesystem),
 # `isolation` (s3), `migration` (nexus), `proxy-egress` (squid), `sso`
@@ -38,6 +41,8 @@ set -uo pipefail
 DTF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/ports.sh
 source "${DTF_DIR}/harness/lib/ports.sh"
+# shellcheck source=lib/exit_codes.sh
+source "${DTF_DIR}/harness/lib/exit_codes.sh"
 
 # --- Locate the artifact-keeper-test corpus (common.sh / run-suite.sh) --------
 # In the productized home (artifact-keeper-test/deploy-test) the corpus is the
@@ -161,6 +166,10 @@ run_tier() {
   source "$manifest"
   [ -n "${RATE_LIMIT_ENABLED:-}" ] && export RATE_LIMIT_ENABLED
   [ -n "${UPSTREAM_ALLOW_PRIVATE_IPS:-}" ] && export UPSTREAM_ALLOW_PRIVATE_IPS
+  # Storage key layout (#2624): a tier that wants the legacy flat namespace
+  # sets STORAGE_KEY_SCHEME=flat in its manifest; the oracle sees the same
+  # value it configured the backend with.
+  [ -n "${STORAGE_KEY_SCHEME:-}" ] && export STORAGE_KEY_SCHEME
   if [ -z "$PROFILES" ] || [ -z "$ORACLE" ]; then
     echo "!! manifest for '${tier}' must set PROFILES and ORACLE" >&2
     exit 4
@@ -218,6 +227,14 @@ run_tier() {
 
   if [ "$rc" -eq 0 ]; then
     echo "=== TIER ${tier}: PASS (exit 0) ==="
+  elif [ "$rc" -eq "$DTF_EXIT_INFRA" ]; then
+    # #323: the oracle could not evaluate the tier (probe build failed, token
+    # mint empty/4xx, fixture precondition unmet, backend unreachable). This is
+    # still RED — a required tier that cannot run cannot certify — but it is
+    # NOT a statement about the candidate, so it must never read as one.
+    echo "=== TIER ${tier}: INFRA/SETUP FAILURE (oracle exit ${rc}) ==="
+    echo "===   the harness could not evaluate this tier — NOT a product verdict ==="
+    echo "===   fix the harness/environment and re-run; the candidate is unjudged ==="
   else
     echo "=== TIER ${tier}: FAIL (oracle exit ${rc}) ==="
   fi
@@ -227,7 +244,7 @@ run_tier() {
 # --- Dispatch -----------------------------------------------------------------
 case "$CMD" in
   "" | -h | --help)
-    sed -n '2,45p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    sed -n '2,38p' "${BASH_SOURCE[0]}"; exit 0 ;;
 
   up)
     profiles_str="$(dims_to_profiles)"

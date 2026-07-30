@@ -146,7 +146,7 @@ fc_case_auth_header_shapes() {
   uid="$(resolve_user_id_by_username "${ADMIN_USER}")" \
     || { echo "could not resolve admin user id"; return 1; }
   tok="$(api_post "/api/v1/users/${uid}/tokens" \
-    "{\"name\":\"dtf-npm-${RUN_ID}\",\"scopes\":[\"read\",\"write\"]}" \
+    "{\"name\":\"dtf-npm-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" \
     | jq -r '.token // empty')"
   [ -n "$tok" ] || { echo "token mint returned no token"; return 1; }
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 \

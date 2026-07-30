@@ -41,7 +41,7 @@ fc_publish() {
   uid="$(resolve_user_id_by_username "${ADMIN_USER}")" \
     || { echo "cannot resolve admin user id to mint a token"; return 1; }
   PUB_TOKEN="$(api_post "/api/v1/users/${uid}/tokens" \
-    "{\"name\":\"dtf-pub-${RUN_ID}\",\"scopes\":[\"read\",\"write\"]}" | jq -r '.token // empty')"
+    "{\"name\":\"dtf-pub-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" | jq -r '.token // empty')"
   [ -n "$PUB_TOKEN" ] || { echo "token mint returned no token"; return 1; }
   echo "  minted write token prefix=${PUB_TOKEN:0:8}..."
 
