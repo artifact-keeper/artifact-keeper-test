@@ -29,6 +29,9 @@
 # `format-conformance` (filesystem, ONE shared AK + per-format client plugins)
 # adds real publish->consume conformance per registry format (conda is the
 # reference; more formats are drop-in plugins, no shared-file edits).
+# `signing` (filesystem + apt/dnf/apk/helm clients) asks the question every other
+# client leg disables: does the client actually VERIFY the advertised signature
+# chain? (#72; no [trusted=yes] / --allow-untrusted / gpgcheck=0 anywhere.)
 # =============================================================================
 set -uo pipefail
 
@@ -267,7 +270,7 @@ case "$CMD" in
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
              virtual-no-transfer proxy-upstream-url oidc-group-sync \
              openapi-signing-tags maven-grouped-name debian-encoded-separator cran-rubygems-download-url backup-custom-name \
-             oidc-env-config gcs-custom-endpoint; do
+             oidc-env-config gcs-custom-endpoint signing; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
