@@ -2153,13 +2153,37 @@ jobs:
   # -------------------------------------------------------------------
   mesh-tests:
     needs: [deploy, resilience-tests]
+    # SOFT — NAMED WAIVER (artifact-keeper-test#327).
+    #
     # continue-on-error: multi-DC federation/replication (peer registration,
     # cross-instance sync, failover) cannot be fully exercised in the ephemeral
     # CI env — the sync worker isn't running and peer instances aren't reachable
     # there (the suite's own steps SKIP/FAIL with "sync worker not running in
     # ephemeral env"). Same known-infra-debt class as stress-tests; release.yml
-    # already treats mesh as an optional gate. Kept in the run for visibility but
-    # excluded from the blocking rollup. See artifact-keeper#1936.
+    # already treats mesh as an optional gate. Kept in the run for visibility.
+    # See artifact-keeper#1936.
+    #
+    # This comment used to claim the job was "excluded from the blocking
+    # rollup" while collect-results still gated on
+    # `needs.mesh-tests.result == 'failure'/'cancelled'`. continue-on-error
+    # changes a job's CONCLUSION, not `needs.<job>.result`, so a mesh failure
+    # DID block the release gate — a documented-advisory job that was in fact
+    # a hard gate. Those two clauses are now removed from the predicate, so
+    # intent and predicate finally agree.
+    #
+    # KNOWN GAP, stated plainly: mesh coverage is advisory, and the suite has
+    # a real harness bug of its own — test-peer-failover.sh registers its
+    # simulated "broken peer" at loopback `http://127.0.0.1:1`, which the
+    # backend's peer-registration SSRF allowlist correctly 400s, so the
+    # failover path is never exercised. That fix, and the migration of mesh
+    # coverage onto a DTF tier (the shape oci-push-scope uses: digest-pinned,
+    # INFRA-vs-regression labeled), are DEFERRED to a future release by
+    # product direction. Nothing here is fixed — mesh is simply no longer
+    # pretending to be a gate.
+    #   owner:   release-engineering
+    #   expires: 2026-12-01 — on/after this date either land the DTF
+    #            peer-failover tier and make it blocking, or re-justify this
+    #            waiver in a PR.
     continue-on-error: true
     if: |
       always() &&
@@ -2356,7 +2380,13 @@ jobs:
   #   security-authz  — the 1.6.1 advisory-class regression tiers
   #                     (vvc3 scoped-admin keystone, qcmj webhook authz,
   #                     f7qf peer authz, 5f2q upload scope, qxxr refresh
-  #                     race)
+  #                     race) plus oci-push-scope, which carries the OCI
+  #                     half of the token-exchange coverage migrated out
+  #                     of the legacy security-tests suite
+  #                     (artifact-keeper-test#327): a least-privilege
+  #                     ["read:artifacts","write:artifacts"] token must
+  #                     complete a real docker push, and a read-only one
+  #                     must still be refused (artifact-keeper#3053).
   #   security-boundary — dos (rate-limit / worker-starvation), sso
   #                     (SAML XSW class), proxy-egress (SSRF egress
   #                     control)
@@ -2400,7 +2430,7 @@ jobs:
           - group: upgrade-origins
             tiers: upgrade-v156-origin upgrade-v158-origin
           - group: security-authz
-            tiers: vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race
+            tiers: vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race oci-push-scope
           - group: security-boundary
             tiers: dos sso proxy-egress
     env:
@@ -2447,7 +2477,12 @@ jobs:
           DEST=deploy-test/harness/tiers/sso/probe/target/release
           mkdir -p "$DEST"
           install -m 0755 /tmp/dtf-probes/dtf-saml-xsw-probe "${DEST}/dtf-saml-xsw-probe"
-          file "${DEST}/dtf-saml-xsw-probe"
+          # Diagnostic only, and NOT a precondition: the ak-docker-runners dind
+          # image ships no `file` binary, so under `set -e` this exited 127 and
+          # skipped the whole sso tier on the 1.7.0-rc.3 gate — reported as an
+          # sso gap on a candidate whose SAML XSW protection was never exercised.
+          # The keygen smoke-exec below is the real check; keep this soft.
+          file "${DEST}/dtf-saml-xsw-probe" || true
           # Prove it actually execs on THIS host before the tier depends on it,
           # so a bad binary is an obvious provisioning error here rather than a
           # confusing SAML failure inside the oracle.
@@ -2653,9 +2688,18 @@ jobs:
         # predicate. Grype image-scan efficacy remains hard-gated by
         # pinned-cve-image-gate.
         #
-        # stress-tests remains intentionally excluded (continue-on-error: true):
+        # stress-tests and mesh-tests are intentionally excluded
+        # (continue-on-error: true, named waivers on the jobs themselves):
         #   - stress-tests: bcrypt-bound auth saturation under sustained
         #     load on shared ARC runners (artifact-keeper#991).
+        #   - mesh-tests: its job header always documented it as advisory,
+        #     but the two `needs.mesh-tests.result` clauses that used to sit
+        #     at the end of this predicate made it blocking anyway
+        #     (continue-on-error does not change `needs.<job>.result` — see
+        #     the note above). Those clauses are removed
+        #     (artifact-keeper-test#327) so the documented intent and the
+        #     predicate agree. Migrating mesh coverage onto a DTF tier is
+        #     DEFERRED to a future release; owner + expiry are on the job.
         #
         # The three new silent-success gates (scan-completion-gate,
         # sbom-correctness-gate, pinned-cve-gate) use the STRICTER
@@ -2705,12 +2749,11 @@ jobs:
           needs.platform-tests.result == 'failure' || needs.platform-tests.result == 'cancelled' ||
           needs.auth-tests.result == 'failure' || needs.auth-tests.result == 'cancelled' ||
           needs.admin-tests.result == 'failure' || needs.admin-tests.result == 'cancelled' ||
-          needs.resilience-tests.result == 'failure' || needs.resilience-tests.result == 'cancelled' ||
-          needs.mesh-tests.result == 'failure' || needs.mesh-tests.result == 'cancelled'
+          needs.resilience-tests.result == 'failure' || needs.resilience-tests.result == 'cancelled'
         run: |
           echo "::error::Release gate FAILED - one or more required test suites did not pass"
           echo "Review the workflow summary above for details"
-          echo "Note: stress-tests is non-blocking; its outcome is shown in the summary but does not gate the release"
+          echo "Note: stress-tests and mesh-tests are non-blocking (named waivers on those jobs); their outcomes are shown in the summary but do not gate the release"
           exit 1
 
   # -------------------------------------------------------------------
