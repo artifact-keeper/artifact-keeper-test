@@ -287,7 +287,8 @@ case "$CMD" in
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
              virtual-no-transfer proxy-upstream-url oidc-group-sync \
              openapi-signing-tags maven-grouped-name debian-encoded-separator cran-rubygems-download-url backup-custom-name \
-             oidc-env-config gcs-custom-endpoint signing; do
+             oidc-env-config gcs-custom-endpoint signing \
+             oci-push-scope; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

@@ -26,8 +26,10 @@
 #       - succeeds regardless of declared scope; JWTs are NOT scoped
 #   - #2430 token-exchange laundering: a read-only API token exchanged into a
 #       JWT/bearer (Conan users/authenticate, OCI /v2/token docker-login) must
-#       inherit the token's action-scope ceiling -> 403 on a subsequent write;
-#       a read+write token exchanges into a credential that CAN write (2xx).
+#       inherit the token's action-scope ceiling -> 403 on a subsequent write.
+#       The matching read+write POSITIVE controls moved to the DTF tier
+#       `oci-push-scope` (artifact-keeper-test#327); see the #2430 section
+#       below for why.
 #
 # Fixture note (#2603 G1 deny-by-default writes): repository writes are
 # DENY-BY-DEFAULT at the principal layer -- a rules-less repository does not
@@ -439,7 +441,16 @@ assert_403_denied "pub upload-URL preflight" "$status"
 # We then present the exchanged credential as a Bearer on an OCI blob-upload
 # init (a write) and assert:
 #   - read-only  -> 403 scope-gate denial  (was 201/202 before #2430)
-#   - read+write -> 202 Accepted  (positive control: exchange still works)
+#
+# The matching read+WRITE POSITIVE controls have MOVED to the DTF tier
+# `oci-push-scope` (deploy-test/harness/tiers/oci-push-scope,
+# artifact-keeper-test#327). They now run against the digest-pinned candidate,
+# drive the whole docker-push wire sequence instead of just the upload-init,
+# and report a setup failure as INFRA rather than as a product verdict. Both
+# jobs are blocking and both run on the same suite selections
+# (security-tests: all|security; dtf-gate: all|security|dtf), so no invocation
+# loses the signal. The read-only NEGATIVE controls stay here on purpose:
+# over-covering a least-privilege boundary is cheap.
 #
 # Both SAs hold an explicit read+write rule on the OCI repo (see the #2603
 # fixture grants above), so require_oci_repo_write_access passes at the
@@ -501,41 +512,18 @@ else
   assert_403_denied "docker-login-exchanged RO bearer on OCI write" "$status"
 fi
 
-# --- Positive controls: read+write exchanges still WORK on the write path ---
-begin_test "Conan-exchanged RW JWT is accepted on OCI write (#2430 positive control)"
-if [ -z "${SA_WRITE_TOKEN:-}" ]; then
-  skip "no write SA token"
-else
-  RW_CONAN_JWT=$(conan_exchange_jwt "$SA_WRITE_TOKEN")
-  if [ -z "$RW_CONAN_JWT" ] || ! printf '%s' "$RW_CONAN_JWT" | grep -q '\.'; then
-    fail "conan exchange did not return a JWT for the read+write token"
-  else
-    status=$(oci_push_status "$RW_CONAN_JWT")
-    if [ "$status" = "202" ] || [ "$status" = "201" ]; then
-      pass
-    else
-      fail "expected 202/201 for RW conan-exchanged JWT on OCI write, got ${status}: $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
-    fi
-  fi
-fi
-
-begin_test "Docker-login-exchanged RW bearer is accepted on OCI write (#2430 positive control)"
-if [ -z "${SA_WRITE_TOKEN:-}" ]; then
-  skip "no write SA token"
-else
-  RW_OCI_BEARER=$(oci_login_bearer "$SA_WRITE_TOKEN")
-  if [ -z "$RW_OCI_BEARER" ]; then
-    fail "docker-login exchange did not return a bearer for the read+write token"
-  else
-    status=$(oci_push_status "$RW_OCI_BEARER")
-    if [ "$status" = "202" ] || [ "$status" = "201" ]; then
-      pass
-    else
-      fail "expected 202/201 for RW docker-login-exchanged bearer on OCI write, got ${status}: $(head -c 200 "${WORK_DIR}/last-body" 2>/dev/null)"
-    fi
-  fi
-fi
-
+# --- Positive controls: MIGRATED (artifact-keeper-test#327) ------------------
+# The two read+write positive controls that used to live here --
+#   "Conan-exchanged RW JWT is accepted on OCI write"
+#   "Docker-login-exchanged RW bearer is accepted on OCI write"
+# -- now live in the DTF tier `oci-push-scope`, which asserts the same thing
+# against the digest-pinned candidate and goes further: it completes a whole
+# docker push (blob upload init, monolithic blob, chunked PATCH, PUT-with-
+# digest, manifest PUT, manifest read-back) with the least-privilege
+# ["read:artifacts","write:artifacts"] token, and keeps a wildcard-token
+# control so a failure is attributable rather than just red. That tier is a
+# blocking leg of dtf-gate. This suite keeps the read-only NEGATIVE controls
+# above, which is where its own regression class (#2430 laundering) lives.
 # -------------------------------------------------------------------------
 # Authorization-layer control: a write-scope SA token passes the GHSA scope
 # check but is STILL rejected (403) on permission/group creation, because

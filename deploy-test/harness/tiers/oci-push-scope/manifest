@@ -1,0 +1,70 @@
+# DTF tier manifest: oci-push-scope  (artifact-keeper#3053 / 1.7.0)
+#
+# Profile-set: filesystem / single. The scope-vocabulary mismatch this tier
+# proves is storage-independent — the broken check is the pure scope match in
+# `oci_scopes_grant`/`scopes_grant_access`, which runs ahead of any storage I/O.
+#
+# WHAT THIS TIER MIGRATES
+# This is the DTF home of the OCI half of the legacy `security-tests`
+# token-exchange coverage (tests/security/test-ghsa-vvc3-scope-checks.sh,
+# the #2430 positive controls). Those two assertions were the only OCI push
+# signal in the blocking gate; here they become a digest-pinned tier that
+# drives the WHOLE docker-push wire sequence instead of just the upload-init,
+# and that labels a setup failure as INFRA rather than as a product verdict.
+# The read-only NEGATIVE controls stay in the legacy suite as well — a
+# least-privilege gate is worth over-covering.
+#
+# THE BUG (artifact-keeper#3053)
+# The #2993/#2989 migration switched ~48 format publish sites to require the
+# colon-form `write:artifacts`, but missed the 5 OCI write call sites in
+# `backend/src/api/handlers/oci_v2.rs` (blob start-upload, chunk PATCH,
+# PUT-with-digest, monolithic POST-with-digest, manifest PUT), which still
+# require the BARE `write` action. Under the #2989 parent rule the coverage
+# direction is broad-covers-specific ONLY, so a held `write:artifacts` does
+# NOT satisfy a bare `write` requirement — and #2996/#3001 made the bare
+# parents un-mintable. Net effect: the ONLY write token a caller can mint
+# today is refused on every OCI blob/manifest write path, and only a
+# wildcard `*`/`admin` token can still push. Least-privilege is defeated and
+# the standard `docker login` + `docker push` CI flow is broken.
+#
+# ORACLE (discriminating, RELEASE_GATE=1)
+#   (MAIN)      a granular ["read:artifacts","write:artifacts"] api-token
+#               completes a real push — blob upload init 202, monolithic
+#               blob POST?digest 201, chunked PATCH 202, PUT?digest 201,
+#               manifest PUT 201, and the manifest reads back 200 — both
+#               presented directly (docker-login Basic api-token) and via
+#               the exchanged `GET /v2/token` bearer and the conan
+#               credential exchange. RED on rc.3 (403 "Token does not have
+#               required scope: write" on every one), GREEN on the fix.
+#   (LEAST-PRIV) a ["read:artifacts"]-only token — direct, and exchanged —
+#               is REFUSED 403 on blob upload and manifest PUT, and leaves
+#               no tag behind. Holds on BOTH images: the fix must not buy
+#               the positive path by widening the read ceiling.
+#   (CONTROL)   a wildcard `*` api-token pushes on BOTH images. This is the
+#               load-bearing discriminator: it proves the OCI push path
+#               itself is functional, so a RED MAIN is specifically the
+#               least-privilege ceiling and not a broken registry.
+#   (CONTROL)   anonymous blob upload -> 401 (authentication still guards).
+#
+# NO DOCKER DAEMON, ON PURPOSE
+# The tier drives the byte-exact HTTP sequence a `docker push` emits (GET
+# /v2/ ping, GET /v2/token login exchange, blob uploads, manifest PUT) with
+# curl rather than a dind client. A required dtf-gate leg must not depend on
+# external image pulls: `docker:dind`/`registry:2` pulls are the documented
+# flake class that keeps the `native-client` tier in dtf-advisory. The
+# credential under test is still minted through the real docker-login
+# exchange, which is where the customer flow actually breaks.
+#
+# OUT OF SCOPE: the matching bare-`delete` site on the manifest delete path.
+# This tier asserts the push (write) class only; delete is tracked with the
+# same issue.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login, two repo
+# creates, three service-account creates, six permission grants, three token
+# mints, two token exchanges and ~15 back-to-back registry calls through a
+# single admin identity; the base default (ON) would throttle them. A tier
+# that must disable a shipped control does so explicitly (design 2.2, same as
+# token-colon-scope / 5f2q-upload-scope).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
