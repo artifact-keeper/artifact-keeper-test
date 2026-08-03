@@ -137,24 +137,25 @@ AK_BACKEND_BRANCH_MAIN="\
   system_stats_proxy_cache \
 "
 
-# virtual_member_partial_update_contract: marks a backend whose
-# PUT /:key/members uses the PRE-#2795 PARTIAL-UPDATE contract (update the
-# listed members' priorities in place, leave unlisted members untouched).
+# virtual_member_replace_contract: marks a backend whose PUT /:key/members has
+# FULL-SET REPLACE semantics. The request body is the complete desired member
+# list: members absent from it are removed, listed members are inserted or have
+# their priority refreshed, and an empty list clears the membership.
 #
-# Unlike every additive flag above, this is an UPPER-bounded contract: it was
-# REMOVED when full-set-replace semantics landed (artifact-keeper#2795, on the
-# 1.3.0 line), so it is present on 1.1.x / 1.2.x-era backends and ABSENT on
-# main (whose backend already has replace semantics). Because MAIN is defined
-# as a superset of the 1.2.x bundle, we cannot express "in 1.2.x but NOT main"
-# by adding the token inside the literal 1_1_X / 1_2_X blocks above (it would
-# flow into MAIN through inheritance). Instead we append it to the 1.1.x and
-# 1.2.x bundles HERE, after MAIN has already been assigned its (token-free)
-# value, so MAIN never captures it.
+# Introduced by artifact-keeper#2795 (merged after v1.6.0, first contained in
+# v1.6.1) and ratified as the intended API contract in artifact-keeper#2899.
+# It is a MAIN-only token: the 1.1.x and 1.2.x bundles pre-date #2795 and still
+# carry the priorities-only update, where the replace assertions are wrong by
+# construction. Appending it to MAIN here, rather than editing the MAIN literal
+# above, keeps this change off the lines other in-flight branches are editing.
 #
-# Gates tests/repos/test-virtual-members-concurrent-put.sh. The replacement
-# assertions for replace semantics are pending artifact-keeper#2899.
-AK_BACKEND_BRANCH_1_1_X="$AK_BACKEND_BRANCH_1_1_X virtual_member_partial_update_contract"
-AK_BACKEND_BRANCH_1_2_X="$AK_BACKEND_BRANCH_1_2_X virtual_member_partial_update_contract"
+# This replaces virtual_member_partial_update_contract, the upper-bounded token
+# that used to mark the PRE-#2795 contract. #2899 ratified replace semantics,
+# so the suite it gated was rewritten for replace rather than kept pinned to
+# the obsolete contract, and the old token has no remaining consumers.
+#
+# Gates tests/repos/test-virtual-members-concurrent-put.sh.
+AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN virtual_member_replace_contract"
 
 # -----------------------------------------------------------------------------
 # Helpers

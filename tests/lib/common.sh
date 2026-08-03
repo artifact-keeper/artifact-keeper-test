@@ -312,19 +312,24 @@ _feature_min_version() {
     # only run against a 1.2.0+ backend and stay out of the in-flight
     # 1.1.9 release-gate. Tracks artifact-keeper-test#92, #93, #94, #95.
     "virtual_member_strict_contract") echo "1.2.0" ;;
-    # virtual_member_partial_update_contract: the PRE-#2795 partial-update
-    # PUT /:key/members contract (update listed members in place, leave others
-    # untouched). This is an UPPER-bounded contract, removed when full-set
-    # replace landed (artifact-keeper#2795, on the 1.3.0 line), so it is present
-    # ONLY on 1.1.x / 1.2.x-era backends. It is authoritatively gated by the
-    # branch-aware AK_FEATURES layer (feature-flags.sh: in the 1.1.x/1.2.x
-    # bundles, NOT main). The min-version probe model here cannot express an
-    # upper bound, so on the local-dev fallback path (AK_FEATURES unset) we use
-    # an unreachable sentinel to conservatively SKIP on modern backends rather
-    # than run obsolete assertions; set AK_FEATURES to force a run against a
-    # genuine 1.1.x/1.2.x backend. Gates
-    # tests/repos/test-virtual-members-concurrent-put.sh (artifact-keeper#2899).
-    "virtual_member_partial_update_contract") echo "99.0.0" ;;
+    # virtual_member_replace_contract: PUT /:key/members has FULL-SET REPLACE
+    # semantics. The request body is the complete desired member list: absent
+    # members are removed, listed members are inserted or have their priority
+    # refreshed, and an empty list clears the membership. Introduced by
+    # artifact-keeper#2795 and ratified as the intended API contract in
+    # artifact-keeper#2899. #2795 merged after v1.6.0 and is contained in
+    # v1.6.1 (first tag carrying 2120b3b2), so 1.6.1 is the floor.
+    #
+    # This replaces virtual_member_partial_update_contract, which gated the
+    # PRE-#2795 priorities-only contract. That flag is gone: #2899 ratified
+    # replace, so the partial-update assertions it guarded were rewritten
+    # rather than kept behind an upper-bounded flag.
+    #
+    # Gates tests/repos/test-virtual-members-concurrent-put.sh. That suite runs
+    # in the repo-tests job, which does not set AK_BACKEND_BRANCH, so this
+    # probe-path entry is the one that actually fires there; the branch-aware
+    # entry in feature-flags.sh covers jobs that do set it.
+    "virtual_member_replace_contract") echo "1.6.1" ;;
     # Auth/Epic-11 features. Targeted for v1.1.9 because security-flavoured
     # work (rotation + token revocation on deactivate) is likely to land on
     # the release/1.1.x maintenance branch as a backport rather than wait
