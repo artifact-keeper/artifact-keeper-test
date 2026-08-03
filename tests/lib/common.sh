@@ -226,6 +226,27 @@ get_backend_version() {
 # Add entries here in the same PR that ships the feature.
 _feature_min_version() {
   case "$1" in
+    # maven_grouped_hosted_direct_put: the grouped Maven component view
+    # (GET /api/v1/repositories/{key}/artifacts?group_by=maven_component)
+    # returns real components for artifacts uploaded to a HOSTED repo via
+    # the plain HTTP PUT path. Pre-1.7.1 backends stored the catalog name
+    # from the GAV path parser but the version from the raw path segment,
+    # so the grouped listing reported pagination.total > 0 with an empty
+    # components array (artifact-keeper#3064, fixed by artifact-keeper#3093).
+    "maven_grouped_hosted_direct_put") echo "1.7.1" ;;
+    # pypi_scoped_token_publish: artifact upload paths (including the PyPI
+    # twine endpoint) accept the colon-form write:artifacts scope. Pre-1.7.0
+    # backends gated upload on the bare "write" scope which ALLOWED_SCOPES
+    # cannot mint, so a least-privilege write:artifacts token was always
+    # rejected with 403 "Token does not have required scope"
+    # (artifact-keeper#3041, fixed by artifact-keeper#2993).
+    "pypi_scoped_token_publish")      echo "1.7.0" ;;
+    # system_stats_proxy_cache: GET /api/v1/admin/stats reports proxy-cache
+    # (pull-through) totals via proxy_artifact_count / proxy_storage_bytes.
+    # Proxy-cached objects live in proxy_cache_artifacts, not artifacts, so
+    # pre-1.7.1 backends silently excluded them from system stats
+    # (artifact-keeper#3087, fixed by artifact-keeper#3088).
+    "system_stats_proxy_cache")       echo "1.7.1" ;;
     # quality_checks_admin_list: the admin quality-checks list-all endpoint
     # GET /api/v1/admin/quality-checks (#2419) — a repository-scoped (or
     # unscoped) paginated `{items,total,page,per_page}` view that backs the web

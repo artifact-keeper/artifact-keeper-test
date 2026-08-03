@@ -1091,7 +1091,7 @@ jobs:
           - name: node
             scripts: "test-npm.sh test-npm-remote.sh test-vscode.sh"
           - name: python
-            scripts: "test-pypi.sh test-pypi-native-client.sh test-pypi-remote.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
+            scripts: "test-pypi.sh test-pypi-native-client.sh test-pypi-scoped-token.sh test-pypi-remote.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
           - name: jvm
             scripts: "test-maven.sh test-maven-native-client.sh test-maven-remote.sh test-maven-virtual-snapshot.sh test-sbt.sh test-gradle-conformance.sh"
           - name: rust-go-swift

@@ -132,6 +132,9 @@ AK_BACKEND_BRANCH_MAIN="\
   composer_dist_cache \
   npm_packument_swr \
   oci_gc_two_phase \
+  maven_grouped_hosted_direct_put \
+  pypi_scoped_token_publish \
+  system_stats_proxy_cache \
 "
 
 # virtual_member_partial_update_contract: marks a backend whose

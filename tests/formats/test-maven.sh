@@ -164,4 +164,79 @@ else
   fail "GET /api/v1/repositories/${REPO_KEY}/artifacts returned error"
 fi
 
+# -------------------------------------------------------------------------
+# Grouped component view on hosted repos (artifact-keeper#3064, fixed by
+# artifact-keeper#3093, ships in v1.7.1)
+#
+# Regression: GET .../artifacts?group_by=maven_component on a HOSTED Maven
+# repo returned pagination.total > 0 with components: [] when the artifacts
+# were uploaded via the direct HTTP PUT path, because the catalog stored the
+# component name from the GAV path parser but the version from the raw path
+# segment. The bug's fingerprint is total > 0 with an empty components
+# array, so both halves are asserted explicitly below.
+# -------------------------------------------------------------------------
+
+GROUPED_ARTIFACT_ID="app-${RUN_ID}"
+GROUPED_VERSION="2.0.0"
+GROUPED_BASE="com/example/demo/${GROUPED_ARTIFACT_ID}/${GROUPED_VERSION}"
+
+begin_test "Upload ${GROUPED_ARTIFACT_ID} ${GROUPED_VERSION} JAR and POM via direct PUT"
+if require_feature "maven_grouped_hosted_direct_put"; then
+  GROUPED_POM="${WORK_DIR}/${GROUPED_ARTIFACT_ID}-${GROUPED_VERSION}.pom"
+  cat > "$GROUPED_POM" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example.demo</groupId>
+  <artifactId>${GROUPED_ARTIFACT_ID}</artifactId>
+  <version>${GROUPED_VERSION}</version>
+  <packaging>jar</packaging>
+</project>
+EOF
+  jar_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X PUT \
+    "${MAVEN_URL}/${GROUPED_BASE}/${GROUPED_ARTIFACT_ID}-${GROUPED_VERSION}.jar" \
+    -u "${ADMIN_USER}:${ADMIN_PASS}" \
+    -H "Content-Type: application/java-archive" \
+    --data-binary "@${JAR_FILE}" 2>/dev/null) || jar_status="000"
+  pom_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X PUT \
+    "${MAVEN_URL}/${GROUPED_BASE}/${GROUPED_ARTIFACT_ID}-${GROUPED_VERSION}.pom" \
+    -u "${ADMIN_USER}:${ADMIN_PASS}" \
+    -H "Content-Type: application/xml" \
+    --data-binary "@${GROUPED_POM}" 2>/dev/null) || pom_status="000"
+  if assert_http_2xx "$jar_status" "PUT grouped-view JAR failed"; then
+    if assert_http_2xx "$pom_status" "PUT grouped-view POM failed"; then
+      pass
+    fi
+  fi
+fi
+
+begin_test "Grouped view returns non-empty components with path-derived version"
+if require_feature "maven_grouped_hosted_direct_put"; then
+  sleep 1
+  GROUPED_PATH="/api/v1/repositories/${REPO_KEY}/artifacts?group_by=maven_component&count=exact&per_page=100"
+  if resp=$(api_get_with_retry "$GROUPED_PATH"); then
+    comp_count=$(echo "$resp" | jq '.components | length' 2>/dev/null) || comp_count=""
+    total=$(echo "$resp" | jq '.pagination.total' 2>/dev/null) || total=""
+    if ! [[ "$comp_count" =~ ^[0-9]+$ ]] || ! [[ "$total" =~ ^[0-9]+$ ]]; then
+      fail "grouped response missing components/pagination.total (components='${comp_count}' total='${total}')" "$resp"
+    elif [ "$total" -gt 0 ] && [ "$comp_count" -eq 0 ]; then
+      fail "regression fingerprint (artifact-keeper#3064): pagination.total=${total} but components is empty" "$resp"
+    elif [ "$comp_count" -eq 0 ]; then
+      fail "grouped view returned no components (total=${total})" "$resp"
+    else
+      grouped_version=$(echo "$resp" | jq -r --arg a "$GROUPED_ARTIFACT_ID" \
+        '.components[] | select(.artifact_id == $a) | .version' 2>/dev/null | head -n1) || grouped_version=""
+      if assert_eq "$grouped_version" "$GROUPED_VERSION" \
+          "component version should come from the path (expected ${GROUPED_VERSION}, got '${grouped_version}')"; then
+        if assert_eq "$total" "$comp_count" \
+            "pagination.total (${total}) should equal returned component count (${comp_count})"; then
+          pass
+        fi
+      fi
+    fi
+  else
+    fail "GET ${GROUPED_PATH} returned error"
+  fi
+fi
+
 end_suite
