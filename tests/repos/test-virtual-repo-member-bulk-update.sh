@@ -6,26 +6,34 @@
 #   body: { "members": [ { "member_key": "...", "priority": N }, ... ] }
 #
 # IMPORTANT BACKEND BEHAVIOR (from backend/src/api/handlers/repositories.rs
-# `update_virtual_members`):
+# `update_virtual_members` -> `set_virtual_members`):
 #
-#   The PUT handler ONLY UPDATES priorities for existing members.
-#   It does NOT add members that aren't already in the virtual repo, and it
-#   does NOT remove members that are absent from the request body.
+#   The PUT handler applies FULL-SET REPLACE semantics. The request body is
+#   the complete desired member list: members absent from the body are
+#   REMOVED, members present are inserted if new or have their priority
+#   updated if existing. Introduced by artifact-keeper/artifact-keeper#2795
+#   and ratified as the intended contract in
+#   artifact-keeper/artifact-keeper#2899.
 #
-#   To remove a member, the caller must use DELETE /:key/members/:member_key
-#   (covered by test-virtual-repo-member-remove.sh).
+#   DELETE /:key/members/:member_key remains the single-member removal path
+#   (covered by test-virtual-repo-member-remove.sh), but it is no longer the
+#   ONLY way to remove a member.
 #
-#   This test therefore exercises bulk reorder semantics: create V with
+#   Replace semantics is asserted directly in
+#   test-virtual-members-concurrent-put.sh. This suite deliberately stays
+#   scoped to bulk REORDER, and every PUT below sends the complete member set,
+#   so its assertions hold identically under either contract: create V with
 #   members [A(p=1), B(p=2)], PUT a body that swaps priorities to
 #   [A(p=10), B(p=5)], then GET /members and assert ordering reflects the
 #   new priorities (members are returned ORDER BY priority ascending, so B
 #   should now precede A).
 #
-# We additionally test that PUT with a member_key that is not currently a
-# member of V returns 4xx (the handler still resolves the key with
-# get_by_key, so an unknown key yields 404; a known but non-member key
-# silently no-ops, which we treat as "no error" rather than asserting any
-# specific behavior because the backend doesn't surface that case).
+# We additionally test that PUT with a member_key that resolves to no
+# repository returns 404: the handler resolves every key in the body with
+# get_by_key before mutating, so an unknown key fails the whole request and
+# leaves membership untouched. Note that under replace semantics a KNOWN but
+# non-member key no longer no-ops -- it is inserted as a new member -- which
+# is why the unknown-key case below uses a deliberately non-existent key.
 #
 # Response shape for PUT (mirrors GET): VirtualMembersListResponse
 #   { "members": [ { ..., "priority": N, "member_repo_key": "..." }, ... ] }
