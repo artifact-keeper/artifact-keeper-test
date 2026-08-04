@@ -27,8 +27,13 @@ GO_IMAGE="${OCI_CONFORMANCE_GO_IMAGE:-golang:1.23-bookworm}"
 CONF_REF="${OCI_CONFORMANCE_REF:-v1.1.0}"        # pinned distribution-spec release
 ENABLE_DELETE="${OCI_CONFORMANCE_DELETE:-0}"     # AK blob-delete gap: opt-in
 SUF="${RUN_ID##*-}-$$"
-NS1="ociconf/repo1-${DTF_SLOT:-x}-${SUF}"        # OCI_NAMESPACE
-NS2="ociconf/repo2-${DTF_SLOT:-x}-${SUF}"        # OCI_CROSSMOUNT_NAMESPACE
+# AK repo keys cannot contain '/'. The OCI namespace is <repo-key>/<image>, so
+# the FIRST path segment is the (slash-free) repository key we create and the
+# rest is the image path within it.
+REPO1="ociconf1-${DTF_SLOT:-x}-${SUF}"
+REPO2="ociconf2-${DTF_SLOT:-x}-${SUF}"
+NS1="${REPO1}/conformance"                       # OCI_NAMESPACE
+NS2="${REPO2}/conformance"                       # OCI_CROSSMOUNT_NAMESPACE
 
 begin_suite "oci-conformance"
 
@@ -47,8 +52,8 @@ create_oci_repo() { # KEY
   || api_post "/api/v1/repositories" \
     "{\"key\":\"${1}\",\"name\":\"${1}\",\"format\":\"oci\",\"repo_type\":\"local\",\"is_public\":false}" >/dev/null 2>&1
 }
-if ! create_oci_repo "$NS1" || ! create_oci_repo "$NS2"; then
-  begin_test "setup: create hosted OCI repos"; fail "could not create OCI repos ${NS1} / ${NS2}"; end_suite
+if ! create_oci_repo "$REPO1" || ! create_oci_repo "$REPO2"; then
+  begin_test "setup: create hosted OCI repos"; fail "could not create OCI repos ${REPO1} / ${REPO2}"; end_suite
 fi
 
 OUT="${WORK_DIR}/ociout"; mkdir -p "$OUT"; chmod 777 "$OUT" 2>/dev/null || true

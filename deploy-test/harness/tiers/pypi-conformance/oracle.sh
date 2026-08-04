@@ -37,9 +37,18 @@ auth_admin
 setup_workdir
 
 # Resolve a scenario's fields, run it. Uses jq for the JSON walk.
+SKIPPED_NONDTF=0
 run_scenario() { # FILE
-  local file="$1" id variant pkg nsteps repo
+  local file="$1" id variant pkg nsteps repo runners
   id="$(jq -r '.id' "$file")"
+  # The DTF runner only executes HTTP scenarios. Unit-level vectors (e.g. the
+  # pypa/packaging version/tag corpus) carry runners:["unit"] and are consumed
+  # by the (separate) unit runner — skip them here without noise.
+  runners="$(jq -r '(.runners // ["dtf"]) | join(",")' "$file" 2>/dev/null)"
+  case ",${runners}," in
+    *",dtf,"*) : ;;
+    *) SKIPPED_NONDTF=$((SKIPPED_NONDTF+1)); return 0 ;;
+  esac
   variant="$(jq -r '.mock_variant // "clean"' "$file")"
   pkg="$(jq -r '.package // "dtfpkg"' "$file")"
   nsteps="$(jq -r '.steps | length' "$file")"
@@ -87,6 +96,8 @@ run_scenario() { # FILE
     if [ "$ok" = "1" ]; then
       pass
     else
+      # Surface the response inline so a gate failure is triageable without a re-run.
+      echo "  >> [${id}] AK ${method} ${path} -> ${code}; body: $(head -c 500 "$body" 2>/dev/null | tr '\n' ' ')" >&2
       fail "conformance step failed: ${reason}" "$(head -c 400 "$body" 2>/dev/null)"
     fi
     rm -f "$body"
@@ -103,5 +114,8 @@ fi
 for f in "${FILES[@]}"; do
   run_scenario "$f"
 done
+if [ "$SKIPPED_NONDTF" -gt 0 ]; then
+  echo "  >> pypi-conformance: skipped ${SKIPPED_NONDTF} unit-only scenario(s) (consumed by the unit runner, not the DTF runner)" >&2
+fi
 
 end_suite
