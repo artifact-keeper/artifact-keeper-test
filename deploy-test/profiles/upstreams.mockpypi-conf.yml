@@ -1,0 +1,57 @@
+# =============================================================================
+# profiles/upstreams.mockpypi-conf.yml — upstreams=mockpypi-conf overlay
+# =============================================================================
+# Adds the variant-route PyPI upstream (`mock-pypi-conf`) for the
+# pypi-conformance tier's corpus runner. One server answers several route
+# families (/clean, /meta404, /relative, /yanked); each corpus scenario points
+# an AK remote repo at http://mock-pypi-conf/<variant>. Pattern and wiring
+# mirror upstreams.mockpypi.yml (#2801); the mock design is credited to uv's
+# pypi_proxy (Apache-2.0 OR MIT) — see conformance/CREDITS.md.
+#
+# Distinct 172.29/16 subnet so it never collides with upstreams.mockpypi
+# (172.28). The mock sits on 172.16/12 so AK's create-time SSRF upstream-URL
+# check allowlists it via AK_SSRF_ALLOW_PRIVATE_CIDRS.
+#
+# Required vars (run.sh exports): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-pypi-conf:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-pypi-conf
+    command: ["python3", "/app/mock_pypi_conf.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_PKG: "dtfpkg"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/pypi-conformance/fixtures/mock_pypi_conf.py:/app/mock_pypi_conf.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockpypiconf:
+        ipv4_address: 172.29.${DTF_SLOT}.50
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-pypi-conf:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockpypiconf: {}
+
+networks:
+  mockpypiconf:
+    name: ak-dtf${DTF_SLOT}-mockpypiconf
+    ipam:
+      config:
+        - subnet: 172.29.${DTF_SLOT}.0/24

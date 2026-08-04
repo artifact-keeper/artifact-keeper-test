@@ -1,0 +1,17 @@
+# DTF tier manifest: pypi-conformance
+# =============================================================================
+# The DTF runner for the PyPI conformance corpus (conformance/corpus/pypi/*.json).
+# For each scenario it stands the scenario's `mock_variant` up on the
+# `mock-pypi-conf` upstream, points an AK remote pypi repo at
+# http://mock-pypi-conf/<variant>, executes the scenario `steps` against AK, and
+# asserts each `expect`. Adding coverage = a corpus JSON (+ maybe a mock route);
+# no oracle edits. See conformance/README.md and docs/test-framework-2026.md.
+#
+# The mock-server pattern is credited to astral-sh/uv's pypi_proxy
+# (Apache-2.0 OR MIT); see conformance/CREDITS.md.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + a repo create and
+# several proxy GETs per scenario, back-to-back.
+PROFILES="storage.filesystem upstreams.mockpypi-conf"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -1,0 +1,20 @@
+{
+  "id": "pypi/relative-file-url",
+  "format": "pypi",
+  "spec_refs": ["PEP 503"],
+  "source": "Modeled on astral-sh/uv pypi_proxy `/relative/` route (Apache-2.0 OR MIT). See CREDITS.md.",
+  "mock_variant": "relative",
+  "package": "dtfpkg",
+  "runners": ["dtf", "unit"],
+  "steps": [
+    {
+      "desc": "Upstream serves RELATIVE file URLs (../../files/...); the proxy render must resolve+rewrite them under /pypi/{repo}/, never leak a bare relative anchor",
+      "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+      "expect": {
+        "status": 200,
+        "body_contains": ["dtfpkg-1.0.0-py3-none-any.whl"],
+        "body_not_contains": ["../../files/"]
+      }
+    }
+  ]
+}
