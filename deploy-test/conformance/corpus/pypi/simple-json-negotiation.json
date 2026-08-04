@@ -1,0 +1,20 @@
+{
+  "id": "pypi/simple-json-negotiation",
+  "format": "pypi",
+  "spec_refs": ["PEP 691", "PEP 503"],
+  "source": "PyPA Simple Repository API (PEP 691) — public spec. See CREDITS.md.",
+  "mock_variant": "clean",
+  "package": "dtfpkg",
+  "runners": ["dtf", "unit"],
+  "steps": [
+    {
+      "desc": "A proxied Simple project-detail index is served 200 and lists the distributions",
+      "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+      "expect": {
+        "status": 200,
+        "body_contains": ["dtfpkg-1.0.0-py3-none-any.whl", "dtfpkg-1.0.0.tar.gz"],
+        "body_not_contains": ["files.pythonhosted.org"]
+      }
+    }
+  ]
+}

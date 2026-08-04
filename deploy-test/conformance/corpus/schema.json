@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Conformance corpus scenario",
+  "description": "One protocol scenario, consumed by both the DTF runner and (next slice) the unit runner. See conformance/README.md.",
+  "type": "object",
+  "required": ["id", "format", "spec_refs", "source", "steps"],
+  "properties": {
+    "id": {"type": "string", "description": "unique, path-like e.g. pypi/yanked-release"},
+    "format": {"type": "string", "enum": ["pypi", "oci", "npm", "conda", "deb", "rpm", "cargo"]},
+    "spec_refs": {"type": "array", "items": {"type": "string"}, "description": "the checklist item(s) pinned, e.g. 'PEP 658'"},
+    "source": {"type": "string", "description": "REQUIRED attribution: upstream project + license, e.g. 'astral-sh/uv (Apache-2.0 OR MIT)'. See CREDITS.md."},
+    "mock_variant": {"type": "string", "description": "route family the format's mock upstream serves for this scenario"},
+    "package": {"type": "string"},
+    "runners": {"type": "array", "items": {"type": "string", "enum": ["dtf", "unit"]}},
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["request", "expect"],
+        "properties": {
+          "desc": {"type": "string"},
+          "request": {
+            "type": "object",
+            "required": ["method", "path"],
+            "properties": {
+              "method": {"type": "string"},
+              "path": {"type": "string", "description": "{repo} and {pkg} are substituted by the runner"}
+            }
+          },
+          "expect": {
+            "type": "object",
+            "properties": {
+              "status": {"type": "integer"},
+              "body_contains": {"type": "array", "items": {"type": "string"}},
+              "body_not_contains": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}

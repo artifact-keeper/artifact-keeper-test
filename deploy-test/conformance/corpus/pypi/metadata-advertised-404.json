@@ -1,0 +1,20 @@
+{
+  "id": "pypi/metadata-advertised-404",
+  "format": "pypi",
+  "spec_refs": ["PEP 658", "PEP 714"],
+  "source": "Modeled on astral-sh/uv pypi_proxy variants (Apache-2.0 OR MIT); pins AK #3077. See CREDITS.md.",
+  "mock_variant": "meta404",
+  "package": "dtfpkg",
+  "runners": ["dtf", "unit"],
+  "steps": [
+    {
+      "desc": "Upstream advertises PEP 658 metadata but 404s it; the index must still serve (no hard 5xx) so the client can fall back to the wheel",
+      "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+      "expect": {
+        "status": 200,
+        "body_contains": ["dtfpkg-1.0.0-py3-none-any.whl"],
+        "body_not_contains": ["files.pythonhosted.org"]
+      }
+    }
+  ]
+}

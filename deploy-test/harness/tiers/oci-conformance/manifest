@@ -1,0 +1,33 @@
+# DTF tier manifest: oci-conformance
+# =============================================================================
+# Adopts the upstream OCI distribution-spec conformance suite
+# (github.com/opencontainers/distribution-spec, conformance/) and points it at
+# Artifact Keeper's /v2 registry. This is the ONE ecosystem with a purpose-built
+# "point at any server" conformance suite; running it unmodified is the highest-
+# ROI brick of the conformance-corpus program (see docs/test-framework-2026.md).
+#
+# Topology: filesystem / single. The suite runs inside a golang container on the
+# host network (--network host) so it reaches AK at the slot's published
+# 127.0.0.1:${HTTP_PORT}. NEEDS_INTERNET: the container clones the pinned
+# distribution-spec ref and downloads its Go module deps on first run.
+#
+# The oracle:
+#   * creates two hosted OCI repos (OCI_NAMESPACE / OCI_CROSSMOUNT_NAMESPACE),
+#   * runs the suite with PULL + PUSH + CONTENT_DISCOVERY enabled (the workflows
+#     AK is expected to pass),
+#   * ingests the suite's junit.xml into results/ and asserts zero
+#     failures/errors across those workflows,
+#   * leaves CONTENT_MANAGEMENT (delete) OFF by default (OCI_CONFORMANCE_DELETE=1
+#     to enable) because AK's blob-delete path is a known conformance gap
+#     (DELETE /v2/<name>/blobs/<digest> currently 405s) — enabling it is how we
+#     track closing that gap rather than a silent skip.
+#
+# Pin: OCI_CONFORMANCE_REF (default a tagged distribution-spec release) keeps the
+# env-var contract and suite behavior deterministic across runs.
+#
+# RATE_LIMIT_ENABLED=false: the suite drives many back-to-back blob/manifest
+# pushes and pulls through a single admin principal.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+NEEDS_INTERNET="true"

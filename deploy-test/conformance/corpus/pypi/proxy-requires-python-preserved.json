@@ -1,0 +1,6 @@
+{ "id": "pypi/proxy-requires-python-preserved", "format": "pypi", "spec_refs": ["PEP 503"],
+  "source": "pypa/pip data-requires-python parsing (MIT). See CREDITS.md.",
+  "mock_variant": "reqpython", "package": "dtfpkg", "runners": ["dtf"],
+  "steps": [{ "desc": "the data-requires-python attribute must be preserved through the proxy render",
+    "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+    "expect": {"status": 200, "body_contains": ["data-requires-python"]} }] }

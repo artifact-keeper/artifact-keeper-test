@@ -1,0 +1,19 @@
+{
+  "id": "pypi/yanked-release",
+  "format": "pypi",
+  "spec_refs": ["PEP 592"],
+  "source": "PEP 592 (public spec); scenario idea cross-checked against pypa/pip tests (MIT). See CREDITS.md.",
+  "mock_variant": "yanked",
+  "package": "dtfpkg",
+  "runners": ["dtf", "unit"],
+  "steps": [
+    {
+      "desc": "A PEP 592 yanked release must preserve the `yanked` marker through the proxy render so installers can honor it",
+      "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+      "expect": {
+        "status": 200,
+        "body_contains": ["yanked"]
+      }
+    }
+  ]
+}
