@@ -114,10 +114,30 @@ def simple_html(variant):
             f'<a href="{wheel}#sha256={sha256(WHEEL_BYTES)}">{wheel}</a>'
             "</body></html>"
         ).encode("utf-8")
+    if variant == "html-only":
+        # A plain PEP 503 HTML index (some mirrors serve only HTML).
+        return (
+            f'<!DOCTYPE html><html><body><a href="{wheel}">{wheel}</a></body></html>'
+        ).encode("utf-8")
+    if variant == "absolute":
+        # An ABSOLUTE offsite URL the proxy render must rewrite to route through
+        # AK (never leak the upstream host).
+        return (
+            "<!DOCTYPE html><html><body>"
+            f'<a href="http://mock-pypi-conf/absolute/files/{wheel}">{wheel}</a>'
+            "</body></html>"
+        ).encode("utf-8")
+    if variant == "reqpython":
+        # PEP 503 data-requires-python attribute the render must preserve.
+        return (
+            "<!DOCTYPE html><html><body>"
+            f'<a href="{wheel}" data-requires-python="&gt;=3.8">{wheel}</a>'
+            "</body></html>"
+        ).encode("utf-8")
     return b"<!DOCTYPE html><html><body></body></html>"
 
 
-HTML_VARIANTS = ("base-tag", "hashfrag")
+HTML_VARIANTS = ("base-tag", "hashfrag", "html-only", "absolute", "reqpython")
 
 
 class Handler(BaseHTTPRequestHandler):

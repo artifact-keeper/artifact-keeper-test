@@ -1,0 +1,6 @@
+{ "id": "pypi/proxy-absolute-url-rewritten", "format": "pypi", "spec_refs": ["PEP 503"],
+  "source": "pypa/pip absolute-href handling (MIT); AK proxy URL rewrite (#2801 class). See CREDITS.md.",
+  "mock_variant": "absolute", "package": "dtfpkg", "runners": ["dtf"],
+  "steps": [{ "desc": "an absolute offsite download URL must be rewritten to route through AK, never leaking the upstream host",
+    "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+    "expect": {"status": 200, "body_contains": ["dtfpkg-1.0.0-py3-none-any.whl"], "body_not_contains": ["mock-pypi-conf", "http://"]} }] }

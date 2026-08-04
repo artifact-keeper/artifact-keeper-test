@@ -1,0 +1,6 @@
+{ "id": "pypi/proxy-html-index-served", "format": "pypi", "spec_refs": ["PEP 503"],
+  "source": "pypa/pip HTML Simple index parsing (MIT). See CREDITS.md.",
+  "mock_variant": "html-only", "package": "dtfpkg", "runners": ["dtf"],
+  "steps": [{ "desc": "an HTML-only upstream index is proxied and served 200 with the distribution listed",
+    "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+    "expect": {"status": 200, "body_contains": ["dtfpkg-1.0.0-py3-none-any.whl"]} }] }
