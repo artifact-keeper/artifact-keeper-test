@@ -388,7 +388,38 @@ require_feature() {
     feature_enabled_via_env "$feature"
     case $? in
       0)
-        # Env says enabled. No HTTP needed.
+        # Env says enabled -- but "enabled" here is derived from a coarse
+        # BRANCH label, not from the deploy. release-gate.yml maps every
+        # backend_tag that does not start 1.1./1.2. to
+        # AK_BACKEND_BRANCH=main, so the main bundle claims every main-line
+        # feature regardless of which main-line tag is actually deployed.
+        # Taking that answer unconditionally marks a feature ENABLED on a
+        # backend that predates it: re-running the gate against backend_tag
+        # 1.7.0 enabled system_stats_proxy_cache (floor 1.7.1) and the suite
+        # hard-failed on missing fields -- a false red on a shipped release.
+        # Worse, the two mechanisms disagreed on the same deploy: the
+        # format-tests jobs do not set AK_BACKEND_BRANCH, so they took the
+        # probe path below and correctly skipped the very same suite.
+        #
+        # So intersect the two signals: the feature is enabled only when the
+        # branch bundle lists it AND the running backend is at or above the
+        # version that ships it.
+        local _env_min_ver
+        if _env_min_ver=$(_feature_min_version "$feature"); then
+          local _env_backend_ver
+          _env_backend_ver=$(get_backend_version)
+          # An undiscoverable version leaves the env answer standing. Soft-
+          # skipping on a failed /health probe is the silent-success class the
+          # env layer exists to kill (see tests/lib/feature-flags.sh header),
+          # so we do not reintroduce it here.
+          if [ "$_env_backend_ver" != "unknown" ] && \
+             ! version_ge "$_env_backend_ver" "$_env_min_ver"; then
+            skip "feature '${feature}' is in AK_FEATURES for backend branch '${AK_BACKEND_BRANCH:-?}' but requires backend >= ${_env_min_ver}, running ${_env_backend_ver}"
+            return 1
+          fi
+        fi
+        # Either no version floor is registered for this flag (the env answer
+        # is the only signal there is) or the floor is met. Enabled.
         return 0
         ;;
       1)
