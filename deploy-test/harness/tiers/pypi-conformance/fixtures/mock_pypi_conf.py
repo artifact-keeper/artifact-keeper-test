@@ -93,6 +93,33 @@ def simple_json(variant):
     return json.dumps(body).encode("utf-8")
 
 
+def simple_html(variant):
+    """PEP 503 HTML project-detail body for HTML-only variants (pip harvest)."""
+    wheel = WHEEL
+    if variant == "base-tag":
+        # A <base href> to an offsite mirror: a correct proxy render must strip
+        # it (else the client re-anchors AK's rewritten root-relative URLs onto
+        # the upstream host). Anchor is relative so the <base> is load-bearing.
+        return (
+            "<!DOCTYPE html><html><head>"
+            '<base href="https://internal-mirror.example/">'
+            "</head><body>"
+            f'<a href="../../files/{wheel}">{wheel}</a>'
+            "</body></html>"
+        ).encode("utf-8")
+    if variant == "hashfrag":
+        # A #sha256=<hex> fragment that a correct proxy render preserves.
+        return (
+            "<!DOCTYPE html><html><body>"
+            f'<a href="{wheel}#sha256={sha256(WHEEL_BYTES)}">{wheel}</a>'
+            "</body></html>"
+        ).encode("utf-8")
+    return b"<!DOCTYPE html><html><body></body></html>"
+
+
+HTML_VARIANTS = ("base-tag", "hashfrag")
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -114,6 +141,8 @@ class Handler(BaseHTTPRequestHandler):
 
         # Simple project-detail index.
         if "/simple/" in p and p.rstrip("/").endswith(PKG):
+            if variant in HTML_VARIANTS:
+                return self._send(200, "text/html", simple_html(variant))
             return self._send(
                 200, "application/vnd.pypi.simple.v1+json",
                 simple_json(variant),

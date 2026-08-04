@@ -1,0 +1,16 @@
+{
+  "id": "pypi/proxy-base-tag-neutralized",
+  "format": "pypi",
+  "spec_refs": ["PEP 503"],
+  "source": "Modeled on pypa/pip HTMLLinkParser base_url handling (MIT); pins the AK <base href> fix (PR #3104). See CREDITS.md.",
+  "mock_variant": "base-tag",
+  "package": "dtfpkg",
+  "runners": ["dtf"],
+  "steps": [
+    {
+      "desc": "an upstream <base href> must be neutralized so rewritten download URLs resolve against AK, not the offsite mirror",
+      "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+      "expect": {"status": 200, "body_contains": ["dtfpkg-1.0.0-py3-none-any.whl"], "body_not_contains": ["<base", "internal-mirror.example"]}
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "pypi/proxy-hash-fragment-preserved",
+  "format": "pypi",
+  "spec_refs": ["PEP 503"],
+  "source": "Modeled on pypa/pip LinkHash fragment allowlist (MIT). See CREDITS.md.",
+  "mock_variant": "hashfrag",
+  "package": "dtfpkg",
+  "runners": ["dtf"],
+  "steps": [
+    {
+      "desc": "the #sha256=<hex> fragment must be preserved through the proxy rewrite so hash-checking installs work",
+      "request": {"method": "GET", "path": "/pypi/{repo}/simple/{pkg}/"},
+      "expect": {"status": 200, "body_contains": ["dtfpkg-1.0.0-py3-none-any.whl#sha256="]}
+    }
+  ]
+}
