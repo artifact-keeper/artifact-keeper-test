@@ -50,14 +50,26 @@ else
 fi
 
 begin_test "Mint repo-scoped read:artifacts+write:artifacts token"
-resp=$(api_post "/api/v1/repositories/${REPO_KEY}/tokens" \
-  "{\"name\":\"e2e-scoped-publish-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"],\"expires_in_days\":1}" 2>/dev/null) || true
-SCOPED_TOKEN=$(echo "$resp" | jq -r '.token // empty')
-SCOPED_TOKEN_ID=$(echo "$resp" | jq -r '.id // empty')
+# Raw curl rather than api_post: api_post uses `curl -sf`, which discards the
+# response body on any non-2xx and collapses every failure into one shell exit
+# code. With the `|| true` the call site needs, that left ${resp} empty on
+# exactly the path the diagnostic is for, so the mint failure printed a bare
+# "failed: " with no status and no body. Capture both, the way put_members in
+# tests/repos/test-virtual-members-concurrent-put.sh does.
+MINT_BODY_FILE="${WORK_DIR}/token-mint-resp.json"
+MINT_STATUS=$(curl -s -o "$MINT_BODY_FILE" -w '%{http_code}' $CURL_TIMEOUT \
+  -X POST \
+  -H "$(auth_header)" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"e2e-scoped-publish-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"],\"expires_in_days\":1}" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/tokens" 2>/dev/null) || MINT_STATUS="000"
+resp=$(cat "$MINT_BODY_FILE" 2>/dev/null || true)
+SCOPED_TOKEN=$(echo "$resp" | jq -r '.token // empty' 2>/dev/null) || SCOPED_TOKEN=""
+SCOPED_TOKEN_ID=$(echo "$resp" | jq -r '.id // empty' 2>/dev/null) || SCOPED_TOKEN_ID=""
 if [ -n "$SCOPED_TOKEN" ] && [ "$SCOPED_TOKEN" != "null" ]; then
   pass
 else
-  fail "repo-scoped token mint failed: ${resp:0:200}"
+  fail "repo-scoped token mint failed: HTTP ${MINT_STATUS}" "${resp:0:400}"
 fi
 
 # ---------------------------------------------------------------------------

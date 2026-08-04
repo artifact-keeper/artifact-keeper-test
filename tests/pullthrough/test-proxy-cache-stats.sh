@@ -23,10 +23,22 @@
 #   1. The stats response carries the new proxy_cache fields
 #      (proxy_artifact_count, proxy_storage_bytes) as numbers.
 #   2. Pulling a package through R produces a cache row in R.
-#   3. After the pull, stats report proxy_artifact_count >= 1 and
-#      proxy_storage_bytes >= 1. The table is a whole-DB aggregate shared
-#      with parallel suites, so the assertion is ">= 1 with our own row
-#      confirmed present", not an exact delta.
+#   3. The stats totals INCREASE across this suite's own pull-through:
+#      proxy_artifact_count by at least 1 and proxy_storage_bytes by at
+#      least the sdist's size, measured against a baseline snapshotted
+#      immediately before the pull.
+#
+# Why assertion 3 is a delta and not ">= 1"
+# -----------------------------------------
+# proxy_artifact_count / proxy_storage_bytes are INSTANCE-WIDE aggregates over
+# the whole proxy_cache_artifacts table. run-suite.sh globs and sorts this
+# directory, so six other pullthrough suites have already populated cache rows
+# by the time this one starts: both counters are >= 1 before this script does
+# anything. An absolute ">= 1" check therefore passes even if this suite's own
+# pull-through never happens and even if the #3088 aggregation is wrong, which
+# is what it was doing. Anchoring on a pre-pull baseline is what actually
+# exercises the fix. The counters can still move under parallel suites, but
+# only upward within a run, so a floor of baseline+delta stays sound.
 #
 # Requires: curl, jq, tar
 
@@ -46,6 +58,24 @@ PKG_NAME="pcspkg${RUN_ID//-/}"
 PKG_VERSION="1.0.0"
 SDIST_BASENAME="${PKG_NAME}-${PKG_VERSION}.tar.gz"
 STATS_PATH="/api/v1/admin/stats"
+SDIST_SIZE=0
+BASE_PROXY_COUNT=0
+BASE_PROXY_BYTES=0
+
+# read_proxy_stats - echo "<proxy_artifact_count> <proxy_storage_bytes>" from
+# the stats endpoint on stdout. Returns 1 (echoing nothing) if the GET failed,
+# so callers can tell "could not read the counters" from "counters are zero".
+# Absent or non-numeric fields normalize to 0 so every call site can do plain
+# integer arithmetic on the result.
+read_proxy_stats() {
+  local resp c b
+  resp=$(api_get "$STATS_PATH" 2>/dev/null) || return 1
+  c=$(echo "$resp" | jq -r '.proxy_artifact_count // 0' 2>/dev/null) || c=0
+  b=$(echo "$resp" | jq -r '.proxy_storage_bytes // 0' 2>/dev/null) || b=0
+  [[ "$c" =~ ^[0-9]+$ ]] || c=0
+  [[ "$b" =~ ^[0-9]+$ ]] || b=0
+  echo "$c $b"
+}
 
 # ---------------------------------------------------------------------------
 # Assertion 1: schema carries the new fields
@@ -82,8 +112,12 @@ from setuptools import setup
 setup(name="${PKG_NAME}", version="${PKG_VERSION}")
 EOF
 SDIST_FILE="${WORK_DIR}/${SDIST_BASENAME}"
-tar -czf "$SDIST_FILE" -C "$WORK_DIR" "${PKG_NAME}-${PKG_VERSION}" || true
-if ! create_local_repo "$UPSTREAM_KEY" "pypi"; then
+# A failed tar is a broken fixture, not a product verdict, and it must not be
+# swallowed: the byte-delta assertion below is measured against this file's
+# size, so a zero-byte or missing sdist would quietly weaken it.
+if ! tar -czf "$SDIST_FILE" -C "$WORK_DIR" "${PKG_NAME}-${PKG_VERSION}"; then
+  infra_fail "could not create the sdist fixture ${SDIST_BASENAME}"
+elif ! create_local_repo "$UPSTREAM_KEY" "pypi"; then
   fail "could not create PyPI upstream"
 elif curl -sf $CURL_TIMEOUT -X POST \
     -H "$(format_auth_header)" \
@@ -97,12 +131,35 @@ elif curl -sf $CURL_TIMEOUT -X POST \
 else
   fail "could not publish sdist to upstream U"
 fi
+# Size of the object the pull-through will cache; the byte delta below is
+# measured against it. Fall back to 1 rather than 0 if the size is somehow
+# unreadable, so the assertion still demands a strict increase.
+SDIST_SIZE=$(wc -c < "$SDIST_FILE" 2>/dev/null | tr -d '[:space:]') || SDIST_SIZE=1
+[[ "$SDIST_SIZE" =~ ^[1-9][0-9]*$ ]] || SDIST_SIZE=1
 
 begin_test "Create remote R pointing at U"
 if create_remote_repo "$REMOTE_KEY" "pypi" "${BASE_URL}/pypi/${UPSTREAM_KEY}"; then
   pass
 else
   fail "could not create remote R"
+fi
+
+# ---------------------------------------------------------------------------
+# Baseline for assertion 3, taken immediately before the pull-through so the
+# delta below covers only this suite's own cache write.
+# ---------------------------------------------------------------------------
+
+begin_test "Snapshot instance-wide proxy-cache totals before this suite pulls"
+if snapshot=$(read_proxy_stats); then
+  BASE_PROXY_COUNT="${snapshot%% *}"
+  BASE_PROXY_BYTES="${snapshot##* }"
+  echo "  baseline: proxy_artifact_count=${BASE_PROXY_COUNT}, proxy_storage_bytes=${BASE_PROXY_BYTES}"
+  pass
+else
+  # Without a baseline there is no delta to assert, and falling back to zero
+  # would silently restore the vacuous ">= 1" check. That is a harness
+  # problem, not a product verdict.
+  infra_fail "could not read ${STATS_PATH} for the pre-pull baseline; the delta assertion needs it"
 fi
 
 # ---------------------------------------------------------------------------
@@ -140,26 +197,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Assertion 3: stats reflect the cached object
+# Assertion 3: stats GREW by this suite's own cached object
+#
+# Against the pre-pull baseline, not against zero: see the header note on why
+# an absolute ">= 1" here was vacuous. The poll is retained because the cache
+# write and the stats aggregate are eventually consistent.
 # ---------------------------------------------------------------------------
 
-begin_test "Stats report nonzero proxy-cache totals after pull-through"
+begin_test "Stats proxy-cache totals grow by this suite's cached object"
+WANT_COUNT=$(( BASE_PROXY_COUNT + 1 ))
+WANT_BYTES=$(( BASE_PROXY_BYTES + SDIST_SIZE ))
 proxy_count=0
 proxy_bytes=0
 deadline=$(( $(date +%s) + 20 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  resp=$(api_get "$STATS_PATH" 2>/dev/null) || resp=""
-  proxy_count=$(echo "$resp" | jq -r '.proxy_artifact_count // 0' 2>/dev/null) || proxy_count=0
-  proxy_bytes=$(echo "$resp" | jq -r '.proxy_storage_bytes // 0' 2>/dev/null) || proxy_bytes=0
-  if [ "$proxy_count" -ge 1 ] 2>/dev/null && [ "$proxy_bytes" -ge 1 ] 2>/dev/null; then
+  if snapshot=$(read_proxy_stats); then
+    proxy_count="${snapshot%% *}"
+    proxy_bytes="${snapshot##* }"
+  fi
+  if [ "$proxy_count" -ge "$WANT_COUNT" ] && [ "$proxy_bytes" -ge "$WANT_BYTES" ]; then
     break
   fi
   sleep 2
 done
-if [ "$proxy_count" -ge 1 ] 2>/dev/null && [ "$proxy_bytes" -ge 1 ] 2>/dev/null; then
+if [ "$proxy_count" -ge "$WANT_COUNT" ] && [ "$proxy_bytes" -ge "$WANT_BYTES" ]; then
   pass
 else
-  fail "stats did not reflect the cached object (proxy_artifact_count=${proxy_count}, proxy_storage_bytes=${proxy_bytes}); pre-#3088 backends omit proxy-cache rows from system stats"
+  fail "stats did not grow by the cached object (proxy_artifact_count ${BASE_PROXY_COUNT} -> ${proxy_count}, want >= ${WANT_COUNT}; proxy_storage_bytes ${BASE_PROXY_BYTES} -> ${proxy_bytes}, want >= ${WANT_BYTES})" \
+    "cached sdist: ${SDIST_BASENAME} (${SDIST_SIZE} bytes) pulled through ${REMOTE_KEY}
+pre-#3088 backends omit proxy_cache_artifacts rows from the system stats aggregate,
+so both counters stay flat across a pull-through that did land a cache row."
 fi
 
 # ---------------------------------------------------------------------------

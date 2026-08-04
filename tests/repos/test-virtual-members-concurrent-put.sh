@@ -603,14 +603,12 @@ fi
 # tears down the four repos regardless of how this script exits.
 # ---------------------------------------------------------------------------
 
-if [ "${EXPECT_FAILURE:-0}" = "1" ]; then
-  if ( end_suite ); then
-    echo "EXPECT_FAILURE=1 but suite passed; inverting to fail"
-    exit 1
-  else
-    echo "EXPECT_FAILURE=1 and suite failed as expected; inverting to pass"
-    exit 0
-  fi
-fi
-
+# EXPECT_FAILURE inversion is handled centrally by end_suite (tests/lib/
+# common.sh): under EXPECT_FAILURE=1 it exits 0 when at least one test failed
+# and 1 when every test passed. This script used to wrap end_suite in a
+# subshell and invert its result again, which double-inverted -- a genuinely
+# failing suite reported success, a clean run reported failure, and an
+# INFRA/SETUP exit (DTF_EXIT_INFRA) was flattened into success. common.sh
+# warns about exactly this in the enable_expect_failure_trap shim. Call
+# end_suite once and let it own the exit code.
 end_suite
