@@ -1,0 +1,75 @@
+# =============================================================================
+# profiles/upstreams.mocknuget-search.yml — upstreams=mocknuget-search overlay
+# (discussion #3130)
+# =============================================================================
+# A single mock NuGet V3 upstream that advertises SearchQueryService and really
+# filters on `q`, for the nuget-remote-search tier.
+#
+# Deliberately separate from upstreams.mocknuget.yml: that profile's fixture is
+# a two-host credential-leak topology owned by the #2925 nuget-cred-scoping
+# gate, and it advertises no search resource on purpose. Adding one there would
+# perturb a live gate for no benefit, so this tier brings its own single-host
+# mock instead.
+#
+# Same escape-hatch discipline as upstreams.mocknuget.yml / upstreams.mockpypi.yml:
+#   * ADDS `mock-nuget-search`, a stdlib python http server on the slot's
+#     private 172.16/12 subnet.
+#   * PATCHES backend onto the same net + sets the private-IP escape hatch
+#     (UPSTREAM_ALLOW_PRIVATE_IPS + AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16/12) so a
+#     remote-repo create against `http://mock-nuget-search/v3/index.json` is
+#     accepted. Without it AK's create-time validation rejects the private IP
+#     ("Upstream URL IP '172.x.x.x' is not allowed (private/internal network)"),
+#     which is the correct production posture.
+#
+# Subnet 172.27.${DTF_SLOT}.0/24 — distinct from mockpypi (172.28/172.29),
+# mocknuget (172.30) and squid (172.31) so concurrent slots and profiles never
+# collide.
+#
+# Required vars (run.sh exports them): DTF_SLOT (per-slot subnet + static IP),
+# DTF_DIR (mount the mock script).
+# =============================================================================
+services:
+  mock-nuget-search:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-nuget-search
+    command: ["python3", "/app/mock_nuget_search.py"]
+    environment:
+      MOCK_PORT: "80"
+      # Must match the hostname AK is configured to reach us by, so the service
+      # index advertises resource URLs on this same origin. The backend pins
+      # discovered bases to the configured upstream origin (#2925,
+      # guard_upstream_base) — a mismatch here would be refused, correctly.
+      SELF_HOST: mock-nuget-search
+    volumes:
+      - "${DTF_DIR}/harness/tiers/nuget-remote-search/fixtures/mock_nuget_search.py:/app/mock_nuget_search.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mocknugetsearch:
+        ipv4_address: 172.27.${DTF_SLOT}.50
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-nuget-search:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mocknugetsearch: {}
+
+networks:
+  mocknugetsearch:
+    name: ak-dtf${DTF_SLOT}-mocknugetsearch
+    ipam:
+      config:
+        - subnet: 172.27.${DTF_SLOT}.0/24
