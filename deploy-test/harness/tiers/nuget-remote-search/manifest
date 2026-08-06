@@ -1,0 +1,50 @@
+# DTF tier manifest: nuget-remote-search  (discussion #3130)
+# Profile-set: filesystem + mocknuget-search. The upstream is a stdlib python
+# mock on the slot's private subnet, so the tier is hermetic — no internet.
+#
+# The #3130 class: a NuGet **remote** repository advertises SearchQueryService
+# in its service index but serves search purely from the local `artifacts`
+# table, so a proxy repo with nothing cached answers every query with
+# `{"totalHits":0,"data":[]}`. The reporter (external, via Q&A discussion) saw
+# Visual Studio's NuGet Package Manager show "No packages found" against a
+# remote repo pointing at nuget.org, while `dotnet restore` from the SAME repo
+# worked — because restore goes through the registration/flat-container paths,
+# which DO proxy upstream (`proxy_v3_registration`), and search does not.
+#
+# Root cause (backend/src/api/handlers/nuget.rs): `search_packages` queries only
+# `effective_local_repo_ids(...)`, which returns the repo itself for a Remote
+# repo (and filters Remote members out of a Virtual repo). `NugetUpstreamResources`
+# never parsed `SearchQueryService` at all, so there was no search analogue of
+# `proxy_v3_registration`.
+#
+# The fix discovers the upstream SearchQueryService (origin-pinned via
+# `guard_upstream_base`, the #2925 credential-exfiltration guard), proxies the
+# query, and rewrites the embedded registration URLs back to AK.
+#
+# Oracle (discriminating, four probes against ONE remote repo):
+#   P1  the remote repo advertises SearchQueryService        (passes before AND
+#       after the fix — advertising search while serving nothing IS the bug's
+#       shape, so it is pinned explicitly rather than assumed)
+#   P2  a matching query returns the upstream's hits         <-- THE GATE
+#   P3  a non-matching query returns 0 hits                  (a fix that
+#       forwards the request but drops `q`, or blanket-returns the upstream
+#       catalogue, must not pass)
+#   P4  a different query does NOT return the marker, and the marker query
+#       still works afterwards. The proxied response is fetched through the
+#       proxy cache; a cache key that does not encode the query parameters
+#       serves query A's payload for query B — silent cross-query corruption,
+#       worse than the bug being fixed. P4 is the regression test for exactly
+#       that.
+#   Fixed:      P1..P4 all pass.
+#   Pre-#3130:  P1 passes, P2 FAILS (0 hits) -> tier fails. Discriminating.
+#
+# The mock really filters on `q` and honours `prerelease`, so P3/P4 test the
+# proxy rather than a stub that always echoes the same document.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives admin login + a repo create +
+# several searches back-to-back through one admin; the shipped default (ON)
+# would throttle the burst. Same rationale as the composer-metadata-preserve
+# and pypi-contenttype tiers.
+PROFILES="storage.filesystem upstreams.mocknuget-search"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
