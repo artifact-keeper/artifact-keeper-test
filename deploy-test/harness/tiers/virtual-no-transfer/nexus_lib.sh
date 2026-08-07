@@ -40,13 +40,51 @@ NEXUS_FIXTURES_FILE="${NEXUS_STATE_DIR}/fixtures.json"
 mkdir -p "${NEXUS_STATE_DIR}" 2>/dev/null || true
 
 # --- skopeo (missing on host -> run containerized, host network) ------------
-SKOPEO_IMAGE="${SKOPEO_IMAGE:-quay.io/skopeo/stable:latest}"
+# PINNED BY DIGEST (v1.22.2, the bytes `latest` has pointed at since
+# 2026-05-31). This is a third-party image fetched from quay.io at gate time;
+# a floating tag makes a release gate non-deterministic for no benefit, and
+# every other image the DTF stands up is already pinned (the backend by
+# candidate digest, Nexus at sonatype/nexus3:3.90.4@sha256:...).
+SKOPEO_IMAGE="${SKOPEO_IMAGE:-quay.io/skopeo/stable:v1.22.2@sha256:c7d3c512612f52805023cd38351081dad7e2729fc13d14b701e47c7c8bdd6615}"
 skopeo() { docker run --rm --network host "${SKOPEO_IMAGE}" "$@"; }
 
 log()  { printf '\033[36m[dtf-migration]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[33m[dtf-migration]\033[0m %s\n' "$*" >&2; }
 err()  { printf '\033[31m[dtf-migration]\033[0m %s\n' "$*" >&2; }
 die()  { err "$*"; exit 1; }
+
+# skopeo_ensure_image — materialise the skopeo image ONCE, loudly, before any
+# skopeo call.
+#
+# WHY THIS EXISTS (v1.7.1 release gate, run 31146165373): `skopeo()` is a
+# `docker run` shim, so the image is pulled IMPLICITLY by whichever call runs
+# first. That call is dest_exists(), which is `>/dev/null 2>&1` — so its pull
+# is invisible. On that run the silent pull failed, left a partially
+# registered image behind, and the next call died with
+#   docker: failed to register layer: mkdirat etc/dnf: no such file or directory
+# The tier then reported "nexus_seed.sh failed" with no trace of the pull at
+# all. Pull explicitly, print what happened, and on failure drop the
+# half-registered image so the retry starts from a clean layer cache.
+skopeo_ensure_image() {
+  local attempt out
+  if docker image inspect "${SKOPEO_IMAGE}" >/dev/null 2>&1; then
+    log "skopeo image already present: ${SKOPEO_IMAGE}"
+    return 0
+  fi
+  for attempt in 1 2 3; do
+    log "pulling skopeo image (attempt ${attempt}/3): ${SKOPEO_IMAGE}"
+    if out=$(docker pull "${SKOPEO_IMAGE}" 2>&1); then
+      log "skopeo image ready."
+      return 0
+    fi
+    err "skopeo image pull FAILED (attempt ${attempt}/3):"
+    printf '%s\n' "$out" | tail -n 20 >&2
+    docker rmi -f "${SKOPEO_IMAGE}" >/dev/null 2>&1 || true
+    sleep 5
+  done
+  err "could not pull ${SKOPEO_IMAGE} after 3 attempts — this is an INFRA failure (third-party registry / local image store), not a candidate verdict"
+  return 1
+}
 
 # nx_curl METHOD PATH [curl-args...] -> authenticated REST call vs NEXUS_API.
 # Uses the *current* admin password from the state file if present, else target.

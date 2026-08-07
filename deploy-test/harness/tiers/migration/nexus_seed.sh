@@ -32,6 +32,10 @@ DCREDS="${NEXUS_ADMIN_USER}:$(nx_pass)"
 nexus_is_up || die "Nexus is not running — run nexus_bootstrap.sh first."
 [ -f "${NEXUS_PASS_FILE}" ] || die "No resolved admin password — run nexus_bootstrap.sh first."
 
+# Materialise the (digest-pinned) skopeo image up front, with the pull output
+# on the log, instead of letting the first silenced `skopeo` call pull it.
+skopeo_ensure_image || die "skopeo image unavailable — cannot seed Nexus fixtures"
+
 # --- 1. enable DockerToken realm ---------------------------------------------
 log "Ensuring DockerToken realm is active ..."
 active=$(nx_curl GET /service/rest/v1/security/realms/active)
@@ -124,6 +128,20 @@ lg_json=$(raw_json "${DEST}/large-multi:latest")
 lg_children=$(echo "$lg_json" | jq -c '[.manifests[].digest]')
 lg_child0=$(echo "$lg_json" | jq -r '.manifests[0].digest')
 lg_size=$(echo "$lg_json" | wc -c)
+
+# The `skopeo inspect` helpers above are `2>/dev/null`, so a broken inspect
+# would otherwise be recorded as an empty/garbage digest and only surface much
+# later as a confusing assert.sh failure. Refuse to write a hollow fixtures
+# file: an unusable fixture is a SETUP failure and must say so here.
+for _f in "sa_top:${sa_top}" "sa_config:${sa_config}" "ma_index:${ma_index}" \
+          "ma_child0:${ma_child0}" "ma_child0_config:${ma_child0_config}" \
+          "lg_index:${lg_index}" "lg_child0:${lg_child0}"; do
+  _name="${_f%%:*}"; _val="${_f#*:}"
+  case "$_val" in
+    sha256:*) : ;;
+    *) die "fixture digest '${_name}' is not a sha256 ref (got '${_val}') — skopeo inspect against ${DEST} did not return a usable manifest; the fixtures are unusable" ;;
+  esac
+done
 
 jq -n \
   --arg repo "${NEXUS_DOCKER_REPO}" \
