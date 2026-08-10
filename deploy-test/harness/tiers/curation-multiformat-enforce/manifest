@@ -28,6 +28,17 @@
 #              Fixed (#2930):  403 curation_blocked on both verbs.
 #              Pre-#2930:      NOT 403 -> FAIL.
 #            A NON-blocked image (library/alpine) must NOT be 403.
+#            BODY SHAPE (artifact-keeper#3110 / PR #3274): the GET arm's 403
+#            body is the OCI distribution-spec error envelope from backend
+#            1.7.2 on -- {"errors":[{"code":"DENIED","message":"curation_blocked:
+#            …","detail":{"package":…,"reason":…}}]} -- not the REST-shaped
+#            {"error":"curation_blocked",…} the npm arm still gets. A 4XX JSON
+#            body on /v2 MUST use that envelope (spec.md "Error Codes"), so the
+#            oracle selects the expected shape from the deployed backend
+#            version (CURATION_OCI_ENVELOPE_MIN_VERSION) and asserts it with jq
+#            field lookups; below the floor either shape passes, because this
+#            oracle runs at @main against 1.7.x tags that predate the fix.
+#            The npm arm is unchanged and still reads `.error`.
 #
 # RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus ~15 back-to-
 # back API + proxy calls; the base default (ON) would throttle them. (Same
