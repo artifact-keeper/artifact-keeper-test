@@ -2096,6 +2096,56 @@ jobs:
   # are independent of the bcrypt/auth saturation that stress-tests
   # measures. Skipping resilience because stress hit its error-rate
   # threshold loses signal on a different failure class.
+  #
+  # PARTIALLY SOFT — NAMED WAIVER, restart + storage legs only
+  # (artifact-keeper-test#338).
+  #
+  # History: bafcb7a ("ci: make resilience tests non-blocking on ARC
+  # runners", 2026-03-23) put `continue-on-error: true` on this job's only
+  # test step but left the `needs.resilience-tests.result == 'failure' ||
+  # ... == 'cancelled'` clause in the collect-results predicate. A
+  # STEP-level continue-on-error swallows the step's `exit 1` and the job
+  # conclusion stays `success`, so `needs.resilience-tests.result` was
+  # never 'failure' and the predicate entry was inert. Every category
+  # reported green unconditionally across v1.7.0 and v1.7.1. (The comment
+  # block above the predicate is right that JOB-level continue-on-error
+  # does not change `needs.<job>.result` — that is a different case, and
+  # is exactly why the step-level one slipped through.)
+  #
+  # Evidence, 8 gate runs that reached this stage (#338 has the table):
+  #   crash / data / network — 0 failures in 6/6 healthy runs. They degrade
+  #     gracefully: unavailable kubectl operations call skip(), not fail().
+  #   restart — the SAME 3 of 5 scripts fail in EVERY run (test-full-reboot,
+  #     test-meilisearch-restart, test-pod-reschedule).
+  #   storage — test-pvc-remount fails in EVERY run.
+  #   (2 of the 8 runs failed everything at "backend not ready after 30s"
+  #    before doing any work; those runs already failed several genuinely
+  #    blocking suites, so they are not a resilience signal.)
+  #
+  # So crash/data/network are now GENUINELY BLOCKING — see the
+  # matrix-conditional continue-on-error on the test step below.
+  #
+  # KNOWN GAP, stated plainly: restart + storage stay soft, and the reasons
+  # are infra debt plus a real harness bug, not product regressions.
+  #   1. The ARC runner ServiceAccount cannot patch deployments/scale in the
+  #      ephemeral namespace, so test-full-reboot.sh cannot scale the backend
+  #      ("Error from server (Forbidden): ... cannot patch resource
+  #      deployments/scale").
+  #   2. The resilience harness selects backend pods with
+  #      `-l app=artifact-keeper-backend` while this workflow waits on them
+  #      with `-l app.kubernetes.io/component=backend` (see lines ~594 and
+  #      ~1331). The selector matches nothing, so test-pvc-remount and
+  #      test-pod-reschedule fail with "no backend pod found".
+  #   3. Meilisearch does not recover inside test-meilisearch-restart.sh's
+  #      90s budget.
+  # Selector fix (2) will likely surface MORE failures, including in the
+  # now-blocking legs, because it also makes some currently-vacuous PASSes
+  # real. That is intended. Nothing here is fixed by this waiver — restart
+  # and storage are simply no longer pretending to be a gate.
+  #   owner:   release-engineering (@brandon.geraci)
+  #   expires: 2026-10-01 — on/after this date either land the RBAC grant +
+  #            selector fix and drop continue-on-error from the step
+  #            entirely, or re-justify this waiver in a PR.
   # -------------------------------------------------------------------
   resilience-tests:
     needs: [deploy, stress-tests]
@@ -2123,7 +2173,13 @@ jobs:
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Run ${{ matrix.category }} resilience tests
-        continue-on-error: true
+        # Soft for the two waived legs ONLY (artifact-keeper-test#338).
+        # crash, data and network evaluate to false here, so a failure in
+        # those categories fails the step, fails the matrix leg, sets
+        # needs.resilience-tests.result to 'failure', and blocks the gate
+        # via the clause in collect-results. Do not widen this back to a
+        # bare `true` — that is the bug this replaces.
+        continue-on-error: ${{ matrix.category == 'restart' || matrix.category == 'storage' }}
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
           FAILED=0
@@ -2136,7 +2192,14 @@ jobs:
             fi
           done
           if [ "$FAILED" -gt 0 ]; then
-            echo "::warning::${FAILED} resilience test(s) failed in ${{ matrix.category }} (non-blocking on ARC runners)"
+            case "${{ matrix.category }}" in
+              restart|storage)
+                echo "::warning::${FAILED} resilience test(s) failed in ${{ matrix.category }} (non-blocking: named waiver, artifact-keeper-test#338)"
+                ;;
+              *)
+                echo "::error::${FAILED} resilience test(s) failed in ${{ matrix.category }} (BLOCKING - this fails the release gate)"
+                ;;
+            esac
             exit 1
           fi
 
@@ -2719,6 +2782,17 @@ jobs:
         # When the input is true, a failure or cancellation DOES block
         # the release.
         #
+        # resilience-tests is a PARTIAL gate. Its clause below is real, but
+        # it only bites for the crash, data and network matrix legs: the
+        # job's test step carries a matrix-conditional continue-on-error
+        # that stays true for restart and storage under a named waiver
+        # (artifact-keeper-test#338; owner + expiry are on that job). Note
+        # this is a STEP-level continue-on-error, which — unlike the
+        # job-level case discussed above — DOES suppress the leg's failure
+        # and therefore the job result. Until bafcb7a's bare
+        # `continue-on-error: true` was narrowed, that suppression applied
+        # to all five legs and made this clause dead.
+        #
         # The wildcard form contains(needs.*.result, 'failure') still
         # observes failures because needs.<job>.result reflects the
         # job's outcome, not its continue-on-error-adjusted conclusion.
@@ -2754,6 +2828,7 @@ jobs:
           echo "::error::Release gate FAILED - one or more required test suites did not pass"
           echo "Review the workflow summary above for details"
           echo "Note: stress-tests and mesh-tests are non-blocking (named waivers on those jobs); their outcomes are shown in the summary but do not gate the release"
+          echo "Note: resilience-tests is blocking for the crash, data and network categories only; its restart and storage categories are non-blocking under a named waiver on that job (artifact-keeper-test#338)"
           exit 1
 
   # -------------------------------------------------------------------
