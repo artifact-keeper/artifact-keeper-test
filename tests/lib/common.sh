@@ -2210,6 +2210,67 @@ wait_for_proxy_cache_warm() {
   return 1
 }
 
+# wait_for_incus_upload_finalized REPO_KEY SESSION_ID [ATTEMPTS]
+#
+# Blocks until an Incus upload session reaches its terminal `completed` state.
+# Returns 0 on completed, 1 on `failed` (echoing finalize_error to stderr) or
+# on timeout. Default budget is 60 x 0.25s = ~15s.
+#
+# Why a 2xx from the image PUT is NOT proof the image is in the catalog:
+# PUT /incus/{repo}/images/{product}/{version}/{file} streams the body to a
+# scratch file, inserts an `incus_upload_sessions` row in `finalizing`, spawns
+# the backend push on a background task and returns 202 Accepted (#1471/#1494 —
+# the multi-GiB push would otherwise outlive an L7 gateway timeout). The
+# `artifacts` row is written by that background task, AFTER it has pushed the
+# bytes through the repo's StorageBackend. Every catalog and download surface
+# reads `artifacts`:
+#
+#   GET /streams/v1/images.json  -> SELECT ... FROM artifacts WHERE ...
+#   GET /streams/v1/index.json   -> SELECT DISTINCT a.name FROM artifacts ...
+#   GET /images/{p}/{v}/{file}   -> SELECT ... FROM artifacts ... else 404
+#
+# so a request landing inside that window sees an EMPTY catalog: images.json
+# still returns a well-formed `products:1.0` document, just with `products: {}`.
+# The format assertion passes and the product assertion fails, which reads like
+# a catalog-generation bug rather than a missed race.
+#
+# Any assertion phrased as "... the uploaded image appears in the catalog" must
+# therefore establish that finalize is DONE before it asserts, or it is racing
+# the background task rather than testing catalog generation. The upload
+# session is the product's own documented completion signal (the 202 carries
+# `session_id` plus a `Location` header pointing at it), and it is INDEPENDENT
+# of the catalog — so waiting on it keeps the catalog assertion meaningful
+# instead of making it self-fulfilling. Do not substitute a blanket `sleep`:
+# it is simultaneously too short on a loaded namespace and pure dead time on an
+# idle one.
+#
+# Callers MUST treat a non-zero return as a FAILURE, never a skip: a finalize
+# that never completes, or that lands in `failed`, is a real backend defect and
+# has to turn the gate red under its own name.
+wait_for_incus_upload_finalized() {
+  local repo_key="$1"
+  local session_id="$2"
+  local attempts="${3:-60}"
+  local _i _resp _status
+  for _i in $(seq 1 "$attempts"); do
+    _resp=$(curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+      "${BASE_URL}/incus/${repo_key}/uploads/${session_id}" 2>/dev/null) || _resp=""
+    _status=$(echo "$_resp" | jq -r '.status // empty' 2>/dev/null) || _status=""
+    case "$_status" in
+      completed)
+        return 0
+        ;;
+      failed)
+        echo "incus finalize failed for session ${session_id}: $(echo "$_resp" | jq -r '.finalize_error // "unknown"' 2>/dev/null)" >&2
+        return 1
+        ;;
+    esac
+    sleep 0.25
+  done
+  echo "incus upload session ${session_id} never reached 'completed' (last status: ${_status:-<unreachable>})" >&2
+  return 1
+}
+
 # wait_for_counter_stable FILE TIMEOUT_SECS [STABLE_WINDOW_SECS]
 # Polls a numeric counter file (e.g. mock peak-inflight) until its value has
 # not changed for STABLE_WINDOW_SECS (default 0.6s) or TIMEOUT_SECS fires.
