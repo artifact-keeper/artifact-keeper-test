@@ -1329,7 +1329,16 @@ jobs:
           curl -fsSL -o "/tmp/${TARBALL}" \
             "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/${TARBALL}"
           tar -xzf "/tmp/${TARBALL}" -C /tmp grpcurl
-          sudo install -m 0755 /tmp/grpcurl /usr/local/bin/grpcurl
+          # Prefer /usr/local/bin; fall back to a user-writable dir if the
+          # runner image has no usable sudo.
+          if sudo -n install -m 0755 /tmp/grpcurl /usr/local/bin/grpcurl 2>/dev/null; then
+            :
+          else
+            mkdir -p "$HOME/.local/bin"
+            install -m 0755 /tmp/grpcurl "$HOME/.local/bin/grpcurl"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
           grpcurl --version
 
       - name: Install kubectl
