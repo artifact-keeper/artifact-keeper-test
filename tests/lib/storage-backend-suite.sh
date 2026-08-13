@@ -45,7 +45,6 @@ run_storage_backend_suite() {
   # -------------------------------------------------------------------------
 
   begin_test "Backend '${backend}' is registered"
-  local registered=false
   local resp
   if resp=$(api_get "/api/v1/admin/storage-backends" 2>/dev/null); then
     if echo "$resp" | jq -e --arg b "$backend" '
@@ -53,29 +52,22 @@ run_storage_backend_suite() {
          elif (.items | type == "array") then .items else [] end)
         | map(if type == "string" then . else (.name // .key // .backend_type // "") end)
         | index($b) != null' > /dev/null 2>&1; then
-      registered=true
       pass
     else
-      skip "storage backend '${backend}' not registered on this deployment"
+      # The capability is genuinely not provisioned. Route through skip_suite
+      # so the _CAPABILITY_EXEMPTIONS allowlist decides the outcome, rather
+      # than emitting per-test skips that leave the suite certifying nothing
+      # while still exiting 0 (test#339 / test#347). The reason carries the
+      # backend NAME on purpose: only gcs and azure are exempt, so if s3 --
+      # which is provisioned and passing -- ever stops registering, this
+      # hard-fails instead of being silently excused.
+      skip_suite "storage backend '${backend}' not registered on this deployment"
     fi
   else
-    skip "admin storage-backends endpoint unavailable; cannot probe '${backend}'"
-  fi
-
-  if [ "$registered" != "true" ]; then
-    # Emit the remaining sections as explicit skips so the JUnit shape is
-    # stable across deployments (missing tests read as silent gaps).
-    for t in \
-        "Create generic repository on ${backend}" \
-        "Small artifact round-trip on ${backend}" \
-        "Multi-MiB artifact round-trip on ${backend}" \
-        "Nested path upload on ${backend}" \
-        "Artifact delete on ${backend}"; do
-      begin_test "$t"
-      skip "backend '${backend}' not registered"
-    done
-    end_suite
-    return 0
+    # Deliberately NOT exempt. If the probe itself cannot run we have learned
+    # nothing about the candidate, which under RELEASE_GATE=1 must fail rather
+    # than skip.
+    skip_suite "admin storage-backends endpoint unavailable; cannot probe '${backend}'"
   fi
 
   # -------------------------------------------------------------------------

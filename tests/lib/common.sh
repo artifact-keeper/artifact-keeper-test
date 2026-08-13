@@ -1439,6 +1439,25 @@ _CAPABILITY_EXEMPTIONS=(
   "dependency_track|/api/v1/integrations/dependency-track not mounted (HTTP 404); backend pre-dates DTrack wiring|200"
   # security: OpenSCAP sidecar not provisioned in gate deploy
   "openscap|openscap service not configured|211"
+  # platform: object-storage emulators for gcs and azure are not provisioned in
+  # the gate deploy. The blocker is upstream in the backend, not the harness:
+  # a gcs/azure backend cannot be registered against an emulator because there
+  # is no endpoint override (artifact-keeper#2646). Once that ships and
+  # helm/storage-emulators.yaml grows the emulator deployments plus the GCS_*/
+  # AZURE_* env in values-test-full.yaml, both suites run unchanged and these
+  # two rows should be DELETED.
+  #
+  # Keyed on the backend NAME, deliberately. A generic "not registered" row
+  # would also match s3 -- which IS provisioned and passes 6/6 -- and would
+  # then silently excuse a real regression if s3 ever stopped registering.
+  # These rows are also only reachable after run_storage_backend_suite has
+  # PROBED /api/v1/admin/storage-backends and confirmed the backend absent, so
+  # they cannot hide a registered-but-broken backend. The sibling
+  # "endpoint unavailable; cannot probe" reason is intentionally NOT listed:
+  # a harness that cannot probe has certified nothing and must fail.
+  # See test#347.
+  "storage_backend_emulator|storage backend 'gcs' not registered on this deployment|347"
+  "storage_backend_emulator|storage backend 'azure' not registered on this deployment|347"
   # platform: no WASM plugin fixture loaded against the gate backend
   "wasm_plugin_fixture|plugin list is empty; no plugin loaded against this backend deploy|211"
   "wasm_plugin_fixture|no plugin list endpoint responded; backend deploy may not include the plugin overlay|211"
