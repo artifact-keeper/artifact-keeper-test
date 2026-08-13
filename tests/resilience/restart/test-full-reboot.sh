@@ -44,8 +44,12 @@ if [ "$_FAIL_COUNT" -eq 0 ]; then
   pass
 fi
 
+# BEFORE_COUNT is a precondition for the post-reboot comparison below.
+# See the note in tests/resilience/crash/test-backend-kill.sh: bare api_get +
+# fail() left this variable unset and the suite died much later under `set -u`
+# with an opaque "BEFORE_COUNT: unbound variable".
 begin_test "Record artifact count"
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
+if resp=$(api_get_with_retry "/api/v1/repositories/${REPO_KEY}/artifacts" 2>"${WORK_DIR}/before-count.err"); then
   BEFORE_COUNT=$(echo "$resp" | jq '
     if type == "array" then length
     elif .items then (.items | length)
@@ -56,7 +60,8 @@ if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
   echo "  Artifact count: ${BEFORE_COUNT}"
   pass
 else
-  fail "could not list artifacts"
+  fail_fatal "could not list artifacts for ${REPO_KEY}" \
+    "$(cat "${WORK_DIR}/before-count.err" 2>/dev/null || echo 'no diagnostic captured')"
 fi
 
 # ---------------------------------------------------------------------------

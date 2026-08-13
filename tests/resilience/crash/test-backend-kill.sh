@@ -42,8 +42,16 @@ if [ "$_FAIL_COUNT" -eq 0 ]; then
   pass
 fi
 
+# BEFORE_COUNT is a precondition for "Verify artifact count matches" below.
+# api_get_with_retry (not bare api_get) so a transient 000/5xx -- e.g. the
+# backend being briefly unreachable because a concurrently scheduled
+# resilience suite is bouncing the shared deployment -- is retried instead of
+# hard-failing, and so that a genuine non-2xx reports its HTTP status and
+# response body instead of curl -sf's silent non-zero exit.
+# fail_fatal (not fail) so a failure here aborts now, legibly, rather than
+# resurfacing minutes later as "BEFORE_COUNT: unbound variable".
 begin_test "Record artifact count before kill"
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
+if resp=$(api_get_with_retry "/api/v1/repositories/${REPO_KEY}/artifacts" 2>"${WORK_DIR}/before-count.err"); then
   BEFORE_COUNT=$(echo "$resp" | jq '
     if type == "array" then length
     elif .items then (.items | length)
@@ -54,7 +62,8 @@ if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts"); then
   echo "  Artifact count before kill: ${BEFORE_COUNT}"
   pass
 else
-  fail "could not list artifacts"
+  fail_fatal "could not list artifacts for ${REPO_KEY}" \
+    "$(cat "${WORK_DIR}/before-count.err" 2>/dev/null || echo 'no diagnostic captured')"
 fi
 
 # ---------------------------------------------------------------------------

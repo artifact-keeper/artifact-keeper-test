@@ -1342,6 +1342,45 @@ fail() {
   # NOTE: does NOT exit. end_suite handles the final exit code.
 }
 
+# fail_fatal - Record a failed PRECONDITION and abort the suite immediately.
+#
+# Usage: fail_fatal <msg> [body]     (same arguments as fail)
+#
+# Why this exists:
+#   fail() deliberately does not exit, which is correct for independent
+#   assertions: one bad assertion should not hide the twenty after it. It is
+#   the wrong default for a step whose job is to ESTABLISH STATE that later
+#   tests read -- a recorded baseline count, an artifact id, a captured token.
+#   When such a step fails, the variable it was supposed to set is never
+#   assigned, and under `set -u` the suite dies at whichever later line first
+#   dereferences it. The operator then sees an opaque
+#       "line 139: BEFORE_COUNT: unbound variable"
+#   instead of the real failure, possibly minutes later and several tests
+#   downstream, with no JUnit case for the step that actually broke.
+#
+#   Observed for real on the 1.7.2-rc.1 release candidate: crash-backend-kill
+#   failed "Record artifact count before kill" at 14:47:47, then reported
+#   itself four minutes later as `BEFORE_COUNT: unbound variable` on line 139.
+#   The real cause was buried; triage started in the wrong place.
+#
+# Semantics:
+#   Records the failure exactly like fail() -- same JUnit <failure> shape, so
+#   the RED testcase in every dashboard is the step that genuinely broke and
+#   carries its real duration and diagnostic body. Then calls end_suite, which
+#   writes the XML and exits non-zero through the normal exit-code path
+#   (including the _INFRA_COUNT / EXPECT_FAILURE branches), so exit-code
+#   ownership stays in one place.
+#
+# Do NOT use this for ordinary assertions. Use it only where the following
+# tests cannot be meaningfully evaluated without this step's result. If the
+# missing state would merely make one later test noisy, prefer fail().
+fail_fatal() {
+  fail "$@"
+  echo "  ABORTING SUITE: the failure above is a precondition for the remaining"
+  echo "  tests in this suite, which cannot be evaluated without it."
+  end_suite
+}
+
 infra_fail() {
   # Usage: infra_fail <msg> [body]
   #
