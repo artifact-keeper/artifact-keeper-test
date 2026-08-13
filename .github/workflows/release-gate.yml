@@ -857,14 +857,23 @@ jobs:
       # under the oci matrix entry once the oci fixture-builder lands
       # (#62 + #64 extension).
       EXPECTED_VULN_CVE: CVE-2019-10744
-      # Trivy DB age threshold for the freshness pre-flight. The DB is
-      # rebuilt every 6 hours upstream; we accept anything <= 14 days
-      # so weekend gaps and slow mirror sync do not generate false
-      # failures, while still catching DBs old enough that
-      # CVE-2019-10744 (published 2019) could fall out of recent index
-      # shards. Override at workflow_dispatch via repo variable
-      # TRIVY_DB_MAX_AGE_DAYS if needed.
-      TRIVY_DB_MAX_AGE_DAYS: ${{ vars.TRIVY_DB_MAX_AGE_DAYS || '14' }}
+      # Trivy DB age threshold for the freshness pre-flight.
+      #
+      # The DB carries its own refresh contract: upstream rebuilds it every
+      # 6 hours and every artifact stamps NextUpdate exactly 24h after
+      # UpdatedAt. The threshold should be a small multiple of THAT, not of
+      # a release cadence. It was 14 days, i.e. ~14x the DB's own interval,
+      # and that slack is precisely what let a completely dead refresh run
+      # undetected for three weeks (#346): the mirror froze on 2026-07-24,
+      # v1.7.1's gate read that same frozen timestamp at 13 days and passed
+      # with a day to spare, and the first honest signal arrived on day 19.
+      #
+      # 2 days tolerates one fully missed upstream cycle plus clock slack
+      # and still surfaces a broken refresh within a day. Override via the
+      # TRIVY_DB_MAX_AGE_DAYS repo variable if a cut must proceed on a
+      # known-stale DB -- but prefer fixing the refresh, because the
+      # override buys a green gate, not a scanned release.
+      TRIVY_DB_MAX_AGE_DAYS: ${{ vars.TRIVY_DB_MAX_AGE_DAYS || '2' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -885,6 +894,9 @@ jobs:
         #   42 - DB too old (distinct so the rollup operator can tell
         #        scanner DB drift apart from a real CVE-detection bug)
         #   43 - Trivy pod unreachable or trivy --version failed
+        #   44 - DB refresh itself failed (#346). Previously swallowed into
+        #        a ::warning:: and allowed to continue; a refresh whose
+        #        failure fails nothing is the defect, not the symptom.
         run: |
           set -uo pipefail
           NS="test-${{ needs.deploy.outputs.run_id }}"
@@ -916,6 +928,15 @@ jobs:
             exit 43
           fi
 
+          # Report which repositories this pod will actually pull from, so a
+          # stale or unexpected DB source is named in the log rather than
+          # inferred. TRIVY_DB_REPOSITORY is a comma-separated priority list
+          # (values-test-full.yaml); trivy tries the entries in order.
+          DB_REPO=$(kubectl -n "$NS" exec "$POD" -c trivy -- \
+            sh -c 'echo "${TRIVY_DB_REPOSITORY:-<unset: trivy built-in default>}"' 2>/dev/null \
+            || echo "<could not read TRIVY_DB_REPOSITORY from pod>")
+          echo "Configured Trivy DB repositories (in priority order): ${DB_REPO}"
+
           # Warm up the Trivy vulnerability DB before reading its
           # UpdatedAt. Trivy 0.62 downloads the DB lazily on first scan,
           # not at pod startup, so `trivy --version` immediately after
@@ -924,12 +945,26 @@ jobs:
           # `image --download-db-only` is idempotent: it no-ops if the
           # DB is already present and within the upstream
           # download-interval window.
+          #
+          # This used to end in `|| echo "::warning::..."`, which turned a
+          # failed refresh into a line nobody reads and let the job continue
+          # to judge whatever DB happened to be on disk. A refresh that
+          # cannot fail anything is not a refresh (#346). Fail here, at the
+          # point of failure, and print what trivy actually said -- the old
+          # form also sent stderr to /dev/null, so the one useful diagnostic
+          # was discarded along with the exit code.
           echo "Warming up Trivy vulnerability DB..."
-          kubectl -n "$NS" exec "$POD" -c trivy -- \
-            trivy image --download-db-only --quiet >/dev/null 2>&1 \
-            || kubectl -n "$NS" exec "$POD" -- \
-                 trivy image --download-db-only --quiet >/dev/null 2>&1 \
-            || echo "::warning::trivy image --download-db-only returned non-zero; will inspect --version anyway"
+          WARM_OUT=$(kubectl -n "$NS" exec "$POD" -c trivy -- \
+            trivy image --download-db-only --quiet 2>&1) || \
+          WARM_OUT=$(kubectl -n "$NS" exec "$POD" -- \
+            trivy image --download-db-only --quiet 2>&1) || {
+            echo "::error::Trivy DB refresh failed in pod ${POD} (trivy image --download-db-only returned non-zero)."
+            echo "::error::Configured DB repositories: ${DB_REPO}"
+            echo "::error::trivy output follows; the DB on disk is now of unknown provenance, so the"
+            echo "::error::pinned-CVE assertion below is NOT trustworthy and is deliberately not run."
+            echo "$WARM_OUT" | tail -40
+            exit 44
+          }
 
           # trivy --version emits "Vulnerability DB: ... UpdatedAt: 2026-04-30 ..."
           # in older versions and a YAML-ish block in newer versions.
@@ -965,17 +1000,61 @@ jobs:
             exit 43
           fi
 
+          # DownloadedAt is the diagnostic that separates the two very
+          # different ways this gate can go stale, which the age check alone
+          # cannot tell apart (#346):
+          #
+          #   DownloadedAt old  -> the pod never fetched; network/auth problem.
+          #   DownloadedAt NEW, UpdatedAt old -> the fetch worked perfectly and
+          #     the SOURCE served stale content. This is the dangerous one: it
+          #     is invisible at the exit-code level, every pull returns 200,
+          #     and nothing anywhere fails. It is exactly what happened when
+          #     the org mirror stopped being refreshed.
+          #
+          # Parsed leniently -- these lines are diagnostics, never a gate.
+          DL_DATE=$( { echo "$VER_OUT" | grep -iE 'DownloadedAt' || true; } | head -n1 \
+            | sed -E 's/.*DownloadedAt[: ]+([0-9-]+ [0-9:.]+).*/\1/' \
+            | awk '{print $1" "$2}')
+          NEXT_DATE=$( { echo "$VER_OUT" | grep -iE 'NextUpdate' || true; } | head -n1 \
+            | sed -E 's/.*NextUpdate[: ]+([0-9-]+ [0-9:.]+).*/\1/' \
+            | awk '{print $1" "$2}')
+
           DB_EPOCH=$(date -d "$DB_DATE" -u +%s)
           NOW_EPOCH=$(date -u +%s)
           AGE_SECONDS=$(( NOW_EPOCH - DB_EPOCH ))
           AGE_DAYS=$(( AGE_SECONDS / 86400 ))
 
-          echo "Trivy DB UpdatedAt: ${DB_DATE} (age: ${AGE_DAYS} days, threshold: ${MAX_AGE_DAYS} days)"
+          echo "Trivy DB UpdatedAt:    ${DB_DATE} (age: ${AGE_DAYS} days, threshold: ${MAX_AGE_DAYS} days)"
+          echo "Trivy DB NextUpdate:   ${NEXT_DATE:-<unparsed>}"
+          echo "Trivy DB DownloadedAt: ${DL_DATE:-<unparsed>}"
+          echo "Trivy DB repositories: ${DB_REPO}"
 
           if [ "$AGE_SECONDS" -gt "$MAX_AGE_SECONDS" ]; then
             echo "::error::Trivy DB is ${AGE_DAYS} days old, exceeds threshold of ${MAX_AGE_DAYS} days."
             echo "::error::The pinned-CVE assertion below would surface a misleading 'CVE-2019-10744 not found' failure;"
-            echo "::error::the actual root cause is upstream DB staleness. Refresh Trivy DB or bump the runner image."
+            echo "::error::the actual root cause is the age of the vulnerability data, not CVE detection."
+
+            # Name the failure precisely instead of leaving the operator to
+            # guess between "could not fetch" and "fetched something stale".
+            FRESH_DOWNLOAD=false
+            if [ -n "$DL_DATE" ] && date -d "$DL_DATE" +%s >/dev/null 2>&1; then
+              DL_EPOCH=$(date -d "$DL_DATE" -u +%s)
+              if [ $(( NOW_EPOCH - DL_EPOCH )) -lt 3600 ]; then
+                FRESH_DOWNLOAD=true
+              fi
+            fi
+
+            if [ "$FRESH_DOWNLOAD" = true ]; then
+              echo "::error::STALE SOURCE, not a failed download: the DB was fetched successfully at"
+              echo "::error::${DL_DATE} yet its content is dated ${DB_DATE}. The pull is healthy and"
+              echo "::error::the repository is serving an old artifact, so nothing will ever fail on"
+              echo "::error::its own -- this can only be caught here."
+              echo "::error::Check the FIRST reachable entry of: ${DB_REPO}"
+              echo "::error::If that is a mirror, its refresh automation is broken or absent."
+            else
+              echo "::error::The DB was not refreshed during this run (DownloadedAt: ${DL_DATE:-<unparsed>})."
+              echo "::error::Check egress and registry availability for: ${DB_REPO}"
+            fi
             exit 42
           fi
 
