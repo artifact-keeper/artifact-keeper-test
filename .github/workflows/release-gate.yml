@@ -865,8 +865,8 @@ jobs:
       # a release cadence. It was 14 days, i.e. ~14x the DB's own interval,
       # and that slack is precisely what let a completely dead refresh run
       # undetected for three weeks (#346): the mirror froze on 2026-07-24,
-      # v1.7.1's gate passed at exactly 14 days old, and the first honest
-      # signal arrived on day 19.
+      # v1.7.1's gate read that same frozen timestamp at 13 days and passed
+      # with a day to spare, and the first honest signal arrived on day 19.
       #
       # 2 days tolerates one fully missed upstream cycle plus clock slack
       # and still surfaces a broken refresh within a day. Override via the
