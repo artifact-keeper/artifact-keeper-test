@@ -62,11 +62,44 @@ upload_body=$(echo "$upload_resp" | sed '$d')
 # session and pushes to storage on a background task to avoid L7 gateway
 # timeouts on multi-GiB uploads (#1471/#1494). The body still carries .sha256,
 # so the downstream catalog/download assertions remain valid. Accept 200/201/202.
+UPLOAD_SESSION_ID=""
 if [ "$http_code" = "201" ] || [ "$http_code" = "200" ] || [ "$http_code" = "202" ]; then
   UNIFIED_SHA256=$(echo "$upload_body" | jq -r '.sha256 // empty' 2>/dev/null) || true
+  UPLOAD_SESSION_ID=$(echo "$upload_body" | jq -r '.session_id // empty' 2>/dev/null) || true
   pass
 else
   fail "unified tarball upload returned ${http_code}, expected 201 or 202"
+fi
+
+# -----------------------------------------------------------------------
+# Establish the precondition the catalog assertions depend on.
+#
+# The 202 contract means the PUT above returned BEFORE the image was
+# durably in the repository: the backend pushes to the StorageBackend and
+# writes the `artifacts` row on a background task, and every SimpleStreams
+# surface below is a read of that table. Asserting "the product appears in
+# images.json" without first confirming finalize is done tests the race,
+# not the catalog -- and loses it whenever finalize takes longer than the
+# handful of milliseconds the harness happens to spend on the index.json
+# round-trip in between (release-gate run 31750117780).
+#
+# The upload session is the product's own completion signal and is
+# independent of the catalog, so waiting on it leaves the catalog
+# assertions doing real work.
+# -----------------------------------------------------------------------
+begin_test "Upload finalizes"
+if [ "$http_code" = "202" ]; then
+  if [ -z "$UPLOAD_SESSION_ID" ]; then
+    fail "202 Accepted carried no session_id; cannot confirm finalize completed"
+  elif wait_for_incus_upload_finalized "$REPO_KEY" "$UPLOAD_SESSION_ID"; then
+    pass
+  else
+    fail "upload session ${UPLOAD_SESSION_ID} did not reach 'completed'"
+  fi
+else
+  # 200/201 is the older synchronous contract: the artifact was committed
+  # inside the request, so there is nothing to await.
+  pass
 fi
 
 # -----------------------------------------------------------------------
@@ -143,16 +176,26 @@ fi
 begin_test "Verify deletion in catalog"
 images_after=$(curl -sf "${BASE_URL}/incus/${REPO_KEY}/streams/v1/images.json" 2>/dev/null) || true
 
+# An unfetchable or malformed catalog is NOT evidence that the delete took
+# effect -- it used to be scored as a pass, which made this assertion succeed
+# in exactly the states it was meant to catch (including the case where the
+# catalog never materialised at all). DELETE is synchronous here: it flips
+# `is_deleted` on the artifacts row inside the request and 404s if there was
+# no live row, so a well-formed catalog is available immediately and there is
+# no finalize window to wait out.
 if [ -z "$images_after" ]; then
-  # If the catalog is empty or gone after the only image was deleted, that counts as success
-  pass
+  fail "could not fetch images.json after delete"
 else
-  ubuntu_after=$(echo "$images_after" | jq -r '.products["ubuntu-noble"].versions["20240215"].items // null' 2>/dev/null) || true
-  if [ "$ubuntu_after" = "null" ] || [ -z "$ubuntu_after" ] || [ "$ubuntu_after" = "{}" ]; then
-    pass
+  after_format=$(echo "$images_after" | jq -r '.format // empty' 2>/dev/null) || true
+  if [ "$after_format" != "products:1.0" ]; then
+    fail "images.json after delete should be products:1.0, got ${after_format:-<unparseable>}"
   else
-    # The item might still be there briefly; treat as a warning, not a hard failure
-    fail "deleted image still present in catalog"
+    ubuntu_after=$(echo "$images_after" | jq -r '.products["ubuntu-noble"].versions["20240215"].items // null' 2>/dev/null) || true
+    if [ "$ubuntu_after" = "null" ] || [ -z "$ubuntu_after" ] || [ "$ubuntu_after" = "{}" ]; then
+      pass
+    else
+      fail "deleted image still present in catalog"
+    fi
   fi
 fi
 
