@@ -232,21 +232,39 @@ trivy:
   image:
     repository: aquasec/trivy
     tag: "0.62.1"
-  # Vulnerability DB: pull from the org mirror ghcr.io/artifact-keeper/trivy-db
-  # and pre-seed it with an init container so the DB is present before the
-  # server accepts scans. Upstream ghcr.io/aquasecurity/trivy-db proved
-  # unreliable from the gate cluster: anonymous pulls hit rate-limit denials
-  # once two components (the Trivy server and the scanner-adapter) both pull,
-  # and authenticating with GITHUB_TOKEN did not help because ghcr's token
-  # exchange denies an artifact-keeper token for another org's package
-  # (aquasecurity), which is what failed on attempts 4-6. The org mirror is
-  # org-controlled and public; its refresh automation is tracked in
-  # arc-runners#7. repository + preseed together is the chart's documented
-  # "make the fetch reliable" combination. The Java DB (javaRepository) is left
-  # empty so Trivy uses its built-in ghcr default. skipUpdate stays false.
-  # See artifact-keeper-test#300.
+  # Vulnerability DB: upstream FIRST, org mirror as fallback, pre-seeded by an
+  # init container so the DB is present before the server accepts scans.
+  #
+  # trivy's db-repository is a priority-ordered list, not a single ref
+  # ("OCI repository(ies) to retrieve trivy-db in order of priority",
+  # pkg/flag/db_flags.go at v0.62.1 -- the flag type is []string and its own
+  # default is a two-entry GCR,GHCR list). trivy splits comma-separated env
+  # values for slice flags explicitly (pkg/flag/options.go, "Split
+  # environmental variables by comma as it is not done by viper"), so this one
+  # env string yields two repositories tried in order.
+  #
+  # Ordering is the whole point (#346). #300/#301 made the org mirror the sole
+  # source, and the mirror is a one-shot manual `crane copy` from 2026-07-24
+  # whose scheduled refresh (arc-runners#7) was never built -- so the gate
+  # scanned a frozen DB for three weeks while every pull "succeeded". A stale
+  # source that answers 200 is invisible at the exit-code level; only an age
+  # assertion catches it. Upstream first means the gate scans fresh data by
+  # default; the mirror stays as the availability backstop that motivated #300,
+  # and the freshness pre-flight in release-gate.yml is what makes a fall-back
+  # to a stale mirror loud instead of silent.
+  #
+  # The reason upstream was demoted no longer holds: #300/#301 cited ghcr
+  # rate-limits and cross-org token denial, but #304 superseded both -- the real
+  # failure was a deploy-time-injected GITHUB_TOKEN expiring before late gate
+  # jobs ran. That injection was reverted in #304 and #306 added a 10-attempt
+  # retry preseed. Upstream still publishes schema 2 with the same artifactType
+  # and layer media type 0.62.1 already consumes.
+  #
+  # repository + preseed together is the chart's documented "make the fetch
+  # reliable" combination. The Java DB (javaRepository) is left empty so Trivy
+  # uses its built-in ghcr default. skipUpdate stays false.
   db:
-    repository: ghcr.io/artifact-keeper/trivy-db
+    repository: ghcr.io/aquasecurity/trivy-db,ghcr.io/artifact-keeper/trivy-db
     preseed:
       enabled: true
   persistence:
@@ -261,16 +279,16 @@ trivy:
 
 # Container-image scans run in the scanner-adapter's in-process Trivy, which
 # does NOT read the trivy.db.* server settings above (#281 fixed only the Trivy
-# server, used for filesystem/SBOM scans). Point the adapter's own Trivy at the
-# org mirror ghcr.io/artifact-keeper/trivy-db so image scans do not hit the
-# rate-limited mirror.gcr.io or the unreliable upstream aquasecurity DB.
-# Upstream ghcr.io/aquasecurity/trivy-db proved unreliable from the gate
-# cluster: anonymous pulls hit rate-limit denials once both the Trivy server
-# and this adapter pull, and GITHUB_TOKEN was denied by ghcr's token exchange
-# for another org's package (attempts 4-6). The mirror is org-controlled and
-# public; its refresh automation is tracked in arc-runners#7. The #293 workflow
-# token injection (scannerAdapter.env.TRIVY_USERNAME/TRIVY_PASSWORD via helm
-# --set) is left in place: it is harmless and valid for a same-org package.
+# server, used for filesystem/SBOM scans). The adapter needs the same
+# priority-ordered DB list for the same reason (#346): upstream first so image
+# scans see fresh vulnerability data, org mirror second as the availability
+# backstop. Keeping the two consumers on identical lists also keeps the
+# freshness pre-flight's verdict on the server representative of the adapter.
+#
+# The #293/#298 token injection is NOT reinstated -- #304 established that the
+# injected GITHUB_TOKEN expires before late gate jobs run and ghcr then rejects
+# it outright with no anonymous fallback. Both entries here are pulled
+# anonymously; the mirror is public and upstream's DB is public.
 #
 # The chart's scanner-adapter-deployment.yaml renders these with
 # `range $key, $value := .Values.scannerAdapter.env`, i.e. it iterates the
@@ -279,10 +297,11 @@ trivy:
 # "true" (the adapter reaches the AK registry over the plain-HTTP in-cluster
 # Service); it would survive the merge on its own, but we replicate it here so
 # the override is self-describing. TRIVY_DB_REPOSITORY is the additive key.
-# See artifact-keeper-test#300 (mirror switch) and #285 (original override).
+# See artifact-keeper-test#346 (upstream-first ordering), #300 (mirror switch)
+# and #285 (original override).
 scannerAdapter:
   env:
-    TRIVY_DB_REPOSITORY: "ghcr.io/artifact-keeper/trivy-db"
+    TRIVY_DB_REPOSITORY: "ghcr.io/aquasecurity/trivy-db,ghcr.io/artifact-keeper/trivy-db"
     SCANNER_TRIVY_INSECURE: "true"
 
 secrets:

@@ -176,8 +176,11 @@ echo "Waiting for backend to become healthy..."
 # + scan.go:67/328); the download below uses the same env/default and the same
 # `image --download-db-only` form as the adapter's own DownloadDB (scan.go:206).
 # TRIVY_DB_REPOSITORY is read from the pod env (set from values-test-full.yaml)
-# with the mirror as a hardcoded fallback; trivy honours that env natively. No
-# credentials are involved: the mirror is public and pulled anonymously.
+# with the same priority-ordered list as a hardcoded fallback; trivy honours
+# that env natively and splits it on commas into repositories tried in order.
+# No credentials are involved: both entries are pulled anonymously. The list is
+# upstream-first so the seeded DB is fresh -- seeding from a stale-but-reachable
+# mirror is what froze the gate's DB for three weeks (artifact-keeper-test#346).
 # ---------------------------------------------------------------------------
 if [ "$FULL_STACK" = true ]; then
   echo "Pre-seeding scanner-adapter Trivy vulnerability DB..."
@@ -192,7 +195,7 @@ if [ "$FULL_STACK" = true ]; then
   for attempt in $(seq 1 10); do
     echo "  Trivy DB preseed attempt ${attempt}/10 (pod ${ADAPTER_POD})..."
     if kubectl -n "$NAMESPACE" exec "$ADAPTER_POD" -- sh -c \
-        'TRIVY_DB_REPOSITORY="${TRIVY_DB_REPOSITORY:-ghcr.io/artifact-keeper/trivy-db}" trivy image --download-db-only --cache-dir "${SCANNER_TRIVY_CACHE_DIR:-/home/scanner/.cache/trivy}"'; then
+        'TRIVY_DB_REPOSITORY="${TRIVY_DB_REPOSITORY:-ghcr.io/aquasecurity/trivy-db,ghcr.io/artifact-keeper/trivy-db}" trivy image --download-db-only --cache-dir "${SCANNER_TRIVY_CACHE_DIR:-/home/scanner/.cache/trivy}"'; then
       db_seeded=true
       echo "  Trivy DB preseed succeeded on attempt ${attempt}/10"
       break
