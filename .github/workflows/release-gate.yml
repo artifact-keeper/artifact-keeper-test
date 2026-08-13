@@ -1247,8 +1247,17 @@ jobs:
       # they could write JUnit XML. 300s gives 120s headroom over SCAN_TIMEOUT
       # for fixture build, upload, and cleanup.
       TEST_TIMEOUT: '300'
-      # Stampede / poisoning test knobs. Must match the values the chart
-      # rendered for the backend Deployment (see helm values-test.yaml).
+      # Stampede / poisoning test knobs, consumed by
+      # tests/security/test-cache-stampede.sh to size its own expectations.
+      #
+      # This comment used to claim they "must match the values the chart
+      # rendered for the backend Deployment (see helm values-test.yaml)". That
+      # is not true and never was: neither PROXY_MAX_CONCURRENT_FETCHES nor
+      # PROXY_QUEUE_TIMEOUT_SECS exists anywhere in the backend, and
+      # values-test.yaml does not set them. What the backend actually ships is
+      # single-flight coalescing (artifact-keeper#1631/#1694), so peak upstream
+      # concurrency for a cold-miss stampede is 1, not this ceiling. These are
+      # TEST-SIDE parameters only. Tracked in artifact-keeper-test#344.
       PROXY_MAX_CONCURRENT_FETCHES: '20'
       PROXY_QUEUE_TIMEOUT_SECS: '5'
       STAMPEDE_UPSTREAM_DELAY_MS: '2000'
