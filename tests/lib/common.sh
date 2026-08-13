@@ -1497,6 +1497,31 @@ _CAPABILITY_EXEMPTIONS=(
   # See test#347.
   "storage_backend_emulator|storage backend 'gcs' not registered on this deployment|347"
   "storage_backend_emulator|storage backend 'azure' not registered on this deployment|347"
+  # pullthrough: live-internet egress to a public third-party registry is not
+  # a property of the release candidate. Two pullthrough suites proxy a REAL
+  # upstream (pypi.org, registry.npmjs.org) because that is the only way to
+  # exercise the #1377 proxy paths end-to-end; when the gate deploy cannot
+  # reach that host, the suite certifies nothing and the #339 coverage floor
+  # correctly reds a blocking job over a third party's availability.
+  #
+  # Keyed on the upstream HOST NAME, deliberately. A generic "upstream
+  # unreachable" row would also match the per-test skip string every gated
+  # test in those suites emits, and would then excuse any suite that skipped
+  # for an unrelated reason. Each host that is genuinely fetched over the
+  # public internet gets its own row and nothing else does.
+  #
+  # These rows are only reachable after the suite has PROBED the upstream and
+  # the probe has failed, so they cannot hide a broken proxy: if the upstream
+  # is reachable the suite proceeds to its assertions and a regression in the
+  # PyPI/npm Remote path fails the gate as before. That is the same property
+  # that makes the storage-backend and rate-limiting rows safe.
+  #
+  # Unlike the #347 rows these do NOT expire: a public registry's uptime will
+  # never become something the candidate controls. Delete a row only if its
+  # suite stops fetching that host over the public internet.
+  # See test#357.
+  "pullthrough_upstream_unreachable|upstream pypi.org unreachable from the gate deploy|357"
+  "pullthrough_upstream_unreachable|upstream registry.npmjs.org unreachable from the gate deploy|357"
   # platform: no WASM plugin fixture loaded against the gate backend
   "wasm_plugin_fixture|plugin list is empty; no plugin loaded against this backend deploy|211"
   "wasm_plugin_fixture|no plugin list endpoint responded; backend deploy may not include the plugin overlay|211"

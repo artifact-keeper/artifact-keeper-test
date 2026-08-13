@@ -42,8 +42,14 @@
 #      bytes)" -- against a real upstream.
 #
 # Skip behaviour:
-#   If registry.npmjs.org is unreachable, the suite skips gracefully.
-#   The reachability gate is the first test.
+#   If registry.npmjs.org is unreachable, the suite skips via skip_suite.
+#   The reachability gate is the first test, and routing through skip_suite
+#   means the _CAPABILITY_EXEMPTIONS allowlist in tests/lib/common.sh governs
+#   the RELEASE_GATE=1 outcome: a public registry's availability is not a
+#   property of the release candidate. Everything below the gate runs
+#   unconditionally, because the gate exits the process when it fails -- so
+#   an assertion here can only be reached with a reachable upstream, and a
+#   real proxy regression still reds the gate (test#357).
 #
 # Requires: curl, jq
 
@@ -59,8 +65,6 @@ SCOPE="@types"
 PKG_SHORT="node"
 SCOPED_NAME="${SCOPE}/${PKG_SHORT}"
 
-UPSTREAM_REACHABLE=false
-
 # -------------------------------------------------------------------------
 # Reachability gate. Probe registry.npmjs.org for the @types/node
 # document before touching the API so an offline runner produces a
@@ -69,10 +73,16 @@ UPSTREAM_REACHABLE=false
 
 begin_test "Probe upstream registry.npmjs.org reachability"
 if curl -sf --max-time 10 "${UPSTREAM_URL}/@types%2Fnode" -o /dev/null 2>/dev/null; then
-  UPSTREAM_REACHABLE=true
   pass
 else
-  skip "registry.npmjs.org unreachable from test environment"
+  # Route through skip_suite so the _CAPABILITY_EXEMPTIONS allowlist decides
+  # the outcome instead of leaving the suite to certify nothing while still
+  # exiting 0 (test#339 / test#357). Reaching this line means the probe RAN
+  # and FAILED, so the exemption cannot mask a broken npm Remote: a reachable
+  # upstream falls through to the assertions below. The reason carries the
+  # upstream HOST on purpose -- the allowlist is keyed on it, so a skip for
+  # any other reason still hard-fails the gate.
+  skip_suite "upstream registry.npmjs.org unreachable from the gate deploy: reachability probe GET ${UPSTREAM_URL}/@types%2Fnode failed"
 fi
 
 # -------------------------------------------------------------------------
@@ -80,9 +90,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Create Remote npm repo against registry.npmjs.org"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
-elif create_remote_repo "$REMOTE_KEY" "npm" "$UPSTREAM_URL"; then
+if create_remote_repo "$REMOTE_KEY" "npm" "$UPSTREAM_URL"; then
   pass
 else
   fail "could not create Remote npm repo against ${UPSTREAM_URL}"
@@ -102,24 +110,20 @@ sleep 2
 METADATA_JSON=""
 
 begin_test "GET scoped metadata via Remote proxy"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
+meta_tmp="${WORK_DIR}/metadata.json"
+meta_status=$(curl -s -o "$meta_tmp" -w '%{http_code}' \
+  $CURL_TIMEOUT \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/npm/${REMOTE_KEY}/${SCOPED_NAME}" 2>/dev/null) || meta_status="000"
+METADATA_JSON=$(cat "$meta_tmp" 2>/dev/null || echo "")
+if [ "$meta_status" != "200" ]; then
+  fail "expected HTTP 200 for scoped metadata, got ${meta_status}" "${METADATA_JSON:0:500}"
 else
-  meta_tmp="${WORK_DIR}/metadata.json"
-  meta_status=$(curl -s -o "$meta_tmp" -w '%{http_code}' \
-    $CURL_TIMEOUT \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}/npm/${REMOTE_KEY}/${SCOPED_NAME}" 2>/dev/null) || meta_status="000"
-  METADATA_JSON=$(cat "$meta_tmp" 2>/dev/null || echo "")
-  if [ "$meta_status" != "200" ]; then
-    fail "expected HTTP 200 for scoped metadata, got ${meta_status}" "${METADATA_JSON:0:500}"
+  fetched_name=$(echo "$METADATA_JSON" | jq -r '.name // empty' 2>/dev/null) || fetched_name=""
+  if [ "$fetched_name" = "${SCOPED_NAME}" ]; then
+    pass
   else
-    fetched_name=$(echo "$METADATA_JSON" | jq -r '.name // empty' 2>/dev/null) || fetched_name=""
-    if [ "$fetched_name" = "${SCOPED_NAME}" ]; then
-      pass
-    else
-      fail "metadata .name='${fetched_name}', expected '${SCOPED_NAME}'" "${METADATA_JSON:0:500}"
-    fi
+    fail "metadata .name='${fetched_name}', expected '${SCOPED_NAME}'" "${METADATA_JSON:0:500}"
   fi
 fi
 
@@ -134,9 +138,7 @@ TARBALL_VERSION=""
 TARBALL_FILENAME=""
 
 begin_test "Metadata advertises at least one version with dist.tarball"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
-elif [ -z "$METADATA_JSON" ]; then
+if [ -z "$METADATA_JSON" ]; then
   fail "no metadata to parse"
 else
   TARBALL_VERSION=$(echo "$METADATA_JSON" | jq -r '."dist-tags".latest // empty' 2>/dev/null) || TARBALL_VERSION=""
@@ -178,9 +180,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Download scoped tarball via Remote proxy (200 + non-empty)"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
-elif [ -z "$TARBALL_FILENAME" ]; then
+if [ -z "$TARBALL_FILENAME" ]; then
   fail "no tarball filename from previous step"
 else
   out_file="${WORK_DIR}/remote-scoped.tgz"
