@@ -57,9 +57,15 @@
 #
 # Skip behaviour:
 #   If pypi.org is unreachable from the test runner (offline CI, egress
-#   restrictions), the suite skips gracefully rather than failing. The
+#   restrictions), the suite skips via skip_suite rather than failing. The
 #   reachability gate is the first test so partial state doesn't leak
-#   into the JUnit output.
+#   into the JUnit output, and routing through skip_suite means the
+#   _CAPABILITY_EXEMPTIONS allowlist in tests/lib/common.sh governs the
+#   RELEASE_GATE=1 outcome: a public registry's availability is not a
+#   property of the release candidate. Everything below the gate runs
+#   unconditionally, because the gate exits the process when it fails --
+#   so an assertion here can only be reached with a reachable upstream,
+#   and a real proxy regression still reds the gate (test#357).
 #
 # Requires: curl, jq
 
@@ -72,19 +78,35 @@ setup_workdir
 REMOTE_KEY="test-pypi-simpleroot-1377-${RUN_ID}"
 UPSTREAM_URL="https://pypi.org"
 
-UPSTREAM_REACHABLE=false
-
 # -------------------------------------------------------------------------
 # Reachability gate. Probe pypi.org BEFORE creating any repos so an
 # offline runner produces a single "skip" line rather than failing later.
+#
+# The probe targets the PROJECT page, not the /simple/ root. The root is the
+# full PEP 503 index (~43 MiB and growing), and --max-time is a TOTAL cap
+# including transfer, so probing it demanded ~4.5 MB/s sustained from a
+# shared runner and reported a perfectly reachable pypi.org as "unreachable"
+# whenever the link was merely slow (test#357). The suite does not consume
+# the upstream root anyway -- as the header above explains, simple_root skips
+# the parse above MAX_SIMPLE_ROOT_BODY_BYTES and the assertions come off the
+# proxy-cache path -- so /simple/flake8/ (~58 KB) is both cheaper and a
+# closer match for what the suite actually fetches through the proxy below.
 # -------------------------------------------------------------------------
 
+PROBE_URL="${UPSTREAM_URL}/simple/flake8/"
+
 begin_test "Probe upstream pypi.org reachability"
-if curl -sf --max-time 10 "https://pypi.org/simple/" -o /dev/null 2>/dev/null; then
-  UPSTREAM_REACHABLE=true
+if curl -sf --max-time 10 "$PROBE_URL" -o /dev/null 2>/dev/null; then
   pass
 else
-  skip "pypi.org unreachable from test environment"
+  # Route through skip_suite so the _CAPABILITY_EXEMPTIONS allowlist decides
+  # the outcome instead of leaving the suite to certify nothing while still
+  # exiting 0 (test#339 / test#357). Reaching this line means the probe RAN
+  # and FAILED, so the exemption cannot mask a broken PyPI Remote: a
+  # reachable upstream falls through to the assertions below. The reason
+  # carries the upstream HOST on purpose -- the allowlist is keyed on it, so
+  # a skip for any other reason still hard-fails the gate.
+  skip_suite "upstream pypi.org unreachable from the gate deploy: reachability probe GET ${PROBE_URL} failed"
 fi
 
 # -------------------------------------------------------------------------
@@ -92,9 +114,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Create Remote PyPI repo against pypi.org"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
-elif create_remote_repo "$REMOTE_KEY" "pypi" "$UPSTREAM_URL"; then
+if create_remote_repo "$REMOTE_KEY" "pypi" "$UPSTREAM_URL"; then
   pass
 else
   fail "could not create Remote PyPI repo against ${UPSTREAM_URL}"
@@ -121,20 +141,16 @@ sleep 2
 # (source 2) lists it. This is exactly how a real proxy root gets populated:
 # clients pull projects, and the root reflects what has been served.
 begin_test "Prime proxy cache with one project (flake8) for the root index"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
+PRIME_TMP="${WORK_DIR}/prime-flake8.html"
+PRIME_STATUS=$(curl -s -o "$PRIME_TMP" -w '%{http_code}' \
+  $CURL_TIMEOUT \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/pypi/${REMOTE_KEY}/simple/flake8/" 2>/dev/null) || PRIME_STATUS="000"
+if [ "$PRIME_STATUS" = "200" ]; then
+  pass
 else
-  PRIME_TMP="${WORK_DIR}/prime-flake8.html"
-  PRIME_STATUS=$(curl -s -o "$PRIME_TMP" -w '%{http_code}' \
-    $CURL_TIMEOUT \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}/pypi/${REMOTE_KEY}/simple/flake8/" 2>/dev/null) || PRIME_STATUS="000"
-  if [ "$PRIME_STATUS" = "200" ]; then
-    pass
-  else
-    fail "could not prime project 'flake8' through the proxy, got ${PRIME_STATUS}" \
-      "$(head -c 300 "$PRIME_TMP" 2>/dev/null)"
-  fi
+  fail "could not prime project 'flake8' through the proxy, got ${PRIME_STATUS}" \
+    "$(head -c 300 "$PRIME_TMP" 2>/dev/null)"
 fi
 
 # Brief settle so the proxy cache write for the primed project is visible to
@@ -154,21 +170,17 @@ FIRST_STATUS="000"
 ROOT_TMP="${WORK_DIR}/simple-root-first.html"
 
 begin_test "GET /simple/ returns non-empty HTML listing"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
+FIRST_STATUS=$(curl -s -o "$ROOT_TMP" -w '%{http_code}' \
+  $CURL_TIMEOUT \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/pypi/${REMOTE_KEY}/simple/" 2>/dev/null) || FIRST_STATUS="000"
+FIRST_BODY=$(cat "$ROOT_TMP" 2>/dev/null || echo "")
+if [ "$FIRST_STATUS" != "200" ]; then
+  fail "expected HTTP 200, got ${FIRST_STATUS}" "${FIRST_BODY:0:500}"
+elif [ -z "$FIRST_BODY" ]; then
+  fail "/simple/ returned 200 with an empty body (the exact #1377 regression)"
 else
-  FIRST_STATUS=$(curl -s -o "$ROOT_TMP" -w '%{http_code}' \
-    $CURL_TIMEOUT \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}/pypi/${REMOTE_KEY}/simple/" 2>/dev/null) || FIRST_STATUS="000"
-  FIRST_BODY=$(cat "$ROOT_TMP" 2>/dev/null || echo "")
-  if [ "$FIRST_STATUS" != "200" ]; then
-    fail "expected HTTP 200, got ${FIRST_STATUS}" "${FIRST_BODY:0:500}"
-  elif [ -z "$FIRST_BODY" ]; then
-    fail "/simple/ returned 200 with an empty body (the exact #1377 regression)"
-  else
-    pass
-  fi
+  pass
 fi
 
 # -------------------------------------------------------------------------
@@ -183,9 +195,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Body contains at least one anchor tag"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
-elif [ -z "$FIRST_BODY" ]; then
+if [ -z "$FIRST_BODY" ]; then
   fail "no body to inspect (earlier fetch failed)"
 else
   anchor_count=$(printf '%s' "$FIRST_BODY" | grep -oE '<a [^>]*>' | wc -l | tr -d ' ')
@@ -208,27 +218,23 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Second GET /simple/ also returns non-empty HTML"
-if [ "$UPSTREAM_REACHABLE" != "true" ]; then
-  skip "upstream unreachable"
+sleep 1
+SECOND_TMP="${WORK_DIR}/simple-root-second.html"
+SECOND_STATUS=$(curl -s -o "$SECOND_TMP" -w '%{http_code}' \
+  $CURL_TIMEOUT \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/pypi/${REMOTE_KEY}/simple/" 2>/dev/null) || SECOND_STATUS="000"
+SECOND_BODY=$(cat "$SECOND_TMP" 2>/dev/null || echo "")
+if [ "$SECOND_STATUS" != "200" ]; then
+  fail "expected HTTP 200 on second fetch, got ${SECOND_STATUS}" "${SECOND_BODY:0:500}"
+elif [ -z "$SECOND_BODY" ]; then
+  fail "second /simple/ fetch returned 200 with an empty body (cache regression?)"
 else
-  sleep 1
-  SECOND_TMP="${WORK_DIR}/simple-root-second.html"
-  SECOND_STATUS=$(curl -s -o "$SECOND_TMP" -w '%{http_code}' \
-    $CURL_TIMEOUT \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}/pypi/${REMOTE_KEY}/simple/" 2>/dev/null) || SECOND_STATUS="000"
-  SECOND_BODY=$(cat "$SECOND_TMP" 2>/dev/null || echo "")
-  if [ "$SECOND_STATUS" != "200" ]; then
-    fail "expected HTTP 200 on second fetch, got ${SECOND_STATUS}" "${SECOND_BODY:0:500}"
-  elif [ -z "$SECOND_BODY" ]; then
-    fail "second /simple/ fetch returned 200 with an empty body (cache regression?)"
+  second_anchor_count=$(printf '%s' "$SECOND_BODY" | grep -oE '<a [^>]*>' | wc -l | tr -d ' ')
+  if [ "${second_anchor_count:-0}" -lt 1 ]; then
+    fail "expected >=1 anchor on second fetch, got ${second_anchor_count}"
   else
-    second_anchor_count=$(printf '%s' "$SECOND_BODY" | grep -oE '<a [^>]*>' | wc -l | tr -d ' ')
-    if [ "${second_anchor_count:-0}" -lt 1 ]; then
-      fail "expected >=1 anchor on second fetch, got ${second_anchor_count}"
-    else
-      pass
-    fi
+    pass
   fi
 fi
 

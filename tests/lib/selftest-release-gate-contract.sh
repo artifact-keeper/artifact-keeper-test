@@ -218,6 +218,11 @@ write_suite "${WORK}/suite-allpass.sh" "selftest-allpass" \
 'begin_test "one"
 pass'
 
+# Drives skip_suite with a reason supplied by the case, so the capability
+# exemption allowlist can be exercised in both directions from one fixture.
+write_suite "${WORK}/suite-skipsuite.sh" "selftest-skipsuite" \
+'skip_suite "${SELFTEST_SKIP_REASON}"'
+
 # ---------------------------------------------------------------------------
 # Cases
 # ---------------------------------------------------------------------------
@@ -303,6 +308,59 @@ run_case "gate + healthy backend at feature floor -> exit 0" 0 "${WORK}/suite-fe
   BASE_URL="$STUB_URL" RELEASE_GATE=1
 
 stop_stub
+
+echo ""
+echo "5. skip_suite: capability-exemption allowlist directionality"
+
+# The allowlist is the one documented escape from the coverage floor, so its
+# NARROWNESS is the whole safety argument. Each row must excuse exactly the
+# capability it names and nothing adjacent. These cases drive the real
+# skip_suite through a real suite script, so a row widened to a generic
+# substring (or the allowlist bypassed altogether) turns this red.
+#
+# A capability whose absence is genuinely not a candidate defect: EXEMPT.
+run_case "gate + exempt reason (pypi upstream) -> exit 0, EXEMPT" 0 "${WORK}/suite-skipsuite.sh" \
+  "EXEMPT: pullthrough_upstream_unreachable" "FAIL:" \
+  RELEASE_GATE=1 \
+  SELFTEST_SKIP_REASON="upstream pypi.org unreachable from the gate deploy: reachability probe GET https://pypi.org/simple/flake8/ failed"
+
+run_case "gate + exempt reason (npm upstream) -> exit 0, EXEMPT" 0 "${WORK}/suite-skipsuite.sh" \
+  "EXEMPT: pullthrough_upstream_unreachable" "FAIL:" \
+  RELEASE_GATE=1 \
+  SELFTEST_SKIP_REASON="upstream registry.npmjs.org unreachable from the gate deploy: reachability probe GET https://registry.npmjs.org/@types%2Fnode failed"
+
+# The negative controls are the load-bearing half. Each of these is a string a
+# pullthrough suite can plausibly emit, and every one of them must still red
+# the gate.
+#
+# The bare per-test string every gated test in those suites used to emit. If a
+# row were keyed on "upstream unreachable" instead of the host, this passes and
+# the allowlist becomes a blanket waiver.
+run_case "gate + bare 'upstream unreachable' -> hard fail" 1 "${WORK}/suite-skipsuite.sh" \
+  "FAIL: skip_suite called with RELEASE_GATE=1" "EXEMPT:" \
+  RELEASE_GATE=1 SELFTEST_SKIP_REASON="upstream unreachable"
+
+# The pre-fix wording. Names the same host, but is not the probe-verified
+# reason, so it must not be excused either.
+run_case "gate + pre-fix pypi wording -> hard fail" 1 "${WORK}/suite-skipsuite.sh" \
+  "FAIL: skip_suite called with RELEASE_GATE=1" "EXEMPT:" \
+  RELEASE_GATE=1 SELFTEST_SKIP_REASON="pypi.org unreachable from test environment"
+
+# A REACHABLE upstream that the candidate then mishandles. This is the defect
+# class the exemption must never swallow.
+run_case "gate + reachable upstream, proxy broken -> hard fail" 1 "${WORK}/suite-skipsuite.sh" \
+  "FAIL: skip_suite called with RELEASE_GATE=1" "EXEMPT:" \
+  RELEASE_GATE=1 SELFTEST_SKIP_REASON="upstream pypi.org reachable but the Remote proxy returned HTTP 502"
+
+# A third-party host that has no row. Adding one is a deliberate act.
+run_case "gate + unlisted upstream host -> hard fail" 1 "${WORK}/suite-skipsuite.sh" \
+  "FAIL: skip_suite called with RELEASE_GATE=1" "EXEMPT:" \
+  RELEASE_GATE=1 SELFTEST_SKIP_REASON="upstream crates.io unreachable from the gate deploy"
+
+# Outside the gate every one of these stays a graceful skip.
+run_case "no gate + non-exempt reason -> graceful skip, exit 0" 0 "${WORK}/suite-skipsuite.sh" \
+  "SKIP_SUITE: upstream unreachable" "FAIL:" \
+  SELFTEST_SKIP_REASON="upstream unreachable"
 
 # ---------------------------------------------------------------------------
 # Summary
