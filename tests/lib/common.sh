@@ -211,15 +211,66 @@ version_ge() {
   [ "$lower" = "$b_core" ]
 }
 
+# Retry budget for the /health version probe. This one probe is the sole input
+# to every require_feature decision in the process, and its result is cached, so
+# a single transient failure used to convert an entire suite into skips
+# (artifact-keeper-test#339). One 5s shot with no retry is not a generous budget
+# on a namespace that has only just come up, which is exactly when the gate runs
+# it. Defaults give ~4 tries over ~14s, well inside every suite's timeout.
+BACKEND_VERSION_PROBE_ATTEMPTS="${BACKEND_VERSION_PROBE_ATTEMPTS:-4}"
+BACKEND_VERSION_PROBE_DELAY="${BACKEND_VERSION_PROBE_DELAY:-3}"
+BACKEND_VERSION_PROBE_TIMEOUT="${BACKEND_VERSION_PROBE_TIMEOUT:-5}"
+
 # Read the backend version from /health, cache it, return it on stdout.
+#
+# This deliberately stays a PURE stdout function that degrades to "unknown".
+# Callers reach it through `$(get_backend_version)` — a command substitution,
+# i.e. a SUBSHELL. Calling infra_fail (or any other reporting helper) from in
+# here would print its message into the captured value and increment
+# _INFRA_COUNT in a child shell where the increment dies on return. The fix
+# would read correctly and do nothing. The fail-closed decision therefore lives
+# in require_feature, which runs in the caller's own shell.
 get_backend_version() {
   if [ -z "$BACKEND_VERSION" ]; then
-    BACKEND_VERSION=$(curl -sf --max-time 5 "${BASE_URL}/health" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+    local _attempt _probe
+    for _attempt in $(seq 1 "$BACKEND_VERSION_PROBE_ATTEMPTS"); do
+      _probe=$(curl -sf --max-time "$BACKEND_VERSION_PROBE_TIMEOUT" "${BASE_URL}/health" 2>/dev/null \
+                 | jq -r '.version // empty' 2>/dev/null) || _probe=""
+      if [ -n "$_probe" ]; then
+        BACKEND_VERSION="$_probe"
+        break
+      fi
+      if [ "$_attempt" -lt "$BACKEND_VERSION_PROBE_ATTEMPTS" ]; then
+        sleep "$BACKEND_VERSION_PROBE_DELAY"
+      fi
+    done
     if [ -z "$BACKEND_VERSION" ]; then
       BACKEND_VERSION="unknown"
     fi
   fi
   echo "$BACKEND_VERSION"
+}
+
+# Handle "the /health probe never produced a version" for require_feature.
+#
+# Under RELEASE_GATE=1 this is an INFRA outcome, not a skip. The gate deploys a
+# digest-pinned candidate, so an undeterminable version does not mean "old
+# backend, feature legitimately absent" — it means the harness could not
+# evaluate the tier at all. Routing it through infra_fail reuses the existing
+# machinery: the case is RED in every dashboard, it is LABELLED as a harness
+# problem rather than a product verdict, and end_suite exits DTF_EXIT_INFRA.
+#
+# Outside the gate the graceful skip is preserved: local dev against a stopped
+# or unreachable backend must not become a hard error.
+_feature_probe_unavailable() {
+  local feature="$1"
+  if [ "${RELEASE_GATE:-0}" = "1" ]; then
+    infra_fail \
+      "could not determine backend version from ${BASE_URL}/health after ${BACKEND_VERSION_PROBE_ATTEMPTS} attempt(s); cannot evaluate feature '${feature}'" \
+      "Skipping here would leave the suite certifying nothing while still exiting 0 (artifact-keeper-test#339). Under RELEASE_GATE=1 an undeterminable backend version is a harness/environment failure, not a feature-absence signal."
+    return 0
+  fi
+  skip "could not determine backend version, skipping ${feature}"
 }
 
 # Map of feature flag -> minimum backend version that ships it.
@@ -442,12 +493,20 @@ require_feature() {
   local backend_ver
   backend_ver=$(get_backend_version)
   if [ "$backend_ver" = "unknown" ]; then
-    skip "could not determine backend version, skipping ${feature}"
+    _feature_probe_unavailable "$feature"
     return 1
   fi
   if version_ge "$backend_ver" "$min_ver"; then
     return 0
   else
+    # A genuine version shortfall stays a SKIP even under RELEASE_GATE=1. The
+    # gate is invocable against older backend_tags on purpose (release-gate.yml
+    # maps 1.1.*/1.2.* onto their release branches for the feature-flag layer),
+    # so a 1.7.x-floor feature legitimately does not exist on such a run and
+    # hard-failing it would red the gate for a correct outcome. The systemic
+    # hazard — a suite that certified NOTHING — is caught by end_suite's
+    # RELEASE_GATE coverage floor instead, which fires on the outcome (zero
+    # passes) rather than on the reason for any individual skip.
     skip "feature '${feature}' requires backend >= ${min_ver}, running ${backend_ver}"
     return 1
   fi
@@ -1521,6 +1580,40 @@ assert_http_2xx() {
 }
 
 end_suite() {
+  # -------------------------------------------------------------------------
+  # RELEASE_GATE coverage floor (artifact-keeper-test#339)
+  # -------------------------------------------------------------------------
+  # A suite in which every test skipped certified NOTHING about the candidate,
+  # yet it exited 0 and was byte-for-byte indistinguishable from an all-passing
+  # suite. skip_suite has been hardened against exactly this for the SUITE-level
+  # skip primitive — "a silently skipped suite is indistinguishable from a
+  # passing one" — but the TEST-level primitive kept graceful-skip semantics, so
+  # the same silent success was reachable one level down (require_feature being
+  # the widest route to it).
+  #
+  # Only the unambiguous case is enforced: ZERO passes, at least one skip, and
+  # nothing already failing. A suite with even one passing test still reports
+  # normally, so a legitimate version-gated skip on a run against an older
+  # backend_tag does not turn the gate red. The _FAIL_COUNT guard keeps a real
+  # product verdict labelled as one — we never relabel an assertion failure as
+  # infra.
+  #
+  # Recorded via infra_fail rather than fail: nothing was learned about the
+  # candidate, so this is a harness/environment outcome, not a product verdict.
+  # That also routes the exit through the existing _INFRA_COUNT branch below
+  # (DTF_EXIT_INFRA), keeping exit-code ownership in one place, and puts a RED
+  # testcase in the JUnit XML instead of only a non-zero exit.
+  if [ "${RELEASE_GATE:-0}" = "1" ] && \
+     [ "${_PASS_COUNT:-0}" -eq 0 ] && \
+     [ "${_FAIL_COUNT:-0}" -eq 0 ] && \
+     [ "${_SKIP_COUNT:-0}" -gt 0 ]; then
+    _TEST_NAME="release-gate coverage floor"
+    _TEST_START=$(date +%s)
+    infra_fail \
+      "suite certified nothing under RELEASE_GATE=1: 0 passed, ${_SKIP_COUNT} skipped" \
+      "Every test in this suite skipped, so the run carries no verdict on the candidate while still reporting green. Either the skip condition is an environment/provisioning gap that must be fixed or exempted, or the assertions never ran. See artifact-keeper-test#339."
+  fi
+
   local total_duration=$(( $(date +%s) - _SUITE_START ))
   local total=$(( _PASS_COUNT + _FAIL_COUNT + _SKIP_COUNT ))
 
