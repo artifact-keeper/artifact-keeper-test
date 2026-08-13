@@ -1,0 +1,56 @@
+name: Harness Contract Self-Test
+
+# Meta-test that pins the RELEASE_GATE coverage contract in
+# tests/lib/common.sh so a future change cannot silently turn it back into a
+# no-op (artifact-keeper-test#339).
+#
+# Why this exists
+# ---------------
+# skip_suite already hard-fails under RELEASE_GATE=1 on the reasoning that "a
+# silently skipped suite is indistinguishable from a passing one". The
+# per-test skip path had no equivalent floor: a suite in which every test
+# skipped exited 0 and certified nothing, and require_feature reached that
+# state from a single failed GET /health. Release gate run 28989233755 shipped
+# green with six suites in blocking jobs (four in security-tests, two in
+# auth-tests) having asserted nothing at all.
+#
+# The floor is only worth as much as its resistance to erosion, and it is
+# three small, individually-deletable pieces of shell. The self-test
+# constructs each failure and asserts the exit code, so removing the retry,
+# the infra_fail routing, or the end_suite coverage floor turns this red.
+#
+# Runs on a plain hosted runner: the fixtures are a closed TCP port and a
+# small python /health stub, so no cluster and no deployed candidate needed.
+
+on:
+  pull_request:
+    paths:
+      - 'tests/lib/common.sh'
+      - 'tests/lib/feature-flags.sh'
+      - 'tests/lib/selftest-release-gate-contract.sh'
+      - '.github/workflows/harness-contract-self-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/lib/common.sh'
+      - 'tests/lib/feature-flags.sh'
+      - 'tests/lib/selftest-release-gate-contract.sh'
+      - '.github/workflows/harness-contract-self-test.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: harness-contract-self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate-contract:
+    name: RELEASE_GATE coverage contract must hold
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run release-gate contract self-test
+        run: |
+          chmod +x tests/lib/selftest-release-gate-contract.sh
+          ./tests/lib/selftest-release-gate-contract.sh
