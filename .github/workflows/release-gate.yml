@@ -1247,8 +1247,17 @@ jobs:
       # they could write JUnit XML. 300s gives 120s headroom over SCAN_TIMEOUT
       # for fixture build, upload, and cleanup.
       TEST_TIMEOUT: '300'
-      # Stampede / poisoning test knobs. Must match the values the chart
-      # rendered for the backend Deployment (see helm values-test.yaml).
+      # Stampede / poisoning test knobs, consumed by
+      # tests/security/test-cache-stampede.sh to size its own expectations.
+      #
+      # This comment used to claim they "must match the values the chart
+      # rendered for the backend Deployment (see helm values-test.yaml)". That
+      # is not true and never was: neither PROXY_MAX_CONCURRENT_FETCHES nor
+      # PROXY_QUEUE_TIMEOUT_SECS exists anywhere in the backend, and
+      # values-test.yaml does not set them. What the backend actually ships is
+      # single-flight coalescing (artifact-keeper#1631/#1694), so peak upstream
+      # concurrency for a cold-miss stampede is 1, not this ceiling. These are
+      # TEST-SIDE parameters only. Tracked in artifact-keeper-test#344.
       PROXY_MAX_CONCURRENT_FETCHES: '20'
       PROXY_QUEUE_TIMEOUT_SECS: '5'
       STAMPEDE_UPSTREAM_DELAY_MS: '2000'
@@ -1294,6 +1303,52 @@ jobs:
           fi
           echo "Runner pod IP: ${POD_IP}"
           echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
+
+      - name: Install grpcurl
+        # tests/security/test-grpc-security.sh and
+        # test-grpc-token-invalidation.sh drive the backend's gRPC data plane
+        # (port 9090) with grpcurl. It was never installed on this runner, so
+        # every one of their 12 assertions took the `command -v grpcurl` skip
+        # branch: both suites certified NOTHING for the entire life of the gate
+        # while security-tests reported success on the strictest predicate in
+        # this file (artifact-keeper-test#339 surfaced it, #343 fixes it).
+        #
+        # Both suites now call require_cmd grpcurl, so if this step ever stops
+        # producing a working binary they hard-fail under RELEASE_GATE=1 rather
+        # than skipping back to green.
+        #
+        # Note: the suites do NOT rely on gRPC server reflection -- the backend
+        # keeps it off by default (artifact-keeper#2226) and
+        # test-grpc-security.sh asserts it stays off. They resolve descriptors
+        # from the vendored contract at tests/proto/sbom.proto instead.
+        env:
+          GRPCURL_VERSION: 1.9.1
+        run: |
+          set -euo pipefail
+          if command -v grpcurl >/dev/null 2>&1; then
+            echo "grpcurl already present: $(grpcurl --version 2>&1)"
+            exit 0
+          fi
+          case "$(uname -m)" in
+            x86_64)          GRPCURL_ARCH=x86_64 ;;
+            aarch64|arm64)   GRPCURL_ARCH=arm64 ;;
+            *) echo "::error::unsupported runner arch $(uname -m) for grpcurl"; exit 1 ;;
+          esac
+          TARBALL="grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz"
+          curl -fsSL -o "/tmp/${TARBALL}" \
+            "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/${TARBALL}"
+          tar -xzf "/tmp/${TARBALL}" -C /tmp grpcurl
+          # Prefer /usr/local/bin; fall back to a user-writable dir if the
+          # runner image has no usable sudo.
+          if sudo -n install -m 0755 /tmp/grpcurl /usr/local/bin/grpcurl 2>/dev/null; then
+            :
+          else
+            mkdir -p "$HOME/.local/bin"
+            install -m 0755 /tmp/grpcurl "$HOME/.local/bin/grpcurl"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          grpcurl --version
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
@@ -1855,10 +1910,37 @@ jobs:
       # A silently-skipped test in release-gate context is exactly the
       # silent-success class (#870/#871/#888) the gate exists to catch.
       RELEASE_GATE: '1'
+      # Mirror of RATE_LIMIT_ENABLED in helm/values-test.yaml and
+      # helm/values-test-full.yaml, which the deploy job renders for the
+      # backend Deployment. tests/auth/test-zz-rate-limiting.sh used to GUESS
+      # this ("may not be enabled in test mode") and skip, so it could not tell
+      # "deliberately disabled" from "enabled but broken" and certified nothing
+      # (artifact-keeper-test#343).
+      #
+      # The suite verifies this declaration rather than trusting it: declared
+      # off means it proves the limiter is inert before taking the documented
+      # capability exemption, and declared on means a flood that never returns
+      # 429 is a hard failure. KEEP THIS IN SYNC with the chart values -- if the
+      # gate deploy re-enables the limiter, flip this to 'true' and drop the
+      # rate_limit_disabled_in_gate row from _CAPABILITY_EXEMPTIONS.
+      AK_RATE_LIMIT_ENABLED: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install oathtool
+        # tests/auth/test-totp-2fa.sh (and its totp-* siblings) need oathtool
+        # to generate a real TOTP code, otherwise the "Enable TOTP" assertion
+        # skips and the enrollment path is never exercised. oath-toolkit is in
+        # the Ubuntu archive.
+        run: |
+          set -euo pipefail
+          if ! command -v oathtool >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq oathtool > /dev/null
+          fi
+          oathtool --version | head -1
 
       - name: Run auth tests
         run: |

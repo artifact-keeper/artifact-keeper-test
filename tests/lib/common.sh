@@ -1451,6 +1451,18 @@ _CAPABILITY_EXEMPTIONS=(
   # the single forced 500. See test#317; remove this row when the injection is
   # armed against the repository UUID.
   "webhook_retry_injection|forced-failure injection is not scoped to this delivery|317"
+  # auth: the rate limiter is deliberately NOT provisioned in the gate deploy.
+  # helm/values-test.yaml and helm/values-test-full.yaml both set
+  # RATE_LIMIT_ENABLED: "false" because release-gate runs 20+ suites against a
+  # single shared backend and the per-user/IP and global auth windows trip 429
+  # across a full run. This is an environment fact, not a backend defect.
+  #
+  # This row is only reachable after tests/auth/test-zz-rate-limiting.sh has
+  # VERIFIED the declaration (50 login attempts, no 429). If the limiter is
+  # actually live the suite fails instead of reaching skip_suite, so this
+  # exemption cannot hide an enabled-but-broken limiter. Remove this row if the
+  # gate deploy ever turns the limiter back on. See test#343.
+  "rate_limit_disabled_in_gate|rate limiting is disabled in this deployment (RATE_LIMIT_ENABLED=false in the gate chart values); verified inert|343"
 )
 
 ## _match_capability_exemption REASON
