@@ -105,6 +105,35 @@ if assert_http_2xx "$prime_status" "prime fetch should succeed against a healthy
 fi
 
 # ---------------------------------------------------------------------------
+# The prime above proves the right BYTES were served. It does NOT prove they
+# are cached: the backend publishes a proxy-cache entry from a writer task that
+# outlives the response (staging write -> copy onto the live key -> discard
+# staging -> pin storage ETag -> __cache_meta__.json sidecar), and freshness is
+# evaluated from that sidecar. A request landing before the sidecar exists
+# classifies a miss and refetches upstream.
+#
+# Both assertions below are phrased "for a previously-cached artifact", so the
+# precondition has to be established rather than assumed -- otherwise a fetch
+# that raced the publish reports as cache poisoning, which is what happened on
+# release-gate run 31677420530 while run 31666770835 won the same race on a
+# backend whose entire proxy-cache implementation is byte-identical.
+#
+# This is a real test, not a sleep: if the entry never becomes readable, that
+# IS a backend defect and the gate must go red.
+# ---------------------------------------------------------------------------
+
+UPSTREAM_COUNTER="${MOCK_STATE_DIR}/request-count.$(mock_counter_key "$ARTIFACT_PATH")"
+
+begin_test "Primed entry is readable from the proxy cache before tampering"
+if wait_for_proxy_cache_warm \
+    "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/download/${ARTIFACT_PATH}" \
+    "$UPSTREAM_COUNTER"; then
+  pass
+else
+  fail "proxy never served ${ARTIFACT_PATH} without re-contacting upstream: the primed cache entry never became readable"
+fi
+
+# ---------------------------------------------------------------------------
 # Attacker step: swap the upstream payload for a different sha256. The mock
 # now serves the tampered content with a 200 OK. A correctly-implemented
 # proxy must NOT propagate the new bytes silently for the same cache key

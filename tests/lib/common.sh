@@ -2089,6 +2089,63 @@ wait_for_file_value() {
   return 1
 }
 
+# mock_counter_key PATH
+# Filename component the mock upstream uses for its per-path GET counter
+# (request-count.<key>): slashes become underscores, anything outside
+# [A-Za-z0-9_.-] is dropped, truncated to 128 chars. Mirrors
+# tests/lib/mock-upstream.py's _safe_counter_key.
+mock_counter_key() {
+  echo "$1" | tr '/' '_' | tr -dc 'A-Za-z0-9_.-' | cut -c1-128
+}
+
+# wait_for_proxy_cache_warm URL COUNTER_FILE [ATTEMPTS]
+#
+# Blocks until the proxy cache demonstrably serves URL WITHOUT contacting the
+# mock upstream -- i.e. until a fetch leaves the mock's per-path GET counter
+# unchanged. Returns 0 once warm, 1 on timeout.
+#
+# Why a fetch returning the right bytes is NOT proof the bytes are cached:
+# the backend publishes a proxy-cache entry from a writer task that outlives
+# the client response. The response completes as soon as the last body byte is
+# teed to the client; the entry only becomes readable afterwards, once that
+# task has finished writing the body to its private staging key, copied it onto
+# the live key, discarded the staging object, pinned the storage ETag and
+# written the __cache_meta__.json sidecar. Freshness is evaluated from that
+# sidecar, so a request landing inside the window sees no entry, classifies a
+# miss, and goes back to the upstream.
+#
+# Any assertion phrased as "... for a PREVIOUSLY-CACHED artifact" must
+# therefore establish that the artifact really is cached before it perturbs the
+# upstream, or it is asserting against that race rather than against the
+# behaviour it names. test-cache-stampede.sh already leans on the same
+# property via wait_for_counter_stable before its post-stampede cache-hit
+# assertion; this is the explicit, positively-confirmed form.
+#
+# The probe fetches are harmless: callers invoke this BEFORE tampering with the
+# upstream, so a probe that misses simply re-primes with the same known-good
+# bytes and the next probe confirms.
+#
+# Callers MUST treat a non-zero return as a FAILURE, never a skip: a proxy
+# cache that never becomes readable is a real backend defect and has to turn
+# the gate red.
+wait_for_proxy_cache_warm() {
+  local url="$1"
+  local counter_file="$2"
+  local attempts="${3:-40}"
+  local before after
+  local _i
+  for _i in $(seq 1 "$attempts"); do
+    before=$(cat "$counter_file" 2>/dev/null || echo 0)
+    curl -s -o /dev/null $CURL_TIMEOUT -H "$(auth_header)" "$url" >/dev/null 2>&1 || true
+    after=$(cat "$counter_file" 2>/dev/null || echo 0)
+    if [ "$before" = "$after" ]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
 # wait_for_counter_stable FILE TIMEOUT_SECS [STABLE_WINDOW_SECS]
 # Polls a numeric counter file (e.g. mock peak-inflight) until its value has
 # not changed for STABLE_WINDOW_SECS (default 0.6s) or TIMEOUT_SECS fires.
