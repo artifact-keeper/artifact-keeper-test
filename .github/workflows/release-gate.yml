@@ -2317,6 +2317,23 @@ jobs:
     runs-on: ak-e2e-runners
     strategy:
       fail-fast: false
+      # SERIALIZED ON PURPOSE (test#352). Every leg drives the SAME backend
+      # Deployment in the SAME namespace, and several of them deliberately take
+      # it down -- restart/test-full-reboot.sh scales it to 0 replicas for ~10s.
+      # Run concurrently, that outage is indistinguishable from a product
+      # failure to whichever sibling happens to be mid-request.
+      #
+      # It cost a release. On v1.7.2-rc.1 the `restart` leg scaled the backend
+      # to zero at 14:47:47.6495Z; the `crash` leg's artifact list failed at
+      # 14:47:47.7636Z -- 114 ms into a 10.1 s outage it did not cause. `crash`
+      # is on the blocking predicate and `restart` carries a waiver, so the
+      # bystander failed the gate while the cause reported success.
+      #
+      # The offset is pure runner jitter (measured +23.0s / -9.6s / +0.1s across
+      # three runs of the same candidate), so this recurs roughly 1 run in 3-5
+      # and is uncorrelated with the candidate. max-parallel: 1 removes the
+      # class rather than making it rarer.
+      max-parallel: 1
       matrix:
         category: [crash, restart, network, storage, data]
     env:
