@@ -88,12 +88,20 @@ add_exit_handler "cleanup"
 # host-side curl helpers (JWT auth) against BASE_URL
 hcode() { curl -s -o /dev/null -w '%{http_code}' --max-time 40 "$@"; }
 
+# Cascade reporters (#323). When a leg's fixture BUILD failed, every dependent
+# step is a consequence of a harness/environment problem and must be reported
+# as INFRA — not as an assertion about the candidate. When the leg failed on a
+# real product assertion, the cascades stay product failures.
+cascade_fail_a() { if [ "${A_INFRA:-0}" = "1" ]; then infra_fail "$1"; else fail "$1"; fi; }
+cascade_fail_b() { if [ "${B_INFRA:-0}" = "1" ]; then infra_fail "$1"; else fail "$1"; fi; }
+
 # ===========================================================================
 # LEG A — #2580 RPM: real dnf install FOLLOWS the repodata <location href>
 # ===========================================================================
 
 begin_test "A0: create hosted RPM repo + build a dependency-free marker RPM in the Fedora client"
 A_OK=1
+A_INFRA=0
 if ! create_repo "$RPM_REPO" rpm local; then
   A_OK=0; fail "could not create hosted rpm repo ${RPM_REPO}"
 else
@@ -101,7 +109,7 @@ else
   # dependencies, so the later `dnf install` resolves purely from the AK repo.
   build_rpm='
 set -e
-dnf -y install rpm-build >/dev/null 2>&1
+dnf -y install rpm-build
 mkdir -p /root/rpmbuild/{SPECS,BUILD,RPMS,SOURCES,SRPMS}
 cat > /root/rpmbuild/SPECS/dtf-marker.spec <<SPEC
 Name: dtf-marker
@@ -118,18 +126,27 @@ echo "DTF-RPM-INSTALLED-%{version}" > %{buildroot}/usr/share/dtf-marker/marker.t
 %files
 /usr/share/dtf-marker/marker.txt
 SPEC
-rpmbuild -bb /root/rpmbuild/SPECS/dtf-marker.spec >/dev/null 2>&1
+rpmbuild -bb /root/rpmbuild/SPECS/dtf-marker.spec
 test -f /root/rpmbuild/RPMS/noarch/'"$RPM_FILE"'
 '
-  if timeout 360 docker exec "$CDNF" bash -c "$build_rpm"; then
+  # Building the fixture inside the client container is SETUP, not a claim
+  # about the candidate: `dnf install rpm-build` needs egress, and a failure
+  # here means the tier was never evaluated (#323 -> infra_fail, exit 11).
+  # The build output is captured and attached — a bare "rpmbuild failed" line
+  # is unactionable (see the deb leg's umask bug, which hid behind exactly
+  # that shape for four release runs).
+  if rpm_build_out=$(timeout 360 docker exec "$CDNF" bash -c "$build_rpm" 2>&1); then
     docker cp "${CDNF}:/root/rpmbuild/RPMS/noarch/${RPM_FILE}" "${WORK_DIR}/${RPM_FILE}" >/dev/null 2>&1 || A_OK=0
     if [ "$A_OK" = "1" ] && [ -s "${WORK_DIR}/${RPM_FILE}" ]; then
       pass
     else
-      A_OK=0; fail "built RPM could not be copied out of the Fedora client"
+      A_OK=0; A_INFRA=1
+      infra_fail "built RPM could not be copied out of the Fedora client (${CDNF})"
     fi
   else
-    A_OK=0; fail "rpm-build/rpmbuild failed inside the Fedora client (egress or tooling issue)"
+    A_OK=0; A_INFRA=1
+    infra_fail "rpm-build/rpmbuild failed inside the Fedora client (egress or tooling issue)" \
+               "$(printf '%s\n' "$rpm_build_out" | tail -n 40)"
   fi
 fi
 
@@ -143,7 +160,7 @@ if [ "$A_OK" = "1" ]; then
     A_OK=0; fail "RPM upload returned HTTP ${up} (expected 201)"
   fi
 else
-  fail "skipped: repo/build failed"
+  cascade_fail_a "skipped: RPM repo/build failed"
 fi
 
 begin_test "A2: #2580 — real \`dnf install\` FOLLOWS repodata <location href> and INSTALLS the package"
@@ -175,7 +192,7 @@ rpm -q dtf-marker >/dev/null
     fail "#2580 REGRESSION: real dnf install did not follow the advertised <location href> / package not installed" "$dnflog"
   fi
 else
-  fail "skipped: publish failed"
+  cascade_fail_a "skipped: RPM publish failed"
 fi
 
 begin_test "A3: #2580 discriminator — advertised <location href> resolves (200); pre-fix generic href (no packages/ prefix) 404s"
@@ -204,7 +221,7 @@ if [ "$A_OK" = "1" ]; then
     fi
   fi
 else
-  fail "skipped: prior RPM leg step failed"
+  cascade_fail_a "skipped: prior RPM leg step failed"
 fi
 
 # ===========================================================================
@@ -213,17 +230,40 @@ fi
 
 begin_test "B0: create hosted Debian repo + build a dependency-free marker .deb in the Debian client"
 B_OK=1
+B_INFRA=0
 if ! create_repo "$DEB_REPO" debian local; then
   B_OK=0; fail "could not create hosted debian repo ${DEB_REPO}"
 else
-  DEB_ARCH=$(docker exec "$CAPT" dpkg --print-architecture 2>/dev/null | tr -d '[:space:]')
-  [ -n "$DEB_ARCH" ] || DEB_ARCH="arm64"
+  # `|| true`: common.sh turns on `set -euo pipefail`, so without it a failed
+  # `docker exec` would kill the oracle here — no JUnit, no message, no clue.
+  DEB_ARCH=$(docker exec "$CAPT" dpkg --print-architecture 2>/dev/null | tr -d '[:space:]' || true)
+  if [ -z "$DEB_ARCH" ]; then
+    # No silent arch guess: a .deb built for the wrong architecture would be
+    # invisible to `apt-get install` later and read as a #2580 regression.
+    B_OK=0; B_INFRA=1
+    infra_fail "could not read \`dpkg --print-architecture\` from the Debian client (${CAPT})"
+  fi
+fi
+
+if [ "$B_OK" = "1" ]; then
   DEB_FILE="dtf-marker_1.0_${DEB_ARCH}.deb"
+  # umask 0022 is LOAD-BEARING, not hygiene. dpkg-deb hard-refuses a control
+  # directory outside 0755-0775:
+  #   dpkg-deb: error: control directory has bad permissions 777
+  #             (must be >=0755 and <=0775)
+  # An exec session inherits its umask from the daemon that hosts the
+  # container: 0022 under a systemd-started dockerd (a workstation), but 0000
+  # under the docker-in-docker daemon the release gate runs on, where
+  # `mkdir -p` therefore yields 0777. Without this line the leg passes on
+  # every developer machine and fails 100% of the time in CI — which is
+  # exactly what it did, silently, for four consecutive release runs.
   build_deb='
 set -e
+umask 0022
 ARCH="'"$DEB_ARCH"'"
 rm -rf /tmp/dtf-marker
 mkdir -p /tmp/dtf-marker/DEBIAN /tmp/dtf-marker/usr/share/dtf-marker
+chmod 0755 /tmp/dtf-marker/DEBIAN
 cat > /tmp/dtf-marker/DEBIAN/control <<CTRL
 Package: dtf-marker
 Version: 1.0
@@ -233,18 +273,25 @@ Description: DTF native-client marker
  A dependency-free marker package for the DTF native-client tier.
 CTRL
 echo "DTF-DEB-INSTALLED-1.0" > /tmp/dtf-marker/usr/share/dtf-marker/marker.txt
-dpkg-deb --root-owner-group --build /tmp/dtf-marker "/tmp/'"$DEB_FILE"'" >/dev/null 2>&1
+dpkg-deb --root-owner-group --build /tmp/dtf-marker "/tmp/'"$DEB_FILE"'"
 test -f "/tmp/'"$DEB_FILE"'"
 '
-  if timeout 120 docker exec "$CAPT" bash -c "$build_deb"; then
+  # Capture the build output and attach it to the failure. The previous shape
+  # (`>/dev/null 2>&1` inside, no capture outside) reported only
+  # "dpkg-deb build failed inside the Debian client (0s)" and threw away the
+  # one line that named the cause.
+  if deb_build_out=$(timeout 120 docker exec "$CAPT" bash -c "$build_deb" 2>&1); then
     docker cp "${CAPT}:/tmp/${DEB_FILE}" "${WORK_DIR}/${DEB_FILE}" >/dev/null 2>&1 || B_OK=0
     if [ "$B_OK" = "1" ] && [ -s "${WORK_DIR}/${DEB_FILE}" ]; then
       pass
     else
-      B_OK=0; fail "built .deb could not be copied out of the Debian client"
+      B_OK=0; B_INFRA=1
+      infra_fail "built .deb could not be copied out of the Debian client (${CAPT})"
     fi
   else
-    B_OK=0; fail "dpkg-deb build failed inside the Debian client"
+    B_OK=0; B_INFRA=1
+    infra_fail "dpkg-deb build failed inside the Debian client (${CAPT}) — fixture build, NOT a candidate assertion" \
+               "$(printf '%s\n' "$deb_build_out" | tail -n 40)"
   fi
 fi
 
@@ -259,7 +306,7 @@ if [ "$B_OK" = "1" ]; then
     B_OK=0; fail "deb upload returned HTTP ${up} (expected 201)"
   fi
 else
-  fail "skipped: repo/build failed"
+  cascade_fail_b "skipped: deb repo/build failed"
 fi
 
 begin_test "B2: #2580 — real \`apt-get install\` FOLLOWS Packages Filename: and INSTALLS the package"
@@ -285,7 +332,7 @@ dpkg -s dtf-marker >/dev/null 2>&1
     fail "#2580 REGRESSION: real apt-get install did not follow the advertised Filename: / package not installed" "$aptlog"
   fi
 else
-  fail "skipped: publish failed"
+  cascade_fail_b "skipped: deb publish failed"
 fi
 
 begin_test "B3: #2580 discriminator — advertised Filename: resolves (200); pre-fix bare basename (no pool/ prefix) 404s"
@@ -308,7 +355,7 @@ if [ "$B_OK" = "1" ]; then
     fi
   fi
 else
-  fail "skipped: prior deb leg step failed"
+  cascade_fail_b "skipped: prior deb leg step failed"
 fi
 
 # ===========================================================================

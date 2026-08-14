@@ -208,10 +208,18 @@ if [ "$A_OK" = "1" ]; then
     case "$(uname -m)" in x86_64) DEB_ARCH="amd64" ;; *) DEB_ARCH="arm64" ;; esac
   fi
   DEB_FILE="dtf-signed_1.0_${DEB_ARCH}.deb"
+  # umask 0022 + the explicit chmod are LOAD-BEARING: dpkg-deb refuses a
+  # control directory outside 0755-0775, and an exec session under a
+  # docker-in-docker daemon (the CI runner) inherits umask 0000, so a plain
+  # `mkdir -p` produces 0777 and the build dies. Same bug the native-client
+  # tier's deb leg hit in the release gate; fixed here before this tier is
+  # ever promoted into CI.
   build_deb='
 set -e
+umask 0022
 rm -rf /tmp/dtf-signed
 mkdir -p /tmp/dtf-signed/DEBIAN /tmp/dtf-signed/usr/share/dtf-signed
+chmod 0755 /tmp/dtf-signed/DEBIAN
 cat > /tmp/dtf-signed/DEBIAN/control <<CTRL
 Package: dtf-signed
 Version: 1.0
@@ -221,10 +229,10 @@ Description: DTF signing-tier marker
  A dependency-free marker package for the DTF signing tier.
 CTRL
 echo "DTF-DEB-SIGNED-INSTALLED-1.0" > /tmp/dtf-signed/usr/share/dtf-signed/marker.txt
-dpkg-deb --root-owner-group --build /tmp/dtf-signed "/tmp/'"$DEB_FILE"'" >/dev/null 2>&1
+dpkg-deb --root-owner-group --build /tmp/dtf-signed "/tmp/'"$DEB_FILE"'"
 test -f "/tmp/'"$DEB_FILE"'"
 '
-  if timeout 120 docker exec "$CAPT" bash -c "$build_deb" \
+  if deb_build_out=$(timeout 120 docker exec "$CAPT" bash -c "$build_deb" 2>&1) \
      && docker cp "${CAPT}:/tmp/${DEB_FILE}" "${WORK_DIR}/${DEB_FILE}" >/dev/null 2>&1 \
      && [ -s "${WORK_DIR}/${DEB_FILE}" ]; then
     up=$(hcode -X PUT -H "$(format_auth_header)" --upload-file "${WORK_DIR}/${DEB_FILE}" \
@@ -233,7 +241,9 @@ test -f "/tmp/'"$DEB_FILE"'"
       A_OK=0; fail "deb upload returned HTTP ${up} (expected 201)"
     fi
   else
-    A_OK=0; fail "dpkg-deb build/copy failed inside the Debian client"
+    A_OK=0
+    infra_fail "dpkg-deb build/copy failed inside the Debian client (${CAPT}) — fixture build, NOT a candidate assertion" \
+               "$(printf '%s\n' "${deb_build_out:-}" | tail -n 40)"
   fi
 else
   fail "skipped: prior step failed"

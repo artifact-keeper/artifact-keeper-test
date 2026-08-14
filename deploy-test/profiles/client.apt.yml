@@ -12,6 +12,14 @@
 # arm64: `debian:*` is multi-arch (arm64/v8 present) so this runs natively on
 # the aarch64 rig. `dpkg-deb`/`apt-get` are in the base image (no extra deps).
 #
+# GOTCHA for oracles that `docker exec` a .deb build in here: an exec session
+# inherits its UMASK from the daemon hosting this container — 0022 under a
+# systemd-started dockerd, but 0000 under the docker-in-docker daemon the CI
+# release gate runs on. `mkdir -p pkg/DEBIAN` therefore yields 0777 there, and
+# `dpkg-deb --build` HARD-REFUSES a control directory outside 0755-0775
+# ("control directory has bad permissions 777"). Any build script exec'd into
+# this container must set `umask 0022` itself; do not rely on the ambient one.
+#
 # Healthcheck-less `sleep infinity` container (see client.dnf.yml rationale);
 # `up --wait` treats it as ready once running. Waits on backend via depends_on.
 #
