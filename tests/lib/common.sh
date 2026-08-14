@@ -2135,6 +2135,69 @@ stop_mock_upstream() {
 # Polls FILE every 0.2s until its content matches EXPECTED_REGEX or the
 # timeout fires. Replaces ad-hoc `sleep N` waits for fixture state changes.
 # Returns 0 on match, 1 on timeout.
+# ---------------------------------------------------------------------------
+# wait_until DESCRIPTION TIMEOUT_SECONDS COMMAND [ARGS...]
+#
+# Polls COMMAND until it exits 0, or TIMEOUT_SECONDS elapses. Returns 0 on
+# success, 1 on timeout. COMMAND's own output is discarded; it is used purely
+# as a predicate, so pass something that exits non-zero while the precondition
+# is unmet.
+#
+# This exists because the dominant failure mode in this suite is
+# `sleep N; assert ...` -- a fixed sleep standing in for an async precondition.
+# That is slow when it works and a false red when the box is loaded, which is
+# exactly when a release is being cut. Prefer:
+#
+#   wait_until "artifact indexed" 30 artifact_exists "$REPO" "$PATH" || \
+#     fail "artifact never appeared"
+#
+# over `sleep 5`. Poll interval defaults to 1s; override with
+# WAIT_UNTIL_INTERVAL for a tighter or looser loop.
+#
+# On timeout it prints the description and elapsed time to stderr, so a failing
+# suite says what it was waiting for rather than just which assertion tripped.
+wait_until() {
+  local desc="$1"
+  local timeout="$2"
+  shift 2
+  local interval="${WAIT_UNTIL_INTERVAL:-1}"
+  local start deadline now attempts=0
+  start=$(date +%s)
+  deadline=$(( start + timeout ))
+
+  while :; do
+    attempts=$(( attempts + 1 ))
+    if "$@" >/dev/null 2>&1; then
+      if [ "$attempts" -gt 1 ]; then
+        now=$(date +%s)
+        echo "  waited $(( now - start ))s for: ${desc}" >&2
+      fi
+      return 0
+    fi
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      echo "  TIMEOUT after $(( now - start ))s (${attempts} attempts) waiting for: ${desc}" >&2
+      return 1
+    fi
+    sleep "$interval"
+  done
+}
+
+# assert_eventually DESCRIPTION TIMEOUT_SECONDS COMMAND [ARGS...]
+#
+# wait_until, but calls fail() on timeout instead of returning 1. Use when the
+# precondition not arriving IS the test failure.
+assert_eventually() {
+  local desc="$1"
+  local timeout="$2"
+  shift 2
+  if ! wait_until "$desc" "$timeout" "$@"; then
+    fail "timed out after ${timeout}s waiting for: ${desc}"
+    return 1
+  fi
+  return 0
+}
+
 wait_for_file_value() {
   local file="$1"
   local pattern="$2"
