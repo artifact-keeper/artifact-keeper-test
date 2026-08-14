@@ -13,7 +13,7 @@ auth_admin
 setup_workdir
 
 UPSTREAM_KEY="test-pypi-upstream-${RUN_ID}"
-REMOTE_KEY="test-pypi-remote-${RUN_ID}"
+REMOTE_KEY="test-pypi-proxy-remote-${RUN_ID}"
 PKG_NAME="e2e-testpkg"
 PKG_VERSION="1.0.0"
 
