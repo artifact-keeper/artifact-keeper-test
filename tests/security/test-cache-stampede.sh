@@ -9,24 +9,18 @@
 # (https://github.com/orgs/artifact-keeper/discussions/872) was triggered by
 # this exact failure mode in v1.1.7.
 #
-# This suite verifies two assertions, in order of importance:
+# The load-bearing assertion is:
 #
 #   1. Peak upstream in-flight count <= proxy_max_concurrent_fetches.
-#      Measured by the mock upstream's own per-handler counter.
+#      Measured by the mock upstream's own per-handler counter. This is the
+#      one that fails on a broken backend (semaphore disabled, limit raised,
+#      fetch path bypassed).
 #
-#   2. When the queue saturates and queue_timeout fires, the backend rejects
-#      with 503 (queue full) -- it does NOT silently dispatch every request.
-#      We only assert this when PROXY_QUEUE_TIMEOUT_SECS is short enough
-#      relative to the per-request mock delay; otherwise informational.
-#
-#      NOTE (artifact-keeper-test#344): assertion 2 is a latent false-red. What
-#      the backend actually ships is single-flight coalescing (#1631/#1694), not
-#      a bounded queue with a timeout; PROXY_MAX_CONCURRENT_FETCHES and
-#      PROXY_QUEUE_TIMEOUT_SECS do not exist in the backend at all. With the
-#      gate's values it always takes the informational skip, so it is harmless
-#      today -- but tuning the knobs as its skip message suggests would fail it
-#      against a perfectly healthy backend. #344 tracks rewriting it against
-#      the coalescing contract.
+#      NOTE (artifact-keeper-test#344): a second assertion used to sit here,
+#      expecting 503 "queue full" responses once the queue saturated. It has
+#      been REMOVED. The backend ships single-flight coalescing
+#      (#1631/#1694), not a bounded queue with a timeout, so it asserted a
+#      contract that does not exist. See the block below where it stood.
 #
 # Parking history (artifact-keeper-test#343)
 # ------------------------------------------
@@ -84,6 +78,9 @@ pass
 LIMIT="${PROXY_MAX_CONCURRENT_FETCHES:-20}"
 N="${STAMPEDE_CONCURRENCY:-$(( LIMIT * 2 + 5 ))}"
 UPSTREAM_DELAY_MS="${STAMPEDE_UPSTREAM_DELAY_MS:-2000}"
+# NOTE: PROXY_QUEUE_TIMEOUT_SECS does not exist in the backend (#344). This is
+# retained only to size the per-request client timeout below; it does not
+# configure anything server-side and nothing asserts against it.
 QUEUE_TIMEOUT_SECS="${PROXY_QUEUE_TIMEOUT_SECS:-30}"
 
 REMOTE_KEY="sec-stampede-${RUN_ID}"
@@ -222,30 +219,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Assertion #3: if N exceeds limit AND queue_timeout was tuned short, we
-# expect SOME 503s. This is informational on default settings (queue
-# timeout of 30s usually long enough that everyone eventually gets in) so
-# we treat it as a soft assertion: skip when N <= LIMIT or the timeout is
-# generous.
+# REMOVED (artifact-keeper-test#344): the former assertion #3 expected 503
+# "queue full" responses once N exceeded the limit and a queue timeout was
+# short. The backend has no such model -- it ships single-flight coalescing
+# (#1631/#1694), and PROXY_MAX_CONCURRENT_FETCHES / PROXY_QUEUE_TIMEOUT_SECS
+# do not exist in it at all. With the gate's values the assertion always took
+# its informational skip, so it never fired; but its skip message instructed
+# the reader to tune those two phantom knobs to "exercise this branch", which
+# would have produced a hard failure against a perfectly healthy backend.
+#
+# It is deleted rather than rewritten because there is no correct version of
+# it: it asserts a contract the backend does not implement.
+#
+# The coalescing contract it should have been testing IS observable here --
+# `upstream_count` above is the total number of upstream fetches for the
+# artifact, and with coalescing working it should be far below N. Asserting it
+# needs a calibrated threshold from a live gate run, so it is tracked
+# separately rather than guessed at in a blocking suite.
 # ---------------------------------------------------------------------------
-
-begin_test "When N > limit and queue_timeout is short, queue-full responses appear"
-expected_queueing=0
-overflow=$(( N - LIMIT ))
-projected_wait_secs=$(( overflow * UPSTREAM_DELAY_MS / 1000 / LIMIT ))
-if [ "$overflow" -gt 0 ] && [ "$projected_wait_secs" -gt "$QUEUE_TIMEOUT_SECS" ]; then
-  expected_queueing=1
-fi
-
-if [ "$expected_queueing" -eq 1 ]; then
-  if [ "$queue_full_count" -ge 1 ]; then
-    pass
-  else
-    fail "expected at least one 503 (overflow=${overflow}, projected_wait=${projected_wait_secs}s, queue_timeout=${QUEUE_TIMEOUT_SECS}s) but saw none: queue_timeout enforcement may be broken"
-  fi
-else
-  skip "queueing not expected with N=${N}, LIMIT=${LIMIT}, delay=${UPSTREAM_DELAY_MS}ms, queue_timeout=${QUEUE_TIMEOUT_SECS}s; tune PROXY_QUEUE_TIMEOUT_SECS or STAMPEDE_UPSTREAM_DELAY_MS to exercise this branch"
-fi
 
 # ---------------------------------------------------------------------------
 # Assertion #4: a follow-up fetch hits the cache. Coalescing (single-flight)
