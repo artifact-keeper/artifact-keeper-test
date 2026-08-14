@@ -2124,7 +2124,13 @@ jobs:
   # See artifact-keeper#991 for v1.1.x auth-path perf investigation.
   # -------------------------------------------------------------------
   stress-tests:
-    needs: [deploy, format-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, security-tests, compatibility-tests]
+    # The destructive phase must not start while ANY suite is still talking to
+    # the shared instance. This list is therefore every namespace-touching job,
+    # not just the functional dozen -- the nine added below were outside the
+    # barrier and could be mid-request when stress began degrading the backend,
+    # producing reds that look like product defects. See test#365.
+    needs: [deploy, format-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, security-tests, compatibility-tests,
+            admin-tests, real-flow-smoke, scan-completion-gate, scan-completion-gate-scaffolds-pending, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, security-grype-scan-completes, pullthrough-tests]
     continue-on-error: true
     if: |
       always() &&
