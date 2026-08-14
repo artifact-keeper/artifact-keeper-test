@@ -19,7 +19,7 @@ setup_workdir
 require_cmd npm
 
 UPSTREAM_KEY="test-npm-upstream-${RUN_ID}"
-REMOTE_KEY="test-npm-remote-${RUN_ID}"
+REMOTE_KEY="test-npm-scoped-remote-${RUN_ID}"
 SCOPE="e2escope"
 PKG_SHORT="testpkg"
 SCOPED_NAME="@${SCOPE}/${PKG_SHORT}"
