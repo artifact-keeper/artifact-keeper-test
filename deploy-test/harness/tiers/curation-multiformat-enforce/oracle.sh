@@ -63,12 +63,28 @@ DOCKER_REPO="cme-docker-${DTF_SLOT:-x}-${SUF}"
 # =============================================================================
 
 # Backend version that first emits the OCI envelope on /v2 (artifact-keeper
-# #3110 / PR #3274, milestone 1.7.2). At or above this the envelope is
-# REQUIRED — a regression back to the REST shape fails the tier. Below it,
-# either shape passes: this same oracle runs at `@main` against every tag the
-# release gate is pointed at, including 1.7.x cuts that predate the fix and
-# `dev` images built from main before the version bump. Keep this in step with
-# the release the fix actually ships in.
+# #3110 / PR #3274). At or above this the envelope is REQUIRED — a regression
+# back to the REST shape fails the tier. Below it, either shape passes: this
+# same oracle runs at `@main` against every tag the release gate is pointed at,
+# including 1.7.x cuts that predate the fix and `dev` images built from main
+# before the version bump.
+#
+# ⚠️ This is a FLOOR, not a marker for the release the fix shipped in. NEVER
+# raise it above the lowest backend version known to emit the envelope, and in
+# particular do NOT "correct" it to the version the work was eventually
+# released as. Raising it LOOSENS the gate: every build between the old and new
+# value stops being held to the envelope and is silently allowed to answer with
+# the pre-#3110 REST shape.
+#
+# Concretely, that is why this reads 1.7.2 — a version that was RETIRED and
+# never released, so no released backend will ever report it. #3274 merged
+# before the workspace version bump, so `dev` images built from main while the
+# version still read 1.7.2 already carry the envelope fix. Raising this to
+# 1.7.3 (the release the work actually shipped in) would drop exactly those
+# builds below the floor. artifact-keeper#3345 keeps the changelog sentence
+# naming ">= 1.7.2" for the same reason.
+#
+# Lower it only if a backend older than this is found to emit the envelope.
 CURATION_OCI_ENVELOPE_MIN_VERSION="1.7.2"
 
 # curation_block_rest_ok BODY -> 0 if BODY is the shared REST block body.
