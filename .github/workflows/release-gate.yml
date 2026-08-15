@@ -1168,7 +1168,7 @@ jobs:
       matrix:
         batch:
           - name: node
-            scripts: "test-npm.sh test-npm-remote.sh test-vscode.sh"
+            scripts: "test-npm.sh test-npm-remote.sh test-vscode.sh test-vscode-remote.sh"
           - name: python
             scripts: "test-pypi.sh test-pypi-native-client.sh test-pypi-scoped-token.sh test-pypi-remote.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
           - name: jvm
