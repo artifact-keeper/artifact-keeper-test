@@ -1,0 +1,73 @@
+# DTF tier manifest: api-alias-repo-key  (artifact-keeper#3443 / #3444)
+# Profile-set: filesystem / single. The gap is in the auth middleware's path
+# parser, ahead of any storage backend, so the storage dimension is irrelevant.
+#
+# THE BUG
+# `extract_repo_key` (backend/src/api/middleware/auth.rs) modelled every format
+# route as `/{format}/{repo_key}/...`. The two alias mounts added in #3392 are
+# NOT that shape — they are `/api/{format}/{repo_key}/...`:
+#     /api/cargo/{repo_key}/...      cargo sparse index      (routes.rs)
+#     /api/helm/{repo_key}/charts    ChartMuseum cm-push     (routes.rs)
+# so the key handed to `repo_visibility_middleware` was the LITERAL string
+# "cargo" / "helm", while the handler's `Path` extraction served the REAL third
+# segment. Middleware and handler disagree about which repository the request
+# is for: a checked-vs-served split.
+#
+# WHY THE DECOY IS THE WHOLE TIER
+# With no repository named `cargo` or `helm`, the split fails CLOSED — the
+# middleware finds no row for the literal key and answers 401/404 (that is the
+# reported symptom, #3443: "the alias routes are mounted but unreachable"). A
+# tier that only creates normally-named repositories is therefore GREEN on the
+# vulnerable baseline and proves NOTHING about the security half.
+# `cargo` and `helm` are perfectly legal repository keys, and they are the most
+# natural names anyone would pick for those repos. As soon as ONE exists, the
+# middleware authorizes THAT repository while the handler serves another one.
+# So this tier's setup DELIBERATELY creates a public repository literally keyed
+# `cargo` and one keyed `helm` (the decoys), alongside private victim
+# repositories holding real content. Without them the tier is worthless.
+#
+# THE PRIMITIVES (all observed 2xx on the vulnerable parent, all refused on the fix)
+#   anon  GET    /api/cargo/{private}/config.json                        -> 200
+#   anon  GET    /api/cargo/{private}/{a}/{b}/{crate}   (sparse index)    -> 200
+#   anon  GET    /api/cargo/{private}/api/v1/crates/{c}/{v}/download      -> 200 + private bytes
+#   tok(scoped to repo `cargo`) PUT  /api/cargo/{other}/api/v1/crates/new -> 200  cross-repo publish
+#   tok(scoped to repo `helm`)  POST /api/helm/{private}/charts           -> 409  existence leak
+#   tok(scoped to repo `helm`)  DELETE /api/helm/{private}/charts/{c}/{v} -> 200  cross-repo destroy
+# The read/write tokens are minted by a NON-ADMIN who owns only the decoys, so
+# the publish and the existence leak are a true cross-tenant reach. Because
+# `delete:artifacts` is admin-only at mint time, the destructive probe uses a
+# repo-scoped token an operator would issue for the `helm` repository; that
+# makes the gate sharper, since repository binding (#504) is then the only
+# control left and it is enforced ahead of the admin permission shortcut.
+# The fix skips the `/api` prefix for exactly those two format names, so the
+# real repository key is evaluated and every primitive above becomes 401/403.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL)  the things that must be TRUE ON BOTH IMAGES — the "did we break
+#              anything" half. The owner of the repo genuinely named `cargo`
+#              still reads its config.json and publishes into it through
+#              /api/cargo/cargo/...; the cm-push alias still accepts a chart
+#              into the repo named `helm`; the anonymous public read on the
+#              decoy still works; the NATIVE /cargo/{private} mount still 401s;
+#              and /api/v1/* is untouched (`v1` is never read as a format).
+#   (BOUNDARY) each primitive above is refused (401/403). RED on the vulnerable
+#              baseline, where they return 2xx / the 409 leak. The destructive
+#              one asserts the OBSERVABLE side effect twice — the victim's live
+#              chart count in the DB and the entry count in its index.yaml are
+#              unchanged on the fix and drop on the baseline.
+#   (FIX)      the compatibility half of #3443: a correctly-scoped token reaches
+#              its OWN normally-named repository through the alias. Also RED on
+#              the baseline (403 there — the request was judged against the
+#              decoy — i.e. RED for the fail-CLOSED reason, not the bypass).
+#
+# Every curl uses --path-as-is: curl normalises dot segments by default and has
+# already produced FALSE 200s while probing exactly this bug.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login, a user create +
+# login, two repo-scoped token mints and ~25 back-to-back authenticated probes;
+# the base default (ON) would throttle them and turn a boundary 403 into a 429.
+# A tier that must disable a shipped control does so explicitly (design 2.2, as
+# isolation/sso/ci-token-basic/5f2q-upload-scope do).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
