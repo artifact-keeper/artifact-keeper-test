@@ -1,0 +1,92 @@
+# DTF tier manifest: oci-rest-delete-digest-authority  (artifact-keeper#3476 / #3475)
+# Profile-set: filesystem / single. Everything this tier asserts lives in the
+# REST delete handler and the OCI index tables (`oci_tags`,
+# `manifest_blob_refs`) — ahead of, and independent of, any storage backend.
+#
+# THE FEATURE, THEN THE BUG
+# #3476: soft-deleting the `artifacts` row for a Docker/OCI manifest left the
+# OCI index rows behind, so a later re-push found the surviving tag on its HEAD
+# probe, skipped the PUT, and the image was never resurrected. #3475 makes the
+# REST delete unwind the index the way `/v2` already did.
+#
+# The first cut of that unwind derived what to unwind from the DELETED ROW'S OWN
+# `checksum_sha256` (`digest = format!("sha256:{}", artifact_checksum)`) instead
+# of resolving it from `oci_tags` for `(repository, image, reference)`. Three
+# behaviours then compose into a destructive primitive:
+#
+#   1. the digest comes from the row's own content hash, so ANY row whose bytes
+#      happen to be some other image's manifest carries that image's digest;
+#   2. `delete_oci_manifest_content`'s digest branch ran
+#      `DELETE FROM oci_tags WHERE repository_id = $1 AND manifest_digest = $2`,
+#      ignoring the image name entirely — a repo-wide content-addressed sweep;
+#   3. `classify_oci` marks a `/manifests/` path immutable only when it contains
+#      the literal `sha256:`, so a digest-SHAPED reference under any other
+#      algorithm (`blake3:00`) is MUTABLE to the release-immutability gate while
+#      `is_digest_reference` still reads it as a digest for (2).
+#
+# So a NON-ADMIN holding only repo-scoped read+write+delete on one repository
+# could: fetch a victim image's manifest bytes (a plain read), upload them as a
+# decoy artifact under an UNRELATED image name at a non-`sha256` digest-shaped
+# reference, delete the decoy, and take the victim image's tags and blob refs
+# with it. `docker pull` then 404s for everyone, while `artifacts.is_deleted`
+# stays false, the REST metadata endpoint still reports the image present, and
+# the audit log records only the decoy. Two tags sharing one digest were both
+# wiped by a single decoy delete.
+#
+# THE FIX (#3475 as merged) — three independent invariants on the REST path:
+#   * the digest is resolved from `oci_tags` for `(repo, image, reference)`;
+#   * the unwind runs only when that indexed manifest IS the row being deleted;
+#   * it is scoped to the single `(name, tag)` entry the REST path names
+#     (`OciIndexDeleteScope::NamedReference`) — the repo-wide content-addressed
+#     scope stays on `/v2`, where the reference IS the resolved digest (#1776).
+# A reference with no index row has nothing to unwind: skip, warn, still
+# soft-delete (peer-replicated Docker artifacts have rows with no index rows).
+#
+# WHY THE BASELINE FOR THIS TIER IS THE PR HEAD, NOT main^
+# `d36cf4fd^1` predates the unwind entirely, so the exploit does nothing there —
+# and the CONTROL that a legitimate REST delete unwinds its own index FAILS
+# there, because that is the feature #3475 adds. The discriminating baseline is
+# the pre-fix PR head `92fb98e7`, where the unwind exists and is unauthoritative.
+#
+# WHY THE IMMUTABILITY 409 IS PART OF THE TIER, NOT THE FIX
+# `classify_oci` is deliberately untouched by #3475 (arming it would also arm
+# the upload-side guard and flip remote proxy cache TTL — a policy change on
+# three subsystems). So the decoy's reference is STILL mutable to the gate and
+# STILL a digest to `is_digest_reference` on the fixed image: the decoy PUT and
+# the decoy DELETE are both still ACCEPTED. This tier asserts that on purpose.
+# If a later change refused them, the boundary gates would pass for a reason
+# that has nothing to do with the unwind's authority, so those two gates carry
+# messages saying the boundary results below are then NOT attributable.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL)  true on BOTH images — the "did the fix break the feature" half.
+#              The attacker is genuinely non-admin. A literal `sha256:` manifest
+#              reference is still refused 409 by release immutability. A
+#              legitimate REST delete of a manifest still unwinds ITS OWN index
+#              (tag gone, `/v2` pull 404) and a re-push resurrects it (#3476).
+#              An unrelated image in the same repository is untouched by that
+#              normal delete. Deleting one of two tags that share a digest
+#              removes only the named tag and leaves the sibling's blob pins
+#              intact (#1776 named-reference semantics).
+#   (BOUNDARY) after the decoy sequence the victim's `oci_tags` rows and its
+#              `manifest_blob_refs` are UNCHANGED in the DB, both of its tags
+#              still serve a 200 whose bytes hash to the indexed digest, and the
+#              REST metadata view and the registry view agree. Repeated with a
+#              decoy under the victim's OWN image name at a forged digest
+#              reference, which the repo-wide sweep also honoured. RED on
+#              `92fb98e7`: tags 2 -> 0, blob refs 2 -> 0, pull 404, with
+#              `is_deleted` still false and no audit row naming the victim.
+#
+# Every curl uses --path-as-is: the probes carry `sha256:`/`blake3:` colons and
+# multi-segment artifact paths, and curl's default dot-segment normalisation has
+# produced false results on exactly this kind of path before.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login, a user create +
+# login, a permission grant, three image pushes (six blob uploads + four
+# manifest PUTs) and ~30 back-to-back authenticated probes; the base default
+# (ON) would throttle them and turn a boundary assertion into a 429. A tier that
+# must disable a shipped control does so explicitly (design 2.2, as
+# isolation/sso/ci-token-basic/5f2q-upload-scope/api-alias-repo-key do).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
