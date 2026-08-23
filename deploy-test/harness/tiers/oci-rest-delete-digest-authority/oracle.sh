@@ -207,7 +207,9 @@ push_image() { # IMAGE TAG SALT -> "" on success, a diagnostic string on failure
   local cfg="${WORK}/cfg-${salt}" layer="${WORK}/layer-${salt}"
   printf '{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"salt":"%s"}' "$salt" > "$cfg"
   printf 'dtf-ocidel-layer-%s' "$salt" > "$layer"
-  local cfgd="sha256:$(sha_of "$cfg")" cfgs layd="sha256:$(sha_of "$layer")" lays c
+  local cfgd cfgs layd lays c
+  cfgd="sha256:$(sha_of "$cfg")"
+  layd="sha256:$(sha_of "$layer")"
   cfgs="$(wc -c < "$cfg" | tr -d ' ')"; lays="$(wc -c < "$layer" | tr -d ' ')"
   c="$(code_to_file "${V2}/${img}/blobs/uploads/?digest=${cfgd}" /dev/null -X POST \
         -H "Authorization: Bearer ${ATTACKER_TOKEN}" -H 'Content-Type: application/octet-stream' \
@@ -247,7 +249,6 @@ if [ -n "${PUSH_FAILS// /}" ]; then
 fi
 
 VICTIM_PATH="v2/${VICTIM_IMG}/manifests/${VICTIM_TAG}"
-VICTIM_PATH2="v2/${VICTIM_IMG}/manifests/${VICTIM_TAG2}"
 LEGIT_PATH="v2/${LEGIT_IMG}/manifests/${LEGIT_TAG}"
 DECOY_PATH="v2/${DECOY_IMG}/manifests/${DECOY_REF}"
 DECOY_PATH2="v2/${VICTIM_IMG}/manifests/${DECOY_REF2}"

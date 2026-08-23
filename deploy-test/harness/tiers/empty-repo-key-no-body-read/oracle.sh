@@ -88,7 +88,7 @@ probe() {
   local args=(-s -o "${WORK}/body" -w '%{http_code} %{size_upload}')
   # shellcheck disable=SC2206  # CURL_TIMEOUT is intentionally word-split
   args+=($CURL_TIMEOUT)
-  args+=($CURL_RAW -X "$method")
+  args+=("$CURL_RAW" -X "$method")
   case "$shape" in
     raw)  args+=(-H 'Content-Type: application/octet-stream' --data-binary "@${BODY}") ;;
     form) args+=(-F "file=@${BODY}") ;;
@@ -282,8 +282,8 @@ flip_repo() { # IS_PUBLIC -> http code of the PATCH
 # The middleware keeps a short-lived repository cache, so poll for the flip
 # rather than assuming it is visible on the very next request.
 await_anon() { # EXPECTED_CODE -> the code finally observed
-  local want="$1" i c=""
-  for i in $(seq 1 10); do
+  local want="$1" c=""
+  for _ in $(seq 1 10); do
     c="$(code_only "${BASE_URL}/conda/${CONDA_T}/channeldata.json")"
     [ "$c" = "$want" ] && break
     sleep 1

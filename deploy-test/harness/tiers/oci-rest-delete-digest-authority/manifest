@@ -67,7 +67,10 @@
 #              An unrelated image in the same repository is untouched by that
 #              normal delete. Deleting one of two tags that share a digest
 #              removes only the named tag and leaves the sibling's blob pins
-#              intact (#1776 named-reference semantics).
+#              intact (#1776 named-reference semantics) — asserted on its OWN
+#              image and its own digest, so that on the pre-fix baseline it
+#              fails only if named-reference scoping is broken and never as
+#              collateral of the boundary probes.
 #   (BOUNDARY) after the decoy sequence the victim's `oci_tags` rows and its
 #              `manifest_blob_refs` are UNCHANGED in the DB, both of its tags
 #              still serve a 200 whose bytes hash to the indexed digest, and the
