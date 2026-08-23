@@ -1,0 +1,86 @@
+# DTF tier manifest: empty-repo-key-no-body-read  (artifact-keeper#3509 / #3444)
+# Profile-set: filesystem / single. The defect is in the auth middleware's
+# empty-key branch, ahead of every handler and of any storage backend, so the
+# storage dimension is irrelevant.
+#
+# THE BUG
+# #3444 gave `repo_visibility_middleware`'s empty-repository-key branch an early
+# return that inserted an anonymous `Option<AuthExtension>` and then ran the
+# handler. That early return skips the REST of the middleware — including the
+# #508 anonymous-write gate 129 lines further down, which would have refused the
+# request. Before #3444 the handler's `Extension<Option<AuthExtension>>`
+# extractor rejected FIRST (axum runs `FromRequestParts` before the body's
+# `FromRequest`), so the body was never read. Afterwards the handler runs and its
+# body extractor (`Bytes`, `Multipart`, ...) buffers the WHOLE request before the
+# in-handler `require_auth` can answer 401.
+#
+# That is an UNAUTHENTICATED MEMORY-EXHAUSTION primitive: no credential, no
+# repository, no configuration. Per request the ceiling is `MAX_UPLOAD_SIZE`
+# (10 GiB default); concurrently `GLOBAL_MAX_CONCURRENCY` (512 default). When it
+# was found, 22 of 36 probed format prefixes buffered a 64 MiB anonymous body and
+# a single anonymous 4 GiB PUT took the backend from 35 MiB to 7,045 MiB RSS.
+# `POST /conda/t/upload` is a SINGLE-slash path, so a reverse proxy that
+# collapses `//` does not filter it, and `/lfs/` is in `BYTE_TRANSFER_PREFIXES`
+# and therefore exempt from the global request timeout, so that arm is
+# drip-feedable.
+#
+# THE FIX (#3509): the empty-key branch answers the existence-hiding 404
+# directly. An empty key names no repository — keys are non-empty by
+# construction — so nothing can be served there, the handler is never invoked,
+# and no body is read. #3443's unauthenticated 500 stays closed for the stronger
+# reason that the strict extension extractor is never reached.
+#
+# WHY A REPOSITORY LITERALLY KEYED `t` IS PART OF THE TIER
+# `extract_repo_key` skipped the conda token-channel pair `t/<TOKEN>` whenever a
+# conda path's second segment was `t` — including two-segment paths like
+# `/conda/t/upload` and `/conda/t/channeldata.json`, which are the PLAIN conda
+# routes for a repository whose key is literally `t`. Those resolved to an EMPTY
+# key, so that repository got no visibility, token-scope or permission check and
+# the caller's credential was replaced with the anonymous value: an admin read of
+# its own private channel answered 401 for a credential it did send. #3509
+# applies the same shape test to both `extract_repo_key` and
+# `extract_conda_url_token` — the token channel is a token channel only when a
+# segment follows the token. So this tier creates a real repository keyed `t`
+# and asserts it is properly authorized, alongside a real token channel that
+# must keep working.
+#
+# THE INSTRUMENT
+# `curl -w '%{http_code} %{size_upload}'`. curl sends `Expect: 100-continue` for
+# a body this size, so a backend that answers before polling the body leaves
+# `size_upload` at exactly 0, and one that polls it uploads all of it. A gate
+# that only asserted "0 bytes" would be unfalsifiable, so the tier includes a
+# POSITIVE CONTROL on the same run: an AUTHENTICATED upload of the SAME payload
+# to a real repository must report the full byte count. If the instrument were
+# broken, that control reads 0 and the tier fails there instead of passing
+# everything vacuously.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL)  the instrument works — an authenticated upload of the same body
+#              reports the full `size_upload`. No empty-key path answers an
+#              unauthenticated 5xx (the pre-#3444 behaviour #3509 must not
+#              reintroduce). A real conda token channel still serves
+#              `/conda/t/<TOKEN>/<repo>/...` and a bogus token there is still
+#              401. An ordinary conda repository is unaffected.
+#   (BOUNDARY) every probed empty-key format prefix answers 401/404 with
+#              `size_upload == 0`. The probe set is exactly the prefixes measured
+#              to buffer on the vulnerable image, so no gate here is vacuous.
+#              RED on `71052767^1`: 401 after uploading the whole 32 MiB.
+#   (BOUNDARY) the repository keyed literally `t` is authorized on its own
+#              terms — anonymous 401, credentialed 200 — and flipping it
+#              public<->private flips the anonymous answer. RED on the baseline
+#              for the credentialed read: the empty-key branch discarded the
+#              credential, so even an admin got 401 on its own private channel.
+#
+# Every curl uses --path-as-is. It is mandatory here rather than merely prudent:
+# curl normalises `//` and dot segments by default, and the empty segment IS the
+# probe. Without it these requests never reach the branch under test.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login, three repository
+# creates, a token mint, a user create + login and ~35 back-to-back probes;
+# the base default (ON) would throttle them and turn a boundary 401 into a 429,
+# which reads as a pass for the wrong reason. A tier that must disable a shipped
+# control does so explicitly (design 2.2, as isolation/sso/ci-token-basic/
+# 5f2q-upload-scope/api-alias-repo-key do).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
