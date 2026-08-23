@@ -2637,6 +2637,17 @@ jobs:
   #   security-boundary — dos (rate-limit / worker-starvation), sso
   #                     (SAML XSW class), proxy-egress (SSRF egress
   #                     control)
+  #   data-integrity  — the two 1.8.2 silent data-loss classes
+  #                     (artifact-keeper-test#386): maven-rollup-anchor-
+  #                     escape, where an un-escaped LIKE let the GC and
+  #                     the repository-delete purge destroy a
+  #                     maven-metadata.xml still being served
+  #                     (artifact-keeper#3493), and
+  #                     migration-progress-monotonic, where a partial
+  #                     migration run overwrote the job row's record of
+  #                     an earlier pass (artifact-keeper#3511). Both
+  #                     leave a 200 behind, so both assert bytes and row
+  #                     state rather than status codes.
   # Required tiers depend only on the candidate image plus local
   # containers (postgres/minio/keycloak/squid) — no external network
   # calls that could flake the gate. Tiers with heavier external
@@ -2680,6 +2691,14 @@ jobs:
             tiers: vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race oci-push-scope api-alias-repo-key oci-rest-delete-digest-authority empty-repo-key-no-body-read
           - group: security-boundary
             tiers: dos sso proxy-egress
+          # Data integrity (1.8.2): two paths that DESTROY a record they cannot
+          # re-derive if they get the decision wrong. maven-rollup-anchor-escape
+          # (#3492/#3493) stands up MinIO and the Maven flat-object GC opt-in;
+          # migration-progress-monotonic (#3510/#3511) stands up a scripted
+          # Artifactory-shaped source. Both are local containers only -- no
+          # external network -- so they belong in the required matrix.
+          - group: data-integrity
+            tiers: maven-rollup-anchor-escape migration-progress-monotonic
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

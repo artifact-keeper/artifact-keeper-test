@@ -35,6 +35,10 @@
 # `signing` (filesystem + apt/dnf/apk/helm clients) asks the question every other
 # client leg disables: does the client actually VERIFY the advertised signature
 # chain? (#72; no [trusted=yes] / --allow-untrusted / gpgcheck=0 anywhere.)
+# `maven-rollup-anchor-escape` (s3 + the Maven flat-object GC opt-in) and
+# `migration-progress-monotonic` (filesystem + a scripted Artifactory-shaped
+# source) are the 1.8.2 data-integrity pair: both assert that a delete/write
+# path does not destroy a record it cannot re-derive.
 # =============================================================================
 set -uo pipefail
 
@@ -288,7 +292,8 @@ case "$CMD" in
              virtual-no-transfer proxy-upstream-url oidc-group-sync \
              openapi-signing-tags maven-grouped-name debian-encoded-separator cran-rubygems-download-url backup-custom-name \
              oidc-env-config gcs-custom-endpoint signing \
-             oci-push-scope api-alias-repo-key oci-rest-delete-digest-authority empty-repo-key-no-body-read; do
+             oci-push-scope api-alias-repo-key oci-rest-delete-digest-authority empty-repo-key-no-body-read \
+             maven-rollup-anchor-escape migration-progress-monotonic; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

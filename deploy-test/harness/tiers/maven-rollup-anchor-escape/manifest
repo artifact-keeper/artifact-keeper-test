@@ -1,0 +1,89 @@
+# DTF tier manifest: maven-rollup-anchor-escape  (artifact-keeper#3492 / #3493)
+# Profile-set: s3 (MinIO) + gc.maven-flat, STORAGE_KEY_SCHEME=flat.
+#
+# THE BUG (silent, unrecoverable data loss)
+# Two delete paths decide whether a Maven `maven-metadata.xml` rollup is still
+# in use by asking "does any live artifact sit under the directory this rollup
+# summarises?". Both built that test as
+#     <artifact key> LIKE <directory prefix derived from the rollup key> || '%'
+# with NO `ESCAPE` clause. Postgres's default LIKE escape character is a
+# backslash, so for a stored key containing one the pattern stops describing
+# the directory it was derived from:
+#     'maven/a\b/1.0/x.jar' LIKE 'maven/a\b/' || '%'            -> FALSE
+#     'maven/ab/1.0/x.jar'  LIKE 'maven/a\b/' || '%'            -> TRUE
+#     'maven/a\b/1.0/x.jar' LIKE 'maven/a\b/' || '%' ESCAPE ''  -> TRUE
+# The guard is a `NOT EXISTS`, so an UNDER-match means DELETE: the rollup of a
+# still-served subtree is reclaimed while its JAR is live. A Maven upload can
+# put a literal backslash in a coordinate — `%5C` in the request path decodes
+# to one — so any user with `write:artifacts` on a Maven repository can create
+# such a key, and a registry migrated from another product may already hold
+# some.
+#
+# The loss is SILENT. The Maven read path SYNTHESISES a substitute
+# `maven-metadata.xml` when the stored document is gone, so `GET` keeps
+# answering 200 and the client sees a well-formed document — with the wrong
+# `lastUpdated`, the wrong version list, no plugin `<prefix>` entries and a
+# different checksum. Every gate below therefore asserts the SERVED/STORED
+# BYTES are identical to what was published, never merely that a 200 came back.
+#
+# TWO CALL SITES, and the tier covers both:
+#   1. the storage-GC sweep's guard 3
+#      (`StorageGcService::cleanup_orphan_maven_flat_objects`), reachable at
+#      `POST /api/v1/admin/storage-gc` and from the scheduled tick. Gated by
+#      the `MAVEN_FLAT_GC_ENABLED` operator opt-in (#3431) — hence the
+#      `gc.maven-flat` overlay.
+#   2. the repository-delete purge collector
+#      (`collect_repo_maven_flat_keys`, api/handlers/repositories.rs), which
+#      runs on EVERY repository delete and carries NO gate at all. That path is
+#      cross-repository: the doomed repository owns the attribution row while
+#      another repository owns the artifact that anchors it.
+#
+# WHY THIS PROFILE-SET IS LOAD-BEARING (the tier is invisible without it)
+#   * `STORAGE_BACKEND=s3`. Both guards walk `maven_flat_object_owner`, the
+#     attribution table for row-less Maven objects. Those rows exist only on a
+#     CLOUD backend: a filesystem repository physically isolates its key space
+#     under `storage_path`, every attribution entry point short-circuits, and
+#     the table is empty (`count = 0`). A filesystem profile would run this
+#     tier green on a vulnerable image and prove nothing.
+#   * `STORAGE_KEY_SCHEME=flat`. The CROSS-REPOSITORY half needs two
+#     repositories to share one key prefix. Under the shipped default
+#     (repo-scoped, #2624) keys are `maven/{repository_id}/...`, so no foreign
+#     repository can ever sit under another's rollup directory and the
+#     cross-repo case cannot be built. The legacy flat namespace is not
+#     hypothetical: every object written before #2624 still lives in it, so an
+#     upgraded instance carries flat-namespace objects today.
+#     The SAME-repository loss on both paths is live under BOTH schemes; only
+#     the cross-repository reach requires this one.
+#
+# Oracle gates (discriminating, RELEASE_GATE=1):
+#   (BOUNDARY) a rollup whose directory contains a literal backslash is SPARED
+#              while an artifact under it is still live — on the GC sweep
+#              (same repository) and on the repository-delete purge (the
+#              anchoring artifact belongs to ANOTHER repository). Asserted as
+#              row-still-present AND object-still-in-MinIO AND bytes identical
+#              to the published document. RED on the pre-fix parent, where the
+#              document and its `.sha1` are gone and `GET` answers 200 with a
+#              synthesised substitute.
+#   (CONTROL)  the fix must not degenerate into "spare everything containing a
+#              backslash". In the SAME pass, and in the same repository delete,
+#              a genuinely orphaned rollup whose directory ALSO contains a
+#              backslash is still RECLAIMED, alongside its plain-ASCII twin;
+#              the doomed repository's own rollup, anchored only by its own
+#              artifact, is still purged (the `<> $1` scoping); a rollup whose
+#              subtree is live is spared for a plain directory too; and an
+#              `operator_repair`-sourced attribution row is preserved (the
+#              #3431 source allowlist — a row the system did not write is not
+#              a re-derivable cache and is never proof of garbage).
+#              These hold on BOTH images.
+#
+# Every curl passes --path-as-is: `%5C` MUST reach the server unmolested, and
+# curl's default dot-segment normalisation has produced false results while
+# probing path-shaped bugs before.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus ~30
+# back-to-back authenticated PUT/GET probes; the base default (ON) would
+# throttle them and turn a byte-identity assertion into a 429.
+PROFILES="storage.s3 gc.maven-flat"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+STORAGE_KEY_SCHEME="flat"

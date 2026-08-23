@@ -1,0 +1,95 @@
+# =============================================================================
+# profiles/upstreams.mock-artifactory.yml — a scripted migration SOURCE
+# =============================================================================
+# Adds `mock-artifactory`, a stdlib-only Python HTTP server that answers the
+# handful of Artifactory endpoints `ArtifactoryClient` calls (ping, version,
+# /api/repositories, POST /api/search/aql, direct download). It exists so the
+# migration-progress-monotonic tier (artifact-keeper#3510/#3511) can drive a
+# real migration whose LISTING LATENCY and catalogue size it controls — the
+# only way to catch a resumed run mid-listing without racing it.
+# See harness/tiers/migration-progress-monotonic/fixtures/mock_artifactory.py.
+#
+# The overlay:
+#   * ADDS  `mock-artifactory` on a per-slot 172.16.<slot>.0/24 subnet, so
+#     AK's create-time SSRF check on the connection URL allowlists it via
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 — the same narrow escape hatch
+#     upstreams.mockpypi.yml and proxy.squid.yml use. A blanket
+#     `0.0.0.0/0` is REJECTED by validation (prefix 0 is banned).
+#   * PATCHES backend onto that network and sets:
+#       AK_SSRF_ALLOW_PRIVATE_CIDRS  so the connection URL validates, and
+#       ALLOW_HTTP_INTEGRATIONS      because `ArtifactoryClient::new` builds a
+#                                    `https_only` reqwest client unless it is
+#                                    set, and the mock speaks plain HTTP.
+#     Neither relaxation is inherited by any other tier: both live here.
+#
+# SUBNET CHOICE, and why it is not 172.28 like upstreams.mockpypi.yml: the
+# base `dtf` network declares no subnet, so Docker allocates it a /16 from its
+# default address pool -- 172.17.0.0/16 through 172.31.0.0/16. Four DTF slots
+# coming up at once will therefore eventually be handed 172.28.0.0/16, which
+# overlaps a hard-coded 172.28.<slot>.0/24 and fails the whole stack with
+# "Pool overlaps with other one on this address space" (observed running four
+# tiers concurrently). 172.16.0.0/16 sits BELOW that pool's base, so it is
+# never auto-allocated, while still being inside the 172.16.0.0/12 the SSRF
+# allowlist entry names.
+#
+# Required vars (run.sh exports them): DTF_SLOT (per-slot subnet + container
+# name so concurrent slots never collide), DTF_DIR (mount the mock script).
+# =============================================================================
+services:
+  mock-artifactory:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-artifactory
+    command: ["python3", "/app/mock_artifactory.py"]
+    environment:
+      MOCK_PORT: "80"
+      # Catalogue driven by the tier's oracle:
+      #   *-int  : the interrupt/monotonicity job (SLOW to list, on purpose)
+      #   *-drya : a dry run's first repository (slow)
+      #   *-dryb : a dry run's second repository (slow) -- the gap between the
+      #            two listings is where a RUNNING dry run is observed
+      #   *-full : an uninterrupted control migration (fast)
+      #   *-race : the cancel-race gate, small and fast
+      MOCK_REPOS: "dtfmig-int:24,dtfmig-drya:6,dtfmig-dryb:6,dtfmig-full:6,dtfmig-race:2"
+      # Slow to LIST (the steering knob): the interrupt job, so a resumed run
+      # can be re-paused while it waits for its first page; and both dry-run
+      # repositories, so a RUNNING dry run can be observed between them.
+      # The control and race repositories stay fast.
+      MOCK_SLOW_REPOS: "dtfmig-int,dtfmig-drya,dtfmig-dryb"
+      MOCK_LIST_DELAY_MS: "9000"
+      MOCK_FILE_BYTES: "512"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/migration-progress-monotonic/fixtures/mock_artifactory.py:/app/mock_artifactory.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockartifactory:
+        ipv4_address: 172.16.${DTF_SLOT}.60
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-artifactory:
+        condition: service_healthy
+    environment:
+      # Narrow, explicit allowlist for the mock's subnet only.
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+      # The mock speaks http://; without this the Artifactory client is built
+      # `https_only` and every source call fails at the transport layer.
+      ALLOW_HTTP_INTEGRATIONS: "1"
+    networks:
+      dtf: {}
+      mockartifactory: {}
+
+networks:
+  mockartifactory:
+    name: ak-dtf${DTF_SLOT}-mockartifactory
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

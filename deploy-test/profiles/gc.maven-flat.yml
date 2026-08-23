@@ -1,0 +1,23 @@
+# =============================================================================
+# profiles/gc.maven-flat.yml — opt into the row-less Maven flat-object GC sweep
+# =============================================================================
+# `MAVEN_FLAT_GC_ENABLED` (#3431) is the operator opt-in that lets
+# `StorageGcService::cleanup_orphan_maven_flat_objects` actually DELETE the
+# row-less Maven objects it identifies. Unset — the shipped default and the
+# base compose default — the sweep reports `maven_flat_objects_gated: N` and
+# deletes nothing, so a tier that needs to observe the sweep's delete decision
+# has to turn it on explicitly.
+#
+# This overlay changes NOTHING else: it is the single environment variable, so
+# a tier can compose it onto any storage profile. It is deliberately a profile
+# overlay rather than a manifest key so the base compose file keeps its
+# production-posture default and no other tier inherits the opt-in.
+#
+# The gate covers only the SCHEDULED/admin sweep. The repository-delete purge
+# collector (`collect_repo_maven_flat_keys`) is NOT gated by it — see
+# harness/tiers/maven-rollup-anchor-escape/manifest.
+# =============================================================================
+services:
+  backend:
+    environment:
+      MAVEN_FLAT_GC_ENABLED: "true"
