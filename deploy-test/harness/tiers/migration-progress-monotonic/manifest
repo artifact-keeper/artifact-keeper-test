@@ -1,0 +1,86 @@
+# DTF tier manifest: migration-progress-monotonic  (artifact-keeper#3510 / #3511)
+# Profile-set: filesystem / single + upstreams=mock-artifactory. The defect is
+# in the migration worker's bookkeeping, ahead of any storage backend, so the
+# storage dimension is irrelevant; a scripted source is what the tier needs.
+#
+# THE BUG (introduced by #3445, live on main until #3511)
+# `flush_job_counters` called the status-guarded `update_job_totals` and then
+# the UNGUARDED `update_job_progress` — `WHERE id = $5` with an absolute
+# `SET completed_items = $1, ..., transferred_bytes = $4`. `process_job`
+# restarts its in-memory counters at zero on every entry while the job row's
+# do not, so the flush on the INTERRUPTION exit published a per-run numerator
+# over a cumulative one. A job that was paused, resumed and paused again
+# before the resumed run had re-listed anything had:
+#     completed_items    73 -> 0
+#     transferred_bytes  7300 -> 0
+# while `total_items` (guarded) held — republishing the exact `N/0 at 0%`
+# symptom #3445 set out to remove. `generate_report` reads
+# `total_bytes_transferred` off that row, so the job's report then claimed a
+# pile of artifacts migrated and ZERO bytes transferred.
+#
+# #3511 also closed two neighbours, and this tier covers both:
+#   * a RUNNING dry run reported `0/N` at 0% for its whole life. The three arms
+#     that `continue` before the per-artifact progress write — a dry run, an
+#     item an earlier pass finished, a duplicate already present — published no
+#     numerator at all, so such a job only ever showed a denominator until the
+#     final row landed. The fix publishes at the end of every page.
+#   * `process_job` opened with an UNGUARDED `update_job_status(Running)`.
+#     `start_migration` sets `running` and spawns a detached task, so an
+#     operator cancel can land in between; the unguarded flip undid it and the
+#     guarded `finalize_job_status` then saw a `running` row and stamped the
+#     cancelled job `completed` — having migrated every artifact of a migration
+#     the operator had cancelled. The fix claims with `claim_job_running`.
+#
+# WHY A SCRIPTED SOURCE, AND WHY IT HAS A LATENCY KNOB
+# `process_job` only checks for a pause BETWEEN artifacts, i.e. after a page
+# has been listed. The moment this tier has to hit — a resumed run interrupted
+# BEFORE it has re-accounted for a single item — therefore lives inside the
+# first AQL call of the resumed run. `upstreams.mock-artifactory` serves an
+# Artifactory-shaped source whose listing latency is configuration, so the
+# oracle pauses into a nine-second window instead of racing a sub-millisecond
+# loop. The same knob gives the dry-run gate a window in which a running job
+# can be observed at all. Without it this tier would be flaky in BOTH
+# directions, which is worse than not having it.
+#
+# The cancel-race gate does NOT race the HTTP requests: measured on the
+# vulnerable parent, the window between `start_migration`'s `UPDATE ... running`
+# and the worker's own flip is under 3 ms, and a cancel fired at any offset
+# from 0 to 40 ms landed either side of it and never inside — 0 hits in 22
+# attempts. The oracle instead takes a `SELECT ... FOR UPDATE` row lock on the
+# job and lets Postgres's lock queue order the three statements exactly
+# (start, then cancel, then the worker's claim). That turns a ~40%-flaky
+# reproduction into a deterministic one, in both directions.
+#
+# Oracle gates (discriminating, RELEASE_GATE=1):
+#   (BOUNDARY) pause -> resume -> pause again while the resumed run is still
+#              listing: neither `completed_items` nor `transferred_bytes` may
+#              go backwards, sampled across the whole window rather than once.
+#              The job's report must then be self-consistent — a report that
+#              counts migrated artifacts may not also claim zero bytes moved.
+#              A cancel issued between the start and the worker's claim must
+#              leave the job `cancelled`, never `completed`, and must transfer
+#              nothing; run as several independent rounds.
+#   (FIX)      a RUNNING dry run reports a real numerator, not just a
+#              denominator. Also RED on the parent, but for the opposite
+#              reason to the boundary gates: there the fix stops a write, here
+#              it adds one (the end-of-page publish).
+#   (CONTROL)  an ordinary uninterrupted migration still ends at exactly 100%
+#              with every artifact present in the destination, its counters and
+#              its report agreeing, and a dry run still finishes at N/N. These
+#              hold on BOTH images -- they are what stops a fix that simply
+#              refuses to write the numerator from passing this tier.
+#
+# ⚠️ KNOWN, DELIBERATELY NOT ASSERTED — artifact-keeper#3512. After a resume,
+# the report's `total_bytes_transferred` is per-RUN while the item counts are
+# cumulative, so a job resumed and then run to completion UNDER-reports its
+# bytes. That is a separate open issue, not the regression #3511 fixed, and
+# this tier must not fail on it: the report gate asserts only the internal
+# consistency #3510 broke (counted artifacts implies non-zero bytes, and the
+# figure never falls below what the row already carried), never an exact total.
+#
+# RATE_LIMIT_ENABLED=false: the oracle polls job state once a second for
+# several minutes across five jobs; the base default (ON) would throttle the
+# poll and turn a progress sample into a 429.
+PROFILES="storage.filesystem upstreams.mock-artifactory"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
