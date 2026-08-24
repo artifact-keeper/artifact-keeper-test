@@ -76,3 +76,89 @@ jobs:
           name: junit-formats-${{ matrix.batch.name }}
           path: /tmp/test-results/*.xml
           if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Non-blocking audit lane (formats-autodiscovery issue).
+  #
+  # tests/formats was the only suite in this repo without run-suite.sh
+  # glob discovery -- every script had to be hand-added to a batch's
+  # `scripts:` field above, and 59 of 120 never were, including a
+  # regression gate for artifact-keeper#2477 that has never executed.
+  #
+  # This job runs everything the `test` job's matrix does NOT name, via
+  # real discovery (scripts/run-suite.sh --suite formats --exclude ...),
+  # so a newly-added script always runs SOMEWHERE automatically instead of
+  # silently nowhere. It is deliberately non-blocking: these scripts have
+  # never been vetted in CI, some may need a toolchain this job does not
+  # install, some may be stale. continue-on-error means a failure here
+  # never fails this reusable workflow or a caller of it. The JUnit
+  # artifact is the promotion signal: once a script is seen passing here
+  # repeatedly, move its name into a `scripts:` field above and it
+  # automatically drops out of this lane (see the exclude computation
+  # below) and becomes blocking.
+  # -------------------------------------------------------------------
+  audit:
+    runs-on: ak-e2e-runners
+    if: inputs.batch == 'all' || inputs.batch == 'audit'
+    continue-on-error: true
+    # 58 not-yet-blocking scripts today, each capped at TEST_TIMEOUT (120s
+    # default) run serially by run-suite.sh. 90m is headroom for that
+    # worst case, not the expected runtime -- most scripts here either
+    # pass or fail (missing tool, auth error) in well under their timeout.
+    timeout-minutes: 90
+    env:
+      BASE_URL: ${{ inputs.backend_url }}
+      RUN_ID: ${{ inputs.run_id }}
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      # Same as the `test` job: a script that silently skips itself should
+      # show up as a failure in the audit report, not a quiet pass.
+      RELEASE_GATE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run formats audit lane
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          # Exclude = this file's own blocking batches (the `scripts:`
+          # fields above), re-read from the workflow file itself, plus
+          # anything explicitly acknowledged in
+          # tests/formats/audit-excluded.txt. Computed at run time from
+          # the same source the matrix above is hand-written from, so this
+          # lane cannot drift out of sync with what's blocking: a script
+          # is always in exactly one of blocking, audited, or excluded.
+          # scripts/check-formats-registration.sh independently re-derives
+          # and verifies this same split.
+          EXCLUDE_ARG=$(
+            { grep 'scripts:' .github/workflows/format-tests.yml | grep -oE 'test-[a-zA-Z0-9.-]+\.sh';
+              [ -f tests/formats/audit-excluded.txt ] && grep -vE '^\s*#|^\s*$' tests/formats/audit-excluded.txt; } \
+            | sort -u | paste -sd, -
+          )
+          ./scripts/run-suite.sh --suite formats --exclude "$EXCLUDE_ARG" --run-id "${RUN_ID}"
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-formats-audit
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Static registration check (formats-autodiscovery issue).
+  #
+  # Cluster-free and independent of the two jobs above: fails fast if a
+  # batch above names a script that no longer exists (stale/typo'd
+  # reference), or if a script is both blocking and listed in
+  # audit-excluded.txt. See scripts/check-formats-registration.sh for what
+  # it does and does not catch.
+  # -------------------------------------------------------------------
+  registration-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check formats registration
+        run: |
+          chmod +x scripts/check-formats-registration.sh
+          ./scripts/check-formats-registration.sh .github/workflows/format-tests.yml
