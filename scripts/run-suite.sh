@@ -64,7 +64,18 @@ if [ ! -d "$SUITE_DIR" ]; then
   exit 1
 fi
 
-# Glob for test-*.sh in the suite directory and all subdirectories
+# Glob for test-*.sh in the suite directory and all subdirectories.
+#
+# The recursion is deliberate and load-bearing: tests/resilience is organised
+# into crash/ data/ network/ restart/ storage/ subdirectories. It is also a
+# trap, because a script discovered this way is judged on its EXIT STATUS
+# alone -- nothing here requires it to source tests/lib/common.sh, so a script
+# that brings its own framework silently opts out of JUnit output and of the
+# RELEASE_GATE skip semantics, and reports PASS if its own fail() never sets
+# an exit code. tests/security/redteam held 15 such scripts inside the
+# blocking security-tests job for five months. See
+# tests/security/README-redteam-port.md, and the "discovery contract" case in
+# tests/lib/selftest-release-gate-contract.sh that now pins it.
 mapfile -t ALL_SCRIPTS < <(find "$SUITE_DIR" -name 'test-*.sh' -type f | sort)
 
 if [ ${#ALL_SCRIPTS[@]} -eq 0 ]; then

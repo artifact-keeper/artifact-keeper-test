@@ -687,6 +687,13 @@ format_get_with_retry() {
 # All curl calls use --max-time to prevent indefinite hangs in CI.
 CURL_TIMEOUT="--max-time 60 --connect-timeout 10"
 
+# Array form of the same flags. CURL_TIMEOUT is a bare word-split string, so
+# every call site that uses it reports SC2086 under shellcheck. New scripts
+# should expand "${CURL_TIMEOUT_ARGS[@]}" instead and stay clean at default
+# severity. The string form is kept because ~150 existing call sites use it.
+# shellcheck disable=SC2034 # consumed by tests that source this file
+CURL_TIMEOUT_ARGS=(--max-time 60 --connect-timeout 10)
+
 api_get() {
   local path="$1"; shift
   curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"

@@ -108,9 +108,60 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Pairs inherited from tests/security/redteam/test-05-default-credentials.sh,
+# which was removed because it could not fail (it sourced the red-team lib and
+# ended in `exit 0`). Its non-login probes -- Meilisearch's dev key, direct
+# PostgreSQL with registry:registry, and the peer key change-me-in-production
+# -- are not carried over: the first two dialled docker-compose service names
+# that do not resolve in the gate namespace and had been permanently inert,
+# and the peer key is already covered by tests/security/test-mesh-peer-auth.sh
+# ("Peer registration with wrong API key rejected", same endpoint).
+# ---------------------------------------------------------------------------
+
+begin_test "Reject admin:admin123"
+status=$(try_login "admin" "admin123")
+if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+  pass
+elif [ "$status" = "200" ]; then
+  fail "default credentials admin:admin123 were accepted (HTTP 200)"
+else
+  pass
+fi
+
+begin_test "Reject admin:password123"
+status=$(try_login "admin" "password123")
+if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+  pass
+elif [ "$status" = "200" ]; then
+  fail "default credentials admin:password123 were accepted (HTTP 200)"
+else
+  pass
+fi
+
+begin_test "Reject admin:changeme123"
+status=$(try_login "admin" "changeme123")
+if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+  pass
+elif [ "$status" = "200" ]; then
+  fail "default credentials admin:changeme123 were accepted (HTTP 200)"
+else
+  pass
+fi
+
+begin_test "Reject root:password"
+status=$(try_login "root" "password")
+if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+  pass
+elif [ "$status" = "200" ]; then
+  fail "default credentials root:password were accepted (HTTP 200)"
+else
+  pass
+fi
+
+# ---------------------------------------------------------------------------
 # Verify that the actual test credentials still work
 #
-# Six wrong-credential attempts above can trip the per-IP auth rate limiter
+# Ten wrong-credential attempts above can trip the per-IP auth rate limiter
 # (429). admin is in RATE_LIMIT_EXEMPT_USERNAMES for username-bucket checks,
 # but the IP bucket counts every failed login regardless of username. So the
 # positive assertion below has to tolerate a transient 429 by waiting for

@@ -13,10 +13,10 @@
 #   - read cloud metadata (http://169.254.169.254/latest/meta-data/iam/...)
 #   - reach internal admin surfaces
 #
-# This is the SAME defence class as webhook SSRF (PR #165 / red-team
-# test #13), but on a different code path (remote-repo creation, not
-# webhook URL). tests/security/redteam/test-13-ssrf-prevention.sh
-# exercises only the webhook path; this script extends the validation
+# This is the SAME defence class as webhook SSRF (PR #165), but on a
+# different code path (remote-repo creation, not webhook URL).
+# tests/security/test-ssrf-prevention.sh covers the webhook path and a
+# generic-format remote repo; this script extends the validation
 # expectation to remote-repo upstream_url for OCI/docker specifically,
 # which is the format the 1.7 sub-task calls out.
 #

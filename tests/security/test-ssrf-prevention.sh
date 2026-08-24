@@ -30,7 +30,8 @@ test_webhook_ssrf() {
   local description="$1"
   local url="$2"
   local allowlist_exemptable="${3:-0}"
-  local webhook_name="sec-ssrf-wh-${RUN_ID}-$(echo "$description" | tr ' /' '-' | head -c 20)"
+  local webhook_name
+  webhook_name="sec-ssrf-wh-${RUN_ID}-$(echo "$description" | tr ' /' '-' | head -c 20)"
 
   local status
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
@@ -71,7 +72,8 @@ test_webhook_ssrf() {
 test_remote_repo_ssrf() {
   local description="$1"
   local url="$2"
-  local repo_key="sec-ssrf-rr-${RUN_ID}-$(echo "$description" | tr ' /' '-' | head -c 15)"
+  local repo_key
+  repo_key="sec-ssrf-rr-${RUN_ID}-$(echo "$description" | tr ' /' '-' | head -c 15)"
 
   local status
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
@@ -123,6 +125,31 @@ test_webhook_ssrf "private-172" "http://172.16.0.1/callback" 1
 
 begin_test "Webhook SSRF: private 192.168.x range"
 test_webhook_ssrf "private-192" "http://192.168.1.1/callback" 1
+
+# ---------------------------------------------------------------------------
+# Vectors inherited from tests/security/redteam/test-13-ssrf-prevention.sh,
+# which was removed because it could not fail (it sourced the red-team lib and
+# ended in `exit 0`). Its webhook coverage was otherwise a subset of the cases
+# above; these four are the ones it exercised and this suite did not.
+#
+# The two metadata hostnames matter separately from 169.254.169.254 because a
+# guard that only blocks literal link-local IPs is bypassed by a DNS name that
+# resolves to one. The container service names matter because the gate deploy
+# and every compose stack resolve them, so a name-based guard that only knows
+# about "localhost" leaves the neighbouring services reachable.
+# ---------------------------------------------------------------------------
+
+begin_test "Webhook SSRF: GCP metadata hostname"
+test_webhook_ssrf "gcp-metadata-host" "http://metadata.google.internal/computeMetadata/v1/"
+
+begin_test "Webhook SSRF: Azure metadata hostname"
+test_webhook_ssrf "azure-metadata-host" "http://metadata.azure.com/metadata/instance"
+
+begin_test "Webhook SSRF: in-cluster database service name"
+test_webhook_ssrf "svc-postgres" "http://postgres:5432/" 1
+
+begin_test "Webhook SSRF: in-cluster cache service name"
+test_webhook_ssrf "svc-redis" "http://redis:6379/" 1
 
 # ---------------------------------------------------------------------------
 # Remote repo upstream SSRF tests

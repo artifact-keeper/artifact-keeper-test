@@ -362,6 +362,70 @@ run_case "no gate + non-exempt reason -> graceful skip, exit 0" 0 "${WORK}/suite
   "SKIP_SUITE: upstream unreachable" "FAIL:" \
   SELFTEST_SKIP_REASON="upstream unreachable"
 
+echo ""
+echo "6. discovery contract: every discovered test sources common.sh"
+
+# Why this lives here (artifact-keeper-test#388)
+# ----------------------------------------------------
+# Everything above pins the SEMANTICS of common.sh. This case pins the
+# precondition those semantics depend on: that a script run-suite.sh discovers
+# is actually using them.
+#
+# scripts/run-suite.sh discovers with `find <suite-dir> -name 'test-*.sh'`,
+# which is recursive, and judges each script purely on its exit status. A
+# script that brings its own framework therefore inherits none of the
+# contract -- no JUnit XML, no RELEASE_GATE skip semantics, and, if its own
+# fail() forgets to set an exit code, no way to fail at all.
+#
+# That is not hypothetical. tests/security/redteam/ held 15 such scripts for
+# five months inside the BLOCKING security-tests job. Their fail() incremented
+# a counter nothing read and all 15 ended in `exit 0`, so run-suite.sh
+# recorded PASS unconditionally on every release. See
+# tests/security/README-redteam-port.md.
+#
+# The check is a plain grep over the tree rather than a constructed fixture,
+# because the failure mode is a file existing, not a helper misbehaving.
+
+# Scripts that legitimately do not source common.sh. Keep this list at zero
+# entries if you can; every row is a script the contract does not cover.
+#   tests/release-gate/test-scan-completion-format-matrix.sh
+#     A local developer driver, not a run-suite suite: it shells out to the
+#     gate primitive per format and already exits non-zero on any failure.
+#     tests/release-gate is not passed to run-suite.sh by any workflow.
+CONTRACT_EXEMPT=(
+  "tests/release-gate/test-scan-completion-format-matrix.sh"
+)
+
+REPO_ROOT="$(cd "${SELFTEST_DIR}/../.." && pwd)"
+offenders=""
+while IFS= read -r script; do
+  rel="${script#"${REPO_ROOT}"/}"
+  exempt=false
+  for allowed in "${CONTRACT_EXEMPT[@]}"; do
+    if [ "$rel" = "$allowed" ]; then
+      exempt=true
+      break
+    fi
+  done
+  $exempt && continue
+  if ! grep -q 'lib/common\.sh' "$script"; then
+    offenders="${offenders}  ${rel}"$'\n'
+  fi
+done < <(find "${REPO_ROOT}/tests" -name 'test-*.sh' -type f | sort)
+
+CASES_RUN=$(( CASES_RUN + 1 ))
+if [ -z "$offenders" ]; then
+  echo "  PASS: every discovered test-*.sh sources tests/lib/common.sh"
+else
+  CASES_FAILED=$(( CASES_FAILED + 1 ))
+  echo "  FAIL: these test scripts do not source tests/lib/common.sh, so"
+  echo "        run-suite.sh judges them on their own exit code alone and they"
+  echo "        emit no JUnit XML and honour no RELEASE_GATE semantics:"
+  printf '%s' "$offenders"
+  echo "        Port them onto common.sh, or add a justified row to"
+  echo "        CONTRACT_EXEMPT in $(basename "${BASH_SOURCE[0]}")."
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

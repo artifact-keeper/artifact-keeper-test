@@ -19,22 +19,32 @@ name: Harness Contract Self-Test
 # constructs each failure and asserts the exit code, so removing the retry,
 # the infra_fail routing, or the end_suite coverage floor turns this red.
 #
+# The self-test also pins the DISCOVERY contract: every test-*.sh under tests/
+# must source tests/lib/common.sh. scripts/run-suite.sh globs recursively and
+# judges a script on its exit status alone, so a script that brings its own
+# framework inherits none of the semantics pinned above -- no JUnit XML, no
+# RELEASE_GATE skip handling, and no exit code at all if its own fail() forgets
+# to set one. tests/security/redteam/ was exactly that for five months inside
+# the blocking security-tests job (tests/security/README-redteam-port.md).
+# That case is a tree-wide grep, so this workflow triggers on any change under
+# tests/ rather than only on the lib files.
+#
 # Runs on a plain hosted runner: the fixtures are a closed TCP port and a
 # small python /health stub, so no cluster and no deployed candidate needed.
 
 on:
   pull_request:
     paths:
-      - 'tests/lib/common.sh'
-      - 'tests/lib/feature-flags.sh'
-      - 'tests/lib/selftest-release-gate-contract.sh'
+      # Tree-wide: the discovery contract is a grep over every test script, so
+      # adding one anywhere has to re-run this job.
+      - 'tests/**'
+      - 'scripts/run-suite.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
     paths:
-      - 'tests/lib/common.sh'
-      - 'tests/lib/feature-flags.sh'
-      - 'tests/lib/selftest-release-gate-contract.sh'
+      - 'tests/**'
+      - 'scripts/run-suite.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
