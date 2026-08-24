@@ -58,7 +58,7 @@ NUM_PROBES=${#JUNK_PATHS[@]}
 
 # Fetch the Prometheus metrics text. The backend serves metrics only at
 # /api/v1/admin/metrics behind admin auth; the old unauthenticated /metrics
-# path was removed (see tests/security/redteam/test-15-metrics-auth.sh). We
+# path was removed (see tests/security/test-metrics-auth.sh). We
 # reuse the suite's admin token via auth_header() (auth_admin ran above).
 fetch_metrics() {
   curl -sf --max-time 15 -H "$(auth_header)" \
