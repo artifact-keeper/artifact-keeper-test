@@ -1,0 +1,44 @@
+# DTF tier manifest: token-expiry-policy  (#3460, 1.9.0 feature)
+# Profile-set: filesystem / single (the walking-skeleton topology; the policy
+# is storage-independent).
+#
+# The feature (#3460): an admin-configurable API token expiration policy.
+# When enabled, newly-minted API tokens must expire: an omitted
+# `expires_in_days` gets the configured default; an out-of-range value is
+# rejected with the permitted range named. Enforcement is MINT-TIME ONLY at
+# the single choke-point every token-creating handler funnels through —
+# tokens that already exist are never retroactively expired (the upgrade
+# story), and the admin endpoint surfaces the live never-expiring inventory
+# instead. Service-account (CI) tokens are exempt unless the admin opts them
+# in. The /v2/token exchange additionally caps the bearer it issues at the
+# presenting credential's remaining lifetime so re-exchanging bearers cannot
+# renew access past the underlying token's expiry.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (A) ENFORCEMENT  PUT /api/v1/admin/settings/token-policy enables a
+#       1..30-day/default-7 policy (404 on a pre-#3460 baseline = RED). Then
+#       an omitted-expiry mint -> 200 with a NON-NULL expires_at (DB-asserted)
+#       + policy_applied=true, and an explicit 90-day mint -> 400 naming the
+#       range. Baseline: both mint as never-expiring (RED).
+#   (B) EXEMPTION    a service-account token minted with no expiry under the
+#       enforced policy -> expires_at IS NULL (CI credentials must not gain a
+#       scheduled outage); after apply_to_service_accounts=true the same mint
+#       IS defaulted. Proves the exemption is a deliberate toggle, not a gap.
+#   (C) MIGRATION    the never-expiring token minted BEFORE the policy was
+#       enabled still authenticates under full enforcement, and the GET
+#       endpoint surfaces it in the non-expiring inventory. This is the
+#       existing-deployment upgrade guarantee.
+#   (D) EXCHANGE CAP a token with ~5 minutes of life exchanged at /v2/token
+#       (docker-login Basic slot) yields expires_in <= 300; a far-expiry token
+#       yields the full base TTL (the cap only narrows). Baseline: full TTL
+#       for both (RED).
+#   (E) DISABLE      require_expiration=false restores the historical
+#       behaviour: an omitted-expiry mint is never-expiring again.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives an admin login plus many mints
+# and /v2/token exchanges through one admin; the base default (ON) would
+# throttle them. A tier that must disable a shipped control does so
+# explicitly (design 2.2, same as the vvc3-scoped-admin / sso tiers).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
