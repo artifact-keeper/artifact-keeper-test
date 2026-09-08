@@ -91,6 +91,30 @@ fetch_proxied() {
     "${BASE_URL}/pypi/${REMOTE_KEY}/simple/${PKG_NAME}/" 2>/dev/null
 }
 
+# Does a simple-index body list this version?
+#
+# Match the whole sdist filename, as a FIXED string. Two reasons, both
+# of which bit the 1.9.0 release gate:
+#
+#   1. `grep "2.0.0"` is a basic regex, so each `.` matches any
+#      character. Every anchor a PyPI simple index emits carries a
+#      64-char `#sha256=` fragment, and a random hex digest contains a
+#      "2<any>0<any>0" substring about 1.5% of the time (for example
+#      ...49290405... matches "2.0.0"). The prime-cache assertion below
+#      is a NEGATIVE match, so that false positive fails a suite whose
+#      index physically cannot contain v2 yet: v2 is not published to
+#      the upstream until the following step.
+#   2. A bare version string also matches inside an unrelated version
+#      (v1.0.0 would match "11.0.0") and inside the RUN_ID digits.
+#
+# The filename is what the index is actually asserting about, so match
+# that and nothing else.
+index_has_version() {
+  local body="$1"
+  local version="$2"
+  printf '%s' "$body" | grep -qF -- "${PKG_NAME}-${version}.tar.gz"
+}
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
@@ -112,7 +136,8 @@ fi
 deadline=$(( $(date +%s) + 10 ))
 until curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
         "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null \
-      | grep -q "${PKG_V1}" || [ "$(date +%s)" -ge "$deadline" ]; do
+      | grep -qF -- "${PKG_NAME}-${PKG_V1}.tar.gz" \
+      || [ "$(date +%s)" -ge "$deadline" ]; do
   sleep 0.2
 done
 
@@ -132,7 +157,7 @@ api_put "/api/v1/repositories/${REMOTE_KEY}/cache-ttl" \
 
 begin_test "Cycle 1: prime cache with v${PKG_V1}-only index"
 PRIMED=$(fetch_proxied) || PRIMED=""
-if echo "$PRIMED" | grep -q "${PKG_V1}" && ! echo "$PRIMED" | grep -q "${PKG_V2}"; then
+if index_has_version "$PRIMED" "$PKG_V1" && ! index_has_version "$PRIMED" "$PKG_V2"; then
   pass
 else
   fail "expected primed index to contain v1 and not v2; got: ${PRIMED:0:200}"
@@ -149,7 +174,7 @@ sleep "$WAIT_SECS"
 
 begin_test "Cycle 1: post-TTL fetch sees v${PKG_V2} (cache evicted, upstream re-fetched)"
 POST1=$(fetch_proxied) || POST1=""
-if echo "$POST1" | grep -q "${PKG_V2}"; then
+if index_has_version "$POST1" "$PKG_V2"; then
   pass
 else
   fail "post-TTL fetch missing v2 (cache eviction did not fire)"
@@ -173,7 +198,7 @@ sleep "$WAIT_SECS"
 
 begin_test "Cycle 2: post-TTL fetch after re-cache sees v${PKG_V3}"
 POST2=$(fetch_proxied) || POST2=""
-if echo "$POST2" | grep -q "${PKG_V3}"; then
+if index_has_version "$POST2" "$PKG_V3"; then
   pass
 else
   fail "second post-TTL fetch missing v3; TTL state may be stuck after first eviction"
@@ -181,7 +206,7 @@ fi
 
 # Sanity: v1 and v2 should still appear too (upstream is additive).
 begin_test "Cycle 2: upstream index also still contains v1 and v2"
-if echo "$POST2" | grep -q "${PKG_V1}" && echo "$POST2" | grep -q "${PKG_V2}"; then
+if index_has_version "$POST2" "$PKG_V1" && index_has_version "$POST2" "$PKG_V2"; then
   pass
 else
   fail "second post-TTL fetch lost prior versions; got: ${POST2:0:300}"
