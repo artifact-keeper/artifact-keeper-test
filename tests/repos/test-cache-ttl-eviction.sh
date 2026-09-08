@@ -123,6 +123,24 @@ fetch_proxied_index() {
     "${BASE_URL}/pypi/${REMOTE_KEY}/simple/${PKG_NAME}/" 2>/dev/null
 }
 
+# Does a simple-index body list this version?
+#
+# Match the whole sdist filename, as a FIXED string. `grep -q "2.0.0"`
+# is a basic regex, so each `.` matches any character, and every anchor
+# a PyPI simple index emits carries a 64-char `#sha256=` fragment. A
+# random hex digest contains a "2<any>0<any>0" substring about 1.5% of
+# the time (for example ...49290405...), which is exactly how the 1.9.0
+# release gate red-flagged a correct index in ttl-expiry-refetch (#391).
+# The negative match below is the dangerous one: a collision there fails
+# a passing suite and vetoes the release. Matching the filename removes
+# both the wildcards and the chance of a version colliding with another
+# version's digits or with the RUN_ID.
+index_has_version() {
+  local body="$1"
+  local version="$2"
+  printf '%s' "$body" | grep -qF -- "${PKG_NAME}-${version}.tar.gz"
+}
+
 # -------------------------------------------------------------------------
 # Setup
 # -------------------------------------------------------------------------
@@ -146,7 +164,8 @@ fi
 deadline=$(( $(date +%s) + 10 ))
 until curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
         "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null \
-      | grep -q "${PKG_V1}" || [ "$(date +%s)" -ge "$deadline" ]; do
+      | grep -qF -- "${PKG_NAME}-${PKG_V1}.tar.gz" \
+      || [ "$(date +%s)" -ge "$deadline" ]; do
   sleep 0.2
 done
 
@@ -154,7 +173,7 @@ begin_test "Upstream simple index lists v${PKG_V1}"
 UPSTREAM_INDEX_V1=$(curl -sf $CURL_TIMEOUT \
   -H "$(format_auth_header)" \
   "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null) || UPSTREAM_INDEX_V1=""
-if echo "$UPSTREAM_INDEX_V1" | grep -q "${PKG_V1}"; then
+if index_has_version "$UPSTREAM_INDEX_V1" "$PKG_V1"; then
   pass
 else
   skip_suite "upstream did not surface v${PKG_V1} in simple index within 10s; cannot run TTL eviction test"
@@ -187,7 +206,7 @@ fi
 
 begin_test "Prime cache: fetch /pypi/R/simple/<pkg>/ (caches v${PKG_V1})"
 PRIMED_INDEX=$(fetch_proxied_index) || PRIMED_INDEX=""
-if [ -n "$PRIMED_INDEX" ] && echo "$PRIMED_INDEX" | grep -q "${PKG_V1}"; then
+if [ -n "$PRIMED_INDEX" ] && index_has_version "$PRIMED_INDEX" "$PKG_V1"; then
   pass
 else
   fail "expected primed index to contain v${PKG_V1}, got: ${PRIMED_INDEX:0:200}"
@@ -214,7 +233,8 @@ fi
 deadline=$(( $(date +%s) + 10 ))
 until curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
         "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null \
-      | grep -q "${PKG_V2}" || [ "$(date +%s)" -ge "$deadline" ]; do
+      | grep -qF -- "${PKG_NAME}-${PKG_V2}.tar.gz" \
+      || [ "$(date +%s)" -ge "$deadline" ]; do
   sleep 0.2
 done
 
@@ -222,8 +242,8 @@ begin_test "Upstream simple index now lists both v${PKG_V1} and v${PKG_V2}"
 UPSTREAM_INDEX_V2=$(curl -sf $CURL_TIMEOUT \
   -H "$(format_auth_header)" \
   "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null) || UPSTREAM_INDEX_V2=""
-if echo "$UPSTREAM_INDEX_V2" | grep -q "${PKG_V1}" \
-   && echo "$UPSTREAM_INDEX_V2" | grep -q "${PKG_V2}"; then
+if index_has_version "$UPSTREAM_INDEX_V2" "$PKG_V1" \
+   && index_has_version "$UPSTREAM_INDEX_V2" "$PKG_V2"; then
   pass
 else
   fail "expected upstream to list both versions, got: ${UPSTREAM_INDEX_V2:0:200}"
@@ -256,9 +276,9 @@ if require_feature "proxy_ttl_eviction_correctness"; then
     WITHIN_INDEX=$(fetch_proxied_index) || WITHIN_INDEX=""
     if [ -z "$WITHIN_INDEX" ]; then
       fail "within-TTL fetch returned empty body"
-    elif echo "$WITHIN_INDEX" | grep -q "${PKG_V2}"; then
+    elif index_has_version "$WITHIN_INDEX" "$PKG_V2"; then
       fail "TTL not honored: within-TTL fetch already shows v${PKG_V2} (proxy refetched upstream before TTL expired)"
-    elif echo "$WITHIN_INDEX" | grep -q "${PKG_V1}"; then
+    elif index_has_version "$WITHIN_INDEX" "$PKG_V1"; then
       pass
     else
       fail "within-TTL fetch returned unexpected body: ${WITHIN_INDEX:0:200}"
@@ -278,7 +298,7 @@ begin_test "Post-TTL fetch (waited ${WAIT_SECS}s) reflects upstream v${PKG_V2}"
 POST_INDEX=$(fetch_proxied_index) || POST_INDEX=""
 if [ -z "$POST_INDEX" ]; then
   fail "post-TTL fetch returned empty body"
-elif echo "$POST_INDEX" | grep -q "${PKG_V2}"; then
+elif index_has_version "$POST_INDEX" "$PKG_V2"; then
   pass
 else
   fail "TTL eviction did not occur: post-TTL index still missing v${PKG_V2} (got: ${POST_INDEX:0:300})"
