@@ -11,13 +11,19 @@
 # Validation rules from the backend:
 #   validate_cache_ttl(): 1 <= secs <= 2_592_000 (30 days). Out-of-range
 #   values yield AppError::Validation -> HTTP 400.
-#   Default when no row exists in repository_config: 86400 (24 hours).
+#   Default when no row exists in repository_config: 300 (5 minutes).
 #
-#   The default was 3600 (1 hour) before artifact-keeper#911 / PR #932.
-#   That PR unified the GET endpoint's default with the proxy's actual
-#   DEFAULT_CACHE_TTL_SECS constant (86400 in proxy_service.rs); the GET
-#   was returning 3600 while the proxy applied 86400, a 24x discrepancy
-#   that misled operators reading the GET response.
+#   The default was 3600 (1 hour) before artifact-keeper#911 / PR #932,
+#   which unified the GET endpoint's default with the proxy constant of
+#   the day (DEFAULT_CACHE_TTL_SECS, 86400). artifact-keeper#3706 / PR
+#   #3721 then found that constant had been dead since #1611 split cache
+#   policy by path class: a repository with no stored override actually
+#   gets cache_classifier::MUTABLE_DEFAULT_TTL_SECS (300) on mutable
+#   paths (tag manifests, maven-metadata.xml, the PyPI simple index, npm
+#   packuments, the Cargo index), so the GET was reporting 86400 for a
+#   TTL the proxy never applied. The read side now reports 300; cache
+#   behaviour is unchanged, and a stored override is still reported and
+#   applied verbatim.
 #
 # -------------------------------------------------------------------------
 # COVERAGE GAP (documented per Epic 6 acceptance):
@@ -33,7 +39,7 @@
 #
 #   1. PUT a valid TTL -> 200 with the value echoed back.
 #   2. GET right after -> same value persisted.
-#   3. Default value when nothing was set (86400).
+#   3. Default value when nothing was set (300).
 #   4. Boundary validation (lower/upper limits and out-of-range -> 400).
 # -------------------------------------------------------------------------
 #
@@ -79,22 +85,25 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 6.3.a: GET on a never-set repo returns the documented default (86400).
+# 6.3.a: GET on a never-set repo returns the documented default (300).
 #
-# This default unified with the proxy's DEFAULT_CACHE_TTL_SECS constant
-# in artifact-keeper PR #932 (issue #911). Before that fix the GET
-# returned 3600 while the proxy used 86400, a 24x divergence that
-# misled operators. Backported to release/1.1.x via #960.
+# The reported default tracks whatever the proxy actually applies when
+# no override is stored. artifact-keeper PR #932 (issue #911) first
+# unified it with DEFAULT_CACHE_TTL_SECS (86400); artifact-keeper PR
+# #3721 (issue #3706) moved it to cache_classifier's
+# MUTABLE_DEFAULT_TTL_SECS (300), the value mutable paths get on a
+# repository with no override. Asserting 86400 here would re-pin the
+# reporting lie that #3721 removed.
 # -------------------------------------------------------------------------
 
-begin_test "GET default cache-ttl is 86400"
+begin_test "GET default cache-ttl is 300"
 if RESP=$(api_get "/api/v1/repositories/${DEFAULT_KEY}/cache-ttl" 2>/dev/null); then
   ttl=$(echo "$RESP" | jq -r '.cache_ttl_seconds // empty')
   rkey=$(echo "$RESP" | jq -r '.repository_key // empty')
-  if [ "$ttl" = "86400" ] && [ "$rkey" = "$DEFAULT_KEY" ]; then
+  if [ "$ttl" = "300" ] && [ "$rkey" = "$DEFAULT_KEY" ]; then
     pass
   else
-    fail "expected default ttl=86400 key=${DEFAULT_KEY}; got ttl='${ttl}' key='${rkey}'"
+    fail "expected default ttl=300 key=${DEFAULT_KEY}; got ttl='${ttl}' key='${rkey}'"
   fi
 else
   fail "GET cache-ttl failed for default-probe repo"
