@@ -130,6 +130,24 @@ fetch_proxied_index() {
     "${BASE_URL}/pypi/${REMOTE_KEY}/simple/${PKG_NAME}/" 2>/dev/null
 }
 
+# Does a simple-index body list this version?
+#
+# Match the whole sdist filename, as a FIXED string. `grep -q "2.0.0"`
+# is a basic regex, so each `.` matches any character, and every anchor
+# a PyPI simple index emits carries a 64-char `#sha256=` fragment. A
+# random hex digest contains a "2<any>0<any>0" substring about 1.5% of
+# the time (for example ...49290405...), which is exactly how the 1.9.0
+# release gate red-flagged a correct index in ttl-expiry-refetch (#391).
+# The negative match below is the dangerous one: a collision there fails
+# a passing suite and vetoes the release. Matching the filename removes
+# both the wildcards and the chance of a version colliding with another
+# version's digits or with the RUN_ID.
+index_has_version() {
+  local body="$1"
+  local version="$2"
+  printf '%s' "$body" | grep -qF -- "${PKG_NAME}-${version}.tar.gz"
+}
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
@@ -153,7 +171,8 @@ fi
 deadline=$(( $(date +%s) + 10 ))
 until curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
         "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null \
-      | grep -q "${PKG_V1}" || [ "$(date +%s)" -ge "$deadline" ]; do
+      | grep -qF -- "${PKG_NAME}-${PKG_V1}.tar.gz" \
+      || [ "$(date +%s)" -ge "$deadline" ]; do
   sleep 0.2
 done
 
@@ -175,7 +194,7 @@ api_put "/api/v1/repositories/${REMOTE_KEY}/cache-ttl" \
 
 begin_test "Prime cache: first fetch through R returns v${PKG_V1} index"
 PRIMED=$(fetch_proxied_index) || PRIMED=""
-if [ -n "$PRIMED" ] && echo "$PRIMED" | grep -q "${PKG_V1}"; then
+if [ -n "$PRIMED" ] && index_has_version "$PRIMED" "$PKG_V1"; then
   pass
 else
   fail "primed index missing v${PKG_V1}; cache-hit test cannot proceed (got: ${PRIMED:0:200})"
@@ -234,7 +253,8 @@ fi
 deadline=$(( $(date +%s) + 10 ))
 until curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
         "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null \
-      | grep -q "${PKG_V2}" || [ "$(date +%s)" -ge "$deadline" ]; do
+      | grep -qF -- "${PKG_NAME}-${PKG_V2}.tar.gz" \
+      || [ "$(date +%s)" -ge "$deadline" ]; do
   sleep 0.2
 done
 
@@ -252,9 +272,9 @@ if require_feature "proxy_ttl_eviction_correctness"; then
     BODY=$(fetch_proxied_index) || BODY=""
     if [ -z "$BODY" ]; then
       fail "within-TTL refetch returned empty"
-    elif echo "$BODY" | grep -q "${PKG_V2}"; then
+    elif index_has_version "$BODY" "$PKG_V2"; then
       fail "CACHE BYPASSED: within-TTL refetch already shows v${PKG_V2}; proxy refetched upstream every call (cache-hit contract violated)"
-    elif echo "$BODY" | grep -q "${PKG_V1}"; then
+    elif index_has_version "$BODY" "$PKG_V1"; then
       pass
     else
       fail "within-TTL refetch returned unexpected body: ${BODY:0:200}"
