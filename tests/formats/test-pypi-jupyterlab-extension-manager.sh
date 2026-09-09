@@ -37,6 +37,9 @@
 # the python batch). The replayed requests cover the same wire contract in
 # both, so the gate loses nothing that the manager would notice.
 #
+# AK_TEST_UPSTREAM_BASE_URL overrides the address the remote repository uses
+# to reach the hosted one (default BASE_URL); see the note at its definition.
+#
 # Requires: python3 (venv, zipfile), curl, jq, sha256sum
 
 source "$(dirname "$0")/../lib/common.sh"
@@ -81,6 +84,15 @@ REMOTE_BASE="${REMOTE_URL}/pypi"
 VIRTUAL_BASE="${VIRTUAL_URL}/pypi"
 
 TRUSTED_HOST=$(echo "$BASE_URL" | sed -E 's|https?://||' | cut -d: -f1)
+
+# The remote repository's upstream is the hosted repository on this same
+# backend, addressed by BASE_URL like the pullthrough suites do. The backend
+# resolves the upstream host and refuses loopback/private targets unless the
+# deploy relaxes that (helm/values-test*.yaml sets UPSTREAM_ALLOW_PRIVATE_IPS
+# / AK_SSRF_ALLOW_PRIVATE_CIDRS), and it refuses the literal "localhost" by
+# name. A local run against http://127.0.0.1:PORT can point the upstream at
+# an address the backend accepts with AK_TEST_UPSTREAM_BASE_URL.
+UPSTREAM_BASE_URL="${AK_TEST_UPSTREAM_BASE_URL:-$BASE_URL}"
 
 # The repositories are created is_public, and the manager sends whatever
 # base_url carries: a bare URL means anonymous requests. Every replay below
@@ -269,15 +281,24 @@ normalise_name() {
   printf '%s' "$1" | sed -E 's/[-_.]+/-/g' | tr '[:upper:]' '[:lower:]'
 }
 
-# check_release_entry JSON_FILE JQ_FILTER FILENAME SHA256 URL_PREFIX LABEL
+# check_release_entry JSON_FILE JQ_FILTER FILENAME SHA256 URL_PREFIX LABEL [DIGESTS]
 #
 # JQ_FILTER must select one file object from the legacy JSON document. Checks
 # the legacy keys, the exact filename, the sha256 digest against the bytes
 # we uploaded, packagetype, yanked, and that `url` points back into
 # URL_PREFIX (absolute URL or absolute path). On success sets RESOLVED_URL to
 # something curl can fetch.
+#
+# DIGESTS is "exact" (default) or "relay". "exact" pins the artifact-keeper#3783
+# scope decision for documents AK builds itself (hosted, virtual over hosted):
+# only the digest AK computed on ingest is emitted, so the key set is exactly
+# sha256; pypi.org's md5/blake2b_256 are neither stored nor synthesised. A
+# remote relays the upstream document, digests included (a pypi.org upstream
+# yields blake2b_256+md5+sha256), so its callers pass "relay" and only the
+# sha256 value is checked.
 check_release_entry() {
   local json="$1" filter="$2" filename="$3" sha="$4" url_prefix="$5" label="$6"
+  local digests="${7:-exact}"
   local entry
   entry=$(jq -c "$filter" "$json" 2>/dev/null) || entry=""
   if [ -z "$entry" ] || [ "$entry" = "null" ]; then
@@ -303,6 +324,14 @@ check_release_entry() {
   if [ "$got_sha" != "$sha" ]; then
     fail "${label}: digests.sha256 '${got_sha}' != sha256sum of uploaded wheel '${sha}'" "$entry"
     return 1
+  fi
+  if [ "$digests" = "exact" ]; then
+    local digest_keys
+    digest_keys=$(jq -r '.digests | keys | join(",")' <<<"$entry")
+    if [ "$digest_keys" != "sha256" ]; then
+      fail "${label}: digests keys are '${digest_keys}', expected exactly 'sha256'" "$entry"
+      return 1
+    fi
   fi
   if [ "$got_type" != "bdist_wheel" ]; then
     fail "${label}: packagetype '${got_type}' != 'bdist_wheel'" "$entry"
@@ -616,10 +645,10 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Create remote PyPI repository over the hosted one"
-if create_remote_repo "$REMOTE_KEY" "pypi" "$HOSTED_URL"; then
+if create_remote_repo "$REMOTE_KEY" "pypi" "${UPSTREAM_BASE_URL}/pypi/${HOSTED_KEY}"; then
   pass
 else
-  fail "could not create remote PyPI repository ${REMOTE_KEY}"
+  fail "could not create remote PyPI repository ${REMOTE_KEY} with upstream ${UPSTREAM_BASE_URL}/pypi/${HOSTED_KEY}"
 fi
 
 begin_test "Remote JSON route answers through the proxy with urls rewritten to the remote"
@@ -637,7 +666,7 @@ elif grep -qF -- "/pypi/${HOSTED_KEY}/" "$REMOTE_JSON"; then
     "$(jq -c '.urls' "$REMOTE_JSON")"
 elif check_release_entry "$REMOTE_JSON" \
        "first(.releases[\"${PKG_VERSION}\"][]? | select(.filename == \"${EXT_WHEEL_BASENAME}\"))" \
-       "$EXT_WHEEL_BASENAME" "$EXT_SHA256" "${REMOTE_URL}/" "remote releases[${PKG_VERSION}]"; then
+       "$EXT_WHEEL_BASENAME" "$EXT_SHA256" "${REMOTE_URL}/" "remote releases[${PKG_VERSION}]" relay; then
   pass
 fi
 
@@ -658,7 +687,7 @@ elif [ "$(jq -r '.info.version // empty' "${WORK_DIR}/ext-remote-version.json")"
   fail "remote version route info.version is not ${PKG_VERSION}" "$(jq -c .info "${WORK_DIR}/ext-remote-version.json")"
 elif check_release_entry "${WORK_DIR}/ext-remote-version.json" \
        "first(.urls[]? | select(.filename == \"${EXT_WHEEL_BASENAME}\"))" \
-       "$EXT_WHEEL_BASENAME" "$EXT_SHA256" "${REMOTE_URL}/" "remote urls[]"; then
+       "$EXT_WHEEL_BASENAME" "$EXT_SHA256" "${REMOTE_URL}/" "remote urls[]" relay; then
   pass
 fi
 RESOLVED_URL=""
