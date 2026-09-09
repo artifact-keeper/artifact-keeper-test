@@ -70,7 +70,9 @@ VIRTUAL_KEY="test-pypi-jlab-virtual-${RUN_ID}"
 # normalised project name uses dashes. RUN_ID is folded to [a-z0-9_] so the
 # module stays importable and normalisation cannot bite the exact-match
 # assertions below.
-RUN_TAG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '_')"
+# Runs of non-alphanumerics are squeezed and edges trimmed so the name is
+# already in PEP 503 normal form and the exact "name==version" matches hold.
+RUN_TAG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '_' | sed -e 's/^_//' -e 's/_$//')"
 EXT_MODULE="ak_jlab_ext_${RUN_TAG}"
 CTL_MODULE="ak_jlab_ctl_${RUN_TAG}"
 EXT_NAME="${EXT_MODULE//_/-}"
@@ -103,6 +105,34 @@ TRUSTED_HOST=$(echo "$BASE_URL" | sed -E 's|https?://||' | cut -d: -f1)
 # name. A local run against http://127.0.0.1:PORT can point the upstream at
 # an address the backend accepts with AK_TEST_UPSTREAM_BASE_URL.
 UPSTREAM_BASE_URL="${AK_TEST_UPSTREAM_BASE_URL:-$BASE_URL}"
+
+# ---------------------------------------------------------------------------
+# Feature gate and cleanup on any exit
+# ---------------------------------------------------------------------------
+
+begin_test "Backend serves the legacy PyPI JSON API and XML-RPC browse (artifact-keeper#3783)"
+require_feature "pypi_legacy_json_xmlrpc" || { end_suite; exit 0; }
+pass
+
+# Delete every repository this run creates, whether the script reaches the
+# normal cleanup or aborts under set -e half-way (a failed build_wheel, a
+# signal). Handlers run LIFO, so this runs before setup_workdir's rm -rf.
+# When end_suite has not run yet, record the abort as an INFRA case and write
+# the JUnit file from a subshell so the exit status of the abort is kept.
+_JLAB_SUITE_ENDED=0
+jlab_cleanup_on_exit() {
+  local k
+  for k in "$VIRTUAL_KEY" "$REMOTE_KEY" "$HOSTED2_KEY" "$HOSTED_KEY"; do
+    # shellcheck disable=SC2086
+    curl -s -X DELETE $CURL_TIMEOUT -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${k}" >/dev/null 2>&1 || true
+  done
+  if [ "${_JLAB_SUITE_ENDED:-0}" != "1" ]; then
+    begin_test "suite aborted before end_suite"
+    infra_fail "script exited before end_suite (set -e abort or signal); repositories test-pypi-jlab-*-${RUN_ID} deleted by the exit handler"
+    ( end_suite ) >/dev/null 2>&1 || true
+  fi
+}
+add_exit_handler 'jlab_cleanup_on_exit'
 
 # The repositories are created is_public, and the manager sends whatever
 # base_url carries: a bare URL means anonymous requests. Every replay below
@@ -853,10 +883,9 @@ elif ! jq -e --arg c "$PREBUILT_CLASSIFIER" 'any(.info.classifiers[]?; . == $c)'
   fail "virtual info.classifiers lacks the Prebuilt classifier" "$(jq -c .info.classifiers "$VIRTUAL_JSON")"
 elif check_release_entry "$VIRTUAL_JSON" \
        "first(.releases[\"${PKG_VERSION}\"][]? | select(.filename == \"${EXT_WHEEL_BASENAME}\"))" \
-       "$EXT_WHEEL_BASENAME" "$EXT_SHA256" "${BASE_URL}/pypi/" "virtual releases[${PKG_VERSION}]"; then
-  # The contract says "first member that answers", so the url may name the
-  # virtual repository or the member; either way it must be on this
-  # instance and serve the same bytes.
+       "$EXT_WHEEL_BASENAME" "$EXT_SHA256" "${VIRTUAL_URL}/simple/" "virtual releases[${PKG_VERSION}]"; then
+  # artifact-keeper#3788: urls in a virtual's document point at the virtual
+  # repository itself, never at the member that holds the file.
   if download_matches "$RESOLVED_URL" "$EXT_SHA256" "virtual releases url"; then
     pass
   fi
@@ -877,7 +906,7 @@ elif ! jq -e --arg f "$EXT2_WHEEL_BASENAME" 'any(.urls[]?; .filename == $f)' "$V
   fail "virtual urls[] does not describe the latest release file ${EXT2_WHEEL_BASENAME}" "$(jq -c '.urls' "$VIRTUAL_JSON")"
 elif check_release_entry "$VIRTUAL_JSON" \
        "first(.releases[\"${PKG_VERSION2}\"][]? | select(.filename == \"${EXT2_WHEEL_BASENAME}\"))" \
-       "$EXT2_WHEEL_BASENAME" "$EXT2_SHA256" "${BASE_URL}/pypi/" "virtual releases[${PKG_VERSION2}]"; then
+       "$EXT2_WHEEL_BASENAME" "$EXT2_SHA256" "${VIRTUAL_URL}/simple/" "virtual releases[${PKG_VERSION2}]"; then
   if download_matches "$RESOLVED_URL" "$EXT2_SHA256" "virtual latest release url"; then
     pass
   fi
@@ -975,4 +1004,5 @@ api_delete "/api/v1/repositories/${REMOTE_KEY}" >/dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${HOSTED2_KEY}" >/dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${HOSTED_KEY}" >/dev/null 2>&1 || true
 
+_JLAB_SUITE_ENDED=1
 end_suite
