@@ -30,7 +30,7 @@ jobs:
           - name: node
             scripts: "test-npm.sh test-vscode.sh"
           - name: python
-            scripts: "test-pypi.sh test-pypi-native-client.sh test-pypi-scoped-token.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
+            scripts: "test-pypi.sh test-pypi-native-client.sh test-pypi-scoped-token.sh test-pypi-jupyterlab-extension-manager.sh test-conda.sh test-huggingface.sh test-mlmodel.sh"
           - name: jvm
             scripts: "test-maven.sh test-maven-native-client.sh test-maven-virtual-snapshot.sh test-sbt.sh test-gradle-conformance.sh"
           - name: rust-go-swift
@@ -52,6 +52,11 @@ jobs:
       # silent-success class (#870/#871/#888) the gate exists to catch.
       # Local-dev runs don't set this and keep graceful skip behavior.
       RELEASE_GATE: '1'
+      # test-pypi-jupyterlab-extension-manager.sh: also drive the real
+      # JupyterLab PyPIExtensionManager (pip install jupyterlab, ~100 MB from
+      # pypi.org). On here, off in release-gate.yml where the replayed
+      # requests cover the same wire contract without the download.
+      AK_TEST_JUPYTERLAB: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
