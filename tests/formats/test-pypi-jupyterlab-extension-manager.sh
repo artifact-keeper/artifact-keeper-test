@@ -351,12 +351,15 @@ check_release_entry() {
     fail "${label}: yanked '${got_yanked}' != false" "$entry"
     return 1
   fi
+  # Accept the absolute form on any host (the backend derives it from the
+  # request, which may differ from BASE_URL behind an ingress) as long as the
+  # path is under this repository, and the path-absolute form.
+  local path_prefix="${url_prefix#"${BASE_URL}"}"
   case "$got_url" in
-    "${url_prefix}"*)
+    "${url_prefix}"*|http://*"${path_prefix}"*|https://*"${path_prefix}"*)
       RESOLVED_URL="$got_url"
       ;;
-    "${url_prefix#"${BASE_URL}"}"*)
-      # Path-absolute rewrite (same shape the simple index uses).
+    "${path_prefix}"*)
       RESOLVED_URL="${BASE_URL}${got_url}"
       ;;
     *)
@@ -708,7 +711,8 @@ else
   bad=""
   while IFS= read -r u; do
     case "$u" in
-      "${REMOTE_URL}/"*|"/pypi/${REMOTE_KEY}/"*) ;;
+      *"/pypi/${HOSTED_KEY}/"*) bad="${bad} ${u}" ;;
+      http://*"/pypi/${REMOTE_KEY}/"*|https://*"/pypi/${REMOTE_KEY}/"*|"/pypi/${REMOTE_KEY}/"*) ;;
       *) bad="${bad} ${u}" ;;
     esac
   done <<<"$info_urls"
