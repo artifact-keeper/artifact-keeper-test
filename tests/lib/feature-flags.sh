@@ -157,6 +157,11 @@ AK_BACKEND_BRANCH_MAIN="\
 # Gates tests/repos/test-virtual-members-concurrent-put.sh.
 AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN virtual_member_replace_contract"
 
+# pypi_legacy_json_xmlrpc: legacy PyPI JSON API + XML-RPC browse on the PyPI
+# handler (artifact-keeper#3783 / #3788), MAIN-only, version floor 1.10.0 in
+# _feature_min_version. Gates tests/formats/test-pypi-jupyterlab-extension-manager.sh.
+AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN pypi_legacy_json_xmlrpc"
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------

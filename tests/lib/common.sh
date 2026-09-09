@@ -418,6 +418,14 @@ _feature_min_version() {
     # eviction E2E test gates against this feature so 1.1.x releases
     # do not block on a known-broken behaviour.
     "proxy_ttl_eviction_correctness") echo "1.2.0" ;;
+    # pypi_legacy_json_xmlrpc: the PyPI handler serves the legacy JSON API
+    # (GET /pypi/{repo}/pypi/{name}/json, /{name}/{version}/json) and the
+    # XML-RPC browse endpoint (POST /pypi/{repo}/pypi) that JupyterLab's
+    # Extension Manager uses, on hosted, remote and virtual repositories
+    # (artifact-keeper#3783, shipped by artifact-keeper#3788 after 1.9.0).
+    # Gates tests/formats/test-pypi-jupyterlab-extension-manager.sh so a
+    # 1.9.x hotfix gate skips it instead of going red on 404s.
+    "pypi_legacy_json_xmlrpc")        echo "1.10.0" ;;
     *) return 1 ;;
   esac
 }
