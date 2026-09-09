@@ -17,7 +17,11 @@
 #
 # This suite replays the manager's exact requests (verified against
 # jupyterlab 4.6.3 source) against all three repository types, then runs
-# the real manager class on top when AK_TEST_JUPYTERLAB=1.
+# the real manager class on top when AK_TEST_JUPYTERLAB=1. It also pins the
+# repository-type semantics artifact-keeper#3788 settled on: a remote never
+# forwards browse (fault -32001), rewrites every url in the document to
+# itself and applies the proxy age gate to the JSON view; a virtual answers
+# browse and the project form as the union over its members.
 #
 # Fixture: two hand-built wheels, no build backend needed.
 #   extension  Classifier: Framework :: Jupyter :: JupyterLab :: Extensions :: Prebuilt
@@ -58,6 +62,7 @@ JUPYTERLAB_VERSION="4.6.3"
 PREBUILT_CLASSIFIER="Framework :: Jupyter :: JupyterLab :: Extensions :: Prebuilt"
 
 HOSTED_KEY="test-pypi-jlab-hosted-${RUN_ID}"
+HOSTED2_KEY="test-pypi-jlab-hosted2-${RUN_ID}"
 REMOTE_KEY="test-pypi-jlab-remote-${RUN_ID}"
 VIRTUAL_KEY="test-pypi-jlab-virtual-${RUN_ID}"
 
@@ -71,10 +76,15 @@ CTL_MODULE="ak_jlab_ctl_${RUN_TAG}"
 EXT_NAME="${EXT_MODULE//_/-}"
 CTL_NAME="${CTL_MODULE//_/-}"
 PKG_VERSION="1.0.$(date +%s)"
+# A newer release of the same extension, published to a second hosted member
+# of the virtual repository so the union across members is observable.
+PKG_VERSION2="1.1.${PKG_VERSION#1.0.}"
 EXT_WHEEL_BASENAME="${EXT_MODULE}-${PKG_VERSION}-py3-none-any.whl"
+EXT2_WHEEL_BASENAME="${EXT_MODULE}-${PKG_VERSION2}-py3-none-any.whl"
 CTL_WHEEL_BASENAME="${CTL_MODULE}-${PKG_VERSION}-py3-none-any.whl"
 
 HOSTED_URL="${BASE_URL}/pypi/${HOSTED_KEY}"
+HOSTED2_URL="${BASE_URL}/pypi/${HOSTED2_KEY}"
 REMOTE_URL="${BASE_URL}/pypi/${REMOTE_KEY}"
 VIRTUAL_URL="${BASE_URL}/pypi/${VIRTUAL_KEY}"
 # What c.PyPIExtensionManager.base_url is set to for each repository. The
@@ -680,12 +690,36 @@ else
 fi
 
 begin_test "Remote rewritten url downloads the uploaded bytes through the proxy"
-if [ -z "${RESOLVED_URL:-}" ]; then
+REMOTE_FILE_URL="${RESOLVED_URL:-}"
+if [ -z "$REMOTE_FILE_URL" ]; then
   skip "no resolvable url from the previous test"
-elif download_matches "$RESOLVED_URL" "$EXT_SHA256" "remote releases url"; then
+elif download_matches "$REMOTE_FILE_URL" "$EXT_SHA256" "remote releases url"; then
   pass
 fi
 RESOLVED_URL=""
+
+begin_test "Remote info.package_url/project_url/release_url point at the remote repository"
+# The manager reads project_url/package_url for its package-manager link;
+# all three are rewritten alongside the file urls (artifact-keeper#3788).
+if [ ! -s "$REMOTE_JSON" ]; then
+  skip "no remote document"
+else
+  info_urls=$(jq -r '.info | [.package_url, .project_url, .release_url] | map(. // "null") | .[]' "$REMOTE_JSON")
+  bad=""
+  while IFS= read -r u; do
+    case "$u" in
+      "${REMOTE_URL}/"*|"/pypi/${REMOTE_KEY}/"*) ;;
+      *) bad="${bad} ${u}" ;;
+    esac
+  done <<<"$info_urls"
+  if [ -n "$bad" ]; then
+    fail "info urls not rewritten to /pypi/${REMOTE_KEY}/:${bad}" "$(jq -c '.info | {package_url, project_url, release_url}' "$REMOTE_JSON")"
+  elif ! jq -e --arg v "/${PKG_VERSION}/json" '.info.release_url | endswith($v)' "$REMOTE_JSON" >/dev/null 2>&1; then
+    fail "info.release_url does not end with /${PKG_VERSION}/json" "$(jq -c '.info.release_url' "$REMOTE_JSON")"
+  else
+    pass
+  fi
+fi
 
 begin_test "Remote /{name}/{version}/json answers through the proxy"
 status=$(http_get "${REMOTE_BASE}/${EXT_JSON_NAME}/${PKG_VERSION}/json" "${WORK_DIR}/ext-remote-version.json")
@@ -701,54 +735,94 @@ elif check_release_entry "${WORK_DIR}/ext-remote-version.json" \
 fi
 RESOLVED_URL=""
 
-begin_test "Remote XML-RPC browse is a well-formed XML-RPC response (forwarded or cache-only)"
-# artifact-keeper#3783 leaves the remote browse policy to the implementation:
-# forward to the upstream, or answer from cached metadata only. Both are
-# valid; a 500 or a non-XML-RPC body is not. When it does return entries,
-# they must respect the classifier filter.
+begin_test "Remote XML-RPC browse answers with fault -32001 (not forwarded, not an empty array)"
+# artifact-keeper#3788: a remote never forwards browse upstream (PyPI's XML-RPC
+# is rate-limited and being retired) and does not pretend to know by
+# answering []; it returns fault -32001 telling the operator to point
+# base_url at a hosted or virtual repository. xmlrpc.client raises Fault.
 status=$(xmlrpc_post "$REMOTE_BASE" "$BROWSE_BODY" "${WORK_DIR}/browse-remote.out")
 if [ "$status" != "200" ]; then
   fail "POST ${REMOTE_BASE} browse returned HTTP ${status}" "$(head -c 600 "${WORK_DIR}/browse-remote.out")"
 else
-  pairs=$(browse_pairs "${WORK_DIR}/browse-remote.out" 2>"${WORK_DIR}/browse-remote.err") && rc=0 || rc=$?
-  case "$rc" in
-    0)
-      if pairs_have "$pairs" "$CTL_NAME" "$PKG_VERSION"; then
-        fail "remote browse lists the control package, which has no Prebuilt classifier" "$pairs"
-      elif [ -n "$pairs" ] && ! pairs_have "$pairs" "$EXT_NAME" "$PKG_VERSION"; then
-        fail "remote browse returned entries but not ${EXT_NAME}==${PKG_VERSION}" "$pairs"
-      else
-        if [ -z "$pairs" ]; then
-          echo "  note: remote browse returned an empty array (cache-only policy)"
-        else
-          echo "  note: remote browse forwarded to the upstream"
-        fi
-        pass
-      fi
-      ;;
-    2)
-      echo "  note: remote browse answered with an XML-RPC fault: $(cat "${WORK_DIR}/browse-remote.err")"
-      pass
-      ;;
-    *)
-      fail "remote browse body is not XML-RPC (decoder exit ${rc}): $(cat "${WORK_DIR}/browse-remote.err")" \
-        "$(head -c 600 "${WORK_DIR}/browse-remote.out")"
-      ;;
-  esac
+  browse_pairs "${WORK_DIR}/browse-remote.out" >"${WORK_DIR}/browse-remote.pairs" 2>"${WORK_DIR}/browse-remote.err" && rc=0 || rc=$?
+  if [ "$rc" != "2" ]; then
+    fail "remote browse did not answer with an XML-RPC fault (decoder exit ${rc}): $(cat "${WORK_DIR}/browse-remote.err" "${WORK_DIR}/browse-remote.pairs" | head -c 300)" \
+      "$(head -c 600 "${WORK_DIR}/browse-remote.out")"
+  elif ! grep -qF -- "FAULT -32001:" "${WORK_DIR}/browse-remote.err"; then
+    fail "remote browse fault code is not -32001: $(cat "${WORK_DIR}/browse-remote.err")" \
+      "$(head -c 600 "${WORK_DIR}/browse-remote.out")"
+  else
+    pass
+  fi
+fi
+
+begin_test "Remote age gate withholds the release: JSON 404, download 451, restored when disabled"
+# artifact-keeper#3788 applies the proxy age gate to the legacy JSON view the
+# same way it applies to /simple/ and to downloads. first_seen mode needs no
+# upstream publish metadata: the remote first saw this release seconds ago.
+gate_body='{"enabled":true,"min_age_days":3650,"mode":"first_seen"}'
+if [ -z "${REMOTE_FILE_URL:-}" ]; then
+  skip "no remote file url from the earlier test"
+elif ! api_put "/api/v1/repositories/${REMOTE_KEY}/age-gate" "$gate_body" >"${WORK_DIR}/age-gate.out" 2>&1; then
+  fail "PUT /api/v1/repositories/${REMOTE_KEY}/age-gate ${gate_body} failed" "$(head -c 400 "${WORK_DIR}/age-gate.out")"
+else
+  gstatus=$(http_get "${REMOTE_BASE}/${EXT_JSON_NAME}/json" "${WORK_DIR}/ext-remote-gated.json")
+  gvstatus=$(http_get "${REMOTE_BASE}/${EXT_JSON_NAME}/${PKG_VERSION}/json" "${WORK_DIR}/ext-remote-gated-version.json")
+  # shellcheck disable=SC2086
+  gdstatus=$(curl -s -o "${WORK_DIR}/gated-download.out" -w '%{http_code}' $CURL_TIMEOUT "$REMOTE_FILE_URL" 2>/dev/null) || gdstatus="000"
+  # Always lift the gate again so the virtual section sees the remote as before.
+  api_put "/api/v1/repositories/${REMOTE_KEY}/age-gate" '{"enabled":false,"min_age_days":3650}' >/dev/null 2>&1 || true
+  rstatus=$(http_get "${REMOTE_BASE}/${EXT_JSON_NAME}/json" "${WORK_DIR}/ext-remote-ungated.json")
+  gated_absent=0
+  if [ "$gstatus" = "404" ]; then
+    gated_absent=1
+  elif [ "$gstatus" = "200" ] \
+       && ! jq -e --arg v "$PKG_VERSION" '.releases | has($v)' "${WORK_DIR}/ext-remote-gated.json" >/dev/null 2>&1 \
+       && ! jq -e --arg f "$EXT_WHEEL_BASENAME" 'any(.urls[]?; .filename == $f)' "${WORK_DIR}/ext-remote-gated.json" >/dev/null 2>&1; then
+    gated_absent=1
+  fi
+  if [ "$gated_absent" != "1" ]; then
+    fail "gated remote /{name}/json still describes ${PKG_VERSION} (HTTP ${gstatus})" "$(head -c 600 "${WORK_DIR}/ext-remote-gated.json")"
+  elif [ "$gvstatus" != "404" ]; then
+    fail "gated remote /{name}/${PKG_VERSION}/json returned HTTP ${gvstatus}, expected 404" "$(head -c 600 "${WORK_DIR}/ext-remote-gated-version.json")"
+  elif [ "$gdstatus" != "451" ]; then
+    fail "gated download of ${REMOTE_FILE_URL} returned HTTP ${gdstatus}, expected 451" "$(head -c 400 "${WORK_DIR}/gated-download.out")"
+  elif [ "$rstatus" != "200" ]; then
+    fail "remote /{name}/json did not come back after disabling the gate (HTTP ${rstatus})" "$(head -c 400 "${WORK_DIR}/ext-remote-ungated.json")"
+  else
+    pass
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 # Section 7: virtual repository over hosted + remote
 # ---------------------------------------------------------------------------
 
-begin_test "Create virtual PyPI repository over hosted and remote"
-if create_virtual_repo "$VIRTUAL_KEY" "pypi" "${HOSTED_KEY},${REMOTE_KEY}"; then
-  pass
+begin_test "Create second hosted repository holding a newer release of the extension"
+EXT2_WHEEL="${WORK_DIR}/${EXT2_WHEEL_BASENAME}"
+build_wheel "$EXT_MODULE" "$PKG_VERSION2" "$EXT2_WHEEL" \
+  "$PREBUILT_CLASSIFIER" "Programming Language :: Python :: 3"
+EXT2_SHA256=$(sha256sum "$EXT2_WHEEL" | awk '{print $1}')
+if ! create_local_repo "$HOSTED2_KEY" "pypi"; then
+  fail "could not create hosted PyPI repository ${HOSTED2_KEY}"
 else
-  fail "could not create virtual PyPI repository ${VIRTUAL_KEY} with members ${HOSTED_KEY},${REMOTE_KEY}"
+  status=$(upload_wheel "$HOSTED2_URL" "$EXT_MODULE" "$PKG_VERSION2" "$EXT2_WHEEL" \
+    "$PREBUILT_CLASSIFIER" "Programming Language :: Python :: 3")
+  if [ "$status" = "200" ] || [ "$status" = "201" ]; then
+    pass
+  else
+    fail "upload of ${EXT2_WHEEL_BASENAME} to ${HOSTED2_KEY} returned HTTP ${status}" "$(head -c 400 "${WORK_DIR}/upload.out")"
+  fi
 fi
 
-begin_test "Virtual XML-RPC browse lists the extension and not the control"
+begin_test "Create virtual PyPI repository over hosted, remote and the second hosted"
+if create_virtual_repo "$VIRTUAL_KEY" "pypi" "${HOSTED_KEY},${REMOTE_KEY},${HOSTED2_KEY}"; then
+  pass
+else
+  fail "could not create virtual PyPI repository ${VIRTUAL_KEY} with members ${HOSTED_KEY},${REMOTE_KEY},${HOSTED2_KEY}"
+fi
+
+begin_test "Virtual XML-RPC browse is the union over members: both releases, not the control"
 sleep 1
 status=$(xmlrpc_post "$VIRTUAL_BASE" "$BROWSE_BODY" "${WORK_DIR}/browse-virtual.out")
 if [ "$status" != "200" ]; then
@@ -757,7 +831,9 @@ elif ! pairs=$(browse_pairs "${WORK_DIR}/browse-virtual.out" 2>"${WORK_DIR}/brow
   fail "virtual browse did not decode as an XML-RPC array: $(cat "${WORK_DIR}/browse-virtual.err")" \
     "$(head -c 600 "${WORK_DIR}/browse-virtual.out")"
 elif ! pairs_have "$pairs" "$EXT_NAME" "$PKG_VERSION"; then
-  fail "virtual browse lacks ${EXT_NAME}==${PKG_VERSION}" "$pairs"
+  fail "virtual browse lacks ${EXT_NAME}==${PKG_VERSION} (from ${HOSTED_KEY})" "$pairs"
+elif ! pairs_have "$pairs" "$EXT_NAME" "$PKG_VERSION2"; then
+  fail "virtual browse lacks ${EXT_NAME}==${PKG_VERSION2} (from ${HOSTED2_KEY})" "$pairs"
 elif pairs_have "$pairs" "$CTL_NAME" "$PKG_VERSION"; then
   fail "virtual browse lists the control package" "$pairs"
 else
@@ -769,8 +845,6 @@ VIRTUAL_JSON="${WORK_DIR}/ext-virtual.json"
 status=$(http_get "${VIRTUAL_BASE}/${EXT_JSON_NAME}/json" "$VIRTUAL_JSON")
 if [ "$status" != "200" ]; then
   fail "GET ${VIRTUAL_BASE}/${EXT_JSON_NAME}/json returned HTTP ${status}" "$(head -c 600 "$VIRTUAL_JSON")"
-elif [ "$(jq -r '.info.version // empty' "$VIRTUAL_JSON")" != "$PKG_VERSION" ]; then
-  fail "virtual info.version is not ${PKG_VERSION}" "$(jq -c .info "$VIRTUAL_JSON")"
 elif ! jq -e --arg c "$PREBUILT_CLASSIFIER" 'any(.info.classifiers[]?; . == $c)' "$VIRTUAL_JSON" >/dev/null 2>&1; then
   fail "virtual info.classifiers lacks the Prebuilt classifier" "$(jq -c .info.classifiers "$VIRTUAL_JSON")"
 elif check_release_entry "$VIRTUAL_JSON" \
@@ -780,6 +854,27 @@ elif check_release_entry "$VIRTUAL_JSON" \
   # virtual repository or the member; either way it must be on this
   # instance and serve the same bytes.
   if download_matches "$RESOLVED_URL" "$EXT_SHA256" "virtual releases url"; then
+    pass
+  fi
+fi
+RESOLVED_URL=""
+
+begin_test "Virtual /{name}/json is the union across members with info.version = latest release"
+# artifact-keeper#3788: the project form merges every member that holds the
+# project; info/urls describe the latest final release, which lives only in
+# the second hosted member here.
+if [ ! -s "$VIRTUAL_JSON" ]; then
+  skip "no virtual document"
+elif [ "$(jq -r '.info.version // empty' "$VIRTUAL_JSON")" != "$PKG_VERSION2" ]; then
+  fail "virtual info.version is '$(jq -r '.info.version' "$VIRTUAL_JSON")', expected the latest release ${PKG_VERSION2}" "$(jq -c '.releases | keys' "$VIRTUAL_JSON")"
+elif ! jq -e --arg a "$PKG_VERSION" --arg b "$PKG_VERSION2" '(.releases | has($a)) and (.releases | has($b))' "$VIRTUAL_JSON" >/dev/null 2>&1; then
+  fail "virtual releases lacks ${PKG_VERSION} and/or ${PKG_VERSION2}" "$(jq -c '.releases | keys' "$VIRTUAL_JSON")"
+elif ! jq -e --arg f "$EXT2_WHEEL_BASENAME" 'any(.urls[]?; .filename == $f)' "$VIRTUAL_JSON" >/dev/null 2>&1; then
+  fail "virtual urls[] does not describe the latest release file ${EXT2_WHEEL_BASENAME}" "$(jq -c '.urls' "$VIRTUAL_JSON")"
+elif check_release_entry "$VIRTUAL_JSON" \
+       "first(.releases[\"${PKG_VERSION2}\"][]? | select(.filename == \"${EXT2_WHEEL_BASENAME}\"))" \
+       "$EXT2_WHEEL_BASENAME" "$EXT2_SHA256" "${BASE_URL}/pypi/" "virtual releases[${PKG_VERSION2}]"; then
+  if download_matches "$RESOLVED_URL" "$EXT2_SHA256" "virtual latest release url"; then
     pass
   fi
 fi
@@ -873,6 +968,7 @@ fi
 
 api_delete "/api/v1/repositories/${VIRTUAL_KEY}" >/dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${REMOTE_KEY}" >/dev/null 2>&1 || true
+api_delete "/api/v1/repositories/${HOSTED2_KEY}" >/dev/null 2>&1 || true
 api_delete "/api/v1/repositories/${HOSTED_KEY}" >/dev/null 2>&1 || true
 
 end_suite
