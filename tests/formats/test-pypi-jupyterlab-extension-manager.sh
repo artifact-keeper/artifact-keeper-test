@@ -661,12 +661,21 @@ elif [ "$(jq -r '.info.version // empty' "$REMOTE_JSON")" != "$PKG_VERSION" ]; t
   fail "remote info.version is not ${PKG_VERSION}" "$(jq -c .info "$REMOTE_JSON")"
 elif ! jq -e --arg c "$PREBUILT_CLASSIFIER" 'any(.info.classifiers[]?; . == $c)' "$REMOTE_JSON" >/dev/null 2>&1; then
   fail "remote info.classifiers lacks the Prebuilt classifier" "$(jq -c .info.classifiers "$REMOTE_JSON")"
-elif grep -qF -- "/pypi/${HOSTED_KEY}/" "$REMOTE_JSON"; then
-  fail "remote JSON leaks upstream urls (/pypi/${HOSTED_KEY}/); expected rewriting to /pypi/${REMOTE_KEY}/" \
-    "$(jq -c '.urls' "$REMOTE_JSON")"
-elif check_release_entry "$REMOTE_JSON" \
+elif ! check_release_entry "$REMOTE_JSON" \
        "first(.releases[\"${PKG_VERSION}\"][]? | select(.filename == \"${EXT_WHEEL_BASENAME}\"))" \
        "$EXT_WHEEL_BASENAME" "$EXT_SHA256" "${REMOTE_URL}/" "remote releases[${PKG_VERSION}]" relay; then
+  :
+elif leaked=$(jq -r --arg k "/pypi/${HOSTED_KEY}/" \
+       '[paths(type == "string" and contains($k)) | map(tostring) | join(".")] | .[]' "$REMOTE_JSON") \
+     && [ -n "$leaked" ]; then
+  # The file urls above are already proven to be rewritten; anything else in
+  # the document that still names the upstream repository (info.package_url,
+  # info.project_url, info.release_url, ...) is a leak: the manager reads
+  # project_url/package_url for its package-manager link, and a client of the
+  # remote has no business learning, or being sent to, the upstream key.
+  fail "remote JSON still names the upstream repository (/pypi/${HOSTED_KEY}/) at: $(printf '%s' "$leaked" | tr '\n' ' ')" \
+    "$(jq -c '.info | {package_url, project_url, release_url, home_page}' "$REMOTE_JSON")"
+else
   pass
 fi
 
