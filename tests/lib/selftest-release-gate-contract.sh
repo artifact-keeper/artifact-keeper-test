@@ -23,6 +23,14 @@
 #   3. `end_suite` fails a suite that recorded zero passes and at least one
 #      skip when RELEASE_GATE=1. Remove it and all-skipped certifies green.
 #
+# A fourth part (artifact-keeper-test#396) splits that floor in two. A skip
+# because the CANDIDATE'S VERSION is below the floor a test declares is a
+# verdict -- the feature is not in this release, there is nothing to certify --
+# and must exit 0; a skip because the ENVIRONMENT could not run the test is the
+# silent-success class and must keep failing. The split is carried by the
+# primitive the caller chose (`skip_not_applicable` vs `skip`), so the cases
+# below also pin that it is NOT inferred from the wording of a reason string.
+#
 # So each part is pinned here by CONSTRUCTING the failure and asserting the
 # exit code, not by asserting the current implementation back to itself. Every
 # case drives the real helpers through a real suite-shaped script.
@@ -188,6 +196,17 @@ if [ -z "$FEATURE_FLOOR" ]; then
 fi
 echo "Pinned feature: ${FEATURE} (floor ${FEATURE_FLOOR})"
 
+# A version comfortably below that floor. The #396 cases serve it from the stub
+# so require_feature takes its version-shortfall path. Checked against the real
+# comparator rather than eyeballed, so a future floor change breaks loudly here
+# instead of quietly turning those cases into "feature supported" runs.
+BELOW_FLOOR="1.0.0"
+if BASE_URL="http://127.0.0.1:1" bash -c \
+     'source "$1" >/dev/null 2>&1; version_ge "$2" "$3"' _ "$COMMON_SH" "$BELOW_FLOOR" "$FEATURE_FLOOR"; then
+  echo "FATAL: ${BELOW_FLOOR} is not below ${FEATURE}'s floor ${FEATURE_FLOOR}; update this self-test"
+  exit 1
+fi
+
 CLOSED_PORT="$(find_closed_port)"
 DEAD_URL="http://127.0.0.1:${CLOSED_PORT}"
 STUB_PORT=45880
@@ -217,6 +236,27 @@ skip "optional sub-behaviour absent"'
 write_suite "${WORK}/suite-allpass.sh" "selftest-allpass" \
 'begin_test "one"
 pass'
+
+# #396 fixtures. All three are driven against a stub serving a version BELOW
+# ${FEATURE}'"'"'s floor, so require_feature takes its version-shortfall path.
+write_suite "${WORK}/suite-na-plus-provisioning.sh" "selftest-na-plus-provisioning" \
+'begin_test "gated"
+require_feature "'"${FEATURE}"'" || true
+begin_test "needs a binary"
+skip "grpcurl not installed"'
+
+write_suite "${WORK}/suite-na-plus-pass.sh" "selftest-na-plus-pass" \
+'begin_test "gated"
+require_feature "'"${FEATURE}"'" || true
+begin_test "ungated"
+pass'
+
+# A PROVISIONING skip whose reason merely READS like a version gate. The
+# classification must come from the primitive, not from the prose, so this
+# must still red the gate.
+write_suite "${WORK}/suite-skip-worded-as-version.sh" "selftest-skip-worded-as-version" \
+'begin_test "one"
+skip "feature '"'"'imaginary'"'"' requires backend >= 9.9.9, running 1.0.0"'
 
 # Drives skip_suite with a reason supplied by the case, so the capability
 # exemption allowlist can be exercised in both directions from one fixture.
@@ -310,7 +350,73 @@ run_case "gate + healthy backend at feature floor -> exit 0" 0 "${WORK}/suite-fe
 stop_stub
 
 echo ""
-echo "5. skip_suite: capability-exemption allowlist directionality"
+echo "5. end_suite: version-gated skips are NOT APPLICABLE, not INFRA (#396)"
+
+# Every case here runs against a backend BELOW the pinned feature's floor: the
+# feature genuinely does not exist on it. That is the permanent shape of a
+# maintenance-line gate (1.9.1 running a main-branch test tree), so it must not
+# be reported as a harness/provisioning failure.
+start_stub "version:${BELOW_FLOOR}" "$STUB_PORT" || exit 1
+
+# The reported bug: the whole suite is one version-gated test, the candidate is
+# below the floor, and the coverage floor called it an INFRA failure.
+run_case "gate + only test version-gated below floor -> exit 0, not applicable" 0 "${WORK}/suite-feature.sh" \
+  "nothing in it applies to this version" "INFRA/SETUP FAILURE" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1
+
+# The verdict must be recorded explicitly, not left implicit in an exit code.
+run_case "gate + version-gated skip carries the explicit marker" 0 "${WORK}/suite-feature.sh" \
+  "SKIP (NOT APPLICABLE TO THIS VERSION): feature '${FEATURE}' ships in backend >= ${FEATURE_FLOOR}; candidate reports ${BELOW_FLOOR}" "-" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1
+
+# ... and in the JUnit XML, where the dashboards read it. The &apos; assertion
+# also pins _xml_escape against bash 5.2's patsub_replacement, under which an
+# unescaped & in a ${var//pat/repl} replacement expands to the matched text and
+# every entity in every message came out as "'apos;" / ">gt;".
+CASES_RUN=$(( CASES_RUN + 1 ))
+if grep -qF 'type="not-applicable"' "${WORK}/junit/selftest-feature.xml" 2>/dev/null && \
+   grep -qF 'NOT APPLICABLE TO THIS VERSION:' "${WORK}/junit/selftest-feature.xml" 2>/dev/null && \
+   grep -qF "&apos;${FEATURE}&apos;" "${WORK}/junit/selftest-feature.xml" 2>/dev/null && \
+   ! grep -qF '<failure' "${WORK}/junit/selftest-feature.xml" 2>/dev/null; then
+  echo "  ok   gate + version-gated skip writes a not-applicable JUnit case with no <failure>"
+else
+  CASES_FAILED=$(( CASES_FAILED + 1 ))
+  echo "  FAIL gate + version-gated skip JUnit shape:"
+  sed 's/^/       | /' "${WORK}/junit/selftest-feature.xml" 2>/dev/null || echo "       | (no XML written)"
+fi
+
+# The other half of the split, stated positively: a provisioning skip still
+# reds, and now says which kind of skip reddened it.
+run_case "gate + provisioning skips only -> infra exit 11, counted as environment" 11 "${WORK}/suite-allskip.sh" \
+  "2 for environment/provisioning reasons, 0 not applicable to this version" "-" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1
+
+# The classification comes from the primitive the caller chose. A plain skip
+# whose reason merely READS like a version gate must not be excused, or the
+# carve-out becomes a wording exploit.
+run_case "gate + provisioning skip worded as a version gate -> infra exit 11" 11 "${WORK}/suite-skip-worded-as-version.sh" \
+  "suite certified nothing under RELEASE_GATE=1" "NOT APPLICABLE" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1
+
+# Mixed, no passes: the provisioning gap is real whatever stood down beside it.
+run_case "gate + not-applicable plus provisioning skip -> infra exit 11" 11 "${WORK}/suite-na-plus-provisioning.sh" \
+  "1 for environment/provisioning reasons, 1 not applicable to this version" "-" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1
+
+# Mixed with a pass: the suite certified something, so no floor fires at all.
+run_case "gate + not-applicable plus a pass -> exit 0" 0 "${WORK}/suite-na-plus-pass.sh" \
+  "1 passed, 0 failed, 1 skipped" "INFRA/SETUP FAILURE" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1
+
+# Outside the gate nothing changes: still a graceful skip, still exit 0.
+run_case "no gate + version-gated skip -> graceful skip, exit 0" 0 "${WORK}/suite-feature.sh" \
+  "NOT APPLICABLE TO THIS VERSION" "INFRA/SETUP FAILURE" \
+  BASE_URL="$STUB_URL"
+
+stop_stub
+
+echo ""
+echo "6. skip_suite: capability-exemption allowlist directionality"
 
 # The allowlist is the one documented escape from the coverage floor, so its
 # NARROWNESS is the whole safety argument. Each row must excuse exactly the
@@ -363,7 +469,7 @@ run_case "no gate + non-exempt reason -> graceful skip, exit 0" 0 "${WORK}/suite
   SELFTEST_SKIP_REASON="upstream unreachable"
 
 echo ""
-echo "6. discovery contract: every discovered test sources common.sh"
+echo "7. discovery contract: every discovered test sources common.sh"
 
 # Why this lives here (artifact-keeper-test#388)
 # ----------------------------------------------------

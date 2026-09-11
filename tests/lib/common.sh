@@ -105,8 +105,27 @@ _TEST_START=0
 _PASS_COUNT=0
 _FAIL_COUNT=0
 _SKIP_COUNT=0
+# Subset of _SKIP_COUNT recorded by skip_not_applicable: tests the CANDIDATE
+# cannot run because the feature they cover does not exist at its version.
+# Tracked separately so end_suite can tell "nothing to certify here" from
+# "nothing got certified" (artifact-keeper-test#396).
+_NA_COUNT=0
 _INFRA_COUNT=0
 _JUNIT_CASES=""
+
+# Explicit marker written into the recorded reason and the JUnit message of a
+# not-applicable skip. The classification is carried by _NA_COUNT and by the
+# primitive the caller chose, never inferred from the wording of a reason; this
+# prefix exists so a human or a dashboard reading the XML sees the same verdict
+# the harness acted on.
+_NOT_APPLICABLE_PREFIX="NOT APPLICABLE TO THIS VERSION"
+
+# Last backend version require_feature actually observed, for end_suite's
+# reporting. get_backend_version is reached through a command substitution, so
+# the BACKEND_VERSION cache it fills lives in a subshell and is invisible to
+# every later caller; require_feature runs in the caller's own shell, so this
+# assignment survives. Empty when no feature gate ran in this suite.
+_OBSERVED_BACKEND_VERSION=""
 
 # ---------------------------------------------------------------------------
 # INFRA/SETUP outcome (artifact-keeper-test#323)
@@ -160,9 +179,15 @@ AUTH_ADMIN_RETRY_DELAY="${AUTH_ADMIN_RETRY_DELAY:-5}"
 # When a test exercises a feature that only ships in a specific minor (or
 # later), call `require_feature "<name>"` at the start. If the backend is
 # older than the version that introduced the feature, the helper records the
-# current test as `skip` with a precise reason and returns 1; the caller
-# should `return` immediately. If supported, the helper returns 0 and the
-# test runs as normal.
+# current test as `skip_not_applicable` with a precise reason and returns 1;
+# the caller should `return` immediately. If supported, the helper returns 0
+# and the test runs as normal.
+#
+# A version shortfall is recorded as NOT APPLICABLE rather than as a plain
+# skip, and that distinction is load-bearing under RELEASE_GATE=1: see
+# skip_not_applicable and end_suite's applicability floor
+# (artifact-keeper-test#396). "The feature is not in this release" is a verdict
+# on the candidate; "the environment could not run the test" is not.
 #
 # The feature -> minimum-version map below is the single source of truth for
 # the gate suite. When a feature ships in a release, add an entry here in
@@ -467,13 +492,17 @@ require_feature() {
         if _env_min_ver=$(_feature_min_version "$feature"); then
           local _env_backend_ver
           _env_backend_ver=$(get_backend_version)
+          _OBSERVED_BACKEND_VERSION="$_env_backend_ver"
           # An undiscoverable version leaves the env answer standing. Soft-
           # skipping on a failed /health probe is the silent-success class the
           # env layer exists to kill (see tests/lib/feature-flags.sh header),
           # so we do not reintroduce it here.
           if [ "$_env_backend_ver" != "unknown" ] && \
              ! version_ge "$_env_backend_ver" "$_env_min_ver"; then
-            skip "feature '${feature}' is in AK_FEATURES for backend branch '${AK_BACKEND_BRANCH:-?}' but requires backend >= ${_env_min_ver}, running ${_env_backend_ver}"
+            # Version shortfall, established against the running deploy: the
+            # feature is not in this candidate, so this test has nothing to
+            # certify here. Not an environment gap (#396).
+            skip_not_applicable "feature '${feature}' ships in backend >= ${_env_min_ver}; candidate reports ${_env_backend_ver} (it is in AK_FEATURES for backend branch '${AK_BACKEND_BRANCH:-?}', which is a coarse branch label, not the deploy)"
             return 1
           fi
         fi
@@ -482,8 +511,31 @@ require_feature() {
         return 0
         ;;
       1)
-        # Env says explicitly disabled. Skip with a precise reason so a
-        # stale workflow mapping shows up loudly (not as a silent skip).
+        # Env says explicitly disabled. Two very different situations reach
+        # here and they must not be reported the same way (#396):
+        #
+        #   a) the running backend is genuinely below the feature's declared
+        #      floor. The branch bundle and the deploy agree; the feature does
+        #      not exist in this candidate. Fixing the mapping would change
+        #      nothing, so this is NOT APPLICABLE, same as the probe path
+        #      below. This is the shape a maintenance-line gate takes when the
+        #      release branch is mapped to a bundle that predates the feature.
+        #
+        #   b) anything else -- no floor registered for the flag, or the
+        #      backend is at or above the floor and the bundle simply does not
+        #      list the feature. That is a stale workflow mapping, the deploy
+        #      could have run the test, and it must stay a loud ordinary skip
+        #      that the coverage floor reds under the gate.
+        local _dis_min_ver _dis_backend_ver
+        if _dis_min_ver=$(_feature_min_version "$feature"); then
+          _dis_backend_ver=$(get_backend_version)
+          _OBSERVED_BACKEND_VERSION="$_dis_backend_ver"
+          if [ "$_dis_backend_ver" != "unknown" ] && \
+             ! version_ge "$_dis_backend_ver" "$_dis_min_ver"; then
+            skip_not_applicable "feature '${feature}' ships in backend >= ${_dis_min_ver}; candidate reports ${_dis_backend_ver} (also absent from AK_FEATURES for backend branch '${AK_BACKEND_BRANCH:-?}')"
+            return 1
+          fi
+        fi
         skip "feature '${feature}' not enabled on backend branch '${AK_BACKEND_BRANCH:-?}' (AK_FEATURES=${AK_FEATURES:-})"
         return 1
         ;;
@@ -500,6 +552,7 @@ require_feature() {
   }
   local backend_ver
   backend_ver=$(get_backend_version)
+  _OBSERVED_BACKEND_VERSION="$backend_ver"
   if [ "$backend_ver" = "unknown" ]; then
     _feature_probe_unavailable "$feature"
     return 1
@@ -511,11 +564,18 @@ require_feature() {
     # gate is invocable against older backend_tags on purpose (release-gate.yml
     # maps 1.1.*/1.2.* onto their release branches for the feature-flag layer),
     # so a 1.7.x-floor feature legitimately does not exist on such a run and
-    # hard-failing it would red the gate for a correct outcome. The systemic
-    # hazard — a suite that certified NOTHING — is caught by end_suite's
-    # RELEASE_GATE coverage floor instead, which fires on the outcome (zero
-    # passes) rather than on the reason for any individual skip.
-    skip "feature '${feature}' requires backend >= ${min_ver}, running ${backend_ver}"
+    # hard-failing it would red the gate for a correct outcome.
+    #
+    # It is recorded through skip_not_applicable, not plain skip, so end_suite's
+    # coverage floor can tell it apart from a provisioning skip (#396). The
+    # floor fires on the OUTCOME (zero passes) and cannot see the reason for an
+    # individual skip, so before #396 a suite whose every test was gated on an
+    # unshipped feature -- the normal state of a maintenance-line gate, since a
+    # release branch always lags the features main tests -- was reported as an
+    # infrastructure failure. The systemic hazard the floor exists for is
+    # unchanged: any suite that skipped for an environment reason and certified
+    # nothing still reds the gate.
+    skip_not_applicable "feature '${feature}' ships in backend >= ${min_ver}; candidate reports ${backend_ver}"
     return 1
   fi
 }
@@ -1289,7 +1349,9 @@ begin_suite() {
   _PASS_COUNT=0
   _FAIL_COUNT=0
   _SKIP_COUNT=0
+  _NA_COUNT=0
   _INFRA_COUNT=0
+  _OBSERVED_BACKEND_VERSION=""
   _JUNIT_CASES=""
   echo "========================================"
   echo "  Suite: ${_SUITE_NAME}"
@@ -1448,6 +1510,58 @@ skip() {
   </testcase>
 "
   echo "  SKIP: ${reason} (${duration}s)"
+}
+
+## skip_not_applicable REASON
+##
+## Record the current test as SKIPPED WITH A VERDICT: the behaviour it asserts
+## does not exist in the candidate, because the candidate's version is below
+## the floor the test declares. Nothing is missing from the environment and
+## nothing is broken; there is simply nothing here to certify.
+##
+## Why this is a separate primitive (artifact-keeper-test#396)
+## ----------------------------------------------------------
+## `skip` covers every other reason a test stands down, and all of them share
+## one property: the assertion COULD have run and did not. A credential is
+## unset, a service is unreachable, a CLI is not installed, an emulator is not
+## provisioned. Under RELEASE_GATE=1 an all-skipped suite of that kind has
+## certified nothing while reporting green, which is the silent-success class
+## end_suite's coverage floor exists to catch (#339).
+##
+## A version-gated skip is the opposite case. A release branch always lags the
+## features main tests: the 1.9.1 security release could not have the PyPI
+## legacy JSON API that landed after 1.9.0, so
+## tests/formats/test-pypi-jupyterlab-extension-manager.sh has nothing to
+## assert there. "This feature is not in this release" is a complete, correct
+## answer about the candidate, not a gap in the harness, and the floor must not
+## read it as one. This recurs on every maintenance line, so the distinction is
+## recorded EXPLICITLY (the _NA_COUNT counter plus the _NOT_APPLICABLE_PREFIX
+## marker in the reason and the type="not-applicable" JUnit attribute) rather
+## than pattern-matched out of a reason string, which would drift the first
+## time somebody rewords a skip.
+##
+## Use it ONLY for a genuine version shortfall against a declared floor. If the
+## backend version cannot be determined, that is a probe failure, not a version
+## shortfall: it goes through _feature_probe_unavailable and stays INFRA under
+## the gate. If a capability is absent for any environmental reason, that is
+## `skip` (or skip_suite plus a _CAPABILITY_EXEMPTIONS row), and it keeps
+## failing the gate exactly as before.
+skip_not_applicable() {
+  local reason="${1:-feature not present at this version}"
+  local duration=$(( $(date +%s) - _TEST_START ))
+  _SKIP_COUNT=$(( _SKIP_COUNT + 1 ))
+  _NA_COUNT=$(( _NA_COUNT + 1 ))
+  local xml_name
+  xml_name=$(_xml_escape "$_TEST_NAME")
+  local xml_suite
+  xml_suite=$(_xml_escape "$_SUITE_NAME")
+  local xml_reason
+  xml_reason=$(_xml_escape "${_NOT_APPLICABLE_PREFIX}: ${reason}")
+  _JUNIT_CASES="${_JUNIT_CASES}  <testcase name=\"${xml_name}\" classname=\"${xml_suite}\" time=\"${duration}\">
+    <skipped message=\"${xml_reason}\" type=\"not-applicable\"/>
+  </testcase>
+"
+  echo "  SKIP (${_NOT_APPLICABLE_PREFIX}): ${reason} (${duration}s)"
 }
 
 ## ---------------------------------------------------------------------------
@@ -1713,15 +1827,52 @@ end_suite() {
   # That also routes the exit through the existing _INFRA_COUNT branch below
   # (DTF_EXIT_INFRA), keeping exit-code ownership in one place, and puts a RED
   # testcase in the JUnit XML instead of only a non-zero exit.
+  # NOT-APPLICABLE CARVE-OUT (artifact-keeper-test#396)
+  # --------------------------------------------------
+  # The floor above cannot see WHY a test skipped, and two reasons look
+  # identical from here while meaning opposite things:
+  #
+  #   provisioning  the assertion could have run and did not (credential
+  #                 unset, service unreachable, binary absent, emulator not
+  #                 deployed). The suite certified nothing and the candidate
+  #                 is unexamined. Stays an INFRA failure, unchanged.
+  #
+  #   not applicable  the candidate's version is below the floor the test
+  #                 declares, so the behaviour under test does not exist in
+  #                 this release. "This feature is not in this release" IS a
+  #                 verdict on the candidate; there is nothing to certify and
+  #                 nothing to fix. This is the normal state of a maintenance
+  #                 line: the 1.9.1 security gate runs a main-branch test tree
+  #                 that necessarily tests post-1.9.0 features.
+  #
+  # skip_not_applicable records the second kind explicitly (_NA_COUNT), so the
+  # split below is a count, not a guess about the wording of a reason string.
+  # A suite mixing the two still reds: the provisioning gap is real whatever
+  # else stood down beside it.
+  local _na_skips="${_NA_COUNT:-0}"
+  local _env_skips=$(( ${_SKIP_COUNT:-0} - _na_skips ))
   if [ "${RELEASE_GATE:-0}" = "1" ] && \
      [ "${_PASS_COUNT:-0}" -eq 0 ] && \
      [ "${_FAIL_COUNT:-0}" -eq 0 ] && \
      [ "${_SKIP_COUNT:-0}" -gt 0 ]; then
-    _TEST_NAME="release-gate coverage floor"
-    _TEST_START=$(date +%s)
-    infra_fail \
-      "suite certified nothing under RELEASE_GATE=1: 0 passed, ${_SKIP_COUNT} skipped" \
-      "Every test in this suite skipped, so the run carries no verdict on the candidate while still reporting green. Either the skip condition is an environment/provisioning gap that must be fixed or exempted, or the assertions never ran. See artifact-keeper-test#339."
+    if [ "$_env_skips" -gt 0 ]; then
+      _TEST_NAME="release-gate coverage floor"
+      _TEST_START=$(date +%s)
+      infra_fail \
+        "suite certified nothing under RELEASE_GATE=1: 0 passed, ${_SKIP_COUNT} skipped (${_env_skips} for environment/provisioning reasons, ${_na_skips} not applicable to this version)" \
+        "Every test in this suite skipped, so the run carries no verdict on the candidate while still reporting green. Either the skip condition is an environment/provisioning gap that must be fixed or exempted, or the assertions never ran. See artifact-keeper-test#339. (Version-gated skips recorded via skip_not_applicable are excluded from this floor by artifact-keeper-test#396; the ${_env_skips} counted above were not.)"
+    else
+      _TEST_NAME="release-gate applicability floor"
+      _TEST_START=$(date +%s)
+      skip_not_applicable \
+        "suite certified nothing under RELEASE_GATE=1 because nothing in it applies to this version: 0 passed, ${_na_skips} skipped, every one of them version-gated above the candidate (backend reports ${_OBSERVED_BACKEND_VERSION:-unknown})"
+      echo ""
+      echo "  NOT APPLICABLE: this suite covers behaviour that does not exist in"
+      echo "  the candidate, so there is nothing here to certify and no"
+      echo "  environment gap to fix. This is the expected outcome on a"
+      echo "  maintenance line, where the release branch lags the features the"
+      echo "  main test tree covers. Exiting 0. See artifact-keeper-test#396."
+    fi
   fi
 
   local total_duration=$(( $(date +%s) - _SUITE_START ))
