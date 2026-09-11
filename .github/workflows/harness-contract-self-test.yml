@@ -19,6 +19,14 @@ name: Harness Contract Self-Test
 # constructs each failure and asserts the exit code, so removing the retry,
 # the infra_fail routing, or the end_suite coverage floor turns this red.
 #
+# It also pins the applicability split (artifact-keeper-test#396): a skip
+# because the CANDIDATE'S VERSION is below the floor a test declares is a
+# verdict (the feature is not in this release, nothing to certify) and exits 0,
+# while a skip because the ENVIRONMENT could not run the test keeps failing.
+# That split is carried by the primitive the caller chose, not by the wording of
+# a reason string, and the cases pin it in both directions -- including a
+# provisioning skip whose reason merely reads like a version gate.
+#
 # The self-test also pins the DISCOVERY contract: every test-*.sh under tests/
 # must source tests/lib/common.sh. scripts/run-suite.sh globs recursively and
 # judges a script on its exit status alone, so a script that brings its own
