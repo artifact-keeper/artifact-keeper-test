@@ -2404,12 +2404,21 @@ wait_for_counter_stable() {
 
 # Escape special XML characters in attribute values.
 _xml_escape() {
+  # The backslashes before each & are load-bearing. bash 5.2 adopted ksh93's
+  # patsub_replacement (on by default), under which an unquoted & in the
+  # REPLACEMENT of ${var//pat/repl} expands to the text the pattern matched.
+  # Unescaped, `${s//>/&gt;}` therefore produced ">gt;" and `${s//\'/&apos;}`
+  # produced "'apos;" on every runner with bash >= 5.2, silently mangling every
+  # JUnit message, skip reason and failure body the gate publishes. `\&` is a
+  # literal ampersand on both sides of that change, so this is correct on 5.1
+  # and 5.2 alike. The &amp; line survived only by coincidence (the matched
+  # text there IS "&"); it is escaped too, so the rule is uniform.
   local s="$1"
-  s="${s//&/&amp;}"
-  s="${s//</&lt;}"
-  s="${s//>/&gt;}"
-  s="${s//\"/&quot;}"
-  s="${s//\'/&apos;}"
+  s="${s//&/\&amp;}"
+  s="${s//</\&lt;}"
+  s="${s//>/\&gt;}"
+  s="${s//\"/\&quot;}"
+  s="${s//\'/\&apos;}"
   echo "$s"
 }
 
