@@ -1280,6 +1280,107 @@ jobs:
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------
+  # Non-blocking formats audit lane (formats-autodiscovery issue).
+  #
+  # tests/formats was the only suite in this repo without run-suite.sh
+  # glob discovery -- every other suite (admin, auth, compatibility,
+  # lifecycle, mesh, platform, promotion, pullthrough, rbac, repos,
+  # search, security, stress, webhooks) runs via
+  # `run-suite.sh --suite <name>`. Every formats script had to be
+  # hand-added to a batch's `scripts:` field above instead, and 59 of 120
+  # never were, including test-oci-token-refresh-reuse-2477.sh, a
+  # regression gate for artifact-keeper#2477 that has never executed.
+  #
+  # This job runs everything format-tests's matrix does NOT name, via
+  # real discovery (scripts/run-suite.sh --suite formats --exclude ...),
+  # so a newly-added script always runs SOMEWHERE automatically instead of
+  # silently nowhere. It is deliberately non-blocking (continue-on-error,
+  # excluded from the collect-results predicate below): these scripts
+  # have never been vetted in this gate, some may need a toolchain this
+  # job does not install, some may be stale. The JUnit artifact is the
+  # promotion signal a maintainer uses to move a script's name into a
+  # `scripts:` field above, script by script -- once moved, it
+  # automatically drops out of this lane's exclude computation below.
+  # -------------------------------------------------------------------
+  format-tests-audit:
+    needs: deploy
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'formats'
+    runs-on: ak-e2e-runners
+    continue-on-error: true
+    # 58 not-yet-blocking scripts today, each capped at TEST_TIMEOUT (120s
+    # default) run serially by run-suite.sh. 90m is headroom for that
+    # worst case, not the expected runtime -- most scripts here either
+    # pass or fail (missing tool, auth error) well under their timeout.
+    timeout-minutes: 90
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      # Same as format-tests: a script that silently skips itself should
+      # show up as a failure in the audit report, not a quiet pass.
+      RELEASE_GATE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run formats audit lane
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x scripts/run-suite.sh
+          # Exclude = format-tests's own blocking batches (the `scripts:`
+          # fields above), re-read from this workflow file itself, plus
+          # anything explicitly acknowledged in
+          # tests/formats/audit-excluded.txt. Computed at run time from
+          # the same source the matrix above is hand-written from, so this
+          # lane cannot drift out of sync with what's blocking: a script
+          # is always in exactly one of blocking, audited, or excluded.
+          # scripts/check-formats-registration.sh independently re-derives
+          # and verifies this same split.
+          EXCLUDE_ARG=$(
+            { grep 'scripts:' .github/workflows/release-gate.yml | grep -oE 'test-[a-zA-Z0-9.-]+\.sh';
+              [ -f tests/formats/audit-excluded.txt ] && grep -vE '^\s*#|^\s*$' tests/formats/audit-excluded.txt; } \
+            | sort -u | paste -sd, -
+          )
+          ./scripts/run-suite.sh --suite formats --exclude "$EXCLUDE_ARG" --run-id "${RUN_ID}"
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-formats-audit
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # Static formats registration check (formats-autodiscovery issue).
+  #
+  # Cluster-free and independent of `deploy`: fails fast, before any
+  # runner/cluster time is spent, if a batch above names a script that no
+  # longer exists (stale/typo'd reference), or if a script is both
+  # blocking and listed in audit-excluded.txt. See
+  # scripts/check-formats-registration.sh for exactly what it does and
+  # does not catch -- by construction it cannot find a script accounted
+  # for in neither the blocking nor the audit set, since the audit set is
+  # defined as the remainder; its job is to make that split legible in CI
+  # logs and to catch the two concrete error classes above. BLOCKING
+  # (unlike format-tests-audit) so a drifted or stale registration cannot
+  # ride through green.
+  # -------------------------------------------------------------------
+  format-tests-registration-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Check formats registration
+        run: |
+          chmod +x scripts/check-formats-registration.sh
+          ./scripts/check-formats-registration.sh .github/workflows/release-gate.yml
+
+  # -------------------------------------------------------------------
   # Security tests
   #
   # cache-poisoning + cache-stampede boot a Python mock upstream on the
@@ -2864,7 +2965,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, security-tests, security-grype-scan-completes, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests, dtf-gate, dtf-advisory]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, format-tests-audit, format-tests-registration-check, security-tests, security-grype-scan-completes, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests, dtf-gate, dtf-advisory]
     if: always()
     # Result rollup only: aggregates needs[].result and downloads JUnit
     # artifacts. No cluster access. Runs on a hosted runner so a
@@ -2887,7 +2988,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes compatibility-tests stress-tests resilience-tests mesh-tests dtf-gate dtf-advisory; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests format-tests-audit format-tests-registration-check repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes compatibility-tests stress-tests resilience-tests mesh-tests dtf-gate dtf-advisory; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -2900,6 +3001,8 @@ jobs:
               pinned-cve-gate) status="${{ needs.pinned-cve-gate.result }}" ;;
               pinned-cve-image-gate) status="${{ needs.pinned-cve-image-gate.result }}" ;;
               format-tests) status="${{ needs.format-tests.result }}" ;;
+              format-tests-audit) status="${{ needs.format-tests-audit.result }}" ;;
+              format-tests-registration-check) status="${{ needs.format-tests-registration-check.result }}" ;;
               repo-tests) status="${{ needs.repo-tests.result }}" ;;
               promotion-tests) status="${{ needs.promotion-tests.result }}" ;;
               rbac-tests) status="${{ needs.rbac-tests.result }}" ;;
@@ -2954,8 +3057,9 @@ jobs:
         # predicate. Grype image-scan efficacy remains hard-gated by
         # pinned-cve-image-gate.
         #
-        # stress-tests and mesh-tests are intentionally excluded
-        # (continue-on-error: true, named waivers on the jobs themselves):
+        # stress-tests, mesh-tests, and format-tests-audit are intentionally
+        # excluded (continue-on-error: true, named waivers or rationale on
+        # the jobs themselves):
         #   - stress-tests: bcrypt-bound auth saturation under sustained
         #     load on shared ARC runners (artifact-keeper#991).
         #   - mesh-tests: its job header always documented it as advisory,
@@ -2966,6 +3070,15 @@ jobs:
         #     (artifact-keeper-test#327) so the documented intent and the
         #     predicate agree. Migrating mesh coverage onto a DTF tier is
         #     DEFERRED to a future release; owner + expiry are on the job.
+        #   - format-tests-audit: discovery-based lane for the 58 formats
+        #     scripts not (yet) named in format-tests's blocking matrix
+        #     (formats-autodiscovery issue). These have never been vetted
+        #     in this gate; failing the release on them would be a worse
+        #     outcome than the silent gap they replace. Its sibling,
+        #     format-tests-registration-check, IS on this predicate below:
+        #     that job only checks that the blocking/audit split itself is
+        #     not stale or ambiguous, which is cheap to get right and
+        #     should never legitimately fail.
         #
         # The three new silent-success gates (scan-completion-gate,
         # sbom-correctness-gate, pinned-cve-gate) use the STRICTER
@@ -3016,6 +3129,7 @@ jobs:
           ((needs.dtf-gate.result != 'success') && (inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf')) ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
+          needs.format-tests-registration-check.result == 'failure' || needs.format-tests-registration-check.result == 'cancelled' ||
           needs.compatibility-tests.result == 'failure' || needs.compatibility-tests.result == 'cancelled' ||
           needs.repo-tests.result == 'failure' || needs.repo-tests.result == 'cancelled' ||
           needs.promotion-tests.result == 'failure' || needs.promotion-tests.result == 'cancelled' ||
@@ -3030,7 +3144,7 @@ jobs:
         run: |
           echo "::error::Release gate FAILED - one or more required test suites did not pass"
           echo "Review the workflow summary above for details"
-          echo "Note: stress-tests and mesh-tests are non-blocking (named waivers on those jobs); their outcomes are shown in the summary but do not gate the release"
+          echo "Note: stress-tests, mesh-tests, and format-tests-audit are non-blocking (named waivers or rationale on those jobs); their outcomes are shown in the summary but do not gate the release"
           echo "Note: resilience-tests is blocking for the crash, data and network categories only; its restart and storage categories are non-blocking under a named waiver on that job (artifact-keeper-test#338)"
           exit 1
 
