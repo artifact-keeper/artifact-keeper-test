@@ -451,6 +451,7 @@ _feature_min_version() {
     # Gates tests/formats/test-pypi-jupyterlab-extension-manager.sh so a
     # 1.9.x hotfix gate skips it instead of going red on 404s.
     "pypi_legacy_json_xmlrpc")        echo "1.10.0" ;;
+    "github_mirror_formats")          echo "1.11.0" ;;
     *) return 1 ;;
   esac
 }

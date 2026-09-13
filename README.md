@@ -226,3 +226,32 @@ artifact-keeper-test/
 │   └── run-suite.sh               Suite orchestrator with timeout
 └── docs/plans/                    Design documents
 ```
+
+## GitHub mirror native-client test
+
+`tests/formats/test-github-mirror.sh` covers the `github`, `mise` and `aqua`
+formats (backend artifact-keeper#3657). It downloads a jq fixture using the
+committed lockfile digest, serves it from a private hosted upstream, and checks
+authenticated mirrors and two isolated `mise install --locked` runs. The second
+run starts with empty client caches after the upstream repository is deleted.
+Anonymous requests are checked before and after the mirror cache is populated.
+
+Requires mise 2026.9.0, Python 3.11+, curl, jq and shasum. Both format workflows
+install pinned mise and Python 3.13.4 versions for this batch. The backend must be able to
+reach its own hosted route through `AK_TEST_UPSTREAM_BASE_URL` (defaults to
+`BASE_URL`) and permit that test address under its SSRF configuration. No
+production SSRF setting is changed by the script.
+
+The feature floor is 1.11.0. To test a feature-branch binary whose version has
+not yet been bumped, set `AK_TEST_GITHUB_MIRROR=1`; the real format creation,
+download and install assertions still run. For example:
+
+```bash
+BASE_URL=http://127.0.0.1:8084 \
+AK_TEST_UPSTREAM_BASE_URL=http://192.168.1.10:8084 \
+AK_TEST_GITHUB_MIRROR=1 bash tests/formats/test-github-mirror.sh
+```
+
+This suite tests warm finite caches, not indefinite outage survival or extended
+GitHub API caching. Expiry and revalidation are covered by backend tests with
+controlled cache timestamps and upstream responses.

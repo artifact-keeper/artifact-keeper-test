@@ -162,6 +162,9 @@ AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN virtual_member_replace_contract"
 # _feature_min_version. Gates tests/formats/test-pypi-jupyterlab-extension-manager.sh.
 AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN pypi_legacy_json_xmlrpc"
 
+# GitHub/mise/aqua formats and finite release caching (artifact-keeper#3657).
+AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN github_mirror_formats"
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
