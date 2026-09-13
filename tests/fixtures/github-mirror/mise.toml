@@ -1,0 +1,5 @@
+[tools]
+"aqua:jqlang/jq" = "1.7.1"
+[settings]
+experimental = true
+lockfile = true

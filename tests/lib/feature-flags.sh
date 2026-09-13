@@ -173,6 +173,9 @@ AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN virtual_nested_members"
 # _feature_min_version. Gates tests/formats/test-maven-prefixes.sh.
 AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN maven_prefixes_no_nesting"
 
+# GitHub/mise/aqua formats and finite release caching (artifact-keeper#3657).
+AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN github_mirror_formats"
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
