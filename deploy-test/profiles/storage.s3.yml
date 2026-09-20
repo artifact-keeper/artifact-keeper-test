@@ -16,7 +16,7 @@
 # =============================================================================
 services:
   minio:
-    image: minio/minio:latest
+    image: ghcr.io/artifact-keeper/ci-mirror/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: ak-dtf${DTF_SLOT}-minio
     command: server /data --console-address ":9001"
     environment:
@@ -33,7 +33,7 @@ services:
     networks: [dtf]
 
   createbucket:
-    image: minio/mc:latest
+    image: ghcr.io/artifact-keeper/ci-mirror/mc:RELEASE.2025-08-13T08-35-41Z
     container_name: ak-dtf${DTF_SLOT}-mc
     depends_on:
       minio:
