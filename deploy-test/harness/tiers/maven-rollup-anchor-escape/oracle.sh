@@ -129,7 +129,7 @@ attr_rows() { # KEY_SQL_LITERAL -> number of maven_flat_object_owner rows
 # percent-decodes its path argument, so the SAME `%5C` spelling the request
 # path uses addresses the object whose stored key holds a literal backslash.
 mc_sh() { # SHELL_SNIPPET
-  docker run --rm --network "$NET" --entrypoint sh minio/mc:latest -c \
+  docker run --rm --network "$NET" --entrypoint sh ghcr.io/artifact-keeper/ci-mirror/mc:RELEASE.2025-08-13T08-35-41Z -c \
     "mc alias set l http://minio:9000 minioadmin minioadmin >/dev/null 2>&1; ${1}" 2>/dev/null || true
 }
 mc_exists() { # ENCODED_KEY -> prints yes|no

@@ -51,7 +51,7 @@ login(){ curl -s -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application
 
 # Recursively list a bucket via a throwaway mc container in minio's netns.
 mc_ls(){
-  docker run --rm --network "container:$MINIO_CTR" --entrypoint sh minio/mc:latest -c \
+  docker run --rm --network "container:$MINIO_CTR" --entrypoint sh ghcr.io/artifact-keeper/ci-mirror/mc:RELEASE.2025-08-13T08-35-41Z -c \
     "mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 && \
      mc ls --recursive \"local/$1\" 2>/dev/null"
 }
