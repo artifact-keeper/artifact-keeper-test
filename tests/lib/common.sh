@@ -457,10 +457,13 @@ _feature_min_version() {
     # invalidation walks every ancestor virtual, and an npm publish/dist-tag
     # write addressed at a virtual routes to its first writable hosted
     # member (artifact-keeper#3840, artifact-keeper#968, milestone 1.11.0).
-    # Pre-1.11.0 backends list nothing through a nested virtual and reject
-    # the through-virtual publish with 400, so the gate skips there.
+    # Unfixed backends list nothing through a nested virtual and reject the
+    # through-virtual publish with 400. The floor is the 1.11.0 dev-window
+    # version main reports (crate version 1.10.0 until release-prep bumps
+    # it), so the companion gate actually runs against development builds;
+    # release branches below the floor skip.
     # Gates tests/pullthrough/test-virtual-nested-members.sh.
-    "virtual_nested_members")         echo "1.11.0" ;;
+    "virtual_nested_members")         echo "1.10.0" ;;
     *) return 1 ;;
   esac
 }
