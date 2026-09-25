@@ -68,8 +68,8 @@ fi
 begin_test "#4197: catalog shows only the real GAV row"
 resp=$(curl -s $CURL_TIMEOUT -H "$(auth_header)" \
   "${BASE_URL}/api/v1/packages?q=widget" 2>/dev/null)
-bogus=$(echo "$resp" | jq '[.items[]? // empty | select(.name == "maven-metadata.xml" or .name == "widget-1.2.3.jar.sha1" or .version == "widget")] | length' 2>/dev/null || echo "-1")
-real=$(echo "$resp" | jq '[.items[]? // empty | select(.name == "com.acme:widget" and .version == "1.2.3")] | length' 2>/dev/null || echo "-1")
+bogus=$(echo "$resp" | jq '[.items[]? // empty | select(.repository_key == "${MVN_REPO}" and (.name == "maven-metadata.xml" or .name == "widget-1.2.3.jar.sha1" or .version == "widget"))] | length' 2>/dev/null || echo "-1")
+real=$(echo "$resp" | jq '[.items[]? // empty | select(.repository_key == "${MVN_REPO}" and .name == "com.acme:widget" and .version == "1.2.3")] | length' 2>/dev/null || echo "-1")
 if [ "$bogus" = "0" ] && [ "$real" = "1" ]; then
   pass
 else
@@ -104,7 +104,7 @@ fi
 begin_test "#3931: catalog row exists after the race"
 resp=$(curl -s $CURL_TIMEOUT -H "$(auth_header)" \
   "${BASE_URL}/api/v1/packages?q=race-pkg" 2>/dev/null)
-if echo "$resp" | jq -e '[.items[]? // empty | select(.name == "race-pkg")] | length >= 1' >/dev/null 2>&1; then
+if echo "$resp" | jq -e '[.items[]? // empty | select(.repository_key == "${GEN_REPO}" and .name == "race-pkg")] | length >= 1' >/dev/null 2>&1; then
   pass
 else
   fail "no catalog row for race-pkg after concurrent publishes; body=$(echo "$resp" | head -c 400)"
