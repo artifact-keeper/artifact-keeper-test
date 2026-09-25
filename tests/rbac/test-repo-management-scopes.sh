@@ -29,11 +29,30 @@ LOCAL_REPO="e2e-repomgmt-local-${RUN_ID}"
 THROWAWAY_REPO="e2e-repomgmt-del-${RUN_ID}"
 
 mint_token() {
-  # mint_token SCOPES_JSON -> prints token value
+  # mint_token NAME_SUFFIX SCOPES_JSON -> prints token value
   local resp
   resp=$(api_post "/api/v1/auth/tokens" \
     "{\"name\":\"e2e-repomgmt-${RUN_ID}-$1\",\"scopes\":$2}" 2>/dev/null) || return 1
   echo "$resp" | jq -r '.token // empty'
+}
+
+# The repo-management handlers layer a per-repository permission check behind
+# the scope gate (the issue asks for exactly this: "subject to the existing
+# per-repository permission check"). An admin-owned token WITHOUT the `admin`
+# scope is folded to non-admin at authentication (with_scope_gated_admin), so
+# it must hold a fine-grained `admin` grant on the target repository -- grant
+# that to the admin user up front.
+grant_self_repo_admin() {
+  # grant_self_repo_admin KEY
+  local key="$1" repo_id admin_id
+  repo_id=$(api_get "/api/v1/repositories/${key}" 2>/dev/null | jq -r '.id // empty') || true
+  admin_id=$(resolve_user_id_by_username "${ADMIN_USER}") || true
+  if [ -z "$repo_id" ] || [ "$repo_id" = "null" ] || [ -z "${admin_id:-}" ]; then
+    return 1
+  fi
+  api_post "/api/v1/permissions" \
+    "{\"principal_type\":\"user\",\"principal_id\":\"${admin_id}\",\"target_type\":\"repository\",\"target_id\":\"${repo_id}\",\"actions\":[\"admin\"]}" \
+    > /dev/null 2>&1
 }
 
 # -------------------------------------------------------------------------
@@ -64,6 +83,13 @@ fi
 echo "repo-mgmt-${RUN_ID}" > "${WORK_DIR}/replace-me.bin"
 api_upload "/api/v1/repositories/${LOCAL_REPO}/artifacts/replace-me.bin" \
   "${WORK_DIR}/replace-me.bin" > /dev/null 2>&1 || true
+
+begin_test "Grant repo-admin to the token owner on cache/delete targets"
+if grant_self_repo_admin "$REMOTE_REPO" && grant_self_repo_admin "$THROWAWAY_REPO"; then
+  pass
+else
+  fail "could not grant fine-grained repo admin"
+fi
 
 # -------------------------------------------------------------------------
 # 1. write:repositories reaches the repo-management write endpoints

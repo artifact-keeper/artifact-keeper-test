@@ -53,11 +53,13 @@ fi
 
 REPO_ID=""
 begin_test "Grant writer {write} on the repo"
+WRITER_PERM_ID=""
 REPO_ID=$(api_get "/api/v1/repositories/${REPO}" 2>/dev/null | jq -r '.id // empty') || true
 if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
   fail "could not resolve repo id"
 elif resp=$(api_post "/api/v1/permissions" \
     "{\"principal_type\":\"user\",\"principal_id\":\"${WRITER_ID}\",\"target_type\":\"repository\",\"target_id\":\"${REPO_ID}\",\"actions\":[\"write\"]}" 2>/dev/null); then
+  WRITER_PERM_ID=$(echo "$resp" | jq -r '.id // empty') || true
   pass
 else
   fail "could not grant write permission"
@@ -121,7 +123,10 @@ fi
 begin_test "Granting read restores by-id access"
 if [ -z "${WEBHOOK_ID:-}" ] || [ -z "${WRITER_JWT:-}" ]; then
   skip "no webhook or writer JWT"
-elif ! api_post "/api/v1/permissions" \
+# A second POST would 409 (duplicate grant); widen the existing row in place.
+elif [ -z "${WRITER_PERM_ID:-}" ] || [ "$WRITER_PERM_ID" = "null" ]; then
+  skip "no permission id captured"
+elif ! api_put "/api/v1/permissions/${WRITER_PERM_ID}" \
     "{\"principal_type\":\"user\",\"principal_id\":\"${WRITER_ID}\",\"target_type\":\"repository\",\"target_id\":\"${REPO_ID}\",\"actions\":[\"read\",\"write\"]}" > /dev/null 2>&1; then
   fail "could not widen grant to read"
 else

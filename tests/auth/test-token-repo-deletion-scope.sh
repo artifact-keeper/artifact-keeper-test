@@ -37,11 +37,15 @@ else
   fail "could not create repo A"
 fi
 
-begin_test "Create repo B (must stay unreachable)"
-if create_local_repo "$REPO_B" "generic"; then
+begin_test "Create repo B (private; must stay unreachable)"
+# create_local_repo hardcodes is_public:true, and a PUBLIC repo is correctly
+# world-readable even to an emptied-out token (require_visible early-returns
+# on is_public) -- so B must be private for the widening pin to mean anything.
+if resp=$(api_post "/api/v1/repositories" \
+    "{\"key\":\"${REPO_B}\",\"name\":\"${REPO_B}\",\"format\":\"generic\",\"repo_type\":\"local\",\"is_public\":false}" 2>/dev/null); then
   pass
 else
-  fail "could not create repo B"
+  fail "could not create private repo B: ${resp:0:200}"
 fi
 
 begin_test "Mint repo-scoped token on repo A"
