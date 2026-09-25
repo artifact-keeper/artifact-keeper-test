@@ -162,6 +162,12 @@ AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN virtual_member_replace_contract"
 # _feature_min_version. Gates tests/formats/test-pypi-jupyterlab-extension-manager.sh.
 AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN pypi_legacy_json_xmlrpc"
 
+# virtual_nested_members: recursive virtual member expansion + publish-to-
+# virtual deployment-target routing (artifact-keeper#3840 / #968), MAIN-only,
+# version floor 1.11.0 in _feature_min_version. Gates
+# tests/pullthrough/test-virtual-nested-members.sh.
+AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN virtual_nested_members"
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
