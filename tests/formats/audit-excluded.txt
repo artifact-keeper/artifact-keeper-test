@@ -1,0 +1,19 @@
+# Scripts listed here are explicitly acknowledged as excluded from BOTH the
+# blocking release gate AND the non-blocking audit lane. They will not run
+# anywhere in CI. Use this only for a script that is genuinely dead
+# (scheduled for deletion) or otherwise unsafe to execute automatically --
+# not as a place to quietly park something you haven't gotten to yet. A
+# script that just hasn't been triaged belongs in the audit lane (the
+# default for anything not listed in a blocking batch), not here.
+#
+# One script basename per line. See scripts/check-formats-registration.sh,
+# which enforces that everything in tests/formats/ is either blocking,
+# audited, or listed here -- and that nothing is listed here AND blocking
+# at the same time.
+#
+# Empty as of this writing: no formats script currently needs a full
+# opt-out. The 59 scripts that were silently unregistered went into the
+# audit lane instead (see the formats-autodiscovery issue), on the
+# reasoning that "never run" and "run non-blocking" are different claims,
+# and only a maintainer with visibility into why a script was carved out
+# should promote it to this list.
