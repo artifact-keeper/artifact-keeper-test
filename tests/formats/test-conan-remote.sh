@@ -292,6 +292,127 @@ else
 fi
 
 # =========================================================================
+# #3887: a remote whose upstream lacks a revision answers 404, so the Conan
+# client falls through to its next remote (the issue's multi-remote case).
+# Uses the harness mock upstream (tests/lib/mock-upstream.py), which answers
+# 404 for any path it has no file for, like conan_server does.
+# =========================================================================
+
+MOCK_REMOTE_KEY="test-conan-mockremote-${RUN_ID}"
+MOCK_NAME="mocklib"
+MOCK_VERSION="2.0.0"
+MOCK_RREV="5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+MOCK_MISSING_RREV="0badc0de0badc0de0badc0de0badc0de"
+MOCK_READY=false
+
+# conan_get <url>: sets global HTTP_STATUS and HTTP_BODY.
+conan_get() {
+  local out
+  out=$(curl -s -w '\n%{http_code}' -H "$(format_auth_header)" $CURL_TIMEOUT "$1") || out=$'\n000'
+  HTTP_BODY=$(printf '%s\n' "$out" | head -n -1)
+  HTTP_STATUS=$(printf '%s\n' "$out" | tail -n 1)
+}
+
+begin_test "#3887 remote: mock upstream serves mocklib/2.0.0 with one revision"
+if start_mock_upstream "${WORK_DIR}/mock-state"; then
+  mref="${MOCK_STATE_DIR}/files/v2/conans/${MOCK_NAME}/${MOCK_VERSION}/_/_"
+  mkdir -p "${mref}/revisions/${MOCK_RREV}"
+  # Only the per-revision endpoints are seeded; everything else (other
+  # revisions, other recipes) gets the mock's 404, like conan_server.
+  printf '{"files":{"conanfile.py":{},"conanmanifest.txt":{},"conan_export.tgz":{}}}\n' \
+    > "${mref}/revisions/${MOCK_RREV}/files"
+  printf '{}\n' > "${mref}/revisions/${MOCK_RREV}/search"
+  if create_remote_repo "$MOCK_REMOTE_KEY" "conan" "$MOCK_BASE_URL"; then
+    MOCK_READY=true
+    pass
+  else
+    fail "could not create remote Conan repo against the mock upstream ${MOCK_BASE_URL}"
+  fi
+else
+  skip "mock upstream did not start"
+fi
+
+begin_test "#3887 remote: /files for a revision the upstream has returns 200"
+if [ "$MOCK_READY" != "true" ]; then
+  skip "mock upstream not available"
+else
+  conan_get "${BASE_URL}/conan/${MOCK_REMOTE_KEY}/v2/conans/${MOCK_NAME}/${MOCK_VERSION}/_/_/revisions/${MOCK_RREV}/files"
+  if assert_eq "$HTTP_STATUS" "200" "expected 200 for upstream-held revision files, got HTTP ${HTTP_STATUS} body=${HTTP_BODY:0:200}" && \
+     assert_contains "$HTTP_BODY" "conanfile.py" "files listing should come from the upstream"; then
+    pass
+  fi
+fi
+
+begin_test "#3887 remote: /files for a revision the upstream lacks returns 404"
+if [ "$MOCK_READY" != "true" ]; then
+  skip "mock upstream not available"
+else
+  conan_get "${BASE_URL}/conan/${MOCK_REMOTE_KEY}/v2/conans/${MOCK_NAME}/${MOCK_VERSION}/_/_/revisions/${MOCK_MISSING_RREV}/files"
+  if assert_eq "$HTTP_STATUS" "404" "expected 404 when the upstream lacks the revision, got HTTP ${HTTP_STATUS} body=${HTTP_BODY:0:200}" && \
+     assert_contains "$HTTP_BODY" "Recipe not found: '${MOCK_NAME}/${MOCK_VERSION}#${MOCK_MISSING_RREV}'" "404 body should name the missing revision"; then
+    pass
+  fi
+fi
+
+begin_test "#3887 remote: package search for a revision the upstream has without binaries returns 200 {}"
+if [ "$MOCK_READY" != "true" ]; then
+  skip "mock upstream not available"
+else
+  conan_get "${BASE_URL}/conan/${MOCK_REMOTE_KEY}/v2/conans/${MOCK_NAME}/${MOCK_VERSION}/_/_/revisions/${MOCK_RREV}/search"
+  if assert_eq "$HTTP_STATUS" "200" "expected 200 for upstream-held revision search, got HTTP ${HTTP_STATUS} body=${HTTP_BODY:0:200}"; then
+    if [ "$(echo "$HTTP_BODY" | jq -c '.' 2>/dev/null)" = "{}" ]; then
+      pass
+    else
+      fail "expected {} for package search of a binary-less upstream revision" "${HTTP_BODY:0:500}"
+    fi
+  fi
+fi
+
+begin_test "#3887 remote: package search for a revision the upstream lacks returns 404"
+if [ "$MOCK_READY" != "true" ]; then
+  skip "mock upstream not available"
+else
+  conan_get "${BASE_URL}/conan/${MOCK_REMOTE_KEY}/v2/conans/${MOCK_NAME}/${MOCK_VERSION}/_/_/revisions/${MOCK_MISSING_RREV}/search"
+  if assert_eq "$HTTP_STATUS" "404" "expected 404 when the upstream lacks the revision, got HTTP ${HTTP_STATUS} body=${HTTP_BODY:0:200}" && \
+     assert_contains "$HTTP_BODY" "Recipe not found: '${MOCK_NAME}/${MOCK_VERSION}#${MOCK_MISSING_RREV}'" "404 body should name the missing revision"; then
+    pass
+  fi
+fi
+
+begin_test "#3887 remote: revisions for a recipe the upstream lacks returns 404"
+if [ "$MOCK_READY" != "true" ]; then
+  skip "mock upstream not available"
+else
+  conan_get "${BASE_URL}/conan/${MOCK_REMOTE_KEY}/v2/conans/nosuchlib/9.9.9/_/_/revisions"
+  if assert_eq "$HTTP_STATUS" "404" "expected 404 when the upstream lacks the recipe, got HTTP ${HTTP_STATUS} body=${HTTP_BODY:0:200}" && \
+     assert_contains "$HTTP_BODY" "Recipe not found: 'nosuchlib/9.9.9'" "404 body should name the missing recipe"; then
+    pass
+  fi
+fi
+
+# The client-side view of #3887: remotes are [mock-backed remote, local].
+# locallib#LOCAL_REVISION exists only in the local repo. The Conan client asks
+# the first remote for the revision's files and moves to the next remote only
+# on 404; an empty 200 made it stop with "no conanfile".
+begin_test "#3887 multi-remote: first remote 404s on /files, second remote serves the revision"
+if [ "$MOCK_READY" != "true" ]; then
+  skip "mock upstream not available"
+else
+  conan_get "${BASE_URL}/conan/${MOCK_REMOTE_KEY}/v2/conans/${LOCAL_NAME}/${LOCAL_VERSION}/_/_/revisions/${LOCAL_REVISION}/files"
+  first_status="$HTTP_STATUS"; first_body="$HTTP_BODY"
+  conan_get "${BASE_URL}/conan/${LOCAL_KEY}/v2/conans/${LOCAL_NAME}/${LOCAL_VERSION}/_/_/revisions/${LOCAL_REVISION}/files"
+  if assert_eq "$first_status" "404" "first remote (${MOCK_REMOTE_KEY}) must answer 404 so the client falls through, got HTTP ${first_status} body=${first_body:0:200}" && \
+     assert_eq "$HTTP_STATUS" "200" "second remote (${LOCAL_KEY}) should serve the revision files, got HTTP ${HTTP_STATUS}" && \
+     assert_contains "$HTTP_BODY" "conanfile.py" "second remote files listing should include conanfile.py"; then
+    pass
+  fi
+fi
+
+if [ "$MOCK_READY" = "true" ]; then
+  api_delete "/api/v1/repositories/${MOCK_REMOTE_KEY}" > /dev/null 2>&1 || true
+fi
+
+# =========================================================================
 # Cleanup
 # =========================================================================
 

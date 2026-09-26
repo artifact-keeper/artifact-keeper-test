@@ -85,9 +85,12 @@ if assert_eq "$status" "404" "expected 404 for non-existent package file, got ${
 fi
 
 # ---------------------------------------------------------------------------
-# 5. List revisions for non-existent recipe returns 404 or empty list
+# 5. List revisions for non-existent recipe returns 404
 # ---------------------------------------------------------------------------
-begin_test "List revisions for non-existent recipe returns 404 or empty"
+# conan_server answers 404 "Recipe not found: '<ref>'" here. An empty 200
+# makes the Conan client stop at this remote instead of falling through to
+# the next one (artifact-keeper#3887), so an empty list is no longer accepted.
+begin_test "List revisions for non-existent recipe returns 404"
 
 resp=$(curl -s -w '\n%{http_code}' \
   -H "$(format_auth_header)" \
@@ -97,18 +100,9 @@ resp=$(curl -s -w '\n%{http_code}' \
 body=$(echo "$resp" | head -n -1)
 status=$(echo "$resp" | tail -n 1)
 
-if [ "$status" = "404" ]; then
+if assert_eq "$status" "404" "expected 404 for revisions of non-existent recipe, got HTTP ${status} body=${body:0:200}" && \
+   assert_contains "$body" "Recipe not found: 'nopkg/0.0.1'" "404 body should name the missing recipe"; then
   pass
-elif [ "$status" = "200" ]; then
-  # Some implementations return an empty revisions list instead of 404
-  rev_count=$(echo "$body" | jq '.revisions | length // 0' 2>/dev/null) || rev_count=""
-  if [ "$rev_count" = "0" ]; then
-    pass
-  else
-    fail "expected 404 or empty revisions list for non-existent recipe, got ${rev_count} revisions"
-  fi
-else
-  fail "expected 404 or 200 with empty list, got HTTP ${status}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -372,6 +366,107 @@ else
 fi
 
 fi  # require_feature "conan_error_correctness"
+
+# ---------------------------------------------------------------------------
+# #3887: missing recipe revisions and packages answer 404, not an empty 200
+# ---------------------------------------------------------------------------
+# Each of these endpoints used to answer 200 with an empty body for a
+# reference the repository does not hold. conan_server answers 404 with a
+# plain-text "Recipe not found" / "Binary package not found" body, and the
+# Conan client relies on that 404 to try the next configured remote.
+
+# conan_get <url>: sets global HTTP_STATUS and HTTP_BODY.
+conan_get() {
+  local out
+  out=$(curl -s -w '\n%{http_code}' -H "$(format_auth_header)" $CURL_TIMEOUT "$1") || out=$'\n000'
+  HTTP_BODY=$(printf '%s\n' "$out" | head -n -1)
+  HTTP_STATUS=$(printf '%s\n' "$out" | tail -n 1)
+}
+
+# expect_404 <url> <expected body substring>
+expect_404() {
+  conan_get "$1"
+  if assert_eq "$HTTP_STATUS" "404" "expected 404 for $1, got HTTP ${HTTP_STATUS} body=${HTTP_BODY:0:200}" && \
+     assert_contains "$HTTP_BODY" "$2" "404 body should read: $2"; then
+    pass
+  fi
+  return 0
+}
+
+RECIPE_REF_BASE="${CONAN_BASE}/${PKG_NAME}/${PKG_VER}/_/_"
+FAKE_RREV="ffffffffffffffffffffffffffffffff"
+FAKE_PKG_ID="1111111111111111111111111111111111111111"
+PKG_ID="$(echo -n 'errlib-pkg-id' | sha1sum | cut -d' ' -f1)"
+PREV="$(echo -n 'errlib-pkg-rev' | md5sum | cut -d' ' -f1)"
+FAKE_PREV="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+begin_test "#3887 recipe files list for existing revision returns 200"
+conan_get "${RECIPE_REF_BASE}/revisions/${REV}/files"
+if assert_eq "$HTTP_STATUS" "200" "expected 200 for files of uploaded revision, got HTTP ${HTTP_STATUS}"; then
+  if echo "$HTTP_BODY" | jq -e '.files | has("conanfile.py")' >/dev/null 2>&1; then
+    pass
+  else
+    fail "files listing of uploaded revision lacks conanfile.py" "${HTTP_BODY:0:500}"
+  fi
+fi
+
+begin_test "#3887 recipe files list for unknown revision of existing recipe returns 404"
+expect_404 "${RECIPE_REF_BASE}/revisions/${FAKE_RREV}/files" \
+  "Recipe not found: '${PKG_NAME}/${PKG_VER}#${FAKE_RREV}'"
+
+begin_test "#3887 recipe revisions for other user/channel of existing recipe returns 404"
+expect_404 "${CONAN_BASE}/${PKG_NAME}/${PKG_VER}/someuser/stable/revisions" \
+  "Recipe not found: '${PKG_NAME}/${PKG_VER}@someuser/stable'"
+
+begin_test "#3887 package search for real revision without binaries returns 200 {}"
+conan_get "${RECIPE_REF_BASE}/revisions/${REV}/search"
+if assert_eq "$HTTP_STATUS" "200" "expected 200 for package search of a binary-less revision, got HTTP ${HTTP_STATUS} body=${HTTP_BODY:0:200}"; then
+  if [ "$(echo "$HTTP_BODY" | jq -c '.' 2>/dev/null)" = "{}" ]; then
+    pass
+  else
+    fail "expected {} for package search of a binary-less revision" "${HTTP_BODY:0:500}"
+  fi
+fi
+
+begin_test "#3887 package search for unknown recipe revision returns 404"
+expect_404 "${RECIPE_REF_BASE}/revisions/${FAKE_RREV}/search" \
+  "Recipe not found: '${PKG_NAME}/${PKG_VER}#${FAKE_RREV}'"
+
+begin_test "#3887 upload a binary package (conaninfo.txt) for the real revision"
+printf '[settings]\nos=Linux\narch=x86_64\n' > "${WORK_DIR}/conaninfo.txt"
+up_status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+  -H "$(format_auth_header)" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary "@${WORK_DIR}/conaninfo.txt" \
+  $CURL_TIMEOUT \
+  "${RECIPE_REF_BASE}/revisions/${REV}/packages/${PKG_ID}/revisions/${PREV}/files/conaninfo.txt") || up_status="000"
+if [ "$up_status" -ge 200 ] 2>/dev/null && [ "$up_status" -lt 300 ] 2>/dev/null; then
+  pass
+else
+  fail "package file upload returned HTTP ${up_status}"
+fi
+
+begin_test "#3887 package revisions for real package id returns 200"
+conan_get "${RECIPE_REF_BASE}/revisions/${REV}/packages/${PKG_ID}/revisions"
+if assert_eq "$HTTP_STATUS" "200" "expected 200 for revisions of uploaded package, got HTTP ${HTTP_STATUS}" && \
+   assert_contains "$HTTP_BODY" "$PREV" "package revisions should list the uploaded package revision"; then
+  pass
+fi
+
+begin_test "#3887 package revisions for unknown package id returns 404"
+expect_404 "${RECIPE_REF_BASE}/revisions/${REV}/packages/${FAKE_PKG_ID}/revisions" \
+  "Binary package not found: '${PKG_NAME}/${PKG_VER}#${REV}:${FAKE_PKG_ID}'"
+
+begin_test "#3887 package files list for real package revision returns 200"
+conan_get "${RECIPE_REF_BASE}/revisions/${REV}/packages/${PKG_ID}/revisions/${PREV}/files"
+if assert_eq "$HTTP_STATUS" "200" "expected 200 for files of uploaded package revision, got HTTP ${HTTP_STATUS}" && \
+   assert_contains "$HTTP_BODY" "conaninfo.txt" "package files listing should include conaninfo.txt"; then
+  pass
+fi
+
+begin_test "#3887 package files list for unknown package revision returns 404"
+expect_404 "${RECIPE_REF_BASE}/revisions/${REV}/packages/${PKG_ID}/revisions/${FAKE_PREV}/files" \
+  "Binary package not found: '${PKG_NAME}/${PKG_VER}#${REV}:${PKG_ID}#${FAKE_PREV}'"
 
 # ---------------------------------------------------------------------------
 # Cleanup: delete the test repository
