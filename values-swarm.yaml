@@ -1,0 +1,10 @@
+backend:
+  image:
+    repository: localhost:32000/artifact-keeper-backend
+    tag: swarm-npm-virtual
+    pullPolicy: IfNotPresent
+  env:
+    # Widen the #3951 in-process member-404 negative-cache window (default
+    # 5000 ms, ceiling 45000 ms) so the companion test can delete the disk
+    # sidecar and re-GET within the TTL on a loaded runner.
+    NPM_VIRTUAL_NEGATIVE_CACHE_TTL_MS: "45000"
