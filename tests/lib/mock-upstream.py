@@ -27,6 +27,13 @@
 #                         When present, the mock returns this status with a
 #                         short text body for every non-readyz request. Used
 #                         by stale-on-error / 5xx-handling tests.
+#   status-prefixes       optional. Lines like "<path-prefix> <code>". A GET
+#                         whose raw (undecoded) request path starts with
+#                         <path-prefix> answers <code> with a short text body.
+#                         First match wins. Emulates CDNs (CloudFront/S3) that
+#                         answer an absent key with 403 under a directory.
+#   files/<dir>/index.html  served for GET /<dir>/ (trailing slash), so a
+#                         PEP 503 simple page can live at a directory URL.
 #
 # GET /__readyz is a readiness probe that bypasses logging, counters, and
 # delay so test fixtures can wait on TCP readiness without polluting state.
@@ -151,8 +158,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(f"injected error {code}\n".encode())
                 return
-            rel = self.path.lstrip("/").split("?", 1)[0]
+            raw_path = self.path.split("?", 1)[0]
+            prefixes_path = STATE_DIR / "status-prefixes"
+            if prefixes_path.is_file():
+                for line in prefixes_path.read_text().splitlines():
+                    parts = line.split()
+                    if len(parts) != 2 or not raw_path.startswith(parts[0]):
+                        continue
+                    try:
+                        code = int(parts[1])
+                    except ValueError:
+                        continue
+                    self.send_response(code)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(f"prefix status {code}\n".encode())
+                    return
+            rel = raw_path.lstrip("/")
             body_path = FILES_DIR / rel
+            if body_path.is_dir() and (body_path / "index.html").is_file():
+                body_path = body_path / "index.html"
             if not body_path.is_file():
                 self.send_response(404)
                 self.send_header("Content-Type", "text/plain")
