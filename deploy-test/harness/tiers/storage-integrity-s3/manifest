@@ -1,0 +1,22 @@
+# DTF tier manifest: storage-integrity-s3  (#3919, #3910, #1570; artifact-keeper#4322)
+# Profile-set: s3 (MinIO). Same oracle as the storage-integrity tier
+# (tiers/storage-integrity/oracle.sh, run with SI_STORAGE=s3); objects are
+# damaged in the `ak-artifacts` bucket through a transient mc container joined
+# to the minio container's network namespace (the backup-s3-bucket pattern).
+#
+# What differs from the filesystem tier:
+#   * content-addressed keys are shared bucket-wide (`ab/cd/<sha>`), so the
+#     verified repair copy is the Maven (path-keyed, `maven/{repo_id}/...`)
+#     copy of the same bytes, exercising a cross-layout donor;
+#   * MinIO sets Last-Modified itself, so the ghost cannot be backdated. The
+#     oracle writes it during setup, asserts a fresh reindex holds it back
+#     (skipped_recent: the 5-minute in-flight guard), and runs the ghost
+#     registration once it has aged past the guard (~5 min wall clock).
+#
+# RED pre-fix: same as storage-integrity (clean 200/206 of corrupted objects;
+# scrub/findings/reindex routes absent).
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives ~60 admin calls back-to-back.
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
