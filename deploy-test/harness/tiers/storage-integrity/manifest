@@ -1,0 +1,31 @@
+# DTF tier manifest: storage-integrity  (#3919, #3910, #1570; artifact-keeper#4322)
+# Profile-set: filesystem / single. The oracle damages stored objects directly
+# on the backend's /data volume (a throwaway postgres:16-alpine container with
+# --volumes-from the backend; the backend image itself has no shell) and then
+# asserts what the product does about it:
+#
+#   #3919  a corrupted object (1 byte flipped, bytes appended, truncated) is
+#          never delivered as a complete transfer under the original
+#          X-Checksum-Sha256 (GET and whole-object Range); sub-ranges and
+#          intact objects are unaffected.
+#          RED pre-fix: flipped/appended objects stream as a clean 200/206.
+#   #3910  POST /api/v1/admin/storage-scrub reports the damage (findings), a
+#          content-addressed object is repaired from a verified second copy,
+#          a path-keyed Maven object is reported but never rewritten, protobuf
+#          commit bundles are not flagged, bounded runs resume from the cursor,
+#          non-admins get 403, runs are audited.
+#          RED pre-fix: the routes are absent (404).
+#   #1570  POST /api/v1/admin/repositories/{key}/reindex-storage registers a
+#          row-less Maven object (backdated past the 5-minute guard with
+#          touch -d) with its real sha256/size, holds back a fresh one,
+#          reports a row whose object is gone, and is idempotent.
+#          RED pre-fix: the route is absent (404).
+#   Regression guards: generic + Maven round-trips, protobuf commit-bundle
+#   download with verification on (B1).
+#
+# The S3 (MinIO) variant of the same oracle is the storage-integrity-s3 tier.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives ~60 admin calls back-to-back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
