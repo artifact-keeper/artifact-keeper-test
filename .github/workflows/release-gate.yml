@@ -186,6 +186,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Install Helm (for chart-default verification)
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
@@ -248,6 +254,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
@@ -339,6 +351,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
@@ -402,6 +420,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
@@ -481,6 +505,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
@@ -641,6 +671,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Install npm (real-flow uses the npm native client)
         run: |
           if ! command -v npm >/dev/null 2>&1; then
@@ -715,6 +751,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Run scan-completion gate for ${{ matrix.format }}
         run: |
@@ -809,6 +851,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Run SBOM correctness gate
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
@@ -878,6 +926,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
@@ -1124,6 +1178,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
@@ -1196,6 +1256,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install test dependencies
         run: |
@@ -1350,6 +1416,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Resolve runner pod address for backend dial-back
         id: mock-host
@@ -1562,6 +1634,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Run waivered Grype scan-completion test (soft)
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
@@ -1633,6 +1711,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Run pull-through cache tests
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
@@ -1667,6 +1751,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Run compatibility tests
         run: |
@@ -1703,6 +1793,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Run repo type tests
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
@@ -1737,6 +1833,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Run promotion tests
         run: |
@@ -1773,6 +1875,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Run RBAC tests
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
@@ -1807,6 +1915,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Run lifecycle tests
         run: |
@@ -1849,6 +1963,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Resolve runner pod address for backend dial-back
         id: receiver-host
@@ -1911,6 +2031,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Run search tests
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
@@ -1958,6 +2084,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Run platform tests
         run: |
@@ -2007,6 +2139,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install oathtool
         # tests/auth/test-totp-2fa.sh (and its totp-* siblings) need oathtool
@@ -2066,6 +2204,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
@@ -2165,6 +2309,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Run stress tests
         run: |
@@ -2353,6 +2503,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
@@ -2449,6 +2605,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
@@ -2571,6 +2733,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Build the SAML XSW payload generator
         working-directory: deploy-test/harness/tiers/sso/probe
@@ -2708,6 +2876,12 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
       - name: Authenticate docker to ghcr
         env:
           GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
@@ -2833,6 +3007,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Authenticate docker to ghcr
         env:
@@ -3045,6 +3225,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
