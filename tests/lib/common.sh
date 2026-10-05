@@ -464,6 +464,11 @@ _feature_min_version() {
     # release branches below the floor skip.
     # Gates tests/pullthrough/test-virtual-nested-members.sh.
     "virtual_nested_members")         echo "1.10.0" ;;
+    # maven_prefixes_no_nesting: .meta/prefixes.txt drops entries whose parent
+    # prefix is listed (artifact-keeper#4367). Floor is the version main reports
+    # in the 1.11.0 dev window, as for virtual_nested_members.
+    # Gates tests/formats/test-maven-prefixes.sh.
+    "maven_prefixes_no_nesting")      echo "1.10.0" ;;
     *) return 1 ;;
   esac
 }
