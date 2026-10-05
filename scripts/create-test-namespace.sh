@@ -9,6 +9,17 @@
 #
 # Environment variables:
 #   GHCR_DOCKER_CONFIG     - Base64-encoded Docker config for ghcr.io pull secret
+#   AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS
+#                          - Optional. Replaces the backend's
+#                            AK_SSRF_ALLOW_PRIVATE_CIDRS from the values file
+#                            (default in values-test-full.yaml:
+#                            10.96.0.0/12,10.244.0.0/16, the kubeadm/kind
+#                            Service and Pod CIDRs). Set it on clusters with
+#                            other networks, e.g. microk8s:
+#                            10.152.183.0/24,10.1.0.0/16. Comma-separated.
+#                            Note: setting it also makes the backend ignore
+#                            WEBHOOK_ALLOW_PRIVATE_IPS, so include the webhook
+#                            receiver's address (runner pod CIDR, or a host /32).
 
 set -euo pipefail
 
@@ -136,6 +147,14 @@ HELM_CMD=(helm upgrade --install "$RELEASE_NAME" "$CHART_DIR"
 
 if [ -n "$EXTRA_VALUES" ]; then
   HELM_CMD+=(--values "${REPO_ROOT}/${EXTRA_VALUES}")
+fi
+
+# Cluster-network override for the SSRF private-CIDR allowlist (see header).
+# Applied last so it wins over both values files. Helm --set splits on
+# commas, so escape them.
+if [ -n "${AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS:-}" ]; then
+  echo "  SSRF private-CIDR allowlist override: ${AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS}"
+  HELM_CMD+=(--set-string "backend.env.AK_SSRF_ALLOW_PRIVATE_CIDRS=${AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS//,/\\,}")
 fi
 
 # No Trivy DB pull credentials are injected. #298 appended a deploy-time

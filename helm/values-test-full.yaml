@@ -88,6 +88,16 @@ backend:
     # Do NOT set UPSTREAM_ALLOW_PRIVATE_IPS=1 here: that blanket toggle would
     # allow ALL RFC1918 upstreams (incl. the security suite's 10.0.0.1 /
     # 192.168.1.1 probes), silently passing the upstream SSRF assertions.
+    #
+    # These defaults are the kubeadm/kind Service and Pod CIDRs used by the
+    # release-gate cluster. Other distributions use other ranges (microk8s:
+    # Service 10.152.183.0/24, Pod 10.1.0.0/16), and there the repos /
+    # pull-through tests whose remote points at the backend Service fail with
+    # an SSRF 400. Do not edit the default for that; override per deploy with
+    #   AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS=10.152.183.0/24,10.1.0.0/16 \
+    #     scripts/create-test-namespace.sh ...
+    # or `--set-string backend.env.AK_SSRF_ALLOW_PRIVATE_CIDRS=...` (escape
+    # the commas as \,) on a hand-run helm upgrade.
     AK_SSRF_ALLOW_PRIVATE_CIDRS: "10.96.0.0/12,10.244.0.0/16"
     # Retained for documentation/back-compat. While AK_SSRF_ALLOW_PRIVATE_CIDRS
     # is set it is IGNORED (the CIDR list governs the webhook context too), but
