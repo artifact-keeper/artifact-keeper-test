@@ -7,7 +7,11 @@
 # a protocol violation (Hex clients such as mix and rebar3 expect protobuf).
 #
 # Hex packages are outer tarballs containing: VERSION, metadata.config,
-# contents.tar.gz, and optionally CHECKSUM.
+# contents.tar.gz and CHECKSUM. CHECKSUM is required: since
+# artifact-keeper#2904 (PR #4388) a publish without one, or with one that
+# is not 64 hex characters, is refused with 422. The backend checks the
+# format only, so the digest below does not have to match hex.pm's exact
+# inner-checksum recipe.
 #
 # Endpoints: ${BASE_URL}/hex/{repo_key}/
 #
@@ -59,7 +63,7 @@ EOMETA
   # VERSION file (Hex package format version 3)
   echo "3" > "${build_dir}/VERSION"
 
-  # CHECKSUM (SHA256 of the contents)
+  # CHECKSUM (SHA256 of the contents). Required member, see the header.
   if command -v shasum &>/dev/null; then
     shasum -a 256 "${build_dir}/contents.tar.gz" | awk '{print $1}' > "${build_dir}/CHECKSUM"
   elif command -v sha256sum &>/dev/null; then

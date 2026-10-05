@@ -177,6 +177,27 @@ bash tests/formats/test-npm.sh
 
 For resilience and mesh tests, you also need `kubectl` access and the appropriate environment variables (`NAMESPACE`, `MAIN_URL`, `PEER1_URL`, etc.).
 
+### Environment requirements: private networks and SSRF
+
+The backend refuses outbound URLs to private addresses (SSRF protection). Some suites need the backend to reach a private address on purpose, so the deploy and the runner have to agree on what is allowed. The backend rule (`validation.rs` `private_ip_allowed`): loopback, link-local and cloud metadata are always refused. If `AK_SSRF_ALLOW_PRIVATE_CIDRS` is set, only RFC1918 addresses inside that list are allowed, for webhooks and remote upstreams alike, and `WEBHOOK_ALLOW_PRIVATE_IPS` / `UPSTREAM_ALLOW_PRIVATE_IPS` are ignored. Otherwise those two toggles decide.
+
+**Webhook suite (`tests/webhooks/`).** Each delivery test starts `tests/lib/mock-webhook-receiver.py` on the runner (bound to `0.0.0.0`) and registers `http://<receiver host>:<port>/hook` with the backend.
+
+- Set `WEBHOOK_RECEIVER_HOST` to an address of the runner that the backend can reach. The release gate sets it to the runner pod IP. When it is unset, `webhook_receiver_host` in `tests/lib/common.sh` uses the runner's primary non-loopback IPv4 address and logs which one it picked. `127.0.0.1` never works: the backend rejects loopback (`Webhook URL IP '127.0.0.1' is not allowed`), and a backend pod could not reach the runner's loopback anyway.
+- That address must pass the backend's private-IP policy. With `AK_SSRF_ALLOW_PRIVATE_CIDRS` set (as in `helm/values-test-full.yaml`), the address has to be inside one of the CIDRs. For a run from a cluster node, add the node's `/32`. With no CIDR list, the backend needs `WEBHOOK_ALLOW_PRIVATE_IPS=1` (as in `helm/values-test.yaml`).
+- The receiver ports (18000-19000) must be reachable from the backend pod, so open them in any host firewall.
+- `test-webhook-ssrf-prevention.sh` expects the RFC1918 probes 10.0.0.1, 172.16.0.1 and 192.168.1.1 to be rejected, which holds under a CIDR list that does not cover them. On a deploy that uses the blanket `WEBHOOK_ALLOW_PRIVATE_IPS=1` with no CIDR list, export `WEBHOOK_ALLOW_PRIVATE_IPS=1` in the runner environment as well (and leave `AK_SSRF_ALLOW_PRIVATE_CIDRS` unset there). Those three rows then skip when the URL is accepted, instead of failing. The hard-blocked rows still run.
+
+**Repos and pull-through suites.** Tests whose remote repository points at the backend's own Service resolve to a ClusterIP, so that Service CIDR must be in `AK_SSRF_ALLOW_PRIVATE_CIDRS`. `helm/values-test-full.yaml` defaults to the kubeadm/kind ranges `10.96.0.0/12,10.244.0.0/16`. On other distributions, override them per deploy instead of editing the default:
+
+```bash
+# microk8s: Service CIDR 10.152.183.0/24, Pod CIDR 10.1.0.0/16
+AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS=10.152.183.0/24,10.1.0.0/16 \
+  ./scripts/create-test-namespace.sh --run-id "$RUN_ID" --full-stack
+```
+
+On an existing release, pass `--set-string backend.env.AK_SSRF_ALLOW_PRIVATE_CIDRS=10.152.183.0/24\,10.1.0.0/16` to `helm upgrade`. Add the webhook receiver's address to the same list if you also run the webhook suite.
+
 ## Calling from a Release Workflow
 
 Add this to your release workflow in any Artifact Keeper repo:

@@ -23,29 +23,30 @@
 #      at delivery time.
 #
 #   2. RFC1918 private space (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
-#      Whether these are rejected is configuration-dependent. Backend
-#      issue #1435 split the single SSRF toggle into per-surface env
-#      vars: WEBHOOK_ALLOW_PRIVATE_IPS gates RFC1918 for the webhook
-#      delivery path, UPSTREAM_ALLOW_PRIVATE_IPS gates it for the
-#      remote-proxy path. The release-gate test cluster sets
-#      WEBHOOK_ALLOW_PRIVATE_IPS=1 (helm/values-test-full.yaml, renamed
-#      from the older single-var name in test-repo #204) BECAUSE the
-#      webhook mock receiver binds inside the runner pod and the webhook
-#      target is the pod's own RFC1918 IP. On the webhook surface in this
-#      cluster, RFC1918 is therefore INTENTIONALLY ALLOWED, so a correct
-#      create returns 2xx, not 4xx. We assert success for these three.
-#
-#      This is a test-side calibration only: it does NOT weaken SSRF
-#      protection. The remote-proxy SSRF suite still asserts RFC1918 is
-#      rejected (UPSTREAM_ALLOW_PRIVATE_IPS is deliberately NOT set), and
-#      metadata / loopback / link-local stay hard-blocked on the webhook
-#      surface regardless of WEBHOOK_ALLOW_PRIVATE_IPS.
+#      Whether these are rejected is configuration-dependent (backend
+#      validation.rs private_ip_allowed):
+#        - AK_SSRF_ALLOW_PRIVATE_CIDRS set: only addresses inside that list
+#          are allowed, for the webhook and upstream contexts alike, and the
+#          blanket WEBHOOK_ALLOW_PRIVATE_IPS toggle is ignored. The release
+#          gate (helm/values-test-full.yaml) runs this way with the cluster
+#          Service/Pod CIDRs, so the representative probes below (10.0.0.1,
+#          172.16.0.1, 192.168.1.1, all outside those CIDRs) must be
+#          REJECTED. This is the default expectation.
+#        - No CIDR list, WEBHOOK_ALLOW_PRIVATE_IPS=1 (helm/values-test.yaml,
+#          and namespaces deployed from it): every RFC1918 webhook URL is
+#          accepted by design, so the rejection rows cannot hold. Export
+#          WEBHOOK_ALLOW_PRIVATE_IPS=1 in the RUNNER's environment too (and
+#          leave AK_SSRF_ALLOW_PRIVATE_CIDRS unset there) to mirror the
+#          backend; the RFC1918 rows then SKIP on a 2xx instead of failing.
+#          A 4xx still passes. The runner cannot read the backend's env, so
+#          this is an explicit opt-in: by default an accepted RFC1918 URL
+#          is a FAIL.
+#      The hard-blocked classes in group 1 are never relaxed by either
+#      setting.
 #
 #      Note (backend #1478, "B4"): before that fix, an RFC1918 webhook
 #      create returned an ambiguous 500 when AK_WEBHOOK_SECRET_KEY was
-#      unset. It now returns a clean 2xx (the URL passes SSRF validation
-#      and the secret-less create succeeds), so "expect 2xx" is the
-#      correct, unambiguous post-#1478 assertion.
+#      unset. A 5xx on any row is still a FAIL.
 #
 # We test each address class separately so a regression on only one class
 # (say, cloud-metadata 169.254.x but not RFC1918) is visible in the
@@ -114,9 +115,23 @@ pass
 # never confuse "request failed" with "validation rejected".
 # -------------------------------------------------------------------------
 
+# rfc1918_webhooks_allowed_by_config
+# True when the runner env says the backend runs with the blanket
+# WEBHOOK_ALLOW_PRIVATE_IPS toggle and no CIDR allowlist (see header).
+rfc1918_webhooks_allowed_by_config() {
+  [ -z "${AK_SSRF_ALLOW_PRIVATE_CIDRS:-}" ] || return 1
+  case "$(printf '%s' "${WEBHOOK_ALLOW_PRIVATE_IPS:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 attempt_ssrf() {
   local label="$1"
   local url="$2"
+  # Third arg "rfc1918" marks a private-space probe that the deploy may
+  # allow by configuration (header, group 2).
+  local class="${3:-}"
   local name="ssrf-${label}-${RUN_ID}"
 
   # CreateWebhookRequest does not accept an enabled/is_enabled field
@@ -152,6 +167,10 @@ attempt_ssrf() {
       leaked_id=$(echo "$body" | jq -r '.id // empty' 2>/dev/null) || leaked_id=""
       if [ -n "$leaked_id" ] && [ "$leaked_id" != "null" ]; then
         CREATED_IDS+=("$leaked_id")
+      fi
+      if [ "$class" = "rfc1918" ] && rfc1918_webhooks_allowed_by_config; then
+        skip "RFC1918 webhook URL '${url}' accepted (HTTP ${status}); WEBHOOK_ALLOW_PRIVATE_IPS=1 without AK_SSRF_ALLOW_PRIVATE_CIDRS allows all private addresses by design"
+        return 0
       fi
       fail "SECURITY: webhook URL '${url}' (${label}) accepted with HTTP ${status}. This is a server-side request forgery vector." "${body:0:400}"
       ;;
@@ -303,16 +322,20 @@ attempt_ssrf "localhost-name" "http://localhost:8080/"
 # 192.168.1.1, all OUTSIDE the allowed CIDRs) are correctly blocked. This is
 # a strictly stronger SSRF posture than the old all-RFC1918 allow. One
 # representative per block so a partial regression stays visible per-row.
+#
+# On a deploy that uses the blanket WEBHOOK_ALLOW_PRIVATE_IPS=1 toggle with
+# no CIDR list, set the same variable in the runner env so these rows skip
+# on accept instead of failing (header, group 2).
 # -------------------------------------------------------------------------
 
 begin_test "Reject RFC1918 10.0.0.0/8 (10.0.0.1) outside cluster-CIDR allowlist"
-attempt_ssrf "rfc1918-10" "http://10.0.0.1/"
+attempt_ssrf "rfc1918-10" "http://10.0.0.1/" rfc1918
 
 begin_test "Reject RFC1918 172.16.0.0/12 (172.16.0.1) outside cluster-CIDR allowlist"
-attempt_ssrf "rfc1918-172" "http://172.16.0.1/"
+attempt_ssrf "rfc1918-172" "http://172.16.0.1/" rfc1918
 
 begin_test "Reject RFC1918 192.168.0.0/16 (192.168.1.1) outside cluster-CIDR allowlist"
-attempt_ssrf "rfc1918-192" "http://192.168.1.1/"
+attempt_ssrf "rfc1918-192" "http://192.168.1.1/" rfc1918
 
 # -------------------------------------------------------------------------
 # 0.0.0.0. Treated as "all addresses on the local host" by most network

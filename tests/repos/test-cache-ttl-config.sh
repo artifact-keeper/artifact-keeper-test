@@ -9,8 +9,13 @@
 #   { "repository_key": "<key>", "cache_ttl_seconds": <i64> }
 #
 # Validation rules from the backend:
-#   validate_cache_ttl(): 1 <= secs <= 2_592_000 (30 days). Out-of-range
-#   values yield AppError::Validation -> HTTP 400.
+#   validate_cache_ttl(): 1 <= secs <= MAX_CACHE_TTL_SECS (315_360_000,
+#   about 10 years). Out-of-range values yield AppError::Validation ->
+#   HTTP 400 with a message built from that constant ("cache_ttl_seconds
+#   must be between 1 and 315360000 ..."). The ceiling was 2_592_000
+#   (30 days) until artifact-keeper#2667 / PR #4390 raised it to the
+#   immutable-path lifetime, so the maximum now means "mutable paths are
+#   never revalidated".
 #   Default when no row exists in repository_config: 300 (5 minutes).
 #
 #   The default was 3600 (1 hour) before artifact-keeper#911 / PR #932,
@@ -40,7 +45,8 @@
 #   1. PUT a valid TTL -> 200 with the value echoed back.
 #   2. GET right after -> same value persisted.
 #   3. Default value when nothing was set (300).
-#   4. Boundary validation (lower/upper limits and out-of-range -> 400).
+#   4. Boundary validation (lower/upper limits and out-of-range -> 400,
+#      with the ceiling named in the message).
 # -------------------------------------------------------------------------
 #
 # EXPECT_FAILURE=1 inverts the suite exit code.
@@ -170,40 +176,58 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 6.3.d: Boundary validation per validate_cache_ttl(): 1..=2_592_000.
+# 6.3.d: Boundary validation per validate_cache_ttl(): 1..=MAX_CACHE_TTL_SECS.
+#
+# MAX_CACHE_TTL_SECS is 315360000 since artifact-keeper PR #4390 (#2667).
+# 2592000 (the old 30-day ceiling) and 2592001 (the old first rejected
+# value) are now ordinary in-range values; 2592001 is kept as a regression
+# guard so a revert to the 30-day cap is visible.
 # -------------------------------------------------------------------------
 
+MAX_CACHE_TTL_SECS=315360000
+
+# put_cache_ttl_status <seconds> <body-file>
+# PUTs the TTL on R, writes the body to <body-file> and prints the HTTP
+# status (curl -w already prints "000" on a transport failure).
+put_cache_ttl_status() {
+  curl -s -o "$2" -w '%{http_code}' $CURL_TIMEOUT \
+    -X PUT -H "$(auth_header)" \
+    -H "Content-Type: application/json" \
+    -d "{\"cache_ttl_seconds\": $1}" \
+    "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/cache-ttl" || true
+}
+
+TTL_BODY="$(mktemp)"
+add_exit_handler "rm -f '${TTL_BODY}'"
+
 begin_test "PUT cache-ttl=1 (lower bound, valid)"
-LB_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-  -X PUT -H "$(auth_header)" \
-  -H "Content-Type: application/json" \
-  -d '{"cache_ttl_seconds": 1}' \
-  "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/cache-ttl") || LB_STATUS="000"
+LB_STATUS=$(put_cache_ttl_status 1 "$TTL_BODY")
 assert_http_2xx "$LB_STATUS" "expected 2xx for ttl=1" && pass
 
-begin_test "PUT cache-ttl=2592000 (upper bound, valid)"
-UB_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-  -X PUT -H "$(auth_header)" \
-  -H "Content-Type: application/json" \
-  -d '{"cache_ttl_seconds": 2592000}' \
-  "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/cache-ttl") || UB_STATUS="000"
-assert_http_2xx "$UB_STATUS" "expected 2xx for ttl=2592000" && pass
+begin_test "PUT cache-ttl=2592001 (old 30-day ceiling + 1, now valid)"
+OLD_STATUS=$(put_cache_ttl_status 2592001 "$TTL_BODY")
+assert_http_2xx "$OLD_STATUS" "expected 2xx for ttl=2592001 (ceiling raised by artifact-keeper#4390)" && pass
+
+begin_test "PUT cache-ttl=${MAX_CACHE_TTL_SECS} (upper bound, valid)"
+UB_STATUS=$(put_cache_ttl_status "$MAX_CACHE_TTL_SECS" "$TTL_BODY")
+if assert_http_2xx "$UB_STATUS" "expected 2xx for ttl=${MAX_CACHE_TTL_SECS}"; then
+  ttl=$(jq -r '.cache_ttl_seconds // empty' "$TTL_BODY" 2>/dev/null)
+  assert_eq "$ttl" "$MAX_CACHE_TTL_SECS" "expected echo ttl=${MAX_CACHE_TTL_SECS}, got '${ttl}'" && pass
+fi
 
 begin_test "PUT cache-ttl=0 returns 400 (below lower bound)"
-ZERO_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-  -X PUT -H "$(auth_header)" \
-  -H "Content-Type: application/json" \
-  -d '{"cache_ttl_seconds": 0}' \
-  "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/cache-ttl") || ZERO_STATUS="000"
+ZERO_STATUS=$(put_cache_ttl_status 0 "$TTL_BODY")
 assert_eq "$ZERO_STATUS" "400" "expected 400 for ttl=0, got ${ZERO_STATUS}" && pass
 
-begin_test "PUT cache-ttl=2592001 returns 400 (above upper bound)"
-OVER_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-  -X PUT -H "$(auth_header)" \
-  -H "Content-Type: application/json" \
-  -d '{"cache_ttl_seconds": 2592001}' \
-  "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/cache-ttl") || OVER_STATUS="000"
-assert_eq "$OVER_STATUS" "400" "expected 400 for ttl=2592001, got ${OVER_STATUS}" && pass
+begin_test "PUT cache-ttl=$((MAX_CACHE_TTL_SECS + 1)) returns 400 (above upper bound)"
+OVER_STATUS=$(put_cache_ttl_status "$((MAX_CACHE_TTL_SECS + 1))" "$TTL_BODY")
+if assert_eq "$OVER_STATUS" "400" "expected 400 for ttl=$((MAX_CACHE_TTL_SECS + 1)), got ${OVER_STATUS}"; then
+  # The message is built from MAX_CACHE_TTL_SECS (cache_ttl_range_error()),
+  # so it must name the current ceiling, not the old 2592000.
+  OVER_BODY=$(cat "$TTL_BODY" 2>/dev/null || true)
+  assert_contains "$OVER_BODY" "between 1 and ${MAX_CACHE_TTL_SECS}" \
+    "400 message should name the ${MAX_CACHE_TTL_SECS} ceiling" && pass
+fi
 
 begin_test "PUT cache-ttl=-1 returns 400 (negative)"
 NEG_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \

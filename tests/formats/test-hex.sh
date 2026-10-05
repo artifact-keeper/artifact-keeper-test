@@ -217,6 +217,87 @@ else
 fi
 
 # -----------------------------------------------------------------------
+# Publish without a usable CHECKSUM member is refused (artifact-keeper#2904)
+#
+# Since artifact-keeper PR #4388 the publish handler extracts the registry
+# facts BEFORE storing anything and answers 422 when the outer tarball has
+# no CHECKSUM member or a malformed one (anything other than 64 hex chars).
+# Before that, the missing case was accepted and every later
+# /packages/{name} read answered 500. A refused publish must leave no
+# artifacts row, so the version must not show up in the artifact list.
+# -----------------------------------------------------------------------
+
+# publish_hex_without_valid_checksum <version> <checksum-mode: missing|malformed>
+# Builds an outer tarball for <version> and PUTs it. Prints "<status> <body>"
+# on one line; the body is the response text, truncated by the caller.
+publish_hex_without_valid_checksum() {
+  local version="$1" mode="$2"
+  local dir="$WORK_DIR/bad-checksum-${mode}"
+  rm -rf "$dir" && mkdir -p "$dir"
+  cat > "$dir/metadata.config" <<EOMETA
+{<<"name">>, <<"${PACKAGE_NAME}">>}.
+{<<"version">>, <<"${version}">>}.
+{<<"description">>, <<"E2E test package, ${mode} CHECKSUM">>}.
+{<<"app">>, <<"${PACKAGE_NAME}">>}.
+{<<"build_tools">>, [<<"mix">>]}.
+{<<"requirements">>, []}.
+EOMETA
+  echo "3" > "$dir/VERSION"
+  tar czf "$dir/contents.tar.gz" -C "$PKG_DIR" lib
+  local members=(VERSION metadata.config contents.tar.gz)
+  if [ "$mode" = "malformed" ]; then
+    # 63 hex chars: one short of a sha256, so decode_inner_checksum refuses it.
+    printf '%s' "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF012345678" > "$dir/CHECKSUM"
+    members=(VERSION CHECKSUM metadata.config contents.tar.gz)
+  fi
+  local tarball="$dir/${PACKAGE_NAME}-${version}.tar"
+  tar cf "$tarball" -C "$dir" "${members[@]}"
+
+  local body_file="$dir/response.txt" status
+  status=$(curl -s -o "$body_file" -w '%{http_code}' \
+    -X PUT \
+    -H "$(format_auth_header)" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "@${tarball}" \
+    "${BASE_URL}/hex/${REPO_KEY}/packages/${PACKAGE_NAME}/releases/${version}") || true
+  printf '%s %s' "$status" "$(tr -d '\n' 2>/dev/null < "$body_file")"
+}
+
+# hex_version_absent <version>: true when no artifact row carries <version>.
+hex_version_absent() {
+  local resp
+  resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null) || return 2
+  ! printf '%s' "$resp" | grep -qF -- "$1"
+}
+
+for mode in missing malformed; do
+  begin_test "Publish with ${mode} CHECKSUM returns 422 and stores nothing"
+  if [ "$mode" = "missing" ]; then
+    BAD_VERSION="3.0.$(date +%s)"
+    expect_msg="no CHECKSUM member"
+  else
+    BAD_VERSION="4.0.$(date +%s)"
+    expect_msg="CHECKSUM must be 64 hex characters"
+  fi
+  bad_resp=$(publish_hex_without_valid_checksum "$BAD_VERSION" "$mode")
+  bad_status="${bad_resp%% *}"
+  bad_body="${bad_resp#* }"
+  if [ "$bad_status" != "422" ]; then
+    fail "publish with ${mode} CHECKSUM returned ${bad_status}, expected 422 (artifact-keeper#2904)" "${bad_body:0:400}"
+  elif [[ "$bad_body" != *"$expect_msg"* ]]; then
+    fail "422 body for ${mode} CHECKSUM should mention '${expect_msg}'" "${bad_body:0:400}"
+  else
+    absent_rc=0
+    hex_version_absent "$BAD_VERSION" || absent_rc=$?
+    case "$absent_rc" in
+      0) pass ;;
+      1) fail "refused ${mode}-CHECKSUM publish left an artifact row for ${PACKAGE_NAME} ${BAD_VERSION}" ;;
+      *) fail "could not list artifacts to confirm the ${mode}-CHECKSUM publish stored nothing" ;;
+    esac
+  fi
+done
+
+# -----------------------------------------------------------------------
 # Delete package and verify removal
 # -----------------------------------------------------------------------
 begin_test "Delete package and verify removal"

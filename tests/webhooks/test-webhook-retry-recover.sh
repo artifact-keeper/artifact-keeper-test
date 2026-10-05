@@ -75,7 +75,7 @@ begin_suite "webhook-retry-recover"
 # Per-PID default port so concurrent webhook suites never share a receiver
 # (shared-receiver simultaneous drains were the "all deltas=0s" root cause).
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-$(( 18700 + $$ % 200 ))}"
-WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://${WEBHOOK_RECEIVER_HOST:-127.0.0.1}:${WEBHOOK_RECEIVER_PORT}/hook}"
+WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://$(webhook_receiver_host):${WEBHOOK_RECEIVER_PORT}/hook}"
 # Number of spaced retry intervals we observe. Default 1: reject attempt 1,
 # recover on attempt 2 — this proves the retry-AND-recover behavior with real
 # backoff spacing while fitting comfortably inside the 300s run-suite per-test

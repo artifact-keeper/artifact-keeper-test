@@ -2187,6 +2187,54 @@ enable_expect_failure_trap() {
 }
 
 # ---------------------------------------------------------------------------
+# Webhook mock receiver host
+# ---------------------------------------------------------------------------
+#
+# webhook_receiver_host
+# Prints the address the *backend* should POST webhook deliveries to. The
+# webhook suites start tests/lib/mock-webhook-receiver.py on the runner,
+# bound to 0.0.0.0, and register http://<this host>:<port>/hook as the
+# webhook URL.
+#
+#   1. WEBHOOK_RECEIVER_HOST, when set. The release gate sets it to the ARC
+#      runner pod IP. Set it explicitly whenever the runner has several
+#      addresses and the auto-detected one is not reachable from the backend.
+#   2. Otherwise the runner's primary non-loopback IPv4 address (the source
+#      address of its default route), so a run from a cluster node or a dev
+#      host against an in-cluster backend works without extra setup.
+#   3. Otherwise 127.0.0.1, with a warning. Loopback is hard-blocked by the
+#      backend's SSRF check (and unreachable from a backend pod), so webhook
+#      create will fail with "Webhook URL IP '127.0.0.1' is not allowed".
+#
+# Whatever address is used must also pass the backend's private-IP policy:
+# with AK_SSRF_ALLOW_PRIVATE_CIDRS set on the backend, the receiver address
+# must be inside one of those CIDRs (WEBHOOK_ALLOW_PRIVATE_IPS is ignored
+# while the CIDR list is set); without it, WEBHOOK_ALLOW_PRIVATE_IPS=1 is
+# needed for an RFC1918 receiver. See README "Environment requirements".
+webhook_receiver_host() {
+  if [ -n "${WEBHOOK_RECEIVER_HOST:-}" ]; then
+    echo "$WEBHOOK_RECEIVER_HOST"
+    return 0
+  fi
+  local addr=""
+  if command -v ip >/dev/null 2>&1; then
+    addr=$(ip -4 route get 1.1.1.1 2>/dev/null \
+      | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}') || addr=""
+  fi
+  if [ -z "$addr" ] && command -v hostname >/dev/null 2>&1; then
+    addr=$( { hostname -I 2>/dev/null || hostname -i 2>/dev/null; } \
+      | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | head -n1) || addr=""
+  fi
+  if [ -n "$addr" ]; then
+    echo "webhook_receiver_host: WEBHOOK_RECEIVER_HOST unset, using detected ${addr}" >&2
+    echo "$addr"
+  else
+    echo "webhook_receiver_host: WARNING: WEBHOOK_RECEIVER_HOST unset and no non-loopback IPv4 found; falling back to 127.0.0.1, which the backend rejects" >&2
+    echo "127.0.0.1"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Mock HTTP upstream fixture
 # ---------------------------------------------------------------------------
 #
