@@ -124,10 +124,19 @@ fc_assert() {
 # ---------------------------------------------------------------------------
 fc_advertised_check() {
   local adv
+  # index.yaml advertises a RELATIVE `charts/<file>` URL, resolved against the
+  # repository URL the client configured (artifact-keeper#3680, #3682). Accept
+  # an absolute or root-relative URL too and resolve each form the way helm does.
   adv="$(nc_advertised "${FC_URL}/index.yaml" \
-    "grep -oE '/helm/[^[:space:]]+${HELM_CHART}-${HELM_VER}\\.tgz' | head -1")" || return 1
+    "grep -oE '[^[:space:]]*charts/${HELM_CHART}-${HELM_VER}\\.tgz' | head -1")" || return 1
   echo "  advertised url=${adv}"
-  nc_expect_code 200 "${BASE_URL}${adv}" || return 1
+  local resolved
+  case "$adv" in
+    http://*|https://*) resolved="$adv" ;;
+    /*)                 resolved="${BASE_URL}${adv}" ;;
+    *)                  resolved="${FC_URL}/${adv}" ;;
+  esac
+  nc_expect_code 200 "$resolved" || return 1
   # bare-basename at the repo root must NOT resolve (real path is /charts/<file>)
   nc_expect_code 404 "${FC_URL}/${HELM_TGZ}" || return 1
 }
