@@ -69,6 +69,20 @@ else
 fi
 
 # -----------------------------------------------------------------------
+begin_test "Upload conanmanifest.txt to publish the revision"
+# -----------------------------------------------------------------------
+# The client uploads the manifest last; the revision is listed only once it
+# is stored (artifact-keeper#4329).
+MANIFEST_STATUS=$(conan_publish_revision \
+  "${BASE_URL}/conan/${REPO_KEY}/v2/conans/testlib/1.0.0/_/_/revisions/${REVISION}/files") || true
+
+if [ "$MANIFEST_STATUS" -ge 200 ] 2>/dev/null && [ "$MANIFEST_STATUS" -lt 300 ] 2>/dev/null; then
+  pass
+else
+  fail "conanmanifest.txt upload returned HTTP ${MANIFEST_STATUS}"
+fi
+
+# -----------------------------------------------------------------------
 begin_test "Query search endpoint"
 # -----------------------------------------------------------------------
 SEARCH_RESP=$(curl -sf \

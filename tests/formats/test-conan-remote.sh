@@ -58,6 +58,12 @@ upload_status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
   --data-binary "@${WORK_DIR}/conanfile.py" \
   "${BASE_URL}/conan/${LOCAL_KEY}/v2/conans/${LOCAL_NAME}/${LOCAL_VERSION}/_/_/revisions/${LOCAL_REVISION}/files/conanfile.py") || true
 
+# The manifest publishes the revision (artifact-keeper#4329).
+if [ "$upload_status" -ge 200 ] 2>/dev/null && [ "$upload_status" -lt 300 ] 2>/dev/null; then
+  upload_status=$(conan_publish_revision \
+    "${BASE_URL}/conan/${LOCAL_KEY}/v2/conans/${LOCAL_NAME}/${LOCAL_VERSION}/_/_/revisions/${LOCAL_REVISION}/files") || true
+fi
+
 if [ "$upload_status" -ge 200 ] 2>/dev/null && [ "$upload_status" -lt 300 ] 2>/dev/null; then
   pass
 else
@@ -314,7 +320,13 @@ conan_get() {
 }
 
 begin_test "#3887 remote: mock upstream serves mocklib/2.0.0 with one revision"
-if start_mock_upstream "${WORK_DIR}/mock-state"; then
+# The backend must dial the mock. Without MOCK_UPSTREAM_HOSTNAME the mock is
+# advertised as http://127.0.0.1:<port>, which the backend refuses as a
+# loopback upstream (and which is not this runner from the backend pod), so
+# the section skips, as test-nuget.sh's #3899 section does.
+if [ -z "${MOCK_UPSTREAM_HOSTNAME:-}" ]; then
+  skip "needs MOCK_UPSTREAM_HOSTNAME reachable from the backend pod"
+elif start_mock_upstream "${WORK_DIR}/mock-state"; then
   mref="${MOCK_STATE_DIR}/files/v2/conans/${MOCK_NAME}/${MOCK_VERSION}/_/_"
   mkdir -p "${mref}/revisions/${MOCK_RREV}"
   # Only the per-revision endpoints are seeded; everything else (other

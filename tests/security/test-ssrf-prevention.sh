@@ -38,7 +38,7 @@ test_webhook_ssrf() {
     -X POST \
     -H "$(auth_header)" \
     -H "Content-Type: application/json" \
-    -d "{\"name\":\"${webhook_name}\",\"url\":\"${url}\",\"events\":[\"artifact.pushed\"]}" \
+    -d "{\"name\":\"${webhook_name}\",\"url\":\"${url}\",\"events\":[\"artifact_uploaded\"]}" \
     "${BASE_URL}/api/v1/webhooks") || true
 
   if [ "$status" = "400" ] || [ "$status" = "422" ]; then
@@ -177,7 +177,7 @@ legit_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -X POST \
   -H "$(auth_header)" \
   -H "Content-Type: application/json" \
-  -d "{\"name\":\"${legit_name}\",\"url\":\"https://example.com/webhook\",\"events\":[\"artifact.pushed\"]}" \
+  -d "{\"name\":\"${legit_name}\",\"url\":\"https://example.com/webhook\",\"events\":[\"artifact_uploaded\"]}" \
   "${BASE_URL}/api/v1/webhooks") || true
 
 if [ "$legit_status" = "200" ] || [ "$legit_status" = "201" ]; then

@@ -172,6 +172,13 @@ if [ "$tgz_status" -lt 200 ] 2>/dev/null || [ "$tgz_status" -ge 300 ] 2>/dev/nul
   echo "  Warning: tgz seed upload returned HTTP ${tgz_status}"
 fi
 
+# The manifest publishes the seed revision (artifact-keeper#4329).
+manifest_status=$(conan_publish_revision \
+  "${CONAN_BASE}/${PKG_NAME}/${PKG_VER}/_/_/revisions/${REV}/files") || true
+if [ "$manifest_status" -lt 200 ] 2>/dev/null || [ "$manifest_status" -ge 300 ] 2>/dev/null; then
+  echo "  Warning: manifest seed upload returned HTTP ${manifest_status}"
+fi
+
 # ---------------------------------------------------------------------------
 # 8. Re-upload same file to same revision is idempotent (200 or 201)
 # ---------------------------------------------------------------------------
@@ -433,13 +440,24 @@ expect_404 "${RECIPE_REF_BASE}/revisions/${FAKE_RREV}/search" \
   "Recipe not found: '${PKG_NAME}/${PKG_VER}#${FAKE_RREV}'"
 
 begin_test "#3887 upload a binary package (conaninfo.txt) for the real revision"
+# conaninfo.txt, conan_package.tgz, then the conanmanifest.txt that publishes
+# the package revision (artifact-keeper#4329).
 printf '[settings]\nos=Linux\narch=x86_64\n' > "${WORK_DIR}/conaninfo.txt"
+echo "errlib-binary" > "${WORK_DIR}/pkg-payload"
+tar czf "${WORK_DIR}/conan_package.tgz" -C "${WORK_DIR}" pkg-payload
+PKG_FILES_URL="${RECIPE_REF_BASE}/revisions/${REV}/packages/${PKG_ID}/revisions/${PREV}/files"
 up_status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
   -H "$(format_auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/conaninfo.txt" \
   $CURL_TIMEOUT \
-  "${RECIPE_REF_BASE}/revisions/${REV}/packages/${PKG_ID}/revisions/${PREV}/files/conaninfo.txt") || up_status="000"
+  "${PKG_FILES_URL}/conaninfo.txt") || up_status="000"
+if [ "$up_status" -ge 200 ] 2>/dev/null && [ "$up_status" -lt 300 ] 2>/dev/null; then
+  up_status=$(format_put_with_retry "${PKG_FILES_URL}/conan_package.tgz" "${WORK_DIR}/conan_package.tgz") || true
+fi
+if [ "$up_status" -ge 200 ] 2>/dev/null && [ "$up_status" -lt 300 ] 2>/dev/null; then
+  up_status=$(conan_publish_revision "$PKG_FILES_URL" conaninfo.txt) || true
+fi
 if [ "$up_status" -ge 200 ] 2>/dev/null && [ "$up_status" -lt 300 ] 2>/dev/null; then
   pass
 else

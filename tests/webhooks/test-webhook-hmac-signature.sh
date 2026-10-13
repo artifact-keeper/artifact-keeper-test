@@ -112,7 +112,7 @@ else
     --arg name "$WEBHOOK_NAME" \
     --arg url "$WEBHOOK_RECEIVER_URL" \
     --arg secret "$WEBHOOK_SECRET" \
-    '{name: $name, url: $url, secret: $secret, events: ["artifact.uploaded"], enabled: true}')
+    '{name: $name, url: $url, secret: $secret, events: ["artifact_uploaded"], enabled: true}')
   if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
     WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
     if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then

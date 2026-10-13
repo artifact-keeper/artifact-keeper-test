@@ -112,10 +112,16 @@ request_id() {
   loc=$(curl -s -o /dev/null -w '%{redirect_url}' \
     "${BASE_URL}/api/v1/auth/sso/saml/${pid}/login")
   python3 - "$loc" <<'PY'
-import sys, urllib.parse, base64, re
+import sys, urllib.parse, base64, re, zlib
 u = sys.argv[1]
 q = urllib.parse.parse_qs(urllib.parse.urlparse(u).query)
-xml = base64.b64decode(q['SAMLRequest'][0]).decode('utf-8', 'replace')
+raw = base64.b64decode(q['SAMLRequest'][0])
+# HTTP-Redirect binding (SAML 2.0 Bindings 3.4.4.1): SAMLRequest is raw
+# DEFLATE before base64 since artifact-keeper#4475 (1.11.0). Inflate it the
+# way an IdP does; keep bare XML working for pre-1.11 candidates.
+if not raw.lstrip().startswith(b'<'):
+    raw = zlib.decompress(raw, -15)
+xml = raw.decode('utf-8', 'replace')
 m = re.search(r'ID="([^"]+)"', xml)
 print(m.group(1) if m else "")
 PY

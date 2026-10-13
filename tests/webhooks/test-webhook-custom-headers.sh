@@ -109,7 +109,7 @@ payload=$(jq -nc \
   '{
     name: $name,
     url:  $url,
-    events: ["artifact.uploaded"],
+    events: ["artifact_uploaded"],
     enabled: true,
     headers: {
       "X-Test-Auth-Token": $tok,

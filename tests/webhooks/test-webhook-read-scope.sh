@@ -69,7 +69,7 @@ begin_test "Admin creates webhook on the repo"
 if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
   skip "no repo id"
 elif resp=$(api_post "/api/v1/webhooks" \
-    "{\"name\":\"e2e-whread-${RUN_ID}\",\"url\":\"https://httpbin.org/post\",\"events\":[\"artifact.uploaded\"],\"repository_id\":\"${REPO_ID}\"}" 2>/dev/null); then
+    "{\"name\":\"e2e-whread-${RUN_ID}\",\"url\":\"https://httpbin.org/post\",\"events\":[\"artifact_uploaded\"],\"repository_id\":\"${REPO_ID}\"}" 2>/dev/null); then
   WEBHOOK_ID=$(echo "$resp" | jq -r '.id // .webhook.id // empty') || true
   if [ -n "$WEBHOOK_ID" ] && [ "$WEBHOOK_ID" != "null" ]; then
     pass

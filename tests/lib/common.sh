@@ -756,6 +756,44 @@ format_get_with_retry() {
   return 1
 }
 
+# Publish a Conan recipe or package revision by PUTting its conanmanifest.txt,
+# the last file the Conan client uploads. Echoes the HTTP status.
+#
+# Since artifact-keeper 1.11.0 (artifact-keeper#4329) a revision's files stay
+# unlisted (/latest, /revisions, /search, /files) until its manifest is
+# stored, and the manifest is refused with 409 until the files the client's
+# integrity checks need are there: conanfile.py for a recipe (plus
+# conan_export.tgz when the manifest names exported files), conaninfo.txt and
+# conan_package.tgz for a package. A suite that PUTs files by hand must end
+# each revision with this call, as the client does. Older backends store the
+# manifest as one more file.
+#
+# FILES_URL is the revision's .../files URL. The manifest lists FILE...
+# (default: conanfile.py) with placeholder md5s; the server does not check
+# them.
+#
+# Usage:
+#   status=$(conan_publish_revision "${BASE}/revisions/${RREV}/files" [FILE...])
+conan_publish_revision() {
+  local files_url="$1"
+  shift
+  [ "$#" -gt 0 ] || set -- conanfile.py
+  local manifest
+  manifest=$(mktemp "${WORK_DIR:-/tmp}/conanmanifest.XXXXXX")
+  {
+    echo "1713000000"
+    local f
+    for f in "$@"; do
+      echo "${f}: d41d8cd98f00b204e9800998ecf8427e"
+    done
+  } > "$manifest"
+  local status
+  status=$(format_put_with_retry "${files_url}/conanmanifest.txt" "$manifest") || true
+  rm -f "$manifest"
+  echo "$status"
+  [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 #
@@ -2295,8 +2333,10 @@ start_mock_upstream() {
   mkdir -p "${MOCK_STATE_DIR}/files"
   MOCK_PORT="$(_pick_mock_port)"
 
+  # Absolute path: callers commonly `cd "$WORK_DIR"` first, and a path
+  # built from BASH_SOURCE is relative to wherever the script was invoked.
   local mock_script
-  mock_script="$(dirname "${BASH_SOURCE[0]}")/mock-upstream.py"
+  mock_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-upstream.py"
   if [ ! -f "$mock_script" ]; then
     echo "start_mock_upstream: mock-upstream.py not found at $mock_script" >&2
     return 1

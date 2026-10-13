@@ -34,7 +34,9 @@ R2_KEY="qwin-window-${RUN_ID}"
 PKG_PATH="pkg/w3912-${RUN_ID}.bin"
 PAYLOAD="quarantine-window-${RUN_ID}"
 
-# fetch_through REPO_KEY -> "STATUS<TAB>BODY"
+# fetch_through REPO_KEY -> "BODY<TAB>STATUS". The body may span lines (the
+# published payload ends in a newline), so split on the LAST tab rather than
+# per line: status="${out##*$'\t'}", body="${out%$'\t'*}".
 fetch_through() {
   curl -s $CURL_TIMEOUT -w $'\t%{http_code}' \
     -H "$(auth_header)" \
@@ -82,7 +84,7 @@ fi
 
 begin_test "First fetch through R1 is held (409)"
 out=$(fetch_through "$R1_KEY") || true
-status=$(echo "$out" | awk -F'\t' '{print $NF}')
+status="${out##*$'\t'}"
 if [ "$status" = "409" ]; then
   pass
 else
@@ -94,13 +96,20 @@ fi
 # policy, then serves immediately.
 # ---------------------------------------------------------------------------
 
+# The held fetch answers 409 immediately and commits the cache entry (and the
+# catalog row the release endpoint looks up) from a detached drain task, so the
+# row can trail the 409 by a moment. Retry while the endpoint still says 404.
 begin_test "Release the held cache entry via the quarantine API"
-status=$(curl -s -o "${WORK_DIR}/release.json" -w '%{http_code}' $CURL_TIMEOUT \
-  -X POST \
-  -H "$(auth_header)" \
-  -H "Content-Type: application/json" \
-  -d "{\"path\":\"${PKG_PATH}\"}" \
-  "${BASE_URL}/api/v1/quarantine/proxy-cache/${R1_KEY}/release" 2>/dev/null) || status="000"
+for _ in $(seq 1 15); do
+  status=$(curl -s -o "${WORK_DIR}/release.json" -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST \
+    -H "$(auth_header)" \
+    -H "Content-Type: application/json" \
+    -d "{\"path\":\"${PKG_PATH}\"}" \
+    "${BASE_URL}/api/v1/quarantine/proxy-cache/${R1_KEY}/release" 2>/dev/null) || status="000"
+  [ "$status" = "404" ] || break
+  sleep 1
+done
 if [ "$status" = "200" ]; then
   pass
 else
@@ -109,8 +118,8 @@ fi
 
 begin_test "The released entry serves immediately (bytes match upstream)"
 out=$(fetch_through "$R1_KEY") || true
-status=$(echo "$out" | awk -F'\t' '{print $NF}')
-body=$(echo "$out" | sed 's/\t[0-9]*$//')
+status="${out##*$'\t'}"
+body=$(printf '%s' "${out%$'\t'*}")
 if [ "$status" = "200" ] && [ "$body" = "$PAYLOAD" ]; then
   pass
 else
@@ -137,7 +146,7 @@ fi
 
 begin_test "First fetch through R2 is held (409)"
 out=$(fetch_through "$R2_KEY") || true
-status=$(echo "$out" | awk -F'\t' '{print $NF}')
+status="${out##*$'\t'}"
 if [ "$status" = "409" ]; then
   pass
 else
@@ -147,8 +156,8 @@ fi
 begin_test "After the 1-minute window the held entry serves from cache"
 sleep 70
 out=$(fetch_through "$R2_KEY") || true
-status=$(echo "$out" | awk -F'\t' '{print $NF}')
-body=$(echo "$out" | sed 's/\t[0-9]*$//')
+status="${out##*$'\t'}"
+body=$(printf '%s' "${out%$'\t'*}")
 if [ "$status" = "200" ] && [ "$body" = "$PAYLOAD" ]; then
   pass
 else
