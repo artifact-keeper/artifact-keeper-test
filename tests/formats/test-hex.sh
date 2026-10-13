@@ -228,8 +228,11 @@ fi
 # -----------------------------------------------------------------------
 
 # publish_hex_without_valid_checksum <version> <checksum-mode: missing|malformed>
-# Builds an outer tarball for <version> and PUTs it. Prints "<status> <body>"
-# on one line; the body is the response text, truncated by the caller.
+# Builds an outer tarball for <version> and POSTs it to /hex/{repo}/publish.
+# Prints "<status> <body>" on one line; the body is the response text,
+# truncated by the caller. The backend has no PUT
+# /packages/{name}/releases/{version} route (that is why the uploads above
+# fall back to /publish), so a PUT there 404s before the CHECKSUM rule runs.
 publish_hex_without_valid_checksum() {
   local version="$1" mode="$2"
   local dir="$WORK_DIR/bad-checksum-${mode}"
@@ -255,11 +258,11 @@ EOMETA
 
   local body_file="$dir/response.txt" status
   status=$(curl -s -o "$body_file" -w '%{http_code}' \
-    -X PUT \
+    -X POST \
     -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${tarball}" \
-    "${BASE_URL}/hex/${REPO_KEY}/packages/${PACKAGE_NAME}/releases/${version}") || true
+    "${BASE_URL}/hex/${REPO_KEY}/publish") || true
   printf '%s %s' "$status" "$(tr -d '\n' 2>/dev/null < "$body_file")"
 }
 
