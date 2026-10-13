@@ -2135,6 +2135,14 @@ jobs:
       # gate deploy re-enables the limiter, flip this to 'true' and drop the
       # rate_limit_disabled_in_gate row from _CAPABILITY_EXEMPTIONS.
       AK_RATE_LIMIT_ENABLED: 'false'
+      # Mirror of the gate backend's guest-access posture for
+      # tests/auth/test-public-repo-guest-disabled.sh (#3855), which fails
+      # under RELEASE_GATE=1 when the posture is undeclared. The gate deploy
+      # sets no AK_GUEST_ACCESS_ENABLED and stores no runtime setting, so the
+      # backend runs with guest access enabled (the default since #867); the
+      # suite then proves a public create really succeeds. KEEP THIS IN SYNC
+      # if the gate deploy ever disables guest access.
+      AK_GUEST_ACCESS_ENABLED: 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
