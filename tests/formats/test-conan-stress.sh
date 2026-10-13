@@ -41,16 +41,23 @@ make_rev() {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: upload a conanfile.py to a recipe and return the HTTP status
+# Helper: upload a conanfile.py to a recipe, then the conanmanifest.txt that
+# publishes the revision (artifact-keeper#4329), and return the HTTP status
 # ---------------------------------------------------------------------------
 conan_upload_recipe() {
   local name="$1" version="$2" revision="$3" filepath="$4"
-  curl -s -o /dev/null -w '%{http_code}' -X PUT \
+  local status
+  status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
     $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${filepath}" \
-    "${CONAN_BASE}/${name}/${version}/_/_/revisions/${revision}/files/conanfile.py"
+    "${CONAN_BASE}/${name}/${version}/_/_/revisions/${revision}/files/conanfile.py") || true
+  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+    status=$(conan_publish_revision \
+      "${CONAN_BASE}/${name}/${version}/_/_/revisions/${revision}/files") || true
+  fi
+  echo "$status"
 }
 
 # ---------------------------------------------------------------------------

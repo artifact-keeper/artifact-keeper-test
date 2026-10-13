@@ -295,7 +295,14 @@ UC_REV="$(echo -n 'user-channel-rev-content' | md5sum | cut -d' ' -f1)"
 
 status=$(conan_upload_file "$PKG_NAME" "$PKG_VER" "myuser" "stable" "$UC_REV" "conanfile.py" "${WORK_DIR}/conanfile_uc.py") || true
 if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
-  pass
+  # The manifest publishes the revision (artifact-keeper#4329).
+  m_status=$(conan_publish_revision \
+    "${CONAN_BASE}/${PKG_NAME}/${PKG_VER}/myuser/stable/revisions/${UC_REV}/files") || true
+  if [ "$m_status" -ge 200 ] 2>/dev/null && [ "$m_status" -lt 300 ] 2>/dev/null; then
+    pass
+  else
+    fail "user/channel manifest upload returned HTTP ${m_status}"
+  fi
 else
   fail "user/channel recipe upload returned HTTP ${status}"
 fi

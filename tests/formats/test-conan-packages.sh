@@ -249,6 +249,16 @@ PKG2_FILE_BASE="${RECIPE_BASE}/revisions/${RECIPE_REV}/packages/${PKG_ID_2}/revi
 status=$(format_put_with_retry \
   "${BASE_URL}${PKG2_FILE_BASE}/conaninfo.txt" \
   "${WORK_DIR}/conaninfo-arm.txt") || true
+# The archive, then the manifest that publishes the package revision
+# (artifact-keeper#4329).
+if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+  status=$(format_put_with_retry \
+    "${BASE_URL}${PKG2_FILE_BASE}/conan_package.tgz" \
+    "${WORK_DIR}/conan_package.tgz") || true
+fi
+if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+  status=$(conan_publish_revision "${BASE_URL}${PKG2_FILE_BASE}" conaninfo.txt) || true
+fi
 
 if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
   pass
@@ -318,6 +328,16 @@ status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/conaninfo-v2.txt" \
   "${BASE_URL}${PKG1B_FILE_BASE}/conaninfo.txt") || true
+# The archive, then the manifest that publishes the package revision
+# (artifact-keeper#4329).
+if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+  status=$(format_put_with_retry \
+    "${BASE_URL}${PKG1B_FILE_BASE}/conan_package.tgz" \
+    "${WORK_DIR}/conan_package.tgz") || true
+fi
+if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+  status=$(conan_publish_revision "${BASE_URL}${PKG1B_FILE_BASE}" conaninfo.txt) || true
+fi
 
 if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
   pass

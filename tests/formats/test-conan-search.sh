@@ -21,7 +21,8 @@ REV_O1="c100000000000000000000000000000c"
 REV_U1="d100000000000000000000000000000d"
 
 # -----------------------------------------------------------------------
-# Helper: upload a Conan recipe (just the conanfile.py)
+# Helper: upload a Conan recipe (conanfile.py, then the conanmanifest.txt that
+# publishes the revision, artifact-keeper#4329)
 # Usage: upload_recipe NAME VERSION USER CHANNEL REVISION
 # -----------------------------------------------------------------------
 upload_recipe() {
@@ -48,6 +49,11 @@ PYEOF
     -H "Content-Type: application/octet-stream" \
     --data-binary "@${WORK_DIR}/conanfile-${name}-${version}.py" \
     "${BASE_URL}/conan/${REPO_KEY}/v2/conans/${name}/${version}/${user}/${channel}/revisions/${revision}/files/conanfile.py") || true
+
+  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+    status=$(conan_publish_revision \
+      "${BASE_URL}/conan/${REPO_KEY}/v2/conans/${name}/${version}/${user}/${channel}/revisions/${revision}/files") || true
+  fi
 
   echo "$status"
 }

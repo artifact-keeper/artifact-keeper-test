@@ -50,6 +50,9 @@ status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/conanfile-v1.py" \
   "${CONAN_BASE}/revisions/${REV1}/files/conanfile.py") || true
+if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+  status=$(conan_publish_revision "${CONAN_BASE}/revisions/${REV1}/files") || true
+fi
 
 if [ "$status" -lt 200 ] 2>/dev/null || [ "$status" -ge 300 ] 2>/dev/null; then
   fail "rev1 upload returned HTTP ${status}"
@@ -85,6 +88,9 @@ status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/conanfile-v2.py" \
   "${CONAN_BASE}/revisions/${REV2}/files/conanfile.py") || true
+if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+  status=$(conan_publish_revision "${CONAN_BASE}/revisions/${REV2}/files") || true
+fi
 
 if [ "$status" -lt 200 ] 2>/dev/null || [ "$status" -ge 300 ] 2>/dev/null; then
   fail "rev2 upload returned HTTP ${status}"
@@ -117,6 +123,9 @@ status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/conanfile-v3.py" \
   "${CONAN_BASE}/revisions/${REV3}/files/conanfile.py") || true
+if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+  status=$(conan_publish_revision "${CONAN_BASE}/revisions/${REV3}/files") || true
+fi
 
 if [ "$status" -lt 200 ] 2>/dev/null || [ "$status" -ge 300 ] 2>/dev/null; then
   fail "rev3 upload returned HTTP ${status}"
@@ -248,12 +257,25 @@ begin_test "Upload package binary under rev1 (prev1)"
 # -----------------------------------------------------------------------
 mkdir -p "${WORK_DIR}/pkg"
 echo "binary-payload-v1-compiled-output" > "${WORK_DIR}/pkg/conan_package.tgz"
+printf '[settings]\n    os=Linux\n' > "${WORK_DIR}/pkg/conaninfo.txt"
 
-pkg_status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-  -H "$(format_auth_header)" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@${WORK_DIR}/pkg/conan_package.tgz" \
-  "${CONAN_BASE}/revisions/${REV1}/packages/${PKG_ID}/revisions/${PREV1}/files/conan_package.tgz") || true
+# A package revision is listed once conaninfo.txt, conan_package.tgz and the
+# conanmanifest.txt that publishes it are stored (artifact-keeper#4329).
+# Usage: upload_package_revision PREV ARCHIVE; echoes the last HTTP status.
+upload_package_revision() {
+  local files_url="${CONAN_BASE}/revisions/${REV1}/packages/${PKG_ID}/revisions/$1/files"
+  local s
+  s=$(format_put_with_retry "${files_url}/conaninfo.txt" "${WORK_DIR}/pkg/conaninfo.txt") || true
+  if [ "$s" -ge 200 ] 2>/dev/null && [ "$s" -lt 300 ] 2>/dev/null; then
+    s=$(format_put_with_retry "${files_url}/conan_package.tgz" "$2") || true
+  fi
+  if [ "$s" -ge 200 ] 2>/dev/null && [ "$s" -lt 300 ] 2>/dev/null; then
+    s=$(conan_publish_revision "$files_url" conaninfo.txt) || true
+  fi
+  echo "$s"
+}
+
+pkg_status=$(upload_package_revision "$PREV1" "${WORK_DIR}/pkg/conan_package.tgz") || true
 
 if [ "$pkg_status" -ge 200 ] 2>/dev/null && [ "$pkg_status" -lt 300 ] 2>/dev/null; then
   pass
@@ -266,11 +288,7 @@ begin_test "Upload second package revision under rev1 (prev2)"
 # -----------------------------------------------------------------------
 echo "binary-payload-v2-recompiled-output" > "${WORK_DIR}/pkg/conan_package2.tgz"
 
-pkg_status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-  -H "$(format_auth_header)" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary "@${WORK_DIR}/pkg/conan_package2.tgz" \
-  "${CONAN_BASE}/revisions/${REV1}/packages/${PKG_ID}/revisions/${PREV2}/files/conan_package.tgz") || true
+pkg_status=$(upload_package_revision "$PREV2" "${WORK_DIR}/pkg/conan_package2.tgz") || true
 
 if [ "$pkg_status" -ge 200 ] 2>/dev/null && [ "$pkg_status" -lt 300 ] 2>/dev/null; then
   pass
