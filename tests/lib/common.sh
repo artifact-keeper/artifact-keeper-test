@@ -206,6 +206,11 @@ BACKEND_VERSION=""
 # reason (e.g. an old checkout), require_feature gracefully falls back
 # to the legacy backend-probe path because feature_enabled_via_env will
 # not be defined.
+# Absolute path of tests/lib, resolved once at source time. BASH_SOURCE is
+# relative to the invoking cwd, and test scripts commonly `cd "$WORK_DIR"`
+# before calling a helper that needs a sibling file (mock-upstream.py).
+_AK_TEST_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # shellcheck source=feature-flags.sh
 if [ -f "$(dirname "${BASH_SOURCE[0]}")/feature-flags.sh" ]; then
   # shellcheck disable=SC1091
@@ -2333,10 +2338,8 @@ start_mock_upstream() {
   mkdir -p "${MOCK_STATE_DIR}/files"
   MOCK_PORT="$(_pick_mock_port)"
 
-  # Absolute path: callers commonly `cd "$WORK_DIR"` first, and a path
-  # built from BASH_SOURCE is relative to wherever the script was invoked.
   local mock_script
-  mock_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-upstream.py"
+  mock_script="${_AK_TEST_LIB_DIR}/mock-upstream.py"
   if [ ! -f "$mock_script" ]; then
     echo "start_mock_upstream: mock-upstream.py not found at $mock_script" >&2
     return 1
