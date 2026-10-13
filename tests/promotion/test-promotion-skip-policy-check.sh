@@ -146,7 +146,9 @@ begin_test "Scoped token without the flag gets the normal policy refusal"
 out=$(promote_as "$SA_TOKEN" "{\"target_repository\":\"${RELEASE_KEY}\"}") || true
 status=$(echo "$out" | awk -F'\t' '{print $NF}')
 body=$(echo "$out" | sed 's/\t[0-9]*$//')
-if [ "$status" = "200" ] && [ "$(echo "$body" | jq -r '.promoted // empty')" = "false" ]; then
+# Not `.promoted // empty`: jq's `//` treats false as absent, so that filter
+# prints nothing for exactly the promoted:false body this test expects.
+if [ "$status" = "200" ] && [ "$(echo "$body" | jq -r '.promoted')" = "false" ]; then
   pass
 else
   fail "expected 200 + promoted:false for a rule-blocked promote, got HTTP ${status}" "$body"
