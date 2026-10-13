@@ -1713,6 +1713,10 @@ jobs:
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      # test-npm-virtual-guard.sh (#3951) dials the backend Service by its
+      # in-namespace DNS name and execs into the backend pod to drop a cache
+      # sidecar, so it needs the namespace and kubectl like admin-tests.
+      NAMESPACE: ${{ needs.deploy.outputs.namespace }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
       # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
@@ -1748,6 +1752,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BACKEND_TAG: ${{ inputs.backend_tag }}
         run: scripts/switch-tests-ref.sh
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       # The pull-through suites (test-npm-virtual-guard.sh,
       # test-cargo-virtual-members.sh, ...) stand up mock upstreams on this
