@@ -1263,6 +1263,38 @@ jobs:
           BACKEND_TAG: ${{ inputs.backend_tag }}
         run: scripts/switch-tests-ref.sh
 
+      - name: Resolve runner pod address for backend dial-back
+        id: mock-host
+        run: |
+          # The runner is a Pod inside the cluster; its pod IP is reachable
+          # from the backend Pod over the cluster network. We pass the bare
+          # IP as MOCK_UPSTREAM_HOSTNAME so the backend's upstream-URL
+          # resolver does not need cluster DNS to be configured for the
+          # `<ip-dashed>.<ns>.pod.cluster.local` form (which depends on
+          # CoreDNS `pods` plugin mode).
+          #
+          # ARC runners with `spec.template.spec.containers[].env.POD_IP`
+          # via the downward API populate $POD_IP. We fall back to
+          # `hostname -i` if the env var is missing.
+          POD_IP="${POD_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
+          if [ -z "$POD_IP" ]; then
+            echo "ERROR: could not determine runner pod IP for mock dial-back" >&2
+            exit 1
+          fi
+          # Sanity: must look like an IPv4. Reject 127.* (loopback would
+          # only be reachable from inside the runner pod itself, not from
+          # the backend pod across the cluster network).
+          if ! echo "$POD_IP" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: POD_IP '${POD_IP}' is not an IPv4 address" >&2
+            exit 1
+          fi
+          if echo "$POD_IP" | grep -Eq '^127\.'; then
+            echo "ERROR: POD_IP '${POD_IP}' is loopback; backend pod cannot reach this" >&2
+            exit 1
+          fi
+          echo "Runner pod IP: ${POD_IP}"
+          echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
+
       - name: Install test dependencies
         run: |
           BATCH="${{ matrix.batch.name }}"
