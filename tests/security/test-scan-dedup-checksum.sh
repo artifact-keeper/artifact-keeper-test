@@ -85,7 +85,16 @@ trigger_and_wait() {
       [ .items[]? | select((.status // "" | ascii_downcase) as $s
         | $s == "completed" or $s == "clean") ] | .[0].id // empty' \
       2>/dev/null || echo "")
-    if [ -n "$completed_id" ]; then
+    local pending
+    pending=$(echo "$resp" | jq -r '
+      [ .items[]? | select((.status // "" | ascii_downcase) as $s
+        | ($s == "pending" or $s == "running" or $s == "queued")) ] | length' \
+      2>/dev/null || echo "0")
+    # Wait for EVERY scanner to settle, not just the first completed row. The
+    # dependency scanner can finish first with a provisional not_cataloged
+    # verdict (artifact-keeper#4154), which the dedup path never reuses; B can
+    # only link back to A once A's other scanners have completed too.
+    if [ -n "$completed_id" ] && [ "${pending:-0}" = "0" ]; then
       final="$completed_id"
       break
     fi
@@ -96,11 +105,6 @@ trigger_and_wait() {
       [ .items[]? | select((.status // "" | ascii_downcase) as $s
         | $s == "failed" or $s == "error" or $s == "cancelled" or $s == "timeout") ]
       | (.[0].id // empty)' 2>/dev/null || echo "")
-    local pending
-    pending=$(echo "$resp" | jq -r '
-      [ .items[]? | select((.status // "" | ascii_downcase) as $s
-        | ($s == "pending" or $s == "running" or $s == "queued")) ] | length' \
-      2>/dev/null || echo "0")
     if [ -n "$any_terminal" ] && [ "${pending:-0}" = "0" ]; then
       # No completed row and nothing still pending: fall back to a terminal
       # (failed/error/...) row id so the caller isn't left empty-handed.
@@ -117,6 +121,11 @@ begin_test "Build deterministic fixture"
 mkdir -p "${WORK_DIR}/pkg"
 cat > "${WORK_DIR}/pkg/package.json" <<'EOF'
 {"name":"dedup-fixture","version":"1.0.0","dependencies":{"lodash":"4.17.4"}}
+EOF
+# A lockfile gives the dependency scanner a resolved package set to catalog,
+# so its row is a reusable verdict rather than a provisional not_cataloged one.
+cat > "${WORK_DIR}/pkg/package-lock.json" <<'EOF'
+{"name":"dedup-fixture","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"dedup-fixture","version":"1.0.0","dependencies":{"lodash":"4.17.4"}},"node_modules/lodash":{"version":"4.17.4","resolved":"https://registry.npmjs.org/lodash/-/lodash-4.17.4.tgz"}}}
 EOF
 # Use --mtime + --owner/--group to make tarball bytes deterministic across
 # runs. These flags are GNU-tar specific; BSD/macOS tar rejects them. The
