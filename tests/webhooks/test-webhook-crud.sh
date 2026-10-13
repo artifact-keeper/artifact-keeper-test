@@ -22,7 +22,7 @@ begin_test "Create webhook"
 WEBHOOK_PAYLOAD='{
   "name": "'"${WEBHOOK_NAME}"'",
   "url": "'"${WEBHOOK_URL}"'",
-  "events": ["artifact.uploaded", "artifact.deleted"],
+  "events": ["artifact_uploaded", "artifact_deleted"],
   "enabled": true
 }'
 if resp=$(api_post "/api/v1/webhooks" "$WEBHOOK_PAYLOAD" 2>/dev/null); then

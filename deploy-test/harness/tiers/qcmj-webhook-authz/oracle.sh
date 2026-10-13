@@ -136,7 +136,7 @@ REPO_ID="$(db "SELECT id FROM repositories WHERE key='${REPO}' LIMIT 1;")"
 # Admin creates the repo-scoped webhook the non-admin will try to hijack.
 mk_repo_webhook() { # NAME -> echoes webhook id
   admin_json POST "/api/v1/webhooks" \
-    "{\"name\":\"${1}\",\"url\":\"https://example.com/hook\",\"events\":[\"artifact.created\"],\"repository_id\":\"${REPO_ID}\",\"secret\":\"whsec_seed_${SUF}\"}" \
+    "{\"name\":\"${1}\",\"url\":\"https://example.com/hook\",\"events\":[\"artifact_uploaded\"],\"repository_id\":\"${REPO_ID}\",\"secret\":\"whsec_seed_${SUF}\"}" \
     | jq -r '.id // empty' 2>/dev/null || true
 }
 WH_DISABLE="$(mk_repo_webhook "qcmj-hook-disable-${SUF}")"

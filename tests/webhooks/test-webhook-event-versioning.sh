@@ -108,7 +108,7 @@ else
   PAYLOAD=$(jq -n \
     --arg name "ver-default-${RUN_ID}" \
     --arg url "$WEBHOOK_RECEIVER_URL" \
-    '{name: $name, url: $url, events: ["artifact.uploaded"], enabled: true}')
+    '{name: $name, url: $url, events: ["artifact_uploaded"], enabled: true}')
   resp=$(create_webhook_status "$PAYLOAD")
   status=$(echo "$resp" | head -n 1)
   body=$(echo "$resp" | tail -n +2)
@@ -186,7 +186,7 @@ else
     --arg name "ver-explicit-${RUN_ID}" \
     --arg url "$WEBHOOK_RECEIVER_URL" \
     --arg ver "$DEFAULT_VERSION" \
-    '{name: $name, url: $url, events: ["artifact.uploaded"], enabled: true, event_schema_version: $ver}')
+    '{name: $name, url: $url, events: ["artifact_uploaded"], enabled: true, event_schema_version: $ver}')
   resp=$(create_webhook_status "$PAYLOAD")
   status=$(echo "$resp" | head -n 1)
   body=$(echo "$resp" | tail -n +2)
@@ -242,7 +242,7 @@ begin_test "Create webhook with unsupported version returns 400"
 PAYLOAD=$(jq -n \
   --arg name "ver-bad-${RUN_ID}" \
   --arg url "$WEBHOOK_RECEIVER_URL" \
-  '{name: $name, url: $url, events: ["artifact.uploaded"], enabled: true, event_schema_version: "9999-99-99"}')
+  '{name: $name, url: $url, events: ["artifact_uploaded"], enabled: true, event_schema_version: "9999-99-99"}')
 resp=$(create_webhook_status "$PAYLOAD")
 status=$(echo "$resp" | head -n 1)
 body=$(echo "$resp" | tail -n +2)
