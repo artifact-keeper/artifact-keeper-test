@@ -2333,8 +2333,10 @@ start_mock_upstream() {
   mkdir -p "${MOCK_STATE_DIR}/files"
   MOCK_PORT="$(_pick_mock_port)"
 
+  # Absolute path: callers commonly `cd "$WORK_DIR"` first, and a path
+  # built from BASH_SOURCE is relative to wherever the script was invoked.
   local mock_script
-  mock_script="$(dirname "${BASH_SOURCE[0]}")/mock-upstream.py"
+  mock_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-upstream.py"
   if [ ! -f "$mock_script" ]; then
     echo "start_mock_upstream: mock-upstream.py not found at $mock_script" >&2
     return 1
