@@ -96,13 +96,20 @@ fi
 # policy, then serves immediately.
 # ---------------------------------------------------------------------------
 
+# The held fetch answers 409 immediately and commits the cache entry (and the
+# catalog row the release endpoint looks up) from a detached drain task, so the
+# row can trail the 409 by a moment. Retry while the endpoint still says 404.
 begin_test "Release the held cache entry via the quarantine API"
-status=$(curl -s -o "${WORK_DIR}/release.json" -w '%{http_code}' $CURL_TIMEOUT \
-  -X POST \
-  -H "$(auth_header)" \
-  -H "Content-Type: application/json" \
-  -d "{\"path\":\"${PKG_PATH}\"}" \
-  "${BASE_URL}/api/v1/quarantine/proxy-cache/${R1_KEY}/release" 2>/dev/null) || status="000"
+for _ in $(seq 1 15); do
+  status=$(curl -s -o "${WORK_DIR}/release.json" -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST \
+    -H "$(auth_header)" \
+    -H "Content-Type: application/json" \
+    -d "{\"path\":\"${PKG_PATH}\"}" \
+    "${BASE_URL}/api/v1/quarantine/proxy-cache/${R1_KEY}/release" 2>/dev/null) || status="000"
+  [ "$status" = "404" ] || break
+  sleep 1
+done
 if [ "$status" = "200" ]; then
   pass
 else
