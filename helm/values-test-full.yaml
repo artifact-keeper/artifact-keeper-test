@@ -99,11 +99,11 @@ backend:
     # or `--set-string backend.env.AK_SSRF_ALLOW_PRIVATE_CIDRS=...` (escape
     # the commas as \,) on a hand-run helm upgrade.
     AK_SSRF_ALLOW_PRIVATE_CIDRS: "10.96.0.0/12,10.244.0.0/16"
-    # Retained for documentation/back-compat. While AK_SSRF_ALLOW_PRIVATE_CIDRS
-    # is set it is IGNORED (the CIDR list governs the webhook context too), but
-    # the webhook mock's pod IP is inside 10.244.0.0/16 so webhook delivery
-    # still works.
-    WEBHOOK_ALLOW_PRIVATE_IPS: "1"
+    # Do NOT set WEBHOOK_ALLOW_PRIVATE_IPS here. Since artifact-keeper#4472
+    # (#4428) a set blanket toggle is honoured for webhooks even alongside the
+    # CIDR list, so it would allow every RFC1918 webhook target and defeat
+    # test-webhook-ssrf-prevention.sh. The webhook mock's pod IP is inside
+    # 10.244.0.0/16, so the CIDR list alone keeps delivery working.
     # Enable the Webhooks v2 EventBus producer. It is OFF by default in the
     # backend (WEBHOOKS_V2_PRODUCER_ENABLED defaults to false) so a fresh
     # cluster does not double-deliver while System B notifications are still

@@ -551,7 +551,7 @@ else
 fi
 
 # =========================================================================
-# Test 11: Concurrent uploads to same artifact_path (last to finalize wins)
+# Test 11: Concurrent uploads to same artifact_path (first to finalize wins; the second is refused, #3924)
 # =========================================================================
 
 begin_test "Concurrent uploads to same path"
@@ -645,9 +645,11 @@ if [ -n "$CONC_A_SESSION" ] && [ -n "$CONC_B_SESSION" ]; then
   echo "  finalize A: HTTP ${CONC_A_FIN}"
   echo "  finalize B: HTTP ${CONC_B_FIN}"
 
-  # Both should succeed (200)
-  if [ "$CONC_A_FIN" = "200" ] && [ "$CONC_B_FIN" = "200" ]; then
-    # Download and verify B's content won (last to finalize)
+  # The path is immutable (versioning off), so the first completion commits
+  # and the second is refused with 409 rather than replacing it. Chunked
+  # completion enforces the same immutability rule as a plain PUT
+  # (artifact-keeper#3924).
+  if [ "$CONC_A_FIN" = "200" ] && [ "$CONC_B_FIN" = "409" ]; then
     CONC_DL_HTTP=$(curl -s -o "${WORK_DIR}/conc_dl.bin" -w '%{http_code}' \
       $CURL_TIMEOUT -H "$(auth_header)" \
       "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/test/concurrent.bin") || CONC_DL_HTTP="000"
@@ -655,23 +657,17 @@ if [ -n "$CONC_A_SESSION" ] && [ -n "$CONC_B_SESSION" ]; then
     if [ "$CONC_DL_HTTP" = "200" ]; then
       CONC_DL_SHA=$(compute_sha256 "${WORK_DIR}/conc_dl.bin")
       echo "  downloaded SHA: ${CONC_DL_SHA}"
-      echo "  session B SHA: ${CONC_SHA_B}"
-      if [ "$CONC_DL_SHA" = "$CONC_SHA_B" ]; then
+      echo "  session A SHA: ${CONC_SHA_A}"
+      if [ "$CONC_DL_SHA" = "$CONC_SHA_A" ]; then
         pass
       else
-        # A might have won if it was finalized after B in race, either is acceptable
-        if [ "$CONC_DL_SHA" = "$CONC_SHA_A" ]; then
-          echo "  (session A won the race instead of B, still valid)"
-          pass
-        else
-          fail "downloaded content doesn't match either session"
-        fi
+        fail "the refused completion B must not change the stored bytes (expected A's SHA)"
       fi
     else
       fail "download after concurrent upload returned HTTP ${CONC_DL_HTTP}"
     fi
   else
-    fail "expected both finalizations to return 200 (got A=${CONC_A_FIN}, B=${CONC_B_FIN})"
+    fail "expected A=200 and B=409 on an immutable path (got A=${CONC_A_FIN}, B=${CONC_B_FIN})"
   fi
 else
   skip "could not create both concurrent sessions (A=${CONC_A_HTTP}, B=${CONC_B_HTTP})"
