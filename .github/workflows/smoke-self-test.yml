@@ -61,6 +61,11 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       - name: Run gate against nonexistent image and expect failure
         env:
@@ -100,6 +105,11 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       # Fixture: tag a public busybox image as the "backend" via a
       # transient ImageStreamTag-style alias. busybox does not have
