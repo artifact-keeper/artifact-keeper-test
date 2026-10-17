@@ -1,0 +1,61 @@
+# DTF tier manifest: format-catalog-fixes  (artifact-keeper#4694, #4633, #4645)
+# Profile-set: s3 (MinIO). #4694 only exists where several repositories share
+# one object-key namespace, i.e. on cloud storage; the other two fixes are
+# storage-independent and ride the same stack.
+#
+# THE BUGS
+# #4694 (conan): recipe and package files were written to the flat key
+#   `conan/{name}/{version}/{user}/{channel}/...`. On a shared S3/GCS/Azure
+#   bucket that key is the same for every repository, so publishing a recipe
+#   revision a second Conan repository already held hit guard_cross_repo_write:
+#   `409 ... already owned by another repository; refusing cross-repository
+#   overwrite`, on every retry. The fix (#4734) writes new files under the
+#   #2624 repo-scoped key `conan/{repository_id}/{path}`. Reads go through the
+#   row's recorded storage_key, so legacy flat-key rows keep serving with no
+#   backfill; a re-upload moves a file to the scoped key.
+# #4633 (maven): every file deployed into a GAV registered the version with
+#   its own size, and the version upsert kept whichever file sorted smallest by
+#   (checksum, size), so a version showed one file's size (29 KB for a 98 MB
+#   version). The fix (#4739) sets package_versions.size_bytes to the sum of
+#   the live artifact rows directly in the version directory, on upload and in
+#   the admin catalog backfill. Checksum sidecars are row-less puts and do not
+#   count. Deletes are out of scope in the PR (liveness is a read-time filter).
+# #4645 (rubygems): the push path stored the gemspec's name/version, but
+#   specs.4.8.gz / latest_specs.4.8.gz re-split the stored filename at the
+#   FIRST hyphen-digit boundary, so `qa-gem-2` 1.0.0 was advertised as
+#   [qa-gem, 2-1.0.0, ruby] and `gem install qa-gem-2` could not resolve it.
+#   The fix (#4724) uses the stored columns when the filename agrees with them
+#   and moves the filename fallback to the LAST hyphen-digit boundary.
+#
+# THE PRIMITIVES
+#   PUT  /conan/{repo}/v2/conans/{n}/{v}/_/_/revisions/{rrev}/files/{f}
+#        (+ .../packages/{pid}/revisions/{prev}/files/{f}); the revision is
+#        published by its conanmanifest.txt (common.sh conan_publish_revision)
+#   PUT  /maven/{repo}/{g}/{a}/{v}/{file}
+#   POST /gems/{repo}/api/v1/gems   (a .gem built by fixtures/build_gem.py)
+#   GET  /gems/{repo}/specs.4.8.gz, latest_specs.4.8.gz (decoded by
+#        fixtures/marshal_specs.py, a small Marshal 4.8 reader)
+#   GET  /api/v1/packages?repository_key=..., /api/v1/packages/{id}/versions
+#   POST /api/v1/admin/packages/backfill?repository_key=...
+#   MinIO is listed / rewritten through a transient `mc` container in the
+#   minio container's network namespace; Postgres through DB_CONTAINER.
+#
+# Oracle gates (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: one-repo conan publish + byte-exact
+#             download; a row on the legacy flat conan key still downloads; a
+#             single-file Maven version's size is that file's; `demo` 1.0.0
+#             and `dtf-s3` 1.2.3 (no digit-leading segment) index correctly;
+#             the packages API lists `dtf-gem-2` 1.2.3 and the gem downloads.
+#   (FIX)     RED on 1.11.1: the same conan revision publishes into a second
+#             repo (409 there) and is served by both; MinIO and the artifact
+#             rows carry two `conan/{repo_id}/...` keys and no flat one; a
+#             re-upload of the legacy row moves it to the scoped key; Maven
+#             demo 1.0.0 = jar + pom + sources in the packages API, in
+#             package_versions and after a backfill; specs.4.8.gz and
+#             latest_specs.4.8.gz carry [dtf-gem-2, 1.2.3, ruby].
+#
+# RATE_LIMIT_ENABLED=false: the oracle makes ~50 authenticated calls back to
+# back (Basic auth on every format-native PUT).
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
