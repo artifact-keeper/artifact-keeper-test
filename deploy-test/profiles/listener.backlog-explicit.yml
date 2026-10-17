@@ -1,0 +1,30 @@
+# =============================================================================
+# profiles/listener.backlog-explicit.yml — listener dimension = explicit
+#                                          accept backlog (artifact-keeper#4647)
+# =============================================================================
+# Sets HTTP_LISTEN_BACKLOG on the backend so the API listener binds with an
+# explicit accept-queue length instead of the OS maximum. The value comes from
+# the tier manifest (exported before `compose up`) and defaults to 777: a
+# number that is neither a kernel default (128 / 4096) nor a power of two, so
+# when it shows up in `ss -ltn` Send-Q or in the startup log it can only have
+# come from this setting.
+#
+# A backend that predates #4647 does not know the variable and ignores it; it
+# still boots and binds with the OS maximum, which is exactly what the tier's
+# RED leg measures.
+#
+# No ports, no extra services: the API listener is the one compose.base.yml
+# already publishes on ${HTTP_PORT}.
+# =============================================================================
+services:
+  backend:
+    environment:
+      HTTP_LISTEN_BACKLOG: ${HTTP_LISTEN_BACKLOG:-777}
+    # The oracle reads the startup diagnostic from `docker logs`. Pin a file
+    # log driver: on a host whose engine defaults to journald (rootless podman
+    # on Fedora), journald's rate limiter drops the backend's startup burst
+    # when several stacks boot at once, and the one line the tier needs is
+    # silently gone. json-file is the docker default and podman maps it to its
+    # k8s-file driver, so this is a no-op on a stock docker host.
+    logging:
+      driver: json-file

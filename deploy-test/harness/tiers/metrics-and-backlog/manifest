@@ -1,0 +1,68 @@
+# DTF tier manifest: metrics-and-backlog  (artifact-keeper#4642 / #4647)
+# Profile-set: filesystem / single + listener.backlog-explicit. Neither fix
+# depends on the storage backend; the listener profile only sets
+# HTTP_LISTEN_BACKLOG (and pins a file log driver so the startup line survives).
+#
+# THE BUGS
+# #4642: `ak_artifact_uploads_total`, `ak_artifact_upload_size_bytes` and
+# `ak_artifact_downloads_total` were defined in metrics_service but no
+# production code recorded them, so /metrics never exported them and every
+# dashboard built on them stayed empty. The fix (artifact-keeper#4728) counts an
+# upload in scanner_service::trigger_scan_on_upload, the post-commit step the
+# generic API and every format-native upload handler already reach, and counts
+# downloads when the download-event dispatcher writes download_statistics rows
+# (so the counter equals the rows, and a HEAD, which writes none, never
+# counts). Labels are {repository, format} only.
+# #4647: an overloaded backend refused connections and nobody could see the
+# accept-queue length the kernel had granted. The fix (artifact-keeper#4743)
+# adds HTTP_LISTEN_BACKLOG (bound through TcpSocket::listen; unset or 0 keeps
+# the OS maximum) and logs "HTTP listener accept backlog" at startup with the
+# requested value, net.core.somaxconn and the effective min of the two.
+#
+# MEASURED ON 1.11.1 (the RED baseline): the exporter at
+# /api/v1/admin/metrics serves ak_http_* but no ak_artifact_uploads_total /
+# ak_artifact_downloads_total / ak_artifact_upload_size_bytes series at all,
+# although download_statistics rows ARE written. 1.11.1 ignores
+# HTTP_LISTEN_BACKLOG: `ss -ltn` shows Send-Q 4096 on :8080 (the OS maximum,
+# somaxconn=4096 in the container netns on this kernel), and no backlog line is
+# logged.
+#
+# THE PRIMITIVES
+#   GET  /api/v1/admin/metrics                    (admin-gated exporter, API port)
+#   PUT  /api/v1/repositories/{generic}/artifacts/{path}, then 2x
+#   GET  /api/v1/repositories/{generic}/download/{path}
+#   PUT + GET + HEAD /maven/{maven}/{gav jar}      (format-native route)
+#   docker run --net container:ak-dtf<N>-backend nicolaka/netshoot ss -Hltn
+#   docker logs ak-dtf<N>-backend
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) TRUE ON BOTH IMAGES: /health 200; the exporter answers with the
+#             pre-existing ak_http_requests_total; the generic upload reports
+#             the right size_bytes and both downloads are byte-identical; two
+#             download_statistics rows land; the Maven PUT/GET/HEAD round-trip;
+#             :8080 is LISTENing; /health and an authenticated API call still
+#             work at the end.
+#   (FIX #4642) counters move by exactly 1 upload (generic and maven, each
+#             with its own repository/format labels) and exactly 2 generic
+#             downloads; ak_artifact_upload_size_bytes_sum grows by the exact
+#             uploaded sizes; the generic download delta equals the
+#             download_statistics rows; the Maven GET counts 1 and its HEAD
+#             counts 0; no artifact series carries a per-artifact label.
+#             RED on 1.11.1: every series is absent.
+#   (FIX #4647) Send-Q of the :8080 LISTEN socket == min(777, somaxconn) and
+#             the startup line names requested=Some(777), somaxconn and
+#             effective. RED on 1.11.1: Send-Q 4096, no line.
+#
+# Not exercised: the 503 + Retry-After shed under GLOBAL_MAX_CONCURRENCY. It
+# predates #4743 (that PR only pinned it in a unit test), so it cannot
+# discriminate 1.11.1 from main.
+#
+# RATE_LIMIT_ENABLED=false: ~20 authenticated calls plus a polling scrape loop;
+# the base default (ON) could turn a scrape into a 429.
+# HTTP_LISTEN_BACKLOG is exported so compose interpolates it into
+# profiles/listener.backlog-explicit.yml and the oracle compares against the
+# same value. 777 is neither a kernel default nor a power of two.
+PROFILES="storage.filesystem listener.backlog-explicit"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+export HTTP_LISTEN_BACKLOG="777"
