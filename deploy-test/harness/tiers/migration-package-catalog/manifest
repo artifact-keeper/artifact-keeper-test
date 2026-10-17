@@ -1,0 +1,67 @@
+# DTF tier manifest: migration-package-catalog  (artifact-keeper#4691 / #4657)
+# Profile-set: filesystem / single + upstreams=mock-artifactory-catalog. Both
+# defects are in the migration importer's registration step, after the bytes
+# are stored, so the storage dimension is irrelevant; a migration SOURCE that
+# serves real Maven and Debian files is what the tier needs.
+#
+# THE BUGS
+#   #4691 (fixed by #4735). Since #2676 the importer registers migrated
+#   artifacts in the package catalog (`packages` / `package_versions`, which
+#   the Packages tab and `GET /api/v1/packages?repository_key=` read), but
+#   `migration_catalog_entry` returned None for maven/gradle/sbt/ivy: the
+#   filename parser recovers only the artifactId while a live `mvn deploy`
+#   catalogues `groupId:artifactId`. A Maven repository migrated from Nexus or
+#   Artifactory therefore stored every file and listed no packages at all.
+#
+#   #4657 (fixed by #4741). The importer copied `.deb` files without
+#   registering them. `parse_name_and_version` had no Debian parser, so no
+#   version and no catalog row; no `debian` control document was written, so
+#   `dists/<d>/<c>/binary-<arch>/Packages` was synthesised from the file name
+#   and lost every control field ("Description: No description available");
+#   and a `.deb` outside `pool/<component>/` (Artifactory's "Set Me Up" path is
+#   `pool/<file>.deb`) was stored where the Packages query never looks, so apt
+#   could not see it at all.
+#
+# PRIMITIVES
+#   * profiles/upstreams.mock-artifactory-catalog.yml: a stdlib-python mock of
+#     the Artifactory API subset `ArtifactoryClient` uses (a copy of the
+#     migration-progress-monotonic mock, adapted), reporting packageType
+#     `maven` / `debian` so the migration provisions native destinations.
+#   * fixtures/build_catalog.py builds the source files on the host at oracle
+#     time (a real jar + pom + .sha1/.md5 sidecars + maven-metadata.xml; two
+#     real `.deb` ar archives, one pooled, one flat) and the oracle `docker cp`s
+#     them into the mock. Timestamps are pinned, so the bytes are identical on
+#     both images and every download is compared by sha256.
+#
+# Oracle gates (discriminating, RELEASE_GATE=1):
+#   (CONTROL)  each migration ends `completed` with completed == total == the
+#              source file count and 0 failed, into a destination of the right
+#              format; the jar downloads byte-identical via /maven/, the pooled
+#              `.deb` via /debian/. These hold on BOTH images.
+#   (FIX #4691) the Packages-tab API lists exactly `com.dtf:demo 1.0.0` for the
+#              migrated Maven repository (sidecars and maven-metadata.xml are
+#              not packages), and packages x package_versions holds that row.
+#   (FIX #4657) the Packages-tab API lists `dtfpkg 1.0` and `dtfflat 2.0`;
+#              the binary-amd64 `Packages` stanza for dtfpkg carries the
+#              control file's Description and the file's SHA256; the flat
+#              `.deb` is indexed at `pool/main/dtfflat_2.0_all.deb` and
+#              downloads from there.
+#   (RECOVERY) with the Maven catalog deleted, `reindex-storage` (#1570)
+#              registers nothing (CONTROL: it only adds rows for objects that
+#              have none, and never touches the catalog) and the #3659 admin
+#              backfill restores `com.dtf:demo 1.0.0` (pre-existing, passes on
+#              both). With the Debian control documents and catalog deleted
+#              (a pre-fix import), RE-RUNNING the migration re-registers both
+#              packages, which is #4741's documented recovery (RED on 1.11.1).
+#
+# NOTE on the pooled .deb on 1.11.1: its Packages stanza is NOT absent there.
+# The index falls back to the file name for a `pool/<component>/` row with no
+# control document, so the gate keys on the control file's Description and
+# not on the package name alone.
+#
+# RATE_LIMIT_ENABLED=false: the oracle polls job state once a second.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the source sits on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-artifactory-catalog"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
