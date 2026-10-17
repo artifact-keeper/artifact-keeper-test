@@ -32,12 +32,14 @@ on:
   pull_request:
     paths:
       - 'scripts/clean-install-smoke.sh'
+      - 'helm/smoke-overrides.yaml'
       - '.github/workflows/release-gate.yml'
       - '.github/workflows/smoke-self-test.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/clean-install-smoke.sh'
+      - 'helm/smoke-overrides.yaml'
       - '.github/workflows/release-gate.yml'
       - '.github/workflows/smoke-self-test.yml'
 

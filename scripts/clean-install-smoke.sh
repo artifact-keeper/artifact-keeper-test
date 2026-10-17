@@ -370,44 +370,24 @@ fi
 #   cosign.enabled=false (default already)
 #     No signature verification in CI; would block on cosign tooling.
 
+# The fixed overrides above live in helm/smoke-overrides.yaml, not here, so the
+# chart's CI and the backend Release Candidate render this exact profile from
+# helm/gate-profiles.txt (scripts/render-gate-profiles.sh,
+# artifact-keeper/artifact-keeper#4722). Only the per-run values stay `--set`.
+SMOKE_OVERRIDES="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/helm/smoke-overrides.yaml"
+if [ ! -f "$SMOKE_OVERRIDES" ]; then
+  echo "ERROR: smoke overrides not found at ${SMOKE_OVERRIDES}" >&2
+  exit 1
+fi
+
 # Build the override flags once and reuse for both the dry-run and the
-# install. Drift between the two would defeat the lint pass.
+# install. Drift between the two would defeat the lint pass. The overrides
+# file follows values-production.yaml, so it wins over it, and the --set
+# flags win over both.
 HELM_OVERRIDES=(
-  --set fullnameOverride=ak-smoke
+  --values "$SMOKE_OVERRIDES"
   --set backend.image.tag="$BACKEND_TAG"
-  --set backend.image.pullPolicy=Always
-  --set backend.replicaCount=1
-  --set "backend.env.ADMIN_PASSWORD=Smoke!2026secure"
-  # Chart 1.9.29+ refuses a credential in backend.env (artifact-keeper-iac#375)
-  # unless told this is a throwaway install.
-  --set backend.allowCredentialsInEnv=true
   --set web.image.tag="$WEB_TAG"
-  --set web.replicaCount=1
-  --set secrets.jwtSecret="smoke-jwt-secret-not-for-production"
-  --set postgres.enabled=true
-  --set "postgres.auth.username=registry"
-  --set "postgres.auth.password=smoke-db-password"
-  --set "postgres.auth.database=artifact_registry"
-  --set externalDatabase.host=""
-  --set externalDatabase.existingSecret=""
-  --set externalSecrets.enabled=false
-  --set ingress.enabled=false
-  --set serviceMonitor.enabled=false
-  --set "backend.autoscaling.enabled=false"
-  --set "backend.podDisruptionBudget.enabled=false"
-  --set "web.podDisruptionBudget.enabled=false"
-  --set edge.enabled=false
-  --set trivy.enabled=false
-  --set dependencyTrack.enabled=false
-  --set networkPolicy.enabled=false
-  --set opensearch.enabled=false
-  # v1.1.x charts: values-production.yaml ships meilisearch.masterKey=""
-  # and env="production" so operators must provide the key out-of-band.
-  # The smoke gate is a transient test deploy: provide a hardcoded test
-  # key (>= 16 bytes) so Meilisearch boots. Harmless on v1.2.x charts
-  # (which dropped Meilisearch in artifact-keeper-iac#67) since the keys
-  # have no template binding there.
-  --set 'meilisearch.masterKey=ak-smoke-meilisearch-test-master-key'
 )
 
 # Fixture override: when SMOKE_BACKEND_REPO_OVERRIDE is set (used by the
@@ -508,8 +488,8 @@ watch_rollout "ak-smoke-web"     "web"     || exit $?
 #
 # `/readyz` is a deeper probe than `kubectl rollout status`: it verifies
 # the backend can reach Postgres, has applied migrations, and has cleared
-# the setup_required flag (which is why we set ADMIN_PASSWORD via --set
-# above). A backend that booted but cannot serve will trip this even when
+# the setup_required flag (which is why helm/smoke-overrides.yaml sets ADMIN_PASSWORD).
+# A backend that booted but cannot serve will trip this even when
 # rollout status reports Ready.
 #
 # We exec into the backend pod itself rather than spinning up a curl pod
