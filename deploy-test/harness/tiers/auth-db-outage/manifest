@@ -1,0 +1,55 @@
+# DTF tier manifest: auth-db-outage  (artifact-keeper#4750 / #4751)
+# Profile-set: filesystem / single. The bug is in the credential check that
+# runs ahead of every handler, so the storage dimension is irrelevant.
+#
+# THE BUG
+# When PostgreSQL could not answer while a PRESENTED credential was being
+# checked, the backend answered 401, as if the credential were wrong. Only a
+# pool-ACQUIRE timeout (#2125) was mapped to 503; a refused / lost connection,
+# a closed pool or a server shutting down fell through to the "invalid
+# credential" branch:
+#   * Bearer JWT on /api/v1: the live-user / credential-watermark lookup error
+#     was ignored, the token fell through to the API-token lookup, and the
+#     request got 401 "Invalid or expired token".
+#   * Basic on a format route (password, or an AK JWT as the password): 401
+#     "Authentication required".
+#   * the /v2 OCI registry and its /v2/token exchange: 401 for every failure.
+# Docker, twine, cargo and CI runners abort or re-prompt on 401 but retry on
+# 503, so a DB blip (failover, restart) turned into hard CI failures. The fix
+# (#4751) adds `AppError::is_db_unavailable()` and answers a retryable 503
+# (`Retry-After: 1` on the middleware and /v2 paths, OCI code `UNAVAILABLE`).
+# Nothing is ever authenticated on an error: it fails closed.
+#
+# THE PRIMITIVE: A REAL OUTAGE
+# The oracle stops this slot's own Postgres container (`docker stop
+# "$DB_CONTAINER"`, i.e. ak-dtf<slot>-db), probes, then starts it again. That is
+# safe: DB_CONTAINER is exported by run.sh from the slot number, every DTF slot
+# owns a separate compose project with its own Postgres, so no other slot or
+# host stack is touched. An EXIT trap restarts the container if the oracle
+# dies mid-outage, so `run.sh` teardown (and `--keep`) find a whole stack. Each
+# outage probe waits for the pool's acquire timeout (5s default), so the
+# stopped window is about a minute.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL)  true on BOTH images: before the outage a user's JWT, API token,
+#              Basic password and JWT-as-Basic-password all authenticate, and
+#              /v2/ accepts Basic; /readyz goes not-ready (503, database
+#              unhealthy) once the DB is stopped; a credential rejected before
+#              the database is consulted (a too-short X-API-Key) still gets 401
+#              during the outage; a correct-password login during the outage
+#              is never a 401 and never mints a token; after `docker start`
+#              /readyz returns to ready, the pool reconnects (regression guard
+#              for the #1877 keepalive work), login works again, the SAME
+#              pre-outage JWT and API token are still valid, and a wrong
+#              password is 401 again.
+#   (FIX)      during the outage each presented credential gets 503, never
+#              401 and never 2xx: Bearer JWT on /api/v1 (+ Retry-After: 1);
+#              Basic password, JWT-as-Basic-password and a WRONG Basic password
+#              on a /maven route (the check cannot run, so "cannot decide");
+#              /v2/ with a Bearer JWT and with Basic, and /v2/token with Basic
+#              (503 UNAVAILABLE + Retry-After: 1). RED on 1.11.1: 401 on all.
+#
+# RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
