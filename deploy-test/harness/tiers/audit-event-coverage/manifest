@@ -1,0 +1,82 @@
+# DTF tier manifest: audit-event-coverage  (artifact-keeper#4710 / #4718)
+# Profile-set: filesystem + a webhook secret-encryption key. The audit trail is
+# written by the API handlers into Postgres, ahead of any storage choice, so
+# the storage dimension is irrelevant. secrets.webhook-key only exists so the
+# webhook rotate-secret call succeeds (without a key it answers 500 and no
+# rotation, audited or not, can happen).
+#
+# THE BUGS
+# #4710: the quarantine, approval, promotion, permission-rule, SSO-admin,
+# signing-key, webhook and sync-policy handlers wrote NO audit_log rows. An
+# auditor could not answer who released a held package, approved or ran a
+# promotion, granted a permission, changed an identity provider, rotated a key
+# or repointed a webhook. Fixed by artifact-keeper#4716, which records each
+# action with the acting principal (`user_id`, `actor`, verified client IP via
+# `AuditEntry::for_principal`), the target as `resource_id`, and secret-free
+# `details`.
+# #4718: `audit_retention_days` was applied only by the manual
+# `POST /api/v1/admin/cleanup`; nothing ran on a schedule, the settings
+# endpoint advertised a `90` that was never applied, and the manual cleanup
+# used that unsaved 90 (and `0` meant "delete every row"). Fixed by
+# artifact-keeper#4720: an hourly scheduler pass (first run 240-270 s after
+# startup) deletes rows older than a saved positive period; unsaved or `0`
+# means retention is off, the settings endpoint reports `0`, and the manual
+# cleanup deletes nothing in that state. The period is a system setting, not
+# an env var, so this manifest sets nothing for it: the oracle saves the
+# smallest legal period (1 day) through the API as its first action, ahead of
+# the first pass.
+#
+# THE PRIMITIVES (each through the real admin API, as the bootstrap admin
+# unless noted)
+#   POST/PUT/DELETE /api/v1/permissions[/{id}]          PERMISSION_RULE_*
+#   POST /api/v1/webhooks, /{id}/disable, /{id}/rotate-secret, DELETE /{id}
+#                                                       WEBHOOK_*
+#   POST/PUT/DELETE /api/v1/admin/sso/oidc[/{id}], PATCH /{id}/toggle
+#                                                       SSO_PROVIDER_*
+#   POST /api/v1/signing/keys/{id}/rotate, /{id}/revoke SIGNING_KEY_*
+#   POST /api/v1/quarantine/{artifact}/release|reject   QUARANTINE_*
+#   POST /api/v1/promotion/repositories/{stg}/artifacts/{a}/promote|reject
+#        (and a promote a min_staging_hours rule refuses) ARTIFACT_PROMOTED,
+#                                                       PROMOTION_REJECTED,
+#                                                       PROMOTION_REFUSED
+#   POST /api/v1/approval/{id}/approve|reject, by a SECOND admin (four-eyes)
+#                                                       PROMOTION_APPROVAL_*
+#   POST/PUT/DELETE /api/v1/sync-policies[/{id}]        SYNC_POLICY_*
+#   GET/POST /api/v1/admin/settings, POST /api/v1/admin/cleanup
+#   UPDATE audit_log SET created_at = ... (backdating rows the oracle created)
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL)  true on BOTH images: repository create writes exactly one
+#              REPOSITORY_CREATED row and user create exactly one USER_CREATED
+#              row, both attributed to the admin; a login carrying a spoofed
+#              X-Forwarded-For records the TCP peer, not the spoof (no trusted
+#              proxy is configured, the 1.11.1 #4681 contract); a saved
+#              audit_retention_days reads back.
+#   (FIX #4710) every primitive above writes exactly one row with the
+#              expected action, resource_type and resource_id (DB count and
+#              the GET /api/v1/admin/audit filter both say 1), attributed to
+#              the acting admin with the same peer IP the login row recorded;
+#              no row carries the OIDC client secret, the webhook secret, or
+#              the webhook URL's userinfo/query. RED on 1.11.1: count 0.
+#   (FIX #4718) the unsaved period reads 0 (1.11.1: 90); a manual cleanup with
+#              no saved period deletes nothing (1.11.1: deletes a 100-day-old
+#              row under the unsaved 90); after the first scheduled pass, rows
+#              backdated 2, 30 and 100 days are gone while a 23-hour-old row
+#              and every fresh row this run wrote survive (1.11.1: no pass
+#              ever runs, the backdated rows stay).
+#
+# The scheduled-pass wait is bounded by the container start time + 390 s, so
+# the tier takes four and a half minutes on the fixed image and six and a half
+# on one with no scheduled pass.
+#
+# RATE_LIMIT_ENABLED=false: two admin logins and ~80 back-to-back
+# authenticated management calls; the base default (ON) would throttle them
+# and turn an assertion into a 429.
+PROFILES="storage.filesystem secrets.webhook-key"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+# The webhook secret-encryption key profiles/secrets.webhook-key.yml needs
+# (base64 of a fixed 32-byte non-production ASCII string). Derived here at run
+# time so the repository holds no key-shaped literal; run.sh sources this file
+# before `docker compose up`, so the export reaches the compose interpolation.
+export DTF_WEBHOOK_SECRET_KEY="$(printf 'dtf-audit-event-coverage-key-32b' | base64)"
