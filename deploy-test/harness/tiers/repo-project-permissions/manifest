@@ -1,0 +1,59 @@
+# DTF tier manifest: repo-project-permissions
+#   (artifact-keeper#4026 / #4730, #4639 / #4737, #4690 / #4753)
+# Profile-set: filesystem / single. All three fixes live in the management API
+# (repository PATCH, the permissions listing, the virtual member/artifact
+# listings) ahead of any storage backend, so the storage dimension is
+# irrelevant and the oracle is pure HTTP plus direct reads of the DB.
+#
+# THE BUGS
+#   #4026  PATCH /api/v1/repositories/{key} {"project_id": null} answered 200
+#          and left the project assignment in place. The request field was a
+#          bare Option<Uuid>, so null and an omitted field were the same thing,
+#          and the service UPDATE ran COALESCE($n, project_id) anyway. The fix
+#          makes the field three-way (omit = unchanged, null = clear, id =
+#          assign), clears the column in the same transaction, and requires
+#          project admin on the project being LEFT (or instance admin) for a
+#          clear. Repository admin alone is refused 403, because a project
+#          admin holds repository admin on the project's repositories by
+#          inheritance.
+#   #4639  GET /api/v1/permissions (and /permissions/{id}, and the create
+#          response) filled `target_name` only for repository targets. Grants
+#          on a group, project or artifact came back `target_name: null`, so
+#          the console showed raw UUIDs. The fix LEFT JOINs groups / projects /
+#          artifacts in the shared hydrate SELECT: group -> groups.name,
+#          project -> projects.name, artifact -> `name@version` (the path when
+#          unversioned). A target that no longer exists still reports null.
+#   #4690  A user granted read on a VIRTUAL repository but on none of its
+#          members gets an empty listing. That is the access model (a grant on
+#          a virtual does not grant its members, #1804 / #3163) and #4753 does
+#          NOT change it. What it fixes is that the refusal was invisible: the
+#          only trace was a server log line. GET /repositories/{virtual}/members
+#          and GET /repositories/{virtual}/artifacts now carry an
+#          `X-AK-Virtual-Members-Notice` header, but only for a caller that
+#          holds a read GRANT on the virtual and can read none of its members.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: a description PATCH works and leaves the
+#             assignment alone; assigning a project id works; the repository
+#             admin really is one (its description PATCH succeeds); the
+#             repository-target permission reports the repository name; a
+#             rule on a deleted group reports target_name null; a user granted
+#             only the virtual still gets an EMPTY member list and listing and
+#             404 on the member itself (no grant widening); a user with no
+#             grant gets the same answer as before and no notice; an admin
+#             gets no notice; once the member is granted too, the member is
+#             listed and the notice is gone.
+#   (FIX)     RED on 1.11.1: {"project_id": null} as a full admin clears the
+#             response AND the DB column; the same PATCH as a repository-only
+#             admin is 403 with the column untouched (1.11.1 answers 200);
+#             target_name equals the group / project name and `name@version`
+#             for the artifact in the create response, the filtered listing
+#             and the detail route; the virtual-only reader gets the notice
+#             header with the shipped text on both listings.
+#
+# RATE_LIMIT_ENABLED=false: the oracle logs in four principals and makes
+# ~60 back-to-back authenticated calls; the base default (ON) would throttle
+# them and turn an assertion into a 429.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
