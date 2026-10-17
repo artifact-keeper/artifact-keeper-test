@@ -1,0 +1,66 @@
+# DTF tier manifest: proxy-cache-empty-object  (artifact-keeper#4630, #4646)
+# Profile-set: filesystem + a steerable static upstream (upstreams.mock-static:
+# a stdlib-python server on a per-slot 172.16.<slot>.0/24 subnet that serves
+# deterministic files, counts GETs per path, and can be told to promise N
+# bytes and close early). Stored objects are damaged directly on the backend's
+# /data volume through a throwaway postgres:16-alpine container with
+# --volumes-from the backend (the backend image has no shell), as the
+# storage-integrity tier does.
+#
+# THE BUG (#4630)
+# A proxy-cache entry is two objects: __content__ and __cache_meta__.json.
+# The streaming read path takes Content-Length from the sidecar's size_bytes
+# and self-heals only when the body is MISSING (NotFound). In production a
+# publish copy() landed a zero-byte __content__ while the sidecar recorded the
+# real size and SHA-256 and pinned storage_etag = d41d8cd98f00b204e9800998ecf8427e
+# (the MD5 of zero bytes). Every GET then answered 200 + Content-Length: N and
+# aborted with no body, forever: the object exists, so the self-heal never
+# fires. The fix (#4661) treats a sidecar that claims size_bytes > 0 while
+# pinning the empty-object ETag as a miss, refetches, and rewrites the entry;
+# on the write side it measures the published object after the copy.
+#
+# THE BUG (#4646)
+# The filesystem backend's put/put_stream ended with sync_all() and no flush(),
+# so a failed FINAL write was swallowed and a short object published. In the
+# OCI chunked upload path that surfaced as a client 400 DIGEST_INVALID for
+# bytes the server lost. The fix (#4749) adds the flush AND a per-part length
+# check at commit: a stored part shorter than the size_bytes its PATCH
+# recorded fails the commit as 500 BLOB_UPLOAD_UNKNOWN naming the part.
+#
+# THE PRIMITIVES
+#   #4630 read  prime an entry through the Remote, then rewrite it on disk into
+#               the exact #4630 state (empty __content__, sidecar size_bytes N,
+#               storage_etag the empty-object MD5), wait out the backend's
+#               30 s in-process sidecar LRU, GET.
+#               fixed:  200 with the full upstream bytes, upstream contacted,
+#                       __content__ rewritten to N bytes, then a cache hit.
+#               1.11.1: 200 + Content-Length N, zero bytes (curl rc 18), no
+#                       upstream request, entry unchanged.
+#   #4646       two 64 KiB PATCHes, truncate stored part 0 by 4 KiB, commit.
+#               fixed:  500 BLOB_UPLOAD_UNKNOWN naming the part, no blob.
+#               1.11.1: 400 DIGEST_INVALID ("computed ... != provided").
+#
+# THE GATES
+#   (FIX)      the two primitives above. RED on 1.11.1 (exit 1).
+#   (CONTROL)  must hold on BOTH images: a cold Remote fetch returns the
+#              upstream bytes and caches, the next fetch is a cache hit (the
+#              upstream counter does not move); an upstream that promises N
+#              bytes and sends none / half is never committed as a cache entry
+#              and caches normally once healthy (the pre-existing #1365/#1912
+#              staging guards, which #4630's write-side measurement sits
+#              behind); a clean two-PATCH OCI upload commits and reads back by
+#              digest; a generic upload's stored object and X-Checksum-Sha256
+#              match the uploaded bytes.
+#
+# NOT GATED HERE (see the PR): #4630's post-copy publish measurement needs a
+# copy() that reports success and lands short, which the filesystem backend's
+# honest copy cannot produce; #4646's flush() needs a final write that fails
+# (ENOSPC/EIO/EFBIG) inside the backend container, which this compose topology
+# cannot inject without a size-limited storage mount.
+#
+# RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-static"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

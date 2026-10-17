@@ -1,0 +1,72 @@
+# =============================================================================
+# profiles/upstreams.mock-static.yml — a steerable static-file upstream
+# =============================================================================
+# Adds `mock-static`, a stdlib-only Python HTTP server that serves
+# deterministic files under /f/<name>, counts the GETs it sees per path, and
+# can be told per path to promise N bytes and close early (empty or half
+# body). It exists so the proxy-cache-empty-object tier (artifact-keeper#4630)
+# can drive a Remote repository's proxy cache against an upstream whose exact
+# bytes and request count it knows. See
+# harness/tiers/proxy-cache-empty-object/fixtures/mock_static.py.
+#
+# The overlay:
+#   * ADDS  `mock-static` on a per-slot 172.16.<slot>.0/24 subnet, so AK's
+#     create-time SSRF check on the upstream URL allowlists it via
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 (the same narrow escape hatch
+#     upstreams.mock-artifactory.yml uses). The tier manifest also sets
+#     UPSTREAM_ALLOW_PRIVATE_IPS=true for the fetch itself.
+#   * PUBLISHES the mock's control endpoints on 127.0.0.1:${TRIVY_PORT}
+#     (8250+N, the spare per-slot port) so the oracle on the host can read the
+#     request counters, flip a path's mode and fetch the reference bytes.
+#   * PATCHES backend onto that network and sets AK_SSRF_ALLOW_PRIVATE_CIDRS.
+#
+# SUBNET CHOICE: 172.16.<slot>.0/24, not 172.28, for the reason
+# upstreams.mock-artifactory.yml records (172.16/16 sits below Docker's
+# default address pool, so a concurrently-allocated base network can never
+# overlap it).
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-static:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-static
+    command: ["python3", "/app/mock_static.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_FILE_BYTES: "262144"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/proxy-cache-empty-object/fixtures/mock_static.py:/app/mock_static.py:ro"
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockstatic:
+        ipv4_address: 172.16.${DTF_SLOT}.70
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-static:
+        condition: service_healthy
+    environment:
+      # Narrow, explicit allowlist for the mock's subnet only.
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockstatic: {}
+
+networks:
+  mockstatic:
+    name: ak-dtf${DTF_SLOT}-mockstatic
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
