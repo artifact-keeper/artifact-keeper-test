@@ -2981,6 +2981,20 @@ jobs:
           # external network -- so they belong in the required matrix.
           - group: data-integrity
             tiers: maven-rollup-anchor-escape migration-progress-monotonic
+          # 1.11.2 fix coverage (artifact-keeper-test#452-#461): one tier per
+          # fix group of the artifact-keeper 1.11.2 milestone, each green on
+          # main and red on the 1.11.1 release image. Grouped by wall clock:
+          # the api group is pure HTTP + DB (~2 min total); formats stands up
+          # MinIO and the npm client; ops carries the slow legs (the audit
+          # tier waits ~4.5 min for the scheduler's first retention pass, the
+          # outage tier stops its own postgres for ~45 s). All local
+          # containers only, so they belong in the required matrix.
+          - group: fixes-1.11.2-api
+            tiers: repo-project-permissions metrics-and-backlog oidc-exchange-and-login auth-db-outage
+          - group: fixes-1.11.2-formats
+            tiers: format-catalog-fixes npm-unpublish-and-push-sync conda-channel-types migration-package-catalog
+          - group: fixes-1.11.2-ops
+            tiers: proxy-cache-empty-object audit-event-coverage
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

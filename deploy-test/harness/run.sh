@@ -286,6 +286,15 @@ case "$CMD" in
     # (openapi-signing-tags #2721, maven-grouped-name #2723,
     # debian-encoded-separator #2562, cran-rubygems-download-url #2754,
     # backup-custom-name #2790).
+    # Then the 1.11.2 fix-coverage tiers (artifact-keeper-test#452-#461), each
+    # green on main 6a4e29f1 and red on the 1.11.1 release image: permissions
+    # (#4026/#4639/#4690), metrics + listen backlog (#4642/#4647), format
+    # catalog (#4694/#4633/#4645), npm unpublish + push sync (#4025/#4643/
+    # #4658), conda channel types (#4708/#4709/#4711), migration catalog
+    # (#4691/#4657), OIDC exchange + login (#4699/#4143/#4648/#4638), proxy
+    # cache (#4630/#4646), auth under a DB outage (#4750), audit coverage
+    # (#4710/#4718). audit-event-coverage is last: its retention leg waits for
+    # the scheduler's first pass (~4.5 min).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -293,7 +302,10 @@ case "$CMD" in
              openapi-signing-tags maven-grouped-name debian-encoded-separator cran-rubygems-download-url backup-custom-name \
              oidc-env-config gcs-custom-endpoint signing \
              oci-push-scope api-alias-repo-key oci-rest-delete-digest-authority empty-repo-key-no-body-read \
-             maven-rollup-anchor-escape migration-progress-monotonic; do
+             maven-rollup-anchor-escape migration-progress-monotonic \
+             repo-project-permissions metrics-and-backlog format-catalog-fixes npm-unpublish-and-push-sync \
+             conda-channel-types migration-package-catalog oidc-exchange-and-login proxy-cache-empty-object \
+             auth-db-outage audit-event-coverage; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

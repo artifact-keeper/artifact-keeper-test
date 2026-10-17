@@ -28,6 +28,16 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 10s | **Real push→pull→scan smoke** | **filesystem**/single/none | `test-real-flow-smoke.sh` (npm publish → pack pull-back → scan → numeric findings_count) | **smoke** | **COVERED** (brick 0) — green, 8/8 |
 | 11 | **Path-traversal (discriminating)** | any | body-assert traversal (not `/dev/null`) | (cross-tier rule) | Partly landed; enforce everywhere |
 | 12 | **RBAC / quotas / retention / promotion / webhooks / search / mesh** | as-today (mesh→topology=mesh) | existing suites | (existing tiers) | EXISTS; keep |
+| 13 | **Repository/project assignment, permission target names, virtual-only grants** — #4026/#4639/#4690 | filesystem | PATCH `project_id: null` clears the assignment (response + DB) and non-admin gets 403; `GET /api/v1/permissions` resolves `target_name` for group/project/artifact targets and `null` once the group is deleted; a user granted only the virtual gets the `X-AK-Virtual-Members-Notice` header and still 404 on the member | **repo-project-permissions** | **COVERED** (#452) — green on main 6a4e29f1 (18/18), red on 1.11.1 (8 fix cases fail, 10 controls hold) |
+| 14 | **Artifact transfer metrics and HTTP listen backlog** — #4642/#4647 | filesystem + `listener.backlog-explicit` | `/api/v1/admin/metrics` moves `ak_artifact_uploads_total` / `ak_artifact_downloads_total` by exactly the requests made (generic and maven); `HTTP_LISTEN_BACKLOG=777` shows as Send-Q 777 on :8080 (`ss` in the backend's netns) and in the startup diagnostic line | **metrics-and-backlog** | **COVERED** (#453) — green (16/16), red on 1.11.1 (8 fail: series absent, backlog 4096 and no diagnostic) |
+| 15 | **Format catalog fixes: conan repo-scoped cloud keys, maven version size, rubygems hyphen-digit names** — #4694/#4633/#4645 | storage=**s3** | same conan revision publishes into two repos and both serve it; MinIO + DB hold `conan/{repo_id}/…` keys and a legacy flat-key row still downloads; maven version `size_bytes` = jar+pom+sources, sidecar excluded, backfill agrees; `specs.4.8.gz` decodes to `[dtf-gem-2, 1.2.3]` | **format-catalog-fixes** | **COVERED** (#454) — green (18/18), red on 1.11.1 (10 fail: 409 on the second repo, size 154, `[dtf-gem, 2-1.2.3]`) |
+| 16 | **npm unpublish and push-peer sync fan-out** — #4025/#4643/#4658 | filesystem + client=**npm** | real `npm unpublish` (version and whole package, scoped and unscoped) removes what the server serves, the row and writes the delete audit row; raw `-rev` routes answer as #4727 says; `npm publish`, Go `.mod`/`.zip` uploads queue one pending push task each (peer registered at an unresolvable host, held in backoff); a re-upload resets the completed task to pending | **npm-unpublish-and-push-sync** | **COVERED** (#458) — green (34/34), red on 1.11.1 (23 fail; unscoped unpublish exits 0 and leaves the package installable) |
+| 17 | **Conda channel documents by repository type, conda audit rows, conda security metrics** — #4708/#4709/#4711 | filesystem + `upstreams.mock-conda` | Remote serves the upstream's `current_repodata.json`, `run_exports.json`, `patch_instructions.json`, `repodata.json.sig`; Virtual builds `current_repodata` from the newest versions and its `.sig` verifies; one audit row each for upload, withdraw, attestation reject, environment register/delete; `ak_conda_allowlist_dropped_total`, `ak_conda_install_script_findings_total`, `ak_conda_attestation_total` exported | **conda-channel-types** | **COVERED** (#460) — green (21/21), red on 1.11.1 (15 fail: empty hosted shape, 0 audit rows, no series) |
+| 18 | **Migrated Maven and Debian packages reach the catalog** — #4691/#4657 | filesystem + `upstreams.mock-artifactory-catalog` | a migration from an Artifactory-shaped source with real jar/pom/`.deb` files registers `com.dtf:demo 1.0.0` and `dtfpkg 1.0`/`dtfflat 2.0` in the packages API and `package_versions`; the Debian `Packages` index carries the control-file Description/path/SHA256 and the flat-pool `.deb` is filed under `pool/main/`; recovery via the documented tools (maven backfill; debian re-run); `reindex-storage` registers nothing (control) | **migration-package-catalog** | **COVERED** (#455) — green (13/13), red on 1.11.1 (7 fail: artifacts stored, catalog empty) |
+| 19 | **OIDC token exchange, forwarded redirect_uri, login expiry, SSRF refusal hint** — #4699/#4143/#4648/#4638 | filesystem + `sso.oidc-entra-shape` (mock IdP that returns an id_token only when the token request carries `openid`) | the recorded `/token` request carries the configured scopes and login completes; an IdP that never returns an id_token gets `502 OIDC_NO_ID_TOKEN`; forwarded headers honoured only from the trusted peer (in-network curl containers on fixed IPs); SSO exchange reports `expires_in` = configured TTL; LDAP/remote/webhook refusals of `10.10.10.10` name `AK_SSRF_ALLOW_PRIVATE_CIDRS`, metadata refusal names nothing | **oidc-exchange-and-login** | **COVERED** (#457) — green (17/17), red on 1.11.1 (11 fail: no `scope`, 500 INTERNAL_ERROR, spoofed https believed, field absent, settings unnamed) |
+| 20 | **Poisoned proxy-cache entry heals; short OCI part is a storage failure** — #4630/#4646 | filesystem + `upstreams.mock-static` | an entry rewritten to empty `__content__` + intact sidecar + MD5-of-empty `storage_etag` is re-fetched once (full bytes, sha matches) and the entry rewritten; a stored OCI upload part truncated by 4 KiB fails commit with `BLOB_UPLOAD_UNKNOWN` naming the part and publishes no blob; a no-body/half-body upstream is never cached and recovers (control) | **proxy-cache-empty-object** | **COVERED** (#459) — green (8/8), red on 1.11.1 (2 fail: bodyless 200 with Content-Length 262144; `DIGEST_INVALID`). Remaining halves filed: artifact-keeper#4758 (no-ETag filesystem heal), #4759 (short upstream body drops the client connection) |
+| 21 | **A DB outage during a credential check answers 503, not 401** — #4750 | filesystem (stops its own slot's postgres for ~45 s) | Bearer JWT, Basic (password / JWT / wrong password) on a private maven route, `/v2/` Bearer and Basic, `/v2/token` Basic all answer `503` + `Retry-After: 1` (OCI `UNAVAILABLE`) while the DB is down; `/readyz` reports the DB unhealthy; after restart the pool reconnects and the pre-outage JWT and API token still work | **auth-db-outage** | **COVERED** (#456) — green (24/24), red on 1.11.1 (7 fail: 401 without Retry-After). Finding filed: artifact-keeper#4756 (login itself still answers 500 DATABASE_ERROR) |
+| 22 | **Privileged admin actions write audit rows; scheduled audit retention** — #4710/#4718 | filesystem + `secrets.webhook-key` | 23 actions (permission rules, webhooks incl. rotate-secret, OIDC provider, signing keys, quarantine release/reject, promotion, approvals, sync policies) each write exactly one `audit_log` row with action/resource/actor/client IP/details, none carrying secret material; with retention saved as 1 day the scheduler's first pass (~4.5 min after start) deletes rows backdated 2/30/100 days and keeps the 23-hour-old and fresh ones | **audit-event-coverage** | **COVERED** (#461) — green (35/35), red on 1.11.1 (27 fail: 2xx but 0 rows; settings report 90; no scheduled pass). Finding filed: artifact-keeper#4762 (REPOSITORY_CREATED/USER_CREATED rows carry no client IP) |
 
 ## Consolidated status (this checkpoint)
 
@@ -57,6 +67,33 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 - **Profiles present:** `storage.filesystem`, `storage.s3`, `upstreams.nexus`,
   `proxy.squid`, `sso.saml`, `client.dnf/apt/docker`, `scanners.trivy`. Every
   other overlay in design §2.1 is a later brick.
+
+## 1.11.2 fix-coverage status (rows 13–22, artifact-keeper-test#452–#461)
+
+- **Ten tiers, one per fix group of the artifact-keeper 1.11.2 milestone**, each
+  proven both ways on this host: GREEN on the `:main` digest built from
+  `6a4e29f1` (every 1.11.2 fix merged) and RED with exit 1 on the released
+  `ghcr.io/artifact-keeper/artifact-keeper-backend:1.11.1` image, with every
+  control case holding on both. The released image is the standing pre-fix
+  baseline for discrimination; no locally built image is needed.
+- **New profiles:** `listener.backlog-explicit`, `upstreams.mock-conda`,
+  `upstreams.mock-artifactory-catalog`, `sso.oidc-entra-shape`,
+  `upstreams.mock-static`, `secrets.webhook-key`. Mock fixtures are copied into
+  each tier's `fixtures/` rather than shared, per the collision contract.
+- **Four backend findings came out of writing them**, all filed on 1.11.2:
+  artifact-keeper#4756 (login answers 500 during a DB outage), #4758 (the
+  proxy-cache heal needs a pinned ETag, which filesystem storage never writes),
+  #4759 (a short upstream body drops the client connection), #4762 (two audit
+  writers record no client IP).
+- **Host notes that are not product findings:** under rootless podman the
+  journald log driver drops startup lines (`docker logs` returns one line), so
+  tiers that read the backend log pin `logging: driver: json-file` in their
+  profile; SELinux-enforcing hosts need `security_opt: [label=disable]` on
+  containers that bind-mount a fixture script (the older mock profiles do not
+  set it and will fail to start there).
+- **Gate wiring:** the release gate's `dtf-gate` matrix carries them in three
+  groups (`fixes-1.11.2-api`, `fixes-1.11.2-formats`, `fixes-1.11.2-ops`);
+  `run.sh all` lists them after the existing tiers, `audit-event-coverage` last.
 
 ## Brick-2 status (migration / Nexus — #2457)
 
