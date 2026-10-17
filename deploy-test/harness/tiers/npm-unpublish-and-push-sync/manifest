@@ -1,0 +1,62 @@
+# DTF tier manifest: npm-unpublish-and-push-sync  (artifact-keeper#4025, #4643, #4658)
+# Profile-set: filesystem / single + the real npm CLI client (client.npm). The
+# bugs live in the npm/goproxy handlers and the peer sync enqueue, ahead of any
+# storage backend, so the storage dimension is irrelevant.
+#
+# THE BUGS
+#   #4025  `npm unpublish` was a silent no-op. None of the requests the client
+#          sends was routed:
+#              PUT    /npm/{repo}/{pkg}/-rev/{rev}           packument rewrite
+#              DELETE /npm/{repo}/{pkg}/-/{file}/-rev/{rev}  tarball delete
+#              DELETE /npm/{repo}/{pkg}/-rev/{rev}           whole package
+#          (all 404; npm's encoded scoped form `@scope%2fname/-rev/{rev}` hit
+#          the GET-only scoped version route and 405'd). libnpmpublish reads a
+#          404 as "already gone" and exits 0, so the publisher believed the
+#          version was gone while it stayed served and installable. The npm
+#          exit code is therefore NOT the signal: the oracle asserts the served
+#          packument, dist-tags, tarball GET and the artifacts row.
+#   #4643  npm publish and the goproxy .mod/.zip upload never queued a push sync
+#          task, so push/mirror peers never received hosted npm packages or Go
+#          modules (Maven and the generic upload did).
+#   #4658  a re-upload to an existing path keeps the artifact id, and the
+#          enqueue only bumped the priority of the already-completed push row:
+#          a versioned Generic/ML repo re-upload, or an upload after a delete,
+#          never reached the peer.
+#
+# THE PEER
+# POST /api/v1/peers does not probe the endpoint, so the oracle registers a peer
+# at an unresolvable `.invalid` host and subscribes four repos to it in push
+# mode. It then sets the peer `online` (the delete fan-out only targets online
+# peers) with `backoff_until` a day out (the sync worker never claims tasks for
+# a peer in backoff), so every sync_tasks row stays where the enqueue left it.
+# "The peer received the first push" is simulated by marking that row
+# `completed` in the DB, exactly as the backend's own unit tests do.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: real npm publish of scoped and unscoped
+#             packages and a real npm install round-trip; the version kept by an
+#             unpublish still installs; an anonymous -rev DELETE removes
+#             nothing; a generic upload to a push-subscribed repo queues a push
+#             row; a Go upload carrying X-Artifact-Keeper-Replication queues
+#             nothing; an unversioned live overwrite is 409 and leaves the
+#             completed push row completed; a delete queues a delete row.
+#   (FIX)     RED on 1.11.1:
+#             #4025 real `npm unpublish pkg@ver --force` (scoped + unscoped):
+#                   version gone from the packument, latest recomputed, tarball
+#                   404, no live row, ARTIFACT_DELETED audited; real
+#                   `npm unpublish pkg --force`: packument 404, install fails;
+#                   raw routes: tarball -rev DELETE 200 then 404, no-op
+#                   packument PUT 400, packument-minus-version PUT 200,
+#                   whole-package DELETE 200 then 404, scoped tarball DELETE
+#                   200, encoded scoped DELETE 200.
+#             #4643 real npm publish, Go .mod and Go .zip each queue a pending
+#                   push row.
+#             #4658 versioned re-upload and delete-then-reupload re-arm the
+#                   completed push row to pending with retry_count 0.
+#
+# RATE_LIMIT_ENABLED=false: the oracle makes ~100 authenticated calls (npm
+# publishes/installs, raw probes, uploads); the base default (ON) would throttle
+# them and turn an assertion into a 429.
+PROFILES="storage.filesystem client.npm"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
