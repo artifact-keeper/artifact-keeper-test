@@ -378,6 +378,9 @@ HELM_OVERRIDES=(
   --set backend.image.pullPolicy=Always
   --set backend.replicaCount=1
   --set "backend.env.ADMIN_PASSWORD=Smoke!2026secure"
+  # Chart 1.9.29+ refuses a credential in backend.env (artifact-keeper-iac#375)
+  # unless told this is a throwaway install.
+  --set backend.allowCredentialsInEnv=true
   --set web.image.tag="$WEB_TAG"
   --set web.replicaCount=1
   --set secrets.jwtSecret="smoke-jwt-secret-not-for-production"

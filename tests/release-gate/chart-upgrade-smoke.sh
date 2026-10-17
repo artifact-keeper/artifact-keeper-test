@@ -217,6 +217,9 @@ fi
 HELM_BASE_OVERRIDES=(
   --set fullnameOverride=ak-upgrade
   --set "backend.env.ADMIN_PASSWORD=${ADMIN_PASS}"
+  # Chart 1.9.29+ refuses a credential in backend.env (artifact-keeper-iac#375)
+  # unless told this is a throwaway install; older charts ignore the key.
+  --set backend.allowCredentialsInEnv=true
   --set backend.replicaCount=1
   --set web.replicaCount=1
   --set secrets.jwtSecret="upgrade-jwt-secret-not-for-production"

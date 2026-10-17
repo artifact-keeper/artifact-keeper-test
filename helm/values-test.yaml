@@ -32,6 +32,10 @@ backend:
     limits:
       cpu: 2500m
       memory: 6Gi
+  # Throwaway test install: ADMIN_PASSWORD rides in backend.env below, which
+  # chart 1.9.29+ (artifact-keeper-iac#375) refuses to render unless this is
+  # set. Production installs use backend.environmentSecrets instead.
+  allowCredentialsInEnv: true
   env:
     ENVIRONMENT: test
     RUST_LOG: info
