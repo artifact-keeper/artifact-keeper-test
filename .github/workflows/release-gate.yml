@@ -194,6 +194,11 @@ jobs:
 
       - name: Install Helm (for chart-default verification)
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       - name: Clone iac chart for default-tag verification
         env:
@@ -266,6 +271,11 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       - name: Run clean-install smoke test
         env:
@@ -362,6 +372,11 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       - name: Run clean-install-smoke with all deps enabled
         env:
@@ -432,6 +447,11 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       - name: Run chart-upgrade-smoke
         env:
@@ -517,6 +537,11 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       - name: Generate run ID
         id: setup
@@ -2701,6 +2726,11 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       - name: Deploy mesh topology
         id: mesh-deploy
@@ -3321,6 +3351,11 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Pinned to the 3.x line: `latest` became Helm 4.3.1 on 2026-10-15, whose
+          # --wait watches every rendered kind (NetworkPolicy included), which the
+          # runner's service account cannot watch. Bump deliberately, with RBAC.
+          version: v3.22.1
 
       - name: Teardown test namespace
         env:
