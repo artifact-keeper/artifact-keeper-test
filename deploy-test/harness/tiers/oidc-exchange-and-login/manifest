@@ -1,0 +1,82 @@
+# DTF tier manifest: oidc-exchange-and-login
+# Profile-set: filesystem / single + sso=oidc-entra-shape (an Entra-shaped mock
+# IdP on 172.16.<slot>.0/24, profiles/sso.oidc-entra-shape.yml).
+#
+# Gates four 1.11.2 SSO/login fixes through the real compose topology.
+#
+# THE BUGS
+#   #4699 (fix artifact-keeper#4726). AK sent `scope` on the OIDC authorization
+#     redirect but not on the authorization-code token request. Microsoft
+#     Entra v2 returns an id_token only when the TOKEN request asks for
+#     `openid`, so every Entra login failed, and the browser saw
+#     500 INTERNAL_ERROR. Fixed: the token request repeats the provider's
+#     configured scopes; a token response with no id_token is a 502 with the
+#     code OIDC_NO_ID_TOKEN naming the provider.
+#   #4143 (fix artifact-keeper#4738). The OIDC redirect_uri was built from
+#     X-Forwarded-Proto / X-Forwarded-Host believed from ANY peer, so a client
+#     could choose the redirect_uri AK sends to the IdP. Fixed: when
+#     RATE_LIMIT_TRUSTED_PROXY_CIDRS is set, the headers count only from a
+#     listed peer (an EMPTY list still trusts every peer, by design, for
+#     patch-release compatibility); a request-derived http:// redirect_uri now
+#     logs a hint naming AK_EXTERNAL_URL and X-Forwarded-Proto.
+#   #4648 (fix artifact-keeper#4744). POST /auth/sso/exchange (and LDAP login)
+#     returned no `expires_in`, and set the access cookie to a hardcoded
+#     one-hour Max-Age while the JWT lives JWT_ACCESS_TOKEN_EXPIRY_MINUTES.
+#     Local POST /auth/login already reported `expires_in` before the fix.
+#   #4638 (fix artifact-keeper#4736). Refusing a private LDAP / upstream /
+#     webhook target (e.g. 10.10.10.10) gave no hint that
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS admits it. The SSO surface already named it,
+#     but also advertised it for a cloud-metadata address that can never be
+#     admitted.
+#
+# PRIMITIVES
+#   * The mock IdP (fixtures/mock_oidc.py, a copy of oidc-group-sync's mock)
+#     records every /token form at GET /__requests and, per login
+#     (/authorize?id_token_mode=), answers like Entra (`entra`: id_token only
+#     if the token request's scope includes openid), never sends an id_token
+#     (`never`), or always does (`always`, the control).
+#   * The oracle plays the browser: AK login -> mock /authorize -> AK callback
+#     -> POST /auth/sso/exchange.
+#   * #4143 peers: two throwaway curl containers on the mock network, pinned to
+#     172.16.<slot>.70 (inside RATE_LIMIT_TRUSTED_PROXY_CIDRS=172.16.<slot>.64/28,
+#     TRUSTED) and 172.16.<slot>.90 (outside it, UNTRUSTED), both calling
+#     http://backend:8080 with X-Forwarded-Proto: https and
+#     X-Forwarded-Host: sso.example.test. The host-published path is not used
+#     for this: under rootless podman its peer is the backend's own address on
+#     the auto-allocated dtf network (measured 10.89.x.y, new every run), so it
+#     cannot be named in a CIDR portably. That path is untrusted here, which is
+#     what makes the oracle's own logins derive a plain-http redirect_uri and
+#     log the #4143 hint.
+#   * JWT_ACCESS_TOKEN_EXPIRY_MINUTES=37 (profile) so every lifetime assertion
+#     compares against 2220 s, not the 30-minute default.
+#   * SSRF: the profile admits only 172.16.0.0/12 (no SSO/UPSTREAM/WEBHOOK
+#     _ALLOW_PRIVATE_IPS), so 10.10.10.10 is refused on every surface.
+#
+# GATES (fixed image GREEN; 1.11.1 RED on every non-control case)
+#   controls (both images): local login expires_in=2220 + token_type Bearer;
+#     OIDC login with an always-id_token IdP completes; that callback's access
+#     cookie Max-Age=2220; trusted peer's headers ARE honoured; an OIDC issuer
+#     at 10.10.10.10 is refused naming the setting; a public https issuer saves.
+#   #4699: Entra-shaped login completes; recorded /token carries
+#     scope="openid profile email offline_access"; no-id_token IdP -> 502
+#     OIDC_NO_ID_TOKEN naming the provider (1.11.1: 500 INTERNAL_ERROR).
+#   #4143: untrusted peer -> redirect_uri http://backend:8080/... (1.11.1:
+#     https://sso.example.test/..., the spoof is believed); the plain-http hint
+#     is in `docker logs` (1.11.1: absent).
+#   #4648: exchange body expires_in within 30 s of 2220, its token works on
+#     /auth/me, and its access cookie Max-Age matches (1.11.1: field absent,
+#     cookie Max-Age=3600).
+#   #4638: LDAP, remote-repo and webhook refusals of 10.10.10.10 contain
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS=10.10.10.10; the 169.254.169.254 OIDC issuer
+#     refusal names no setting (1.11.1: it advertised the allowlist).
+#
+# NOT COVERED: LDAP login `expires_in` (#4648). Stacking sso.ldap.yml adds an
+# osixia/openldap container and forces UPSTREAM_ALLOW_PRIVATE_IPS=true plus
+# 10.0.0.0/8 into the SSRF allowlist, which would admit the 10.10.10.10 target
+# the #4638 gates depend on.
+#
+# RATE_LIMIT_ENABLED=false: the oracle makes many authenticated and SSO calls
+# back to back from one client.
+PROFILES="storage.filesystem sso.oidc-entra-shape"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

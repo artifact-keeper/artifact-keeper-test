@@ -1,0 +1,100 @@
+# =============================================================================
+# profiles/sso.oidc-entra-shape.yml -- sso dimension = oidc, Entra-shaped mock
+# =============================================================================
+# A copy of sso.oidc.yml for the oidc-exchange-and-login tier
+# (artifact-keeper#4699, #4143, #4648, #4638). Differences from sso.oidc.yml:
+#
+#   * The mock is harness/tiers/oidc-exchange-and-login/fixtures/mock_oidc.py,
+#     which records every /token form at GET /__requests and, by default
+#     (MOCK_ID_TOKEN_MODE=entra), returns an id_token only when the token
+#     request carries `scope` containing `openid`, as Microsoft Entra v2 does.
+#   * SUBNET: 172.16.<slot>.0/24, not 172.28. See the SUBNET CHOICE note in
+#     upstreams.mock-artifactory.yml: the base `dtf` network is auto-allocated
+#     from 172.17-172.31, so a hard-coded 172.28 can collide with another
+#     slot's dtf network. 172.16.0.0/16 is never auto-allocated and still sits
+#     inside the 172.16.0.0/12 allowlist entry below.
+#   * SSRF: only AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 (the mock's subnet
+#     and the docker bridge range). SSO_ALLOW_PRIVATE_IPS is deliberately NOT
+#     set, and UPSTREAM/WEBHOOK_ALLOW_PRIVATE_IPS stay at their false
+#     defaults, so a 10.10.10.10 target is refused on every surface and the
+#     #4638 refusal message is observable.
+#   * JWT_ACCESS_TOKEN_EXPIRY_MINUTES=37: a distinctive login TTL (2220 s) so
+#     #4648's `expires_in` can be asserted to equal the configured value
+#     rather than the 30-minute default.
+#   * RATE_LIMIT_TRUSTED_PROXY_CIDRS=172.16.<slot>.64/28 (#4143): see the
+#     value's comment below.
+#
+# Ports: the mock's /authorize is published on the slot's spare ${TRIVY_PORT}
+# (8250+N), like sso.oidc.yml; this tier runs no scanner.
+#
+# Required vars (exported by run.sh): DTF_SLOT, TRIVY_PORT, DTF_DIR.
+# =============================================================================
+services:
+  mock-oidc:
+    image: python:3.12.13-slim-bookworm
+    container_name: ak-dtf${DTF_SLOT}-mock-oidc
+    command: ["python3", "/app/mock_oidc.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_ISSUER: "http://mock-oidc"
+      MOCK_AUTHORIZE_URL: "http://127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}/authorize"
+      MOCK_OIDC_SUB: "dtf-oidc-user"
+      MOCK_OIDC_EMAIL: "dtf-oidc-user@dtf.test"
+      MOCK_OIDC_GROUPS: ""
+      MOCK_ID_TOKEN_MODE: "entra"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/oidc-exchange-and-login/fixtures/mock_oidc.py:/app/mock_oidc.py:ro"
+    # On an SELinux-enforcing host (rootless podman on Fedora) a bind-mounted
+    # file under $HOME keeps its user_home_t label and the container cannot
+    # read it. Disable label separation for THIS container only, rather than
+    # relabelling the checkout with :z. A no-op where SELinux is off.
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockoidcentra:
+        ipv4_address: 172.16.${DTF_SLOT}.60
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-oidc:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+      JWT_ACCESS_TOKEN_EXPIRY_MINUTES: "37"
+      # #4143: forwarding headers count for the OIDC redirect_uri only when
+      # the TCP peer is in this list. A /28 on the mock subnet, so the oracle
+      # can speak from a TRUSTED peer (a throwaway curl container pinned to
+      # 172.16.<slot>.70) and an UNTRUSTED one (pinned to .90, outside the
+      # /28), both on the same network as the backend. The host-published
+      # path is not used for this: under rootless podman its peer is the
+      # backend's own address on the auto-allocated `dtf` network (measured:
+      # 10.89.x.y, different every run), and under docker it is the bridge
+      # gateway, so it cannot be named in a CIDR portably.
+      RATE_LIMIT_TRUSTED_PROXY_CIDRS: 172.16.${DTF_SLOT}.64/28
+    # The #4143 log-hint gate reads `docker logs`. Pin the json-file driver
+    # (docker's default; podman maps it to k8s-file) so the gate does not
+    # depend on a host journald that may rate-limit and drop container lines.
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockoidcentra: {}
+
+networks:
+  mockoidcentra:
+    name: ak-dtf${DTF_SLOT}-mockoidcentra
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
