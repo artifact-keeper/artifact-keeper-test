@@ -168,6 +168,11 @@ AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN pypi_legacy_json_xmlrpc"
 # tests/pullthrough/test-virtual-nested-members.sh.
 AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN virtual_nested_members"
 
+# maven_prefixes_no_nesting: no nested entries in .meta/prefixes.txt
+# (artifact-keeper#4367), MAIN-only, version floor 1.10.0 in
+# _feature_min_version. Gates tests/formats/test-maven-prefixes.sh.
+AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN maven_prefixes_no_nesting"
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
