@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+# =============================================================================
+# mock_conda.py — a canned upstream conda channel for the conda-channel-types
+#                 tier (artifact-keeper#4708 / #4711)
+# =============================================================================
+# A static, stdlib-only conda channel. At startup it builds, in memory, one
+# `noarch` subdir carrying EVERY sibling document a real channel can publish,
+# each stamped with a marker string so the oracle can tell an UPSTREAM document
+# apart from one Artifact Keeper built itself:
+#
+#   noarch/repodata.json            three records: dtfup-alpha 1.0 and 2.0, and
+#                                   dtfup-blocked 1.0 (the allowlist's victim)
+#   noarch/current_repodata.json    ONLY dtfup-alpha 2.0, `info.dtf_marker`
+#                                   = "<MARKER>-current"
+#   noarch/run_exports.json         dtfup-alpha 2.0 with weak run_export
+#                                   "<MARKER>-runexp"
+#   noarch/patch_instructions.json  `remove` names "<MARKER>-removed-1.0-0.tar.bz2"
+#   noarch/repodata.json.sig        the bytes "<MARKER>-SIG\n" (opaque: a remote
+#                                   must proxy it, never re-sign it)
+#   noarch/dtfup-alpha-2.0-0.tar.bz2  a real v1 package (info/index.json), whose
+#                                   size + sha256 are the ones repodata.json lists
+#   channeldata.json                minimal
+#
+# Anything else (repodata.json.zst / .bz2, other subdirs) answers 404, which is
+# what makes AK's virtual merge fall through its candidate list to the plain
+# JSON (virtual_merge::fetch_remote_members moves on only on a 404).
+#
+# Env: MOCK_PORT (default 80), MOCK_MARKER (default dtfmockconda).
+# `/__readyz` answers `ok` for the compose healthcheck.
+# =============================================================================
+import hashlib
+import io
+import json
+import os
+import tarfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = int(os.environ.get("MOCK_PORT", "80"))
+MARKER = os.environ.get("MOCK_MARKER", "dtfmockconda")
+
+
+def build_package(name, version, build):
+    """A minimal conda v1 package: a bzip2 tar holding info/index.json."""
+    index = {
+        "name": name,
+        "version": version,
+        "build": build,
+        "build_number": 0,
+        "noarch": "generic",
+        "platform": None,
+        "subdir": "noarch",
+        "depends": [],
+        "license": "MIT",
+    }
+    raw = json.dumps(index).encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:bz2") as tar:
+        info = tarfile.TarInfo("info/index.json")
+        info.size = len(raw)
+        info.mtime = 0
+        tar.addfile(info, io.BytesIO(raw))
+    return buf.getvalue()
+
+
+def record(name, version, blob=None):
+    rec = {
+        "name": name,
+        "version": version,
+        "build": "0",
+        "build_number": 0,
+        "depends": [],
+        "license": "MIT",
+        "noarch": "generic",
+        "subdir": "noarch",
+        "timestamp": 1700000000000,
+    }
+    if blob is not None:
+        rec["size"] = len(blob)
+        rec["sha256"] = hashlib.sha256(blob).hexdigest()
+        rec["md5"] = hashlib.md5(blob).hexdigest()  # noqa: S324 (conda field)
+    else:
+        rec["size"] = 1024
+        rec["sha256"] = hashlib.sha256(f"{name}-{version}".encode()).hexdigest()
+        rec["md5"] = hashlib.md5(f"{name}-{version}".encode()).hexdigest()  # noqa: S324
+    return rec
+
+
+ALPHA2 = build_package("dtfup-alpha", "2.0", "0")
+ALPHA1_FN = "dtfup-alpha-1.0-0.tar.bz2"
+ALPHA2_FN = "dtfup-alpha-2.0-0.tar.bz2"
+BLOCKED_FN = "dtfup-blocked-1.0-0.tar.bz2"
+
+REPODATA = {
+    "info": {"subdir": "noarch"},
+    "packages": {
+        ALPHA1_FN: record("dtfup-alpha", "1.0"),
+        ALPHA2_FN: record("dtfup-alpha", "2.0", ALPHA2),
+        BLOCKED_FN: record("dtfup-blocked", "1.0"),
+    },
+    "packages.conda": {},
+    "removed": [],
+    "repodata_version": 1,
+}
+
+CURRENT = {
+    "info": {"subdir": "noarch", "dtf_marker": f"{MARKER}-current"},
+    "packages": {ALPHA2_FN: REPODATA["packages"][ALPHA2_FN]},
+    "packages.conda": {},
+    "removed": [],
+    "repodata_version": 1,
+}
+
+RUN_EXPORTS = {
+    "info": {"subdir": "noarch"},
+    "packages": {ALPHA2_FN: {"run_exports": {"weak": [f"{MARKER}-runexp"]}}},
+    "packages.conda": {},
+}
+
+PATCH = {
+    "patch_instructions_version": 1,
+    "packages": {},
+    "packages.conda": {},
+    "remove": [f"{MARKER}-removed-1.0-0.tar.bz2"],
+    "revoke": [],
+}
+
+CHANNELDATA = {
+    "channeldata_version": 1,
+    "packages": {"dtfup-alpha": {"version": "2.0", "subdirs": ["noarch"]}},
+    "subdirs": ["noarch"],
+}
+
+
+def js(doc):
+    return json.dumps(doc, indent=2, sort_keys=True).encode()
+
+
+FILES = {
+    "/noarch/repodata.json": ("application/json", js(REPODATA)),
+    "/noarch/current_repodata.json": ("application/json", js(CURRENT)),
+    "/noarch/run_exports.json": ("application/json", js(RUN_EXPORTS)),
+    "/noarch/patch_instructions.json": ("application/json", js(PATCH)),
+    "/noarch/repodata.json.sig": ("application/octet-stream", f"{MARKER}-SIG\n".encode()),
+    f"/noarch/{ALPHA2_FN}": ("application/x-bzip2", ALPHA2),
+    "/channeldata.json": ("application/json", js(CHANNELDATA)),
+}
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def _send(self, code, ctype, body, head=False):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if not head:
+            self.wfile.write(body)
+
+    def _route(self, head):
+        path = self.path.split("?", 1)[0]
+        if path == "/__readyz":
+            self._send(200, "text/plain", b"ok", head)
+            return
+        # Tolerate a doubled slash from an upstream URL that ends in "/".
+        while "//" in path:
+            path = path.replace("//", "/")
+        hit = FILES.get(path)
+        if hit is None:
+            self._send(404, "text/plain", b"not found", head)
+            return
+        self._send(200, hit[0], hit[1], head)
+
+    def do_GET(self):  # noqa: N802
+        self._route(False)
+
+    def do_HEAD(self):  # noqa: N802
+        self._route(True)
+
+    def log_message(self, fmt, *args):
+        print("mock-conda: " + fmt % args, flush=True)
+
+
+if __name__ == "__main__":
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

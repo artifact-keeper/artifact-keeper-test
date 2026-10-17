@@ -1,0 +1,73 @@
+# DTF tier manifest: conda-channel-types  (artifact-keeper#4708 / #4709 / #4711)
+# Profile-set: filesystem / single + upstreams=mock-conda (a stdlib-python
+# static conda channel on the slot's own 172.16.<slot>.0/24 subnet, every
+# document stamped with the marker "dtfmockconda<slot>").
+#
+# THE BUGS
+# #4708  `repodata.json` branched on repository type, its four siblings did
+#        not: current_repodata.json, run_exports.json, repodata.json.sig and
+#        patch_instructions.json were always built from the repository's OWN
+#        artifact rows. A Remote or Virtual has none, so a client asking a
+#        remote/virtual channel for current_repodata got a well-formed EMPTY
+#        channel (`{"packages":{}}`), run_exports lost every upstream entry,
+#        the remote's .sig was 404 (or, on a signed virtual, a signature over
+#        the empty hosted build that never verifies against the repodata.json
+#        actually served), and patch_instructions.json was a 200 stub that
+#        asserted "no patches" on behalf of a channel nobody asked.
+# #4709  conda's security-relevant writes left no audit trail: native publish
+#        (the handler inserts its own artifact row, bypassing the audited
+#        ArtifactService path), withdraw, attestation verdicts, and stored
+#        environment ingest/delete wrote zero audit_log rows.
+# #4711  no metric told an operator that a virtual's allowlist was dropping
+#        upstream records, that uploads carried install scripts, or how
+#        attestation verdicts were going.
+#
+# THE PRIMITIVES
+#   anon GET /conda/{remote}/noarch/{current_repodata.json,run_exports.json,
+#            patch_instructions.json,repodata.json.sig}     upstream bytes?
+#   anon GET /conda/{virtual}/noarch/{current_repodata.json,run_exports.json,
+#            patch_instructions.json}                       derived / merged / 404?
+#   anon GET /conda/{signed virtual}/{keys/repo.pub, noarch/repodata.json(.sig)}
+#            -> openssl dgst -sha256 -verify on the served bytes
+#   PUT    /conda/{hosted}/noarch/{file}                    publish (x4)
+#   DELETE /conda/{hosted}/noarch/{file}                    withdraw
+#   PUT    /conda/{hosted}/noarch/{file}/attestation        malformed + unsigned
+#   POST/DELETE /api/v1/repositories/{hosted}/environments  conda-lock.yml
+#   PUT    /api/v1/repositories/{virtual}/allowlist         admit dtfup-alpha only
+#   GET    /api/v1/admin/metrics                            Prometheus text
+# Audit rows are read from audit_log in the slot's Postgres (they are written
+# fire-and-forget, so each is polled for, then counted: exactly one per act).
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: the hosted channel's repodata.json and
+#             current_repodata.json list its uploads; remote and virtual
+#             repodata.json carry the upstream records; a hosted .sig with no
+#             key is 404; withdraw, refused attestations and environment
+#             ingest/delete answer as before; the allowlisted virtual's
+#             repodata.json omits the non-admitted record; /api/v1/admin/metrics
+#             answers.
+#   (FIX)     #4708 remote siblings carry the mock's markers and the remote .sig
+#             is the upstream's bytes; the virtual's current_repodata holds the
+#             newest upstream version of each name and its run_exports holds
+#             the remote's entry; virtual and hosted patch_instructions are
+#             404; the signed virtual's .sig verifies against the repodata.json
+#             it serves. #4709 one row each: ARTIFACT_UPLOADED (with
+#             details.package coordinates), CONDA_PACKAGE_WITHDRAWN,
+#             ATTESTATION_REJECTED (x2), ENVIRONMENT_REGISTERED,
+#             ENVIRONMENT_DELETED. #4711 ak_conda_allowlist_dropped_total
+#             {repository=<virtual>,member=<remote>},
+#             ak_conda_install_script_findings_total{kind="post-link"},
+#             ak_conda_attestation_total{outcome="rejected"|"absent"}.
+#             All RED on 1.11.1: empty hosted-shape documents, 200 stubs, a
+#             .sig that does not verify, zero audit rows, absent metrics.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~40 authenticated calls
+# back to back (repo/member/allowlist/signing setup, four uploads, metric
+# scrapes); the base default (ON) would turn a setup call into a 429.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the remote's upstream is the mock on a
+# private address (the profile also sets it, and scopes the SSRF allowlist to
+# 172.16.0.0/12).
+PROFILES="storage.filesystem upstreams.mock-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

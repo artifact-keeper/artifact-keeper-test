@@ -1,0 +1,81 @@
+# =============================================================================
+# profiles/upstreams.mock-conda.yml — a canned upstream conda CHANNEL
+# =============================================================================
+# Adds `mock-conda`, a stdlib-only Python HTTP server serving one static
+# `noarch` subdir with every sibling document a real channel can publish
+# (repodata.json, current_repodata.json, run_exports.json,
+# patch_instructions.json, repodata.json.sig) plus one real v1 package. Each
+# document carries a marker string, so the conda-channel-types tier
+# (artifact-keeper#4708 / #4711) can tell a document PROXIED from upstream
+# apart from an empty one Artifact Keeper built from a remote's (nonexistent)
+# own artifact rows. See
+# harness/tiers/conda-channel-types/fixtures/mock_conda.py.
+#
+# The overlay:
+#   * ADDS  `mock-conda` on a per-slot 172.16.<slot>.0/24 subnet, so AK's
+#     create-time SSRF check on the remote's upstream URL allowlists it via
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 (the same narrow escape hatch
+#     upstreams.mock-artifactory.yml uses).
+#   * PATCHES backend onto that network and sets the private-IP escape hatch
+#     (UPSTREAM_ALLOW_PRIVATE_IPS + AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16/12) so the
+#     remote repo create against http://172.16.<slot>.70/ is accepted and the
+#     proxy fetch can reach the mock.
+#
+# SUBNET CHOICE: 172.16.<slot>.0/24, not 172.28 — see the SUBNET CHOICE note in
+# upstreams.mock-artifactory.yml (Docker's default pool hands out 172.17-31/16
+# to the base `dtf` networks; 172.16/16 is below that pool's base, so it never
+# collides with an auto-allocated network). The two profiles are not stacked
+# together; if they ever are, the mock IPs differ (.60 vs .70) but the subnet
+# names do too, so give one of them another third octet first.
+#
+# Required vars (run.sh exports them): DTF_SLOT (per-slot subnet + container
+# name so concurrent slots never collide), DTF_DIR (mount the mock script).
+# =============================================================================
+services:
+  mock-conda:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-conda
+    command: ["python3", "/app/mock_conda.py"]
+    environment:
+      MOCK_PORT: "80"
+      # Slot-scoped marker the oracle greps for in every proxied document.
+      MOCK_MARKER: "dtfmockconda${DTF_SLOT}"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/conda-channel-types/fixtures/mock_conda.py:/app/mock_conda.py:ro"
+    # On an SELinux-enforcing host (rootless podman on Fedora) a bind-mounted
+    # file under $HOME keeps its user_home_t label and the container cannot
+    # read it. Disable label separation for THIS container only, rather than
+    # relabelling the checkout with :z. A no-op where SELinux is off.
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockconda:
+        ipv4_address: 172.16.${DTF_SLOT}.70
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-conda:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockconda: {}
+
+networks:
+  mockconda:
+    name: ak-dtf${DTF_SLOT}-mockconda
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
