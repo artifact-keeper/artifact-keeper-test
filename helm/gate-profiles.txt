@@ -1,0 +1,25 @@
+# gate-profiles.txt - every chart render the release gate performs, as data
+# (artifact-keeper/artifact-keeper#4722).
+#
+# scripts/render-gate-profiles.sh runs `helm template` of a chart with each
+# line below, so a chart change that refuses the gate's values fails in
+# seconds -- in artifact-keeper-iac's helm-ci.yml on the chart PR, and in the
+# backend Release Candidate's bookkeeping job before the gate is dispatched --
+# instead of at `helm install` on the cluster an hour into a candidate.
+#
+# Format: <profile> <values file>...
+#   Values files are layered left to right, exactly as the gate layers them.
+#   Paths are relative to this repository's root; a `chart:` prefix makes a
+#   path relative to the chart directory instead.
+#
+# KEEP IN STEP with the installs that consume these files:
+#   values-test             scripts/create-test-namespace.sh (default)
+#   values-test-full        scripts/create-test-namespace.sh --full-stack (deploy job)
+#   values-test-mesh        create-test-namespace.sh --values helm/values-test-mesh.yaml (mesh-tests)
+#   values-smoke-with-deps  tests/release-gate/clean-install-smoke-with-deps.sh
+#   clean-install-smoke     scripts/clean-install-smoke.sh
+values-test             helm/values-test.yaml
+values-test-full        helm/values-test-full.yaml
+values-test-mesh        helm/values-test.yaml helm/values-test-mesh.yaml
+values-smoke-with-deps  helm/values-smoke-with-deps.yaml
+clean-install-smoke     chart:values-production.yaml helm/smoke-overrides.yaml

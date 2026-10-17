@@ -1,0 +1,76 @@
+# smoke-overrides.yaml - the fixed overrides clean-install-smoke layers on the
+# chart's own values-production.yaml (artifact-keeper/artifact-keeper#4722).
+#
+# This used to be a `--set` list inside scripts/clean-install-smoke.sh. It is a
+# values file so the chart's CI (artifact-keeper-iac helm-ci.yml) and the
+# backend's Release Candidate can render the exact smoke profile without
+# parsing a shell script; scripts/render-gate-profiles.sh reads it from
+# helm/gate-profiles.txt. The per-run values (image tags, the self-test's
+# repository override) stay `--set` in the script. The justification for each
+# key is the comment block above HELM_OVERRIDES in clean-install-smoke.sh.
+fullnameOverride: ak-smoke
+
+backend:
+  image:
+    pullPolicy: Always
+  replicaCount: 1
+  env:
+    ADMIN_PASSWORD: "Smoke!2026secure"
+  # Chart 1.9.29+ refuses a credential in backend.env (artifact-keeper-iac#375)
+  # unless told this is a throwaway install.
+  allowCredentialsInEnv: true
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+
+web:
+  replicaCount: 1
+  podDisruptionBudget:
+    enabled: false
+
+secrets:
+  jwtSecret: "smoke-jwt-secret-not-for-production"
+
+postgres:
+  enabled: true
+  auth:
+    username: registry
+    password: smoke-db-password
+    database: artifact_registry
+
+externalDatabase:
+  host: ""
+  existingSecret: ""
+
+externalSecrets:
+  enabled: false
+
+ingress:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+edge:
+  enabled: false
+
+trivy:
+  enabled: false
+
+dependencyTrack:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+opensearch:
+  enabled: false
+
+# v1.1.x charts: values-production.yaml ships meilisearch.masterKey="" and
+# env="production" so operators must provide the key out-of-band. The smoke
+# gate is a transient test deploy: provide a hardcoded test key (>= 16 bytes)
+# so Meilisearch boots. Harmless on v1.2.x charts (which dropped Meilisearch in
+# artifact-keeper-iac#67) since the key has no template binding there.
+meilisearch:
+  masterKey: ak-smoke-meilisearch-test-master-key

@@ -1,0 +1,58 @@
+name: Gate Profiles Render
+
+# Renders the chart at artifact-keeper-iac@main with every release-gate values
+# profile in helm/gate-profiles.txt (artifact-keeper/artifact-keeper#4722).
+#
+# artifact-keeper-iac's helm-ci.yml runs the same script against this
+# repository's main on every chart PR, and the backend Release Candidate runs it
+# in its bookkeeping job before dispatching the gate. This workflow is the
+# third side: a change HERE to a profile, to the manifest, or to the script is
+# rendered against the chart the gate deploys before it merges, instead of at
+# `helm install` an hour into the next candidate.
+
+on:
+  pull_request:
+    paths:
+      - 'helm/**'
+      - 'scripts/render-gate-profiles.sh'
+      - '.github/workflows/gate-profiles-render.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'helm/**'
+      - 'scripts/render-gate-profiles.sh'
+      - '.github/workflows/gate-profiles-render.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-profiles-render-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    name: Render gate profiles against iac main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout artifact-keeper-iac@main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-iac
+          ref: main
+          path: .iac
+          persist-credentials: false
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # The release gate's pin (release-gate.yml); bump both together.
+          version: v3.22.1
+
+      - name: Render every gate profile
+        run: scripts/render-gate-profiles.sh --chart-dir .iac/charts/artifact-keeper
