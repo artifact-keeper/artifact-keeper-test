@@ -1,4 +1,4 @@
-# DTF tier manifest: proxy-cache-empty-object  (artifact-keeper#4630, #4646)
+# DTF tier manifest: proxy-cache-empty-object  (artifact-keeper#4630, #4646, #4758, #4759)
 # Profile-set: filesystem + a steerable static upstream (upstreams.mock-static:
 # a stdlib-python server on a per-slot 172.16.<slot>.0/24 subnet that serves
 # deterministic files, counts GETs per path, and can be told to promise N
@@ -27,6 +27,22 @@
 # check at commit: a stored part shorter than the size_bytes its PATCH
 # recorded fails the commit as 500 BLOB_UPLOAD_UNKNOWN naming the part.
 #
+# THE BUGS (#4758, #4759; fixed by #4768)
+# #4758: the #4661 heal keys on the empty-object ETag a sidecar pins, but the
+# filesystem backend (the default) never pins one, so an emptied __content__
+# under an intact sidecar was still served as 200 + Content-Length: N with no
+# body and upstream was never contacted. The fix compares storage.size() with
+# the sidecar's size_bytes when no ETag is pinned, evicts on a mismatch, and
+# refetches.
+# #4759: an upstream that advertised Content-Length: N and sent no body got
+# its headers forwarded at once, so the client saw a dropped connection. The
+# fix waits for the first body byte: none -> 502 {code: UPSTREAM_SHORT_BODY,
+# message naming the repository and "promised N bytes ... after 0 bytes"},
+# never the upstream URL. A body that ends after some bytes were forwarded
+# still closes the connection (the headers are out), and the tee now logs a
+# warn with the cache key, expected_bytes and received_bytes. Nothing is
+# cached either way.
+#
 # THE PRIMITIVES
 #   #4630 read  prime an entry through the Remote, then rewrite it on disk into
 #               the exact #4630 state (empty __content__, sidecar size_bytes N,
@@ -36,12 +52,26 @@
 #                       __content__ rewritten to N bytes, then a cache hit.
 #               1.11.1: 200 + Content-Length N, zero bytes (curl rc 18), no
 #                       upstream request, entry unchanged.
+#   #4758 read  prime an entry, empty its __content__ on disk, leave the
+#               sidecar exactly as written (storage_etag absent), GET.
+#               fixed:  200 with the full bytes, exactly one upstream GET,
+#                       __content__ rewritten, then a cache hit.
+#               1.11.1 / 6a4e29f1: 200 + Content-Length N, zero bytes
+#                       (curl rc 18), no upstream request.
+#   #4759       mock mode `empty` (Content-Length N, no body) and `short`
+#               (half the body, close).
+#               fixed:  empty -> 502 UPSTREAM_SHORT_BODY naming the repo and
+#                       N/0; short -> curl rc 18 and a docker-logs warn naming
+#                       the path with expected_bytes=N, received_bytes<N.
+#               1.11.1 / 6a4e29f1: empty -> no HTTP response (curl rc 52);
+#                       short -> rc 18, no warn with the counts.
 #   #4646       two 64 KiB PATCHes, truncate stored part 0 by 4 KiB, commit.
 #               fixed:  500 BLOB_UPLOAD_UNKNOWN naming the part, no blob.
 #               1.11.1: 400 DIGEST_INVALID ("computed ... != provided").
 #
 # THE GATES
-#   (FIX)      the two primitives above. RED on 1.11.1 (exit 1).
+#   (FIX)      the primitives above. RED on 1.11.1 (all four) and on main
+#              6a4e29f1 (#4758 and both #4759 cases).
 #   (CONTROL)  must hold on BOTH images: a cold Remote fetch returns the
 #              upstream bytes and caches, the next fetch is a cache hit (the
 #              upstream counter does not move); an upstream that promises N
@@ -51,6 +81,10 @@
 #              behind); a clean two-PATCH OCI upload commits and reads back by
 #              digest; a generic upload's stored object and X-Checksum-Sha256
 #              match the uploaded bytes.
+#
+# The profile pins the backend's json-file log driver for the #4759 warn
+# (rootless podman's journald driver drops lines) and runs the mock with
+# label=disable (SELinux-enforcing hosts cannot read the bind-mounted script).
 #
 # NOT GATED HERE (see the PR): #4630's post-copy publish measurement needs a
 # copy() that reports success and lands short, which the filesystem backend's

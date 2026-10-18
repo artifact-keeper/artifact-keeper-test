@@ -1,4 +1,4 @@
-# DTF tier manifest: auth-db-outage  (artifact-keeper#4750 / #4751)
+# DTF tier manifest: auth-db-outage  (artifact-keeper#4750 / #4751, #4756, #4765)
 # Profile-set: filesystem / single. The bug is in the credential check that
 # runs ahead of every handler, so the storage dimension is irrelevant.
 #
@@ -20,6 +20,19 @@
 # (`Retry-After: 1` on the middleware and /v2 paths, OCI code `UNAVAILABLE`).
 # Nothing is ever authenticated on an error: it fails closed.
 #
+# THE FOLLOW-UPS (1.11.2)
+# #4756: login itself, and any handler whose OWN query hit the outage (an API
+# token is validated from the auth cache, so /api/v1/auth/me got past the
+# middleware and failed in the handler), still answered 500 DATABASE_ERROR.
+# Fixed by #4764: the central AppError mapping answers an outage-class
+# database error with 503 DATABASE_UNAVAILABLE ("Database is temporarily
+# unavailable, retry shortly") + Retry-After: 1.
+# #4765: format handlers that build their own protocol error body (npm
+# {"error"}, Git LFS {"message", "request_id"}, OCI, Connect, Swift, Maven
+# metadata, Pub) shed only a pool timeout to 503; an outage was a
+# non-retryable 500. Fixed by #4769: the same classification, 503 + Retry-After
+# in each format's own envelope.
+#
 # THE PRIMITIVE: A REAL OUTAGE
 # The oracle stops this slot's own Postgres container (`docker stop
 # "$DB_CONTAINER"`, i.e. ak-dtf<slot>-db), probes, then starts it again. That is
@@ -30,24 +43,52 @@
 # outage probe waits for the pool's acquire timeout (5s default), so the
 # stopped window is about a minute.
 #
+# REACHING A FORMAT HANDLER DURING THE OUTAGE (#4765)
+# A password, a JWT, or an API token inside Basic is checked against the
+# database by the auth middleware, which answers the #4751 503 before any
+# handler runs; an anonymous LFS batch is refused outright (#508). The probes
+# therefore present the user's API token as Bearer (validated from the auth
+# cache, no query) on PUBLIC npm and gitlfs repos whose keys the oracle warms
+# into the visibility middleware's 60 s repo cache immediately before the
+# stop, and they run first in the outage. The format handler's own repository
+# lookup is then the first query to fail.
+#
 # Oracle (discriminating, RELEASE_GATE=1):
 #   (CONTROL)  true on BOTH images: before the outage a user's JWT, API token,
 #              Basic password and JWT-as-Basic-password all authenticate, and
 #              /v2/ accepts Basic; /readyz goes not-ready (503, database
 #              unhealthy) once the DB is stopped; a credential rejected before
 #              the database is consulted (a too-short X-API-Key) still gets 401
-#              during the outage; a correct-password login during the outage
-#              is never a 401 and never mints a token; after `docker start`
-#              /readyz returns to ready, the pool reconnects (regression guard
-#              for the #1877 keepalive work), login works again, the SAME
-#              pre-outage JWT and API token are still valid, and a wrong
-#              password is 401 again.
+#              during the outage; after `docker start` /readyz returns to
+#              ready, the pool reconnects (regression guard for the #1877
+#              keepalive work), login works again, the SAME pre-outage JWT and
+#              API token are still valid, a wrong password is 401 again (on
+#              /maven and on login), and the npm GET / LFS batch answer
+#              404 / 200 as they did before the outage.
 #   (FIX)      during the outage each presented credential gets 503, never
 #              401 and never 2xx: Bearer JWT on /api/v1 (+ Retry-After: 1);
 #              Basic password, JWT-as-Basic-password and a WRONG Basic password
 #              on a /maven route (the check cannot run, so "cannot decide");
 #              /v2/ with a Bearer JWT and with Basic, and /v2/token with Basic
 #              (503 UNAVAILABLE + Retry-After: 1). RED on 1.11.1: 401 on all.
+#   (FIX #4756) during the outage, POST /api/v1/auth/login with the correct
+#              AND with a wrong password, and a Bearer API token on
+#              /api/v1/auth/me, answer 503 {code: DATABASE_UNAVAILABLE} +
+#              Retry-After: 1 (and login mints no token). RED on 1.11.1 and
+#              on main 6a4e29f1: 500 DATABASE_ERROR, no Retry-After.
+#   (FIX #4765) during the outage a Git LFS batch answers 503 + Retry-After:
+#              1 in the LFS envelope ({message: "Database is temporarily
+#              unavailable, retry shortly", request_id}), and an npm metadata
+#              GET answers 503 DATABASE_UNAVAILABLE + Retry-After: 1. RED on
+#              1.11.1 and 6a4e29f1: 500 "Database operation failed".
+#
+# NOT GATED HERE: npm's own {"error"} envelope. Every npm read resolves the
+# repository first through map_db_err, i.e. the generic AppError body (#4764),
+# so with the whole database down the npm envelope's DB sites (after the
+# repo lookup) are unreachable; the npm probe gates the 503 on the npm route,
+# not the envelope. OCI's envelope is likewise behind the /v2 credential
+# check (already 503 UNAVAILABLE); Connect, Swift, Maven metadata and Pub are
+# not probed.
 #
 # RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
 PROFILES="storage.filesystem"

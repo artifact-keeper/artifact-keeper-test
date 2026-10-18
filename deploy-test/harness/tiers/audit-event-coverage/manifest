@@ -1,4 +1,4 @@
-# DTF tier manifest: audit-event-coverage  (artifact-keeper#4710 / #4718)
+# DTF tier manifest: audit-event-coverage  (artifact-keeper#4710 / #4718, #4762)
 # Profile-set: filesystem + a webhook secret-encryption key. The audit trail is
 # written by the API handlers into Postgres, ahead of any storage choice, so
 # the storage dimension is irrelevant. secrets.webhook-key only exists so the
@@ -58,6 +58,10 @@
 #              the acting admin with the same peer IP the login row recorded;
 #              no row carries the OIDC client secret, the webhook secret, or
 #              the webhook URL's userinfo/query. RED on 1.11.1: count 0.
+#   (FIX #4762) the REPOSITORY_CREATED and USER_CREATED rows of the two
+#              controls record the same TCP peer the login row recorded
+#              (#4770 defaults every request-scoped audit row's ip_address to
+#              the verified client IP). RED on 1.11.1 and main 6a4e29f1: NULL.
 #   (FIX #4718) the unsaved period reads 0 (1.11.1: 90); a manual cleanup with
 #              no saved period deletes nothing (1.11.1: deletes a 100-day-old
 #              row under the unsaved 90); after the first scheduled pass, rows
