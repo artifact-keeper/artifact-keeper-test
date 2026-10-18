@@ -244,6 +244,28 @@ else
   fail "USER_CREATED for ${U_ID}: db=${n} api=${t} (want 1/1)"
 fi
 
+# =============================================================================
+# FIX #4762 — the two pre-#4716 writers now record the client IP too
+# =============================================================================
+# #4770 defaults AuditEntry::new's ip_address to the verified request client
+# IP, so the REPOSITORY_CREATED / USER_CREATED rows the two controls above
+# wrote carry the same TCP peer the login row recorded. RED on 1.11.1 and on
+# main 6a4e29f1: ip_address is NULL.
+for ip_case in "REPOSITORY_CREATED:${CTL_REPO_ID:-}" "USER_CREATED:${U_ID:-}"; do
+  ip_action="${ip_case%%:*}"; ip_rid="${ip_case#*:}"
+  begin_test "FIX #4762: the ${ip_action} row records the client IP (the TCP peer ${PEER_IP})"
+  if [ -z "$ip_rid" ]; then
+    fail "${ip_action}: no resource to look up (the create above failed)"
+    continue
+  fi
+  ip_got="$(db "SELECT coalesce(ip_address,'') FROM audit_log WHERE action='${ip_action}' AND resource_id='${ip_rid}' ORDER BY created_at DESC LIMIT 1")"
+  if [ "$ip_got" = "$PEER_IP" ]; then
+    pass
+  else
+    fail "${ip_action} for ${ip_rid}: ip_address=${ip_got:-<null>}, want the TCP peer ${PEER_IP}"
+  fi
+done
+
 begin_test "CONTROL: a login with a spoofed X-Forwarded-For records the TCP peer, not the header"
 before="$(db "SELECT count(*) FROM audit_log WHERE action='LOGIN' AND resource_id='${ADMIN_ID}'")"
 code="$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -o /dev/null -w '%{http_code}' -X POST \

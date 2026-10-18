@@ -12,6 +12,10 @@
 # being checked, the backend said 401 ("your credential is wrong") instead of
 # 503 ("try again"). Only a pool-acquire timeout was mapped to 503 (#2125).
 # Clients abort on 401 and retry on 503, so a DB restart failed CI outright.
+# The 1.11.2 follow-ups close the rest of the outage surface: login itself and
+# any handler whose own query hits the outage (#4756, fixed by #4764: central
+# 503 DATABASE_UNAVAILABLE + Retry-After: 1), and the format envelopes that
+# build their own error body, Git LFS among them (#4765, fixed by #4769).
 #
 # THE PRIMITIVE. A real outage: this oracle stops its OWN slot's Postgres
 # (`docker stop "$DB_CONTAINER"` = ak-dtf<slot>-db; every slot is a separate
@@ -22,6 +26,11 @@
 #   (CONTROL) before / during / after the outage, true on BOTH images.
 #   (FIX)     each presented credential gets 503 during the outage, never 401
 #             and never 2xx. RED on 1.11.1 (401).
+#   (FIX #4756/#4765) login (correct and wrong password), an API token on
+#             /api/v1/auth/me, an npm metadata GET and a Git LFS batch (both
+#             with the user's API token as Bearer) answer 503 +
+#             Retry-After: 1 in their own body shape. RED on 1.11.1 and on
+#             main 6a4e29f1 (500).
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${ADMIN_USER:?}"; : "${ADMIN_PASS:?}"
@@ -35,6 +44,11 @@ SLOT="${DTF_SLOT:-x}"
 USR="dbout-user-${SLOT}-${SUF}"
 USR_PASS="Dbout_${SUF}_Aa1!"
 REPO="dbout-maven-${SLOT}-${SUF}"
+NPM_REPO="dbout-npm-${SLOT}-${SUF}"
+LFS_REPO="dbout-lfs-${SLOT}-${SUF}"
+NPM_PKG="dbout-pkg-${SUF}"
+LFS_OID="$(printf 'auth-db-outage-lfs-%s' "$SUF" | sha256sum | awk '{print $1}')"
+DB_MSG="Database is temporarily unavailable, retry shortly"
 COORD="com/example/dbout/1.0.0/dbout-1.0.0.txt"
 BYTES="auth-db-outage-${SUF}"
 
@@ -78,6 +92,35 @@ login_code() { # USER PASS
   req POST "${BASE_URL}/api/v1/auth/login" -H 'Content-Type: application/json' \
     -d "$(jq -nc --arg u "$1" --arg p "$2" '{username:$u,password:$p}')"
 }
+
+# expect_db_unavailable LABEL CODE JQ_FILTER
+# The #4756 / #4765 FIX assertion: 503 + Retry-After: 1, and the body says
+# "database unavailable" in the shape JQ_FILTER selects (it must print
+# "ok"). 1.11.1 and main 6a4e29f1 answered 500 DATABASE_ERROR / "Database
+# operation failed" here.
+expect_db_unavailable() {
+  local label="$1" code="$2" filter="$3"
+  local ev; ev="$(evidence "$code")"
+  if [ "$code" != "503" ]; then
+    fail "${label}: HTTP ${code}, expected 503 (a database outage is retryable, not a server fault or a bad credential)" "$ev"
+    return
+  fi
+  if [ "$(retry_after)" != "1" ]; then
+    fail "${label}: 503 without Retry-After: 1" "$ev"
+    return
+  fi
+  if [ "$(jq -r --arg m "$DB_MSG" "$filter" "${WORK}/body" 2>/dev/null)" != "ok" ]; then
+    fail "${label}: 503 body is not the database-unavailable shape (${filter})" "$ev"
+    return
+  fi
+  pass
+}
+# The generic AppError body (#4764): {code, message}. ($m is a jq variable.)
+# shellcheck disable=SC2016
+JQ_APPERR='if .code == "DATABASE_UNAVAILABLE" and .message == $m then "ok" else "no" end'
+# The Git LFS envelope (#4769): {message, request_id}.
+# shellcheck disable=SC2016
+JQ_LFS='if .message == $m and (.request_id | type) == "string" then "ok" else "no" end'
 
 # expect_503 LABEL CODE [require-retry-after] [require-oci-unavailable]
 # The FIX assertion: 503, and specifically NOT the 1.11.1 401.
@@ -130,6 +173,21 @@ GRANT="$(docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -Atc 
   WHERE u.username='${USR}' AND r.name='developer' AND repo.key='${REPO}'
   ON CONFLICT DO NOTHING RETURNING 1;" 2>&1 || true)"
 if [ "$(echo "$GRANT" | head -1)" != "1" ]; then infra_fail "could not grant ${USR} developer on ${REPO}" "$GRANT"; end_suite; fi
+# Public npm and Git LFS repos for the format probes (#4765). The probes
+# present the user's API TOKEN as Bearer (npm's _authToken; git-lfs sends the
+# same header from an http.extraHeader): a validated Bearer API token is
+# served from the auth service's token cache without a query, so the request
+# gets past the auth middleware during the outage and the format handler's
+# own repo lookup is the query that fails. A password, a JWT, or an API token
+# inside Basic is checked against the database by the middleware and gets the
+# #4751 503 before any handler runs, and LFS batch refuses an anonymous
+# caller outright (#508).
+for spec in "${NPM_REPO}:npm" "${LFS_REPO}:gitlfs"; do
+  if ! api_post "/api/v1/repositories" \
+    "{\"key\":\"${spec%%:*}\",\"name\":\"${spec%%:*}\",\"format\":\"${spec##*:}\",\"repo_type\":\"local\",\"is_public\":true}" >/dev/null 2>&1; then
+    infra_fail "could not create public ${spec##*:} repo ${spec%%:*}"; end_suite
+  fi
+done
 pass
 
 BEARER_JWT="Authorization: Bearer ${USER_JWT}"
@@ -139,6 +197,14 @@ BASIC_JWT="Authorization: Basic $(b64_basic "$USR" "$USER_JWT")"
 BASIC_WRONG="Authorization: Basic $(b64_basic "$USR" "not-the-password-${SUF}")"
 BASIC_ADMIN="Authorization: Basic $(b64_basic "$ADMIN_USER" "$ADMIN_PASS")"
 ART_URL="${BASE_URL}/maven/${REPO}/${COORD}"
+NPM_URL="${BASE_URL}/npm/${NPM_REPO}/${NPM_PKG}"
+LFS_URL="${BASE_URL}/lfs/${LFS_REPO}/objects/batch"
+LFS_BODY="$(jq -nc --arg o "$LFS_OID" '{operation:"download",transfers:["basic"],objects:[{oid:$o,size:4}]}')"
+npm_get() { req GET "$NPM_URL" -H 'Accept: application/json' -H "$BEARER_API"; }
+lfs_batch() {
+  req POST "$LFS_URL" -H 'Accept: application/vnd.git-lfs+json' -H "$BEARER_API" \
+    -H 'Content-Type: application/vnd.git-lfs+json' --data-binary "$LFS_BODY"
+}
 
 me_is_user() { # HEADER -> 0 when /api/v1/auth/me answers 200 for $USR
   local c; c="$(req GET "${BASE_URL}/api/v1/auth/me" -H "$1")"
@@ -176,10 +242,32 @@ begin_test "CONTROL before: /v2/ with Basic -> 200"
 C="$(req GET "${BASE_URL}/v2/" -H "$BASIC_ADMIN")"
 if [ "$C" = "200" ]; then pass; else fail "/v2/ Basic returned ${C}" "$(body)"; fi
 
+begin_test "CONTROL before: wrong-password login -> 401"
+C="$(login_code "$USR" "not-the-password-${SUF}")"
+if [ "$C" = "401" ]; then pass; else fail "wrong-password login returned ${C}, expected 401" "$(evidence "$C")"; fi
+
+begin_test "CONTROL before: npm metadata GET and Git LFS batch with a Bearer API token answer 404 / 200"
+NC="$(npm_get)"; NB="$(body)"
+LC="$(lfs_batch)"; LB="$(body)"
+if [ "$NC" = "404" ] && [ "$LC" = "200" ] && [ "$(jq -r '.objects[0].oid // empty' <<<"$LB" 2>/dev/null)" = "$LFS_OID" ]; then
+  pass
+else
+  fail "npm GET ${NC} / LFS batch ${LC} before the outage (want 404 / 200 naming the oid)" "npm: ${NB}
+lfs: ${LB}"
+fi
+
 # =============================================================================
 # THE OUTAGE: stop this slot's own Postgres
 # =============================================================================
 begin_test "CONTROL outage: stop ${DB_CONTAINER}; /readyz goes not-ready (503, database unhealthy)"
+# Warm the visibility middleware's repo cache (60 s TTL) for the two public
+# repos, and the API-token cache, right before the stop: with both cached the
+# request passes the middleware without a query and reaches the format
+# handler, whose own repo lookup is the first thing to hit the outage.
+# (Uncached, the middleware treats its failed repo lookup as "no such repo"
+# and answers 404/401 without reaching the handler; see the manifest.)
+npm_get >/dev/null; lfs_batch >/dev/null
+WARM_T0="$(date +%s)"
 if ! docker stop -t 10 "$DB_CONTAINER" >/dev/null 2>&1; then
   infra_fail "docker stop ${DB_CONTAINER} failed"; end_suite
 fi
@@ -195,6 +283,18 @@ if wait_until "/readyz reports not-ready" "$NOTREADY_TIMEOUT" readyz_not_ready; 
 else
   fail "/readyz never went not-ready within ${NOTREADY_TIMEOUT}s of stopping the database" "$(curl -s --max-time 15 "${BASE_URL}/readyz" | head -c 300)"
 fi
+
+# The format probes run first, while the repo-cache entries warmed above are
+# still inside their 60 s TTL.
+begin_test "FIX #4765 outage: Git LFS batch (Bearer API token) -> 503 + Retry-After: 1 in the LFS {message} body (not 500)"
+C="$(lfs_batch)"
+echo "  ${C} $(( $(date +%s) - WARM_T0 ))s after the repo-cache warm-up"
+expect_db_unavailable "LFS batch" "$C" "$JQ_LFS"
+
+begin_test "FIX #4756/#4765 outage: npm metadata GET (Bearer API token) -> 503 DATABASE_UNAVAILABLE + Retry-After: 1 (not 500)"
+C="$(npm_get)"
+echo "  ${C} $(( $(date +%s) - WARM_T0 ))s after the repo-cache warm-up"
+expect_db_unavailable "npm metadata GET" "$C" "$JQ_APPERR"
 
 begin_test "FIX outage: Bearer JWT on /api/v1/auth/me -> 503 + Retry-After: 1 (not 401)"
 C="$(req GET "${BASE_URL}/api/v1/auth/me" -H "$BEARER_JWT")"
@@ -228,13 +328,21 @@ begin_test "CONTROL outage: a credential rejected before the DB is consulted (to
 C="$(req GET "$ART_URL" -H "X-API-Key: short")"
 if [ "$C" = "401" ]; then pass; else fail "too-short X-API-Key during the outage returned ${C}, expected 401" "$(evidence "$C")"; fi
 
-begin_test "CONTROL outage: POST /api/v1/auth/login with the CORRECT password is never 401 and never mints a token"
+begin_test "FIX #4756 outage: Bearer API token on /api/v1/auth/me -> 503 DATABASE_UNAVAILABLE + Retry-After: 1 (not 500)"
+C="$(req GET "${BASE_URL}/api/v1/auth/me" -H "$BEARER_API")"
+expect_db_unavailable "Bearer API token /api/v1/auth/me" "$C" "$JQ_APPERR"
+
+begin_test "FIX #4756 outage: login with the CORRECT password -> 503 DATABASE_UNAVAILABLE + Retry-After: 1, no token (not 500)"
 C="$(login_code "$USR" "$USR_PASS")"
-case "$C" in
-  401) fail "login with the correct password answered 401 during a DB outage" "$(evidence "$C")" ;;
-  2*)  fail "login answered ${C} with the database stopped" "$(evidence "$C")" ;;
-  *)   echo "  login during the outage: $(evidence "$C" | head -1)"; pass ;;
-esac
+if [ -n "$(jq -r '.access_token // .token // empty' "${WORK}/body" 2>/dev/null)" ]; then
+  fail "login minted a token with the database stopped" "$(evidence "$C")"
+else
+  expect_db_unavailable "correct-password login" "$C" "$JQ_APPERR"
+fi
+
+begin_test "FIX #4756 outage: login with a WRONG password -> 503 DATABASE_UNAVAILABLE + Retry-After: 1 (cannot decide; not 401, not 500)"
+C="$(login_code "$USR" "not-the-password-${SUF}")"
+expect_db_unavailable "wrong-password login" "$C" "$JQ_APPERR"
 
 OUTAGE_SECS=$(( $(date +%s) - OUTAGE_T0 ))
 echo "  outage window so far: ${OUTAGE_SECS}s"
@@ -273,5 +381,13 @@ if art_ok "$BASIC_PASS"; then pass; else fail "Basic password GET failed after r
 begin_test "CONTROL recovery: wrong Basic password is 401 again (the 503 was outage-only)"
 C="$(req GET "$ART_URL" -H "$BASIC_WRONG")"
 if [ "$C" = "401" ]; then pass; else fail "wrong Basic password after recovery returned ${C}, expected 401" "$(evidence "$C")"; fi
+
+begin_test "CONTROL recovery: wrong-password login is 401 again"
+C="$(login_code "$USR" "not-the-password-${SUF}")"
+if [ "$C" = "401" ]; then pass; else fail "wrong-password login after recovery returned ${C}, expected 401" "$(evidence "$C")"; fi
+
+begin_test "CONTROL recovery: npm GET and LFS batch answer 404 / 200 again"
+NC="$(npm_get)"; LC="$(lfs_batch)"
+if [ "$NC" = "404" ] && [ "$LC" = "200" ]; then pass; else fail "after recovery: npm GET ${NC}, LFS batch ${LC} (want 404 / 200)" "$(body)"; fi
 
 end_suite

@@ -5,6 +5,11 @@
 #         N bytes must heal, not stream Content-Length: N over nothing forever
 #   #4646 a stored OCI upload part shorter than its PATCH recorded is a storage
 #         fault (500, names the part), not a client DIGEST_INVALID
+#   #4758 the same heal on the filesystem default, where no storage ETag is
+#         pinned: an emptied __content__ under an intact sidecar is refetched
+#   #4759 an upstream that promises N bytes and sends none answers 502
+#         UPSTREAM_SHORT_BODY; one that stops after some bytes closes the
+#         connection and logs a warn with both counts
 # See the manifest for THE BUG, the primitives and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
@@ -58,13 +63,14 @@ mock_mode(){ curl -s --max-time 5 -X POST "${MOCK}/__mode?path=/f/$1&mode=$2" | 
 golden(){ curl -s --max-time 10 -o "$2" "${MOCK}/__golden/$1" || true; }
 
 # --- the Remote repository ---------------------------------------------------
-# remote_get <name> <outfile> -> "<http_code> <curl_rc>"
+# remote_get <name> <outfile> [curl args...] -> "<http_code> <curl_rc>"
 remote_get(){
-  local code rc
-  rm -f "$2"
-  code="$(curl -s --max-time 30 -o "$2" -w '%{http_code}' -H "Authorization: Bearer $TOK" \
-    "$BASE/api/v1/repositories/${R_REMOTE}/download/f/$1")"; rc=$?
-  [ -f "$2" ] || : > "$2"
+  local code rc name="$1" out="$2"
+  shift 2
+  rm -f "$out"
+  code="$(curl -s --max-time 30 -o "$out" -w '%{http_code}' -H "Authorization: Bearer $TOK" "$@" \
+    "$BASE/api/v1/repositories/${R_REMOTE}/download/f/${name}")"; rc=$?
+  [ -f "$out" ] || : > "$out"
   echo "${code:-000} ${rc}"
 }
 
@@ -203,23 +209,78 @@ fi
 finish_case "#4630: a sidecar vouching for N bytes over an empty body (empty-object ETag pinned) is still served instead of refetched"
 
 # =============================================================================
-# #4630 COMMIT SIDE (both images): an upstream that promises N bytes and
-# delivers none / half is never committed as a cache entry, and the path
-# caches normally once the upstream is healthy.
+# #4758: the same poisoned body on the filesystem default, where the sidecar
+# pins NO storage ETag. Only __content__ is emptied; the sidecar is left
+# exactly as the backend wrote it, so no LRU wait is needed.
 # =============================================================================
+begin_test "#4758: an entry whose __content__ is empty under an intact sidecar with no storage_etag (filesystem default) is refetched and healed"
+reset_case
+N_NE="ne-${SUF}.bin"
+golden "$N_NE" "$W/ne.golden"
+read -r code rc <<<"$(remote_get "$N_NE" "$W/ne.0")"
+if [ "$code" != "200" ] || ! wait_sidecar "$N_NE"; then
+  infra_fail "could not prime the cache entry for ${N_NE} (HTTP ${code}, sidecar never written)"; end_suite
+fi
+wait_warm "$N_NE" || { infra_fail "the primed entry for ${N_NE} never became a cache hit"; end_suite; }
+DIR="$(entry_dir "$N_NE")"
+ne_pin="$(sidecar "$N_NE" | jqr '.storage_etag // "null"')"
+if [ "$ne_pin" != "null" ]; then
+  infra_fail "the filesystem backend pinned storage_etag ${ne_pin} on ${N_NE}; the #4758 precondition (no pinned ETag) does not hold"; end_suite
+fi
+fsx "o=\$(stat -c %u:%g '${DIR}/__content__'); : > '${DIR}/__content__'; chown \"\$o\" '${DIR}/__content__'"
+t_sz="$(content_size "$N_NE")"; t_meta_sz="$(sidecar "$N_NE" | jqr '.size_bytes // empty')"
+note "tampered ${DIR:-?}: __content__ ${t_sz} bytes, sidecar size_bytes ${t_meta_sz}, storage_etag ${ne_pin}"
+if [ "$t_sz" != "0" ] || [ "$t_meta_sz" != "$FILE_BYTES" ]; then infra_fail "the tamper did not take on ${DIR}"; end_suite; fi
+c_primed="$(mock_count "$N_NE")"
+read -r code rc <<<"$(remote_get "$N_NE" "$W/ne.1")"
+c_heal="$(mock_count "$N_NE")"
+note "GET after tamper: HTTP ${code}, curl rc ${rc}, $(size_of "$W/ne.1") bytes; upstream GETs ${c_primed} -> ${c_heal}"
+[ "$code" = "200" ] && [ "$rc" = "0" ] || fail_g "GET over the emptied entry was HTTP ${code} / curl rc ${rc} (18 = Content-Length promised, body never came)"
+[ "$(sha_of "$W/ne.1")" = "$(sha_of "$W/ne.golden")" ] || fail_g "body is $(size_of "$W/ne.1") bytes with sha $(sha_of "$W/ne.1"), not the ${FILE_BYTES}-byte upstream object"
+[ -n "$c_heal" ] && [ "$c_heal" = "$(( ${c_primed:-0} + 1 ))" ] || fail_g "upstream GETs went ${c_primed} -> ${c_heal}, expected exactly one refetch"
+for _i in $(seq 1 40); do [ "$(content_size "$N_NE")" = "$FILE_BYTES" ] && break; sleep 0.5; done
+h_sz="$(content_size "$N_NE")"
+note "after heal: __content__ ${h_sz:-absent} bytes"
+[ "$h_sz" = "$FILE_BYTES" ] || fail_g "the cache object was not rewritten (__content__ is ${h_sz:-absent} bytes, expected ${FILE_BYTES})"
+if wait_warm "$N_NE"; then
+  c_b="$(mock_count "$N_NE")"; read -r code rc <<<"$(remote_get "$N_NE" "$W/ne.2")"; c_a="$(mock_count "$N_NE")"
+  note "post-heal GET: HTTP ${code}, upstream GETs ${c_b} -> ${c_a}"
+  [ "$(sha_of "$W/ne.2")" = "$(sha_of "$W/ne.golden")" ] && [ "$c_b" = "$c_a" ] || fail_g "the healed entry is not served from cache with the upstream bytes"
+else
+  fail_g "the healed entry never became a cache hit"
+fi
+finish_case "#4758: an emptied __content__ under an unpinned sidecar is still served as Content-Length: N with no body"
+
+# =============================================================================
+# #4630 COMMIT SIDE + #4759: an upstream that promises N bytes and delivers
+# none / half. Neither is ever committed as a cache entry (the #1365/#1912
+# staging guards, CONTROL on both images), and the path caches normally once
+# the upstream is healthy. #4759 FIX: with no body at all the client gets a
+# 502 UPSTREAM_SHORT_BODY naming the repository and both counts (1.11.1 and
+# main 6a4e29f1: 200 + Content-Length N, then the connection drops); with half
+# the body the headers are already out, so the connection still closes short,
+# and the backend logs a warn carrying expected_bytes / received_bytes.
+# =============================================================================
+# backend_log_since <rfc3339>: the backend's log since then, ANSI stripped
+# (images before the no-TTY fix colour their fields).
+backend_log_since(){ docker logs --since "$1" "$BACKEND_CTR" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true; }
+
 for MODE in empty short; do
   begin_test "CONTROL (#4630 commit side, #1365/#1912 guards): an upstream body that ends ${MODE} of its Content-Length is not cached; a healthy refetch caches"
   reset_case
   N_LIE="lie-${MODE}-${SUF}.bin"
   golden "$N_LIE" "$W/lie.golden"
   [ "$(mock_mode "$N_LIE" "$MODE")" = "$MODE" ] || { infra_fail "could not set mock mode ${MODE}"; end_suite; }
+  LOG_T0="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   read -r code rc <<<"$(remote_get "$N_LIE" "$W/lie.1")"
+  LIE1_CODE="$code"; LIE1_RC="$rc"; cp "$W/lie.1" "$W/lie.1.body" 2>/dev/null || : > "$W/lie.1.body"
   note "GET (upstream ${MODE}): HTTP ${code}, curl rc ${rc}, $(size_of "$W/lie.1") bytes"
   if [ "$rc" = "0" ] && [ "$(sha_of "$W/lie.1")" = "$(sha_of "$W/lie.golden")" ]; then
     fail_g "a complete transfer was reported for a body the upstream never sent"
   fi
   [ "$rc" != "0" ] || [ "${code:0:1}" != "2" ] || fail_g "a short body was delivered as a clean HTTP ${code} transfer (curl rc 0, $(size_of "$W/lie.1") of ${FILE_BYTES} bytes)"
   sleep 3
+  LIE_LOG="$(backend_log_since "$LOG_T0")"
   l_meta="$(sidecar "$N_LIE")"; l_sz="$(content_size "$N_LIE")"
   note "on disk after the failed fetch: sidecar ${l_meta:+present}${l_meta:-absent}, __content__ ${l_sz:-absent}"
   [ -z "$l_meta" ] || fail_g "a sidecar was committed for a body the upstream never finished: ${l_meta}"
@@ -235,6 +296,34 @@ for MODE in empty short; do
   wait_warm "$N_LIE" || fail_g "the healthy refetch never became a cache hit"
   [ "$(content_size "$N_LIE")" = "$FILE_BYTES" ] || fail_g "cache object is $(content_size "$N_LIE") bytes after the healthy refetch, expected ${FILE_BYTES}"
   finish_case "a ${MODE} upstream body was cached, or the entry never recovered once the upstream was healthy"
+
+  if [ "$MODE" = "empty" ]; then
+    begin_test "FIX #4759: an upstream that promises ${FILE_BYTES} bytes and sends none answers 502 UPSTREAM_SHORT_BODY naming the repository and both counts"
+    reset_case
+    e_code="$(jqr '.code // empty' < "$W/lie.1.body")"; e_msg="$(jqr '.message // empty' < "$W/lie.1.body")"
+    note "first GET: HTTP ${LIE1_CODE}, curl rc ${LIE1_RC}, body: $(head -c 300 "$W/lie.1.body")"
+    [ "$LIE1_CODE" = "502" ] || fail_g "HTTP ${LIE1_CODE}, expected 502 (1.11.1 / 6a4e29f1 hand back the headers and drop the connection: curl sees 000/rc 52 or 200/rc 18)"
+    [ "$e_code" = "UPSTREAM_SHORT_BODY" ] || fail_g "error code is '${e_code}', expected UPSTREAM_SHORT_BODY"
+    case "$e_msg" in *"'${R_REMOTE}'"*) ;; *) fail_g "the message does not name the repository ${R_REMOTE}: ${e_msg}";; esac
+    case "$e_msg" in *"promised ${FILE_BYTES} bytes"*"after 0 bytes"*) ;; *) fail_g "the message does not carry the expected/received counts (${FILE_BYTES}/0): ${e_msg}";; esac
+    case "$e_msg" in *"172.16."*|*"/f/"*) fail_g "the message leaks the upstream URL: ${e_msg}";; esac
+    finish_case "#4759: an upstream body that never came is not answered 502 UPSTREAM_SHORT_BODY with the counts"
+  else
+    begin_test "FIX #4759: an upstream that stops mid-body after the headers went out closes the client short and logs a warn with expected_bytes/received_bytes"
+    reset_case
+    warn="$(printf '%s\n' "$LIE_LOG" | grep -F "$N_LIE" | grep -F 'expected_bytes' | grep -F 'received_bytes' | grep -F '4759' | head -1 || true)"
+    note "first GET: HTTP ${LIE1_CODE}, curl rc ${LIE1_RC}, $(size_of "$W/lie.1.body") of ${FILE_BYTES} bytes"
+    note "warn: ${warn:-<none>}"
+    [ "$LIE1_RC" = "18" ] || fail_g "curl rc ${LIE1_RC}, expected 18 (the connection closes short of Content-Length)"
+    [ -n "$warn" ] || fail_g "no warn line naming ${N_LIE} with expected_bytes and received_bytes (#4759) in docker logs ($(printf '%s\n' "$LIE_LOG" | grep -c . || true) lines since ${LOG_T0})"
+    exp_b="$(printf '%s' "$warn" | grep -oE 'expected_bytes[^0-9]{1,4}[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)"
+    rcv_b="$(printf '%s' "$warn" | grep -oE 'received_bytes[^0-9]{1,4}[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)"
+    if [ -n "$warn" ]; then
+      [ "$exp_b" = "$FILE_BYTES" ] || fail_g "warn expected_bytes=${exp_b:-?}, want ${FILE_BYTES}"
+      [ -n "$rcv_b" ] && [ "$rcv_b" -lt "$FILE_BYTES" ] 2>/dev/null || fail_g "warn received_bytes=${rcv_b:-?}, want fewer than ${FILE_BYTES}"
+    fi
+    finish_case "#4759: a body that ends mid-stream leaves no warn with the byte counts"
+  fi
 done
 
 # =============================================================================
