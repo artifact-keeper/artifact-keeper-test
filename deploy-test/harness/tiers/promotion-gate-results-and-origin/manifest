@@ -1,0 +1,58 @@
+# DTF tier manifest: promotion-gate-results-and-origin
+#   (artifact-keeper#4556, #4557, #4558, #3977, #4152, #4147, #4160, #1758)
+# Profile-set: filesystem only. Every case is the promotion API, the scan
+# policy / quality gate API, the artifact read API and Postgres; no scanner,
+# no upstream and no signing key is involved. The audit's three Y2 tiers
+# promotion-gate-results-and-metadata, bulk-promotion-gate-and-origin and
+# promotion-warn-and-predicates share this profile set and are folded here.
+#
+# THE BUGS (all fixed in 1.11.0; RED image 1.10.0)
+# #4556 / #4557: POST .../promote (single and bulk) reported only failures;
+#   a passing promotion had no record of what was checked. 1.11.0 adds
+#   gate_results[{rule,passed,reason}] to every PromotionResponse, including
+#   a passed `policy-predicate` entry per predicate that held, its reason
+#   carrying the policy name and the predicate token ([origin.kind],
+#   [conda.license], ...). The conda-attestation facet of #4556 (a verified
+#   CEP-27 bundle satisfying require_signature) belongs to the
+#   conda-attestation-trust tier; this tier uses signature-free predicates.
+# #4557: promotion inserted the target row and nothing else, so a promoted
+#   conda package was served from the release channel with empty depends,
+#   empty license and no md5. The copy now carries artifact_metadata. A
+#   staging upload was stamped origin kind `virtual` (migration 284).
+# #4152: the copy's origin was derived from the TARGET repository; it now
+#   carries the source's origin document verbatim.
+# #4558: two scan policies with the same name on one repository were
+#   accepted; now 409 (case-insensitive), create and rename.
+# #3977: bulk promotion never ran the quality gate or the policy, a `warn`
+#   gate's violations were dropped from every success response, and bulk
+#   promotion_history.policy_result was a {"passed":true} placeholder.
+# #4147 / #4160: the promotion gate never evaluated scan_policies.predicates
+#   (origin and conda); the conda channel allowlist fails closed on a package
+#   whose identity records no channel.
+# #1758: artifact GET and listing responses carry last_promotion
+#   {target_repo_key, promoted_at, status}; null when never promoted (or only
+#   refused); target_repo_key null for a caller who cannot read the target.
+#
+# THE PRIMITIVES
+#   generic staging repos with: no gate (control), an origin.allowed_kinds
+#   [hosted] policy (passes), [proxy] (refuses), a warn quality gate and a
+#   block quality gate (min_health_score 50 against the computed score 0 of a
+#   generic file); conda staging repos with conda.denied_licenses (passes),
+#   conda.allowed_channels [conda-forge] (refuses) and an allowlist naming
+#   the repository itself on a package whose identity purl had its channel
+#   qualifier removed in Postgres (the "channel unknown" state).
+#
+# THE GATES
+#   (CONTROL) on both images: an ungated promotion copies the bytes, the
+#             target serves them, one history row; a block gate refuses a
+#             SINGLE promotion with 409 naming the gate; a same-named policy
+#             on another repository is accepted.
+#   (FIX)     every other case; on 1.10.0 the response has no gate_results,
+#             predicates are inert, bulk ignores gates and policies, warn
+#             violations are [], artifacts.origin and last_promotion do not
+#             exist, and the release repodata loses depends/license/md5.
+#
+# RATE_LIMIT_ENABLED=false: about 80 authenticated calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
