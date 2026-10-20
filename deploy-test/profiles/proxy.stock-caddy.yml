@@ -1,0 +1,72 @@
+# =============================================================================
+# profiles/proxy.stock-caddy.yml - the stock compose's Caddy in front of AK
+# =============================================================================
+# Adds the `caddy` service exactly as the backend repo's docker-compose.yml
+# declares it (image docker.io/library/caddy:2-alpine, SITE_ADDRESS, the
+# cleared proxy variables, the Caddyfile mounted at /etc/caddy/Caddyfile),
+# with the stock docker/Caddyfile copied into
+# harness/tiers/stock-compose-caddy/fixtures/Caddyfile. STOCK_CADDYFILE
+# overrides the mounted file, so the same tier can be pointed at an older
+# release's Caddyfile to prove what it misrouted.
+#
+# Also adds `web`, a stand-in for the web UI (the Caddyfile's fallback
+# upstream web:3000) that answers every path with a marked HTML 404 (see
+# fixtures/web_standin.py), and publishes Caddy's :80 on
+# 127.0.0.1:${TRIVY_PORT} (8250+N, the spare per-slot port). The backend is
+# reached by its service name `backend` on the dtf network, as in the stock
+# compose.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  web:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-web-standin
+    command: ["python3", "/app/web_standin.py"]
+    environment:
+      MOCK_PORT: "3000"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/stock-compose-caddy/fixtures/web_standin.py:/app/web_standin.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks: [dtf]
+
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: ak-dtf${DTF_SLOT}-stock-caddy
+    depends_on:
+      backend:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      SITE_ADDRESS: localhost
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      NO_PROXY: "localhost,127.0.0.1"
+      no_proxy: "localhost,127.0.0.1"
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    volumes:
+      - "${STOCK_CADDYFILE:-${DTF_DIR}/harness/tiers/stock-compose-caddy/fixtures/Caddyfile}:/etc/caddy/Caddyfile:ro"
+    security_opt:
+      - label=disable
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks: [dtf]
