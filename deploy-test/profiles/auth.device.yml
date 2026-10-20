@@ -1,0 +1,30 @@
+# =============================================================================
+# profiles/auth.device.yml -- auth dimension = device authorization grant [DTF]
+# =============================================================================
+# PATCHES backend.environment to turn on the RFC 8628 device authorization
+# grant (artifact-keeper#3461, shipped by #3549). The grant is off by default
+# and every device route answers 404 while it is off.
+#
+#   DEVICE_AUTH_ENABLED            default true here; the device-auth-flow
+#                                  oracle recreates the backend with
+#                                  DEVICE_AUTH_ENABLED=false on the same
+#                                  compose project to prove the kill switch.
+#   DEVICE_AUTH_POLL_INTERVAL_SECS 2 (shipped default 5) so the oracle's
+#                                  poll-after-approval waits stay short; the
+#                                  oracle asserts the advertised interval
+#                                  equals this value.
+#   DEVICE_AUTH_CODE_REQUESTS_PER_WINDOW 100 (shipped default 10 per IP per
+#                                  window): the oracle starts about a dozen
+#                                  flows from one client IP. This limiter is
+#                                  not the failed-code throttle under test,
+#                                  which keeps its shipped defaults (5 per
+#                                  user, 20 per IP).
+#
+# No services are added and no host ports are used.
+# =============================================================================
+services:
+  backend:
+    environment:
+      DEVICE_AUTH_ENABLED: ${DEVICE_AUTH_ENABLED:-true}
+      DEVICE_AUTH_POLL_INTERVAL_SECS: "2"
+      DEVICE_AUTH_CODE_REQUESTS_PER_WINDOW: "100"
