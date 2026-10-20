@@ -277,7 +277,7 @@ else
 fi
 finish_case "LDAP login does not report its real session lifetime"
 
-begin_test "#4638: saving an LDAP server on a CGNAT address is refused naming AK_SSRF_ALLOW_PRIVATE_CIDRS; a metadata address names nothing"
+begin_test "#4638: an LDAP server on a CGNAT address is refused naming AK_SSRF_ALLOW_PRIVATE_CIDRS on save and on /test; a metadata address names nothing"
 reset_case
 mk_ldap_json(){ jq -nc --arg n "$1" --arg s "$2" --arg b "$LDAP_BIND_DN" '{name:$n,server_url:$s,bind_dn:$b,bind_password:"x",user_base_dn:"ou=people,dc=dtf,dc=local",user_filter:"(uid={0})"}'; }
 areq POST /api/v1/admin/sso/ldap "$(mk_ldap_json "dtf-cgnat-${RUN_ID}" "ldap://100.64.1.1:389")"
@@ -288,6 +288,23 @@ areq POST /api/v1/admin/sso/ldap "$(mk_ldap_json "dtf-meta-${RUN_ID}" "ldap://16
 note "ldap://169.254.169.254:389 -> ${CODE}: $(jqr '.message // empty' <<<"$BODY")"
 [ "$CODE" = "400" ] || fail_g "the metadata address was not refused (${CODE})"
 grep -q 'AK_SSRF_ALLOW_PRIVATE_CIDRS' <<<"$BODY" && fail_g "the metadata refusal offers an allowlist"
+# The connection test guards the address again at probe time. A provider
+# saved while its host was admitted (here: written straight to the row, as if
+# the allowlist had since been narrowed) must be refused there with the same
+# wording.
+areq POST /api/v1/admin/sso/ldap "$(mk_ldap_json "dtf-probe-${RUN_ID}" "ldap://ldap.dtf.local:389")"
+PROBE_ID="$(jqr '.id // empty' <<<"$BODY")"
+if [ -z "$PROBE_ID" ]; then
+  fail_g "could not create the provider for the /test probe (${CODE})"
+else
+  CREATED_IDS+=("$PROBE_ID")
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
+    "UPDATE ldap_configs SET server_url = 'ldap://100.64.1.1:389' WHERE id = '${PROBE_ID}'" >/dev/null 2>&1
+  areq POST "/api/v1/admin/sso/ldap/${PROBE_ID}/test"
+  note "/test on a stored ldap://100.64.1.1:389 -> ${CODE}: $(jqr -c '{success, message}' <<<"$BODY")"
+  [ "$(jqr '.success' <<<"$BODY")" != "true" ] || fail_g "/test reported success for a refused address"
+  grep -q 'AK_SSRF_ALLOW_PRIVATE_CIDRS' <<<"$BODY" || fail_g "the /test refusal does not name AK_SSRF_ALLOW_PRIVATE_CIDRS"
+fi
 finish_case "the private-network refusal does not name the setting that admits it"
 
 begin_test "#3505: a username the directory does not have pays a decoy bind, like a wrong password does"

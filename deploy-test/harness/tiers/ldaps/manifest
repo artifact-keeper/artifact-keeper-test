@@ -35,7 +35,8 @@
 #   #4648 (1.11.2) LDAP login returns expires_in=1800 and the access cookie's
 #     Max-Age is 1800 (the default 30-minute token), not a fixed 3600.
 #     RED on 1.11.1 and older.
-#   #4638 (1.11.2) saving ldap://100.64.1.1 is 400 naming
+#   #4638 (1.11.2) saving ldap://100.64.1.1, and /test on a provider whose
+#     stored server_url is that address, are 400 naming
 #     AK_SSRF_ALLOW_PRIVATE_CIDRS=100.64.1.1; 169.254.169.254 is 400 and
 #     names no allowlist. RED on 1.11.1 and older (bare "not allowed").
 #   #3505 (1.11.0) a search miss is followed by a decoy BIND to
