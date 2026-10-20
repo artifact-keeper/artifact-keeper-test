@@ -1,0 +1,91 @@
+# =============================================================================
+# profiles/upstreams.mock-registry.yml: a mock OCI registry with token services
+# =============================================================================
+# Adds `mock-registry`, a stdlib-only Python OCI registry reachable from the
+# backend as `mockreg` (see
+# harness/tiers/oci-remote-upstream-auth/fixtures/mock_registry.py). It serves
+# the registry and a same-origin token service on :5000, a cross-origin token
+# service on :5001 and a TLS cross-origin token service on :5443, and records
+# every token request (with whether credentials were presented) so the oracle
+# can tell what the backend sent where.
+#
+# The overlay:
+#   * ADDS  `mock-registry` on a per-slot 172.16.<slot>.0/24 subnet with the
+#     network alias `mockreg`, so the create-time SSRF check on the upstream
+#     URL and on oci_trusted_bearer_realms allowlists it via
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 (the escape hatch
+#     upstreams.mock-static.yml uses). The tier manifest also sets
+#     UPSTREAM_ALLOW_PRIVATE_IPS=true for the fetch itself.
+#   * The mock generates a throwaway CA and a `mockreg` leaf certificate at
+#     start into the `mockreg_certs` volume; the backend mounts it read-only
+#     and trusts the CA through CUSTOM_CA_CERT_PATH (needed because
+#     oci_trusted_bearer_realms accepts https origins only).
+#   * PUBLISHES :5000 on 127.0.0.1:${TRIVY_PORT} (8250+N, the spare per-slot
+#     port) so the oracle can read /__log.
+#   * PATCHES backend onto that network and pins the json-file log driver (the
+#     tier counts `security` warnings in docker logs).
+#
+# SUBNET CHOICE: 172.16.<slot>.0/24, not 172.28, for the reason
+# upstreams.mock-artifactory.yml records.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-registry:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-registry
+    command: ["python3", "/app/mock_registry.py"]
+    environment:
+      MOCK_HOST: mockreg
+      CERT_DIR: /certs
+    volumes:
+      - "${DTF_DIR}/harness/tiers/oci-remote-upstream-auth/fixtures/mock_registry.py:/app/mock_registry.py:ro"
+      - mockreg_certs:/certs
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:5000"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "test -s /certs/ca.pem && python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    networks:
+      mockreg:
+        ipv4_address: 172.16.${DTF_SLOT}.71
+        aliases: [mockreg]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-registry:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+      CUSTOM_CA_CERT_PATH: /mockreg-certs/ca.pem
+    volumes:
+      - mockreg_certs:/mockreg-certs:ro
+    security_opt:
+      - label=disable
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockreg: {}
+
+networks:
+  mockreg:
+    name: ak-dtf${DTF_SLOT}-mockreg
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
+
+volumes:
+  mockreg_certs:
+    name: ak-dtf${DTF_SLOT}_mockreg_certs
