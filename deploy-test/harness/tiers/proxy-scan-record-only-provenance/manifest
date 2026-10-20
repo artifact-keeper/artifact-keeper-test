@@ -1,0 +1,26 @@
+# DTF tier manifest: proxy-scan-record-only-provenance  (artifact-keeper
+# 1.11.0: #3645 / #3868 record-only proxy scanning and its audit, #3013
+# finding_class, #3014 vulnerability-DB provenance on scan results)
+# Profile-set: filesystem + the mock-scan-formats upstream (Maven fixtures
+# whose pom.properties name commons-text 1.9 and log4j-core 2.14.1).
+# LOCAL-ONLY: verdicts and findings come from the backend image's bundled
+# Grype and its pre-seeded DB; the malicious-package finding is ingested
+# through POST /api/v1/security/findings/external (no OSV, no internet).
+#
+# WHAT IT GUARDS:
+#   * #3645/#3868: proxy_scan_action=record_only scans and records every
+#     proxied pull but never withholds one (X-AK-Scan: pending, then
+#     recorded); hyphenated spellings are 400; a Virtual that enforces wins
+#     over a record-only member; every scan-config change is audited as
+#     REPOSITORY_UPDATED with before/after and the changed field names.
+#   * #3013: findings carry finding_class; the findings list filters on it
+#     (closed vocabulary, typo 400); a MAL-* id is classed malicious and
+#     graded critical whatever severity the scanner reported.
+#   * #3014: scan results report vuln_db_version / vuln_db_published_at
+#     (grype-db-v<schema> for Grype, live:osv for the dependency scanner).
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and newer.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
