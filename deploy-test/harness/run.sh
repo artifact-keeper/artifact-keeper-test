@@ -376,6 +376,38 @@ case "$CMD" in
     # Then the older tiers the 1.11.x coverage audit relies on (storage
     # integrity, scan-on-proxy, authz regressions); storage-integrity-s3 is
     # last of all, its fresh-ghost leg waits out the 5-minute guard.
+    # Then the P2-P9 coverage tiers (artifact-keeper-test#504-#570), one
+    # block per audit wave, each green on the first release carrying its fix
+    # (1.11.0 for most, 1.11.1/1.11.2 where noted in matrix.md) and on main
+    # 2f08663f, red on the release before it. Slow tiers close each block.
+    #   P2 1.11.0 features: access (k8s SA tokens, project admins and quota,
+    #      guest access/visibility/banners) and policy (lifecycle assignments
+    #      and min_keep, Ed25519 signing rotation, trash/blob GC/Remote cache;
+    #      the GC leg waits ~2.5 min for the scheduler).
+    #   P3 ops: log/metrics fields, DB keepalives and startup retry, bind IPs
+    #      and OTel, upload receive errors and SMTP diagnostics, presigned
+    #      redirects/readyz/SMTP TLS.
+    #   P4 proxy, virtual and OCI: download ledger, cache TTL/refill, virtual
+    #      member failure/timeout, npm isolate, NuGet translation, OCI digest
+    #      scope/promotion, upstream auth, presigned blobs, usage counting.
+    #   P5 conda: 1.11.0 channel surface, merge policy, CEP-16 shards hosted/
+    #      remote/virtual, attestation trust, proxy scan grading and gates;
+    #      conda-environments-reverse-index waits three scheduler ticks
+    #      (~4 min).
+    #   P6 scanning and promotion: scan-on-proxy for Maven/NuGet/Cargo,
+    #      record_only and provenance, scan-on-upload completeness, OSV
+    #      findings, ingest, SBOM licenses, OCI scrub, severity counts,
+    #      promotion gate results and validation.
+    #   P7 formats and clients: GitHub release mirror, VS Code gallery,
+    #      pacman, bazel, Maven upload tx on S3; debian-flat-remote,
+    #      conan-protocol-1-11 and native-client-modules-and-lfs install
+    #      packages from the public internet (gate: dtf-advisory).
+    #   P8 migration/upgrade/storage: 1.10.0 -> candidate upgrade, replicated
+    #      chunked uploads, S3 staging, Azure default backend, per-repo OCI
+    #      blob journal, native quota and RPM races, S3 411 CopyObject.
+    #   P9 long tail: 1.11.0 API contracts, artifact.uploaded webhooks,
+    #      catalog backfill, startup config, private-IP toggles, stock Caddy
+    #      routes; trivy-server-mode needs the Trivy DB (gate: dtf-advisory).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -399,7 +431,29 @@ case "$CMD" in
              repo-mutation-authz migration-authz token-colon-scope ledger-triggers-authoritative quota-admission-o1 \
              redact-userinfo-leak nuget-cred-scoping rpm-p3-curation inline-scan-hosted-gate-2954 \
              inline-scan-fail-open-2954 inline-scan-proxy-pypi-2954 scan-verdict-dbversion \
-             storage-integrity storage-integrity-s3; do
+             storage-integrity storage-integrity-s3 \
+             k8s-sa-pull-token project-admin-and-project-quota guest-access-runtime-visibility-banners \
+             lifecycle-assignments-min-keep signing-ed25519-rotation-overlap-legacy trash-blob-gc-remote-cache \
+             db-keepalive-startup-retry ops-log-and-metrics-1112 bind-ip-and-otel upload-receive-and-ops-errors \
+             ops-endpoints-1110 \
+             oci-usage-counts-layers-once oci-manifest-scrub oci-presigned-redirect oci-remote-upstream-auth \
+             virtual-member-failure-policy nuget-protocol-translation npm-virtual-isolate-disttag-feed \
+             proxy-cache-ttl-and-refill proxy-download-ledger virtual-member-metadata-timeout \
+             oci-digest-scope-and-promotion \
+             conda-virtual-merge-policy conda-channel-1110-surface conda-attestation-trust conda-sharded-remote-virtual \
+             conda-proxy-scan-grading scan-on-proxy-conda-and-content conda-hosted-cep16-and-upload conda-virtual-shards \
+             conda-environments-reverse-index \
+             promotion-and-curation-validation promotion-gate-results-and-origin \
+             severity-counts-agree cargo-scan-on-proxy osv-positional-findings sbom-license-expression \
+             proxy-scan-record-only-provenance scan-on-proxy-maven-nuget scan-ingest-and-workspace \
+             scan-on-upload-native-and-completeness \
+             bazel-bzlmod-registry maven-upload-tx-and-quality-s3 github-release-mirror vscode-gallery-protocol \
+             pacman-hosted debian-flat-remote conan-protocol-1-11 native-client-modules-and-lfs \
+             quota-native-and-rpm-races s3-copy-length-required azure-default-backend oci-blob-journal-per-repo \
+             replicated-and-chunked-uploads upgrade-v270-origin upload-staging-object-store \
+             lifecycle-signing-webhook-config api-contracts-1110 catalog-backfill-liveness \
+             webhook-artifact-uploaded-formats stock-compose-caddy startup-config-and-format-indexes \
+             trivy-server-mode; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
