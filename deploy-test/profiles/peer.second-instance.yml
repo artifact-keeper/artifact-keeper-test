@@ -1,0 +1,91 @@
+# =============================================================================
+# profiles/peer.second-instance.yml - a second Artifact Keeper instance (B)
+# =============================================================================
+# Adds `peer-backend` (instance B) with its own `peer-db` postgres to the slot's
+# compose project, running the SAME image as `backend` (instance A). The two
+# instances share the slot's `dtf` network, so A reaches B at
+# http://peer-backend:8080 (as a push peer or as a remote instance) and B
+# reaches A at http://backend:8080. Nothing is shared between them but the
+# network: separate databases, separate /data volumes, separate JWT secrets.
+#
+# Used by the tiers that need a real second instance rather than a stub peer:
+#   push-sync-native-formats  (A's sync worker pushes to B for real)
+#   remote-instance-relay     (A's /api/v1/instances/{id}/proxy relays to B)
+#
+# The overlay:
+#   * ADDS  `peer-db` (postgres:16-alpine, no host port; the oracle uses
+#     `docker exec ak-dtf<N>-peer-db psql ...`).
+#   * ADDS  `peer-backend`, published on 127.0.0.1:${TRIVY_PORT} (8250+N, the
+#     spare per-slot port, the same one upstreams.mock-static uses; the two
+#     profiles are never combined) so the oracle on the host can drive B
+#     directly and compare it with what the relay or the sync worker produced.
+#   * PATCHES nothing on `backend`. A tier that registers B with A must set
+#     UPSTREAM_ALLOW_PRIVATE_IPS=true in its manifest: peer and remote-instance
+#     URLs go through validate_outbound_url, and B sits on a private address.
+#
+# B's rate limit, private-IP posture and admin password follow the same
+# variables as A's, so a tier manifest configures both at once.
+#
+# Required vars (run.sh exports them): DTF_SLOT, TRIVY_PORT, BACKEND_IMAGE.
+# =============================================================================
+services:
+  peer-db:
+    image: postgres:16-alpine
+    container_name: ak-dtf${DTF_SLOT}-peer-db
+    environment:
+      POSTGRES_USER: registry
+      POSTGRES_PASSWORD: registry
+      POSTGRES_DB: artifact_registry
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U registry -d artifact_registry"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [dtf]
+
+  peer-backend:
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
+    container_name: ak-dtf${DTF_SLOT}-peer-backend
+    depends_on:
+      peer-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://registry:registry@peer-db:5432/artifact_registry
+      STORAGE_PATH: /data/storage
+      BACKUP_PATH: /data/backups
+      PLUGINS_DIR: /data/plugins
+      JWT_SECRET: dtf-nonprod-peer-b-quartz-meadow-2c9e41d7a0f3
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-TestRunner!2026secure}
+      RUST_LOG: ${RUST_LOG:-info}
+      HOST: 0.0.0.0
+      PORT: "8080"
+      STORAGE_BACKEND: filesystem
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      UPSTREAM_ALLOW_PRIVATE_IPS: ${UPSTREAM_ALLOW_PRIVATE_IPS:-false}
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:8080"
+    volumes:
+      - dtf_peer_data:/data
+    # The relay tier greps B's request log; pin json-file as
+    # upstreams.mock-static.yml does (rootless podman's journald driver can
+    # drop lines).
+    logging:
+      driver: json-file
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 10s
+      start_period: 40s
+      retries: 24
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      peer-backend:
+        condition: service_healthy
+
+volumes:
+  dtf_peer_data:
+    name: ak-dtf${DTF_SLOT}_peer_data
