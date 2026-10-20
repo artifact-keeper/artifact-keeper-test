@@ -1,0 +1,41 @@
+# DTF tier manifest: conda-virtual-shadow-and-cache
+#   (artifact-keeper#4555 security + channel facets, #4506; all fixed in 1.11.0)
+# Profile-set: filesystem / single + upstreams=mock-conda (the conda-channel-types
+# tier's stdlib-python static conda channel on 172.16.<slot>.70; it publishes
+# dtfup-alpha 1.0 and 2.0 and dtfup-blocked 1.0 in noarch, and logs every
+# request line to stdout).
+#
+# THE BUGS
+# #4555 shadowing  A virtual conda channel merged remote members first and kept
+#        the first writer per filename, so an upstream that publishes a name an
+#        internal (hosted) member owns sat next to the internal records and won
+#        the solve: dependency confusion. Fixed: once a local/staging member has
+#        published a name, remote members contribute no records under it,
+#        channeldata.json drops their entry, and a download of such a file
+#        through the virtual is not proxied upstream.
+# #4555 Cache-Control  conda channel documents were `public, max-age=60` even
+#        for a request carrying credentials, so a shared cache could store a
+#        private channel's (or one caller's merged virtual) index and serve it
+#        to the next requester. Fixed: authenticated -> `private`; anonymous
+#        responses keep `public`.
+# #4555 indexed_timestamp (CEP-47)  hosted records carry a server-set
+#        `indexed_timestamp` (ms, the artifact row's created_at), identical
+#        across rebuilds and in a virtual's merge.
+# #4555 rattler token layout  `/t/<TOKEN>/conda/<repo>/...` (pixi
+#        --conda-token) 404'd; only `/conda/t/<TOKEN>/<repo>/...` was mounted.
+# #4506  origin policies (denied_upstreams, ...) were evaluated only against an
+#        `artifacts` row's origin; a Remote serves proxy-cache content with no
+#        such row, so an upstream deny policy never stopped a Remote download.
+#        Fixed: Remote content has origin {kind: proxy, upstream_url: <remote's
+#        upstream>} and is refused 403 "blocked by the repository's scan
+#        policy", cached entries included, and a virtual does not serve it.
+#
+# RED image: ak-backend:1.10.0 (every fix case). GREEN: 1.11.0 and later.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~30 authenticated calls back
+# to back. UPSTREAM_ALLOW_PRIVATE_IPS=true: the remotes' upstream is the mock
+# on a private address (the profile also scopes AK_SSRF_ALLOW_PRIVATE_CIDRS).
+PROFILES="storage.filesystem upstreams.mock-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
