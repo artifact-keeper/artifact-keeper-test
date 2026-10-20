@@ -1,0 +1,68 @@
+# DTF tier manifest: upload-receive-and-ops-errors
+#   (artifact-keeper#4609, #4023, #4591, #3907: 1.11.0; #4595: 1.11.2)
+# Profile-set: filesystem + limits.upload-1mib (MAX_UPLOAD_SIZE=1048576) +
+# mail.mock-smtp (a steerable stdlib SMTP server the backend is pointed at,
+# SMTP_TLS_MODE=none with credentials).
+#
+# THE FIXES AND THEIR GATES
+# #4609 (1.11.0)  The archive-parsing publish routes received the body with
+#   axum's Bytes extractor, so a body cut short before its Content-Length
+#   answered `400 Failed to buffer the request body`, the same as a bad
+#   package. upload_body.rs now answers 408 {code: incomplete_body, message:
+#   "... received N of M declared bytes"}.
+#   (FIX)     npm PUT, Cargo crates/new PUT and conda upload POST with
+#             Content-Length 65536, 32768 bytes sent, then FIN -> 408
+#             incomplete_body. RED on 1.10.0: 400 "Failed to buffer".
+#   (CONTROL) complete but invalid npm / Cargo bodies are 400 on both.
+# #4595 (1.11.2)  LFS PUT /lfs/{key}/objects/{oid} had a fixed 2 GB cap
+#   instead of MAX_UPLOAD_SIZE. On 1.11.1 the streamed body is already
+#   counted against MAX_UPLOAD_SIZE (a full 2 MiB body answers 413 "Upload
+#   exceeds the maximum allowed size"), so below 2 GB what #4602 adds is the
+#   refusal on the declared Content-Length before any of the body is read
+#   (gitlfs.rs declared_length_exceeds, "Object exceeds the maximum allowed
+#   size of N bytes").
+#   (FIX)     PUT declaring Content-Length 2 MiB, 4 KiB sent, FIN -> 413
+#             "Object exceeds the maximum allowed size of 1048576 bytes"; a
+#             full 2 MiB PUT -> 413; the object is not downloadable.
+#             RED on 1.11.1: the short body is read and answers 408
+#             incomplete_body. RED on 1.10.0: the full 2 MiB object is
+#             accepted (200) and stored.
+#   (CONTROL) a 2 MiB raw generic upload is 413 (the limit is in force) and a
+#             4 KiB LFS object round-trips byte-exact, on every image.
+# #4023 (1.11.0)  JetBrains uploadPlugin and the Swift publish parse multipart
+#   with multer under a whole_stream ceiling of MAX_UPLOAD_SIZE; its size
+#   error was reported as a malformed-multipart 400. Now 413.
+#   (FIX)     2 MiB multipart to both routes, with Content-Length and with
+#             Transfer-Encoding: chunked -> 413. RED on 1.10.0: 400 "Failed
+#             to read upload body: stream size exceeded limit".
+# #4591 (1.11.0)  POST /api/v1/admin/smtp/test answered every delivery failure
+#   with a bare 500, a silent server hung the send, and a bad recipient was
+#   500. Now 502 "SMTP test failed: ... ; server advertised ...; hint: ...",
+#   a 60 s send bound ("no SMTP reply within 60s"), and 400 for the address.
+#   (CONTROL) accepting server -> 200 {success: true}, message recorded by the
+#             mock, on both.
+#   (FIX)     535 on AUTH -> 502 with "535", "Authentication unsuccessful",
+#             "server advertised before TLS: no STARTTLS, AUTH PLAIN LOGIN"
+#             and the "rejected the username or password" hint. RED 1.10.0:
+#             500 "Internal server error".
+#   (FIX)     to: "not an address" -> 400 "invalid recipient address". RED
+#             1.10.0: 500.
+#   (FIX)     a server that accepts and never greets -> 502 "no SMTP reply
+#             within 60s" + hint after about 60 s. RED 1.10.0: no bound
+#             (the request ends on the server's request timeout instead).
+#             This case costs about 60 s of wall clock by design.
+# #3907 (1.11.0)  The /health storage check interpolated the OS error
+#   ("Storage write failed: Permission denied (os error 13)").
+#   (FIX)     storage dir moved away -> message exactly "Storage path not
+#             accessible"; replaced by a mode-000 dir -> exactly "Storage
+#             write failed"; no OS text in the body. RED on 1.10.0: the
+#             messages carry ": No such file or directory (os error 2)" /
+#             ": Permission denied (os error 13)".
+#   (CONTROL) restored dir -> storage healthy with no message, on both.
+#   The backend image has no shell, so the oracle changes the data volume
+#   from a throwaway python:3.12-slim container and restores it on exit.
+#
+# RATE_LIMIT_ENABLED=false: the SMTP and upload probes are many quick calls.
+PROFILES="storage.filesystem limits.upload-1mib mail.mock-smtp"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
