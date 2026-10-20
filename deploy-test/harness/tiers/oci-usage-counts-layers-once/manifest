@@ -1,0 +1,46 @@
+# DTF tier manifest: oci-usage-counts-layers-once  (artifact-keeper#4483,
+# #4505; both fixed in 1.11.0)
+# Profile-set: filesystem only. Images are pushed over the real /v2 wire
+# sequence with curl (monolithic blob POSTs, then the manifest PUT), no docker
+# daemon and no external pull. The oracle reads repositories' storage figures
+# over the API and repository_usage_ledger / oci_blobs / artifacts directly.
+#
+# THE BUGS
+# #4483  An OCI manifest's artifacts row records the image size
+#        (config.size + layers[].size, #3601), and those bytes are already
+#        counted through oci_blobs. The live usage SUM, the virtual sum, the
+#        ledger trigger (migration 182), the reconciler and the publish
+#        preflight all counted the manifest row too, so a Docker repository's
+#        usage was at least twice its real bytes, plus once more per extra
+#        tag, and quotas tripped at a fraction of the real footprint.
+# #4505  POST /repositories for a virtual with member_repos answered
+#        member_storage_used_bytes: 0 even when the members held content; GET
+#        reported the real total.
+#
+# THE GATES
+#   (FIX)      RED on 1.10.0, GREEN on 1.11.0 and main:
+#              #4483 after pushing config + 2 layers, storage_used_bytes ==
+#                    summed blob bytes; ledger hosted|proxy|oci == 0|0|blob
+#                    bytes; a second tag of the same image changes neither,
+#                    while the manifest rows keep the image size for listings;
+#                    a 240000-byte quota admits a 150094-byte image (and a
+#                    second tag of it) at its real bytes and refuses the next
+#                    100000-byte layer with 507 DENIED.
+#              #4505 a Docker virtual created with member_repos [the pushed
+#                    repository] answers member_storage_used_bytes == blob
+#                    bytes in the create response, equal to the next GET, and
+#                    storage_used_bytes 0; a generic virtual created with a
+#                    7000-byte member answers 7000; one created without
+#                    members answers 0.
+#   (CONTROL)  must hold on BOTH images: the push succeeds, pulls back by tag
+#              (same manifest digest) and a layer by digest, and oci_blobs
+#              holds the three blobs once each; a generic hosted repository
+#              reports its uploaded bytes.
+#
+# NOT GATED HERE (see the PR): migration 288's recompute of an existing
+# ledger on upgrade (an upgrade-class tier: push on 1.10.0, swap the image).
+#
+# RATE_LIMIT_ENABLED=false: ~30 authenticated calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
