@@ -26,6 +26,14 @@
 #      first, then asserts those exact strings are absent from the anonymous
 #      listing. The DTO omits them today (it reports the boolean
 #      `upstream_auth_configured` instead), so this pins that shape.
+#      The repository must be PUBLIC for the anonymous listing to show it,
+#      and since artifact-keeper#4662 (1.11.1) a public Remote that carries
+#      upstream credentials is refused with 400 unless the create sends
+#      `allow_public_with_upstream_credentials: true`. The create sends it and
+#      asserts the response reports `public_with_upstream_credentials: true`.
+#      It also sends `upstream_auth_type: "basic"`: without it the backend
+#      ignores upstream_username/upstream_password on create, so the earlier
+#      version of this check ran against a remote that held no credential.
 #
 # Repository listing being anonymously readable is a deliberate product
 # decision (public repositories are discoverable), so it is not asserted
@@ -138,8 +146,9 @@ assert_anonymous_401 "generic upload" PUT \
 begin_test "Register a remote repository holding upstream credentials"
 remote_payload=$(cat <<JSON
 {"key":"${REMOTE_KEY}","name":"${REMOTE_KEY}","format":"pypi","repo_type":"remote",
- "is_public":true,"upstream_url":"https://pypi.org",
- "upstream_username":"${UPSTREAM_USER}","upstream_password":"${UPSTREAM_PASS}"}
+ "is_public":true,"upstream_url":"https://pypi.org","upstream_auth_type":"basic",
+ "upstream_username":"${UPSTREAM_USER}","upstream_password":"${UPSTREAM_PASS}",
+ "allow_public_with_upstream_credentials":true}
 JSON
 )
 status=$(curl -s -o "${WORK_DIR}/remote-create.json" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
@@ -151,6 +160,16 @@ if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
 else
   fail_fatal "could not register the credentialed remote repository (HTTP ${status})" \
     "The leak assertion below is vacuous without a repository that actually holds an upstream secret. Response: $(head -c 400 "${WORK_DIR}/remote-create.json" 2>/dev/null)"
+fi
+
+begin_test "Create response flags the public Remote as carrying upstream credentials (#4662)"
+flags=$(jq -r '"\(.public_with_upstream_credentials)|\(.allow_public_with_upstream_credentials)|\(.upstream_auth_configured)"' \
+  "${WORK_DIR}/remote-create.json" 2>/dev/null) || flags="unparseable"
+if [ "$flags" = "true|true|true" ]; then
+  pass
+else
+  fail "public_with_upstream_credentials|allow_public_with_upstream_credentials|upstream_auth_configured = ${flags} in the create response; expected true|true|true" \
+    "A public Remote holding upstream credentials must be reported as such, with the explicit override recorded. Response: $(head -c 400 "${WORK_DIR}/remote-create.json" 2>/dev/null)"
 fi
 
 begin_test "Anonymous repository listing does not expose upstream credentials"
