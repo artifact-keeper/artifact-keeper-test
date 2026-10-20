@@ -1,0 +1,34 @@
+# DTF tier manifest: replicated-and-chunked-uploads
+# (artifact-keeper#4403/#1846 chunked completion runs the incus/debian native
+# finalize; #4404/#3916 no local spool for uploads into object storage)
+# Profile-set: s3 (MinIO) / two replicas on one database and one /data volume.
+#   storage.s3                 MinIO, backend on STORAGE_BACKEND=s3
+#   topology.two-replica       backend-b, reached at 127.0.0.1:8081 inside
+#                              backend's network namespace
+#   topology.two-replica-s3    backend-b on the same MinIO (new, additive)
+#
+# Test PR #415 (tests/platform/test-chunked-upload-multi-replica.sh) owns the
+# generic cross-replica chunked upload (#3918) and staged-chunk cleanup
+# (#3922); this tier keeps one generic cross-replica upload only as a CONTROL
+# and asserts what #415 does not:
+#   (FIX #4403/#1846) a chunked upload into an incus repository (session and
+#        chunk 0 on A, chunk 1 and completion on B) is named after its
+#        product/version and carries metadata.yaml's os/release in
+#        artifact_metadata and images.json; into a debian repository it is
+#        catalogued as its control file's package and indexed with Depends and
+#        Description; a .deb whose control disagrees with its file name is
+#        refused with 400.
+#   (FIX #4404) a multipart POST, and (FIX #3916) a raw PUT, of 8 MiB at
+#        1 MiB/s into the MinIO-backed repository: no new file appears on the
+#        replicas' /data volume while it streams (a watcher container lists
+#        it every 0.25 s), a generic_upload_staging row exists during the
+#        upload, and neither rows nor generic-upload-staging/ objects remain.
+#   (CONTROL) every upload completes and downloads byte-identical on both
+#        images.
+# RED: ak-backend:1.10.0. GREEN: 1.11.0 and later.
+#
+# RATE_LIMIT_ENABLED=false: the oracle polls Postgres and the API while the
+# slow uploads stream.
+PROFILES="storage.s3 topology.two-replica topology.two-replica-s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

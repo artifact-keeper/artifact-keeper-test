@@ -1,0 +1,25 @@
+# =============================================================================
+# profiles/topology.two-replica-s3.yml: the second replica on MinIO too
+# =============================================================================
+# Layer it AFTER storage.s3.yml and topology.two-replica.yml. storage.s3.yml
+# patches only `backend` with the S3 settings, and topology.two-replica.yml's
+# `backend-b` takes STORAGE_BACKEND from the shell (default filesystem), so a
+# repository stored on MinIO would be unreadable from backend-b. This overlay
+# gives backend-b the same object store as backend, which is what two pods of
+# one S3-backed deployment have. backend-b shares backend's network namespace,
+# so `minio` resolves from it exactly as from backend.
+#
+# Required vars (run.sh exports them): DTF_SLOT, BACKEND_IMAGE.
+# =============================================================================
+services:
+  backend-b:
+    depends_on:
+      createbucket:
+        condition: service_completed_successfully
+    environment:
+      STORAGE_BACKEND: s3
+      S3_BUCKET: ak-artifacts
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
