@@ -1,0 +1,22 @@
+# =============================================================================
+# profiles/upstreams.mock-artifactory-docker.yml: adds a `docker` repository
+# and a plain `generic` one to the mock Artifactory source
+# =============================================================================
+# Layer it AFTER upstreams.mock-artifactory-catalog.yml (it only patches that
+# overlay's `mock-artifactory` service). The catalog mock serves whatever files
+# the oracle copies under /srv/catalog/<repo>/, with each repository reporting
+# the packageType named in MOCK_REPOS; this overlay re-declares MOCK_REPOS
+# with two more repositories:
+#   * dtfcat-docker (packageType docker): an image in Artifactory's on-disk
+#     layout (`<image>/<tag>/manifest.json`, `<image>/<tag>/sha256__<hex>`),
+#     so a migration provisions a docker destination and runs the OCI import;
+#   * dtfcat-gen (packageType generic): plain files.
+# Used by the upgrade-v270-origin tier (artifact-keeper#4153, #4465), which
+# migrates from this source on the 1.10.0 origin image before the upgrade.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-artifactory:
+    environment:
+      MOCK_REPOS: "dtfcat-mvn:maven,dtfcat-deb:debian,dtfcat-rpm:rpm,dtfcat-debc:debian,dtfcat-cran:cran,dtfcat-slow:generic,dtfcat-docker:docker,dtfcat-gen:generic"

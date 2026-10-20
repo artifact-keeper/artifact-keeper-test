@@ -22,6 +22,12 @@
 #   GET  /{repo}/{path}                         artifact download
 #   GET  /api/storage/{repo}/{path}[?properties] properties / download fallback
 #   GET  /__readyz                              container healthcheck
+#   GET  /api/docker/{repo}/v2/{image}/blobs/sha256:{hex}
+#                                               Docker registry API blob fetch
+#                                               (the OCI import pulls a
+#                                               manifest's blobs this way); it
+#                                               serves the repository's
+#                                               `<image>/.../sha256__{hex}` file
 #
 # Source-fidelity additions (artifact-keeper#3926, #4740/#4797):
 #   * a file whose name starts with `slow-` is streamed over MOCK_SLOW_SECS
@@ -181,6 +187,18 @@ class Handler(BaseHTTPRequestHandler):
                     for key, ptype in REPOS.items()
                 ],
             )
+        if path.startswith("/api/docker/"):
+            # /api/docker/{repo}/v2/{image...}/blobs/sha256:{hex}
+            m = re.match(r"^/api/docker/([^/]+)/v2/(.+)/blobs/sha256:([0-9a-f]{64})$", path)
+            if m and m.group(1) in REPOS:
+                repo, image, hexd = m.groups()
+                base = os.path.realpath(os.path.join(ROOT, repo, image))
+                if base.startswith(os.path.realpath(os.path.join(ROOT, repo)) + os.sep):
+                    for dirpath, _dirs, files in os.walk(base):
+                        if "sha256__" + hexd in files:
+                            with open(os.path.join(dirpath, "sha256__" + hexd), "rb") as fh:
+                                return self._send(200, fh.read(), "application/octet-stream")
+            return self._send(404, {"errors": [{"status": 404, "message": path}]})
         if path.startswith("/api/storage/"):
             # Properties lookups and the download fallback. Only an item with
             # a fixture properties document has properties (#4740); every
