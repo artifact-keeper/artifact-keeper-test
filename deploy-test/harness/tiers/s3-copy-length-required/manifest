@@ -1,0 +1,36 @@
+# DTF tier manifest: s3-copy-length-required
+#   artifact-keeper#3737 (PR #4321, 1.11.0): proxy-cache publishes failed on
+#   Google Cloud Storage's S3-compatible API because CopyObject was sent
+#   without Content-Length and GCS answers 411 Length Required.
+#   Profile-set: s3 (MinIO) + storage.s3-copy-411 (new: a pass-through in
+#   front of MinIO that answers 411 to exactly that request) +
+#   upstreams.mock-static (a counting static upstream for a remote repo).
+#
+# THE BUG
+# A remote repository's proxy cache writes the fetched body to a staging key
+# and publishes it to the live key with a server-side copy. On an endpoint
+# that requires Content-Length on every PUT, that CopyObject failed with 411
+# on every publish: the backend logged "failed to publish staged proxy-cache
+# object to the live key; not caching" and refetched the upstream on every
+# request. The fix retries a 411-refused CopyObject as a signed CopyObject
+# carrying `Content-Length: 0`, and every later copy on that backend sends it
+# up front ("S3 endpoint rejected CopyObject without Content-Length (411);
+# retrying ... (#3737)"). Since #3916 the generic upload route promotes its
+# staged object with the same copy, so it pays the same retry.
+#
+# Gates: (CONTROL) a generic upload through the shim is 201 and downloads
+# byte-exact; the shim is in the backend's S3 path; three GETs through the
+# remote all answer the exact upstream bytes (both images). (FIX) those three
+# GETs reach the upstream once (cached after the first) and the backend
+# logged no failed publish; the shim refused a header-less CopyObject and
+# then received CopyObjects carrying Content-Length; a later proxy publish
+# goes straight to the Content-Length form (no new 411).
+#
+# RATE_LIMIT_ENABLED=false: not under test. UPSTREAM_ALLOW_PRIVATE_IPS=true:
+# the mock upstream is on a private subnet.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and main.
+PROFILES="storage.s3 storage.s3-copy-411 upstreams.mock-static"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
