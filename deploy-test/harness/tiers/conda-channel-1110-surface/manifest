@@ -1,0 +1,57 @@
+# DTF tier manifest: conda-channel-1110-surface
+#   (artifact-keeper#4051, #4059, #4146, #4555, #4576, #4559, #4580; all
+#   shipped in 1.11.0)
+# Profile-set: filesystem / single + upstreams=mock-conda (the conda-channel-types
+# tier's stdlib-python static conda channel on 172.16.<slot>.70; it publishes
+# dtfup-alpha 1.0 and 2.0 and dtfup-blocked 1.0 in noarch, a
+# patch_instructions.json and a channeldata.json, and logs every request).
+#
+# THE FEATURES / BUGS
+# #4051  A Remote's repodata.json was not attributable to the upstream
+#        repodata patch generation in effect. Fixed: the response carries
+#        X-Repodata-Patch-Generation = BLAKE2b-256 hex of the upstream
+#        {subdir}/patch_instructions.json, and a row is written to
+#        conda_repodata_patch_generations (migration 225). Hosted and virtual
+#        channels carry none.
+# #4059  No way to withdraw ONE conda package. Fixed: DELETE
+#        /conda/{repo}/{subdir}/{file} (delete:artifacts + admin, hosted only)
+#        puts a permanent quarantine hold on it; every repodata variant,
+#        current_repodata, channeldata and a virtual's merge drop it (named in
+#        `removed`), its download answers 409, and notices.json carries a
+#        CEP-6 warning quoting the reason.
+# #4146  notices.json had no visibility check, and concurrent withdrawals
+#        lost notices (read-modify-write on three connections). Fixed: the
+#        read gate of channeldata.json, and an atomic append.
+# #4555  `unknown/repodata.json` answered 400 (pixi search without -p); an
+#        upload whose URL subdir disagreed with info/index.json was filed
+#        under the URL's subdir; POST /upload without X-Conda-Subdir filed
+#        every package under noarch. Fixed: empty index for `unknown`
+#        (uploads there still refused), 400 naming both subdirs, and the
+#        package's own subdir when the header is absent.
+# #4576  Package allowlist on virtual conda channels: GET/PUT/DELETE
+#        /api/v1/repositories/{key}/allowlist; name globs, conda version
+#        specs and subdir restrictions; filters repodata (every encoding)
+#        and channeldata, reports X-AK-Allowlist-Dropped, 404s a dropped
+#        download without contacting the upstream, audited as
+#        REPOSITORY_ALLOWLIST_CHANGED; hosted members are never filtered.
+# #4559  A token scoped to a virtual repository was refused every member
+#        ("Virtual repository has no accessible members"). Fixed: the
+#        virtual in scope passes its members, each still checked against
+#        the token owner's grants; the member's own URL stays out of scope.
+# #4580  Hosted and virtual repodata carried info.base_url =
+#        "/conda/<repo>/<subdir>/", which rattler resolves against the
+#        channel's canonical URL and breaks mirror-configured clients.
+#        Fixed: no base_url (CEP-15 default).
+#
+# RED image: ak-backend:1.10.0 (every FIX case). GREEN: 1.11.0 and later.
+# The indexed_timestamp and /t/<TOKEN>/conda/ facets of #4555 are in
+# conda-virtual-shadow-and-cache; the virtual-merge facets of #4555 are in
+# conda-virtual-merge-policy.
+#
+# RATE_LIMIT_ENABLED=false: two logins then ~60 authenticated calls back to
+# back. UPSTREAM_ALLOW_PRIVATE_IPS=true: the remote's upstream is the mock on
+# a private address (the profile also scopes AK_SSRF_ALLOW_PRIVATE_CIDRS).
+PROFILES="storage.filesystem upstreams.mock-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
