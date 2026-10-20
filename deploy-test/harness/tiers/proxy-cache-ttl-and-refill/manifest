@@ -1,0 +1,61 @@
+# DTF tier manifest: proxy-cache-ttl-and-refill  (artifact-keeper#3832, #4120,
+# #4298, #4339, #4431, #4432; all fixed in 1.11.0)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files,
+# from the proxy-download-ledger tier: the oracle writes the upstream's files
+# over a control API and reads per-path GET / HEAD / conditional counters).
+# The npm packuments come from fixtures/packuments.py.
+#
+# THE BUGS
+# #3832  A cache entry's expiry was stamped when it was written; lowering a
+#        Remote's cache_ttl_seconds only applied to entries cached afterwards,
+#        so an index cached under a long TTL kept being served stale.
+# #4120  Every goproxy fetch went through the format-less helpers with the
+#        Generic stand-in format, so a module version's @v/<ver>.info/.mod/.zip
+#        got the 5-minute mutable TTL and was re-fetched after it.
+# #4298  When a streaming refill replaced an EXPIRED sidecar, a request landing
+#        in the tee writer's tail (upstream EOF to sidecar publish) still saw
+#        the old sidecar, classified it Stale and went upstream a second time.
+# #4339  Remote/Virtual Cargo downloads built the upstream .crate URL from the
+#        lowercased name; crates.io serves only the canonical spelling, so
+#        Inflector answered 404.
+# #4431  The age gate's npm version comparator was not a total order on mixed
+#        numeric / hash prereleases; Rust's sort_by panicked on a long list
+#        (confusing-browser-globals) and the client saw a dropped connection.
+# #4432  The age gate overwrote dist-tags.latest with the newest allowed
+#        version, prereleases included.
+#
+# THE GATES
+#   (FIX)      RED on 1.10.0, GREEN on 1.11.0 and main:
+#              #3832 generic Remote, TTL 3600, entry cached; PUT cache-ttl 2,
+#                    wait 4 s -> the next read makes exactly 1 upstream request
+#                    (a conditional HEAD) and the read after it none.
+#              #4120 Go Remote, TTL 1: @v/v1.0.0.info is not re-requested
+#                    upstream 3 s later.
+#              #4298 generic Remote, TTL 5, a 40 MB object whose upstream bytes
+#                    changed: 15 concurrent GETs fired as the refilling GET
+#                    returns add no upstream GET and no HEAD beyond the
+#                    refill's own, and all get the new bytes (1.10.0: 1 to 3
+#                    more GETs and 3 to 30 HEADs, 3 of 3 runs). The burst must
+#                    follow the refill at once: the window is the tee's tail.
+#              #4339 GET /cargo/<remote>/api/v1/crates/Inflector/0.11.4/download
+#                    -> 200 with the upstream bytes; upstream asked for
+#                    Inflector, never inflector.
+#              #4431 7-day gate, the 45 confusing-browser-globals version keys
+#                    published 2020 -> 200, 45 versions, latest 1.0.11 (1.10.0:
+#                    connection dropped).
+#              #4432 latest 1.1.0 allowed with an allowed 2.0.0-beta.1 -> latest
+#                    stays 1.1.0; latest 1.2.0 published today -> repointed to
+#                    1.1.0 (1.10.0: 2.0.0-beta.1 both times).
+#   (CONTROL)  must hold on BOTH images: a warm generic entry under a 3600 s
+#              TTL is served without an upstream request; a Go Remote serves
+#              .info and @v/list and revalidates @v/list after the TTL; an
+#              expired entry whose upstream changed is refetched with the new
+#              bytes; a lowercase crate downloads; the gate removes a version
+#              published today and keeps an allowed `next` tag.
+#
+# RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
