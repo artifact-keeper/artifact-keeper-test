@@ -27,7 +27,15 @@
 # candidate v158-4fix (adds attribution migration 155). See MATRIX-ROW.md for the
 # image-lineage rationale and why base-2504 (the isolation coder's pre-#2504
 # image) canNOT be used as the OLD image here.
+#
+# DEFAULT OLD IMAGE: nexus2457-v157base is rig-local (never published), which
+# kept this tier out of the release gate. The published
+# ghcr.io/artifact-keeper/artifact-keeper-backend:1.5.6 is an equally valid
+# ancestor (migrations up to 153, NO 155 attribution table; the same origin
+# upgrade-v156-origin uses), so it is the default now and the tier runs in the
+# gate's upgrade-origins group. Green against ak-backend:main-2f08663f. Set
+# UPGRADE_OLD_IMAGE to reproduce the original rig pairing.
 PROFILES="storage.s3"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
-UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ak-backend:nexus2457-v157base}"
+UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ghcr.io/artifact-keeper/artifact-keeper-backend:1.5.6}"

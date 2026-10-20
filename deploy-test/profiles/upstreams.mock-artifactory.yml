@@ -57,6 +57,10 @@ services:
       MOCK_SLOW_REPOS: "dtfmig-int,dtfmig-drya,dtfmig-dryb"
       MOCK_LIST_DELAY_MS: "9000"
       MOCK_FILE_BYTES: "512"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (the process exits on open).
+    security_opt:
+      - label=disable
     volumes:
       - "${DTF_DIR}/harness/tiers/migration-progress-monotonic/fixtures/mock_artifactory.py:/app/mock_artifactory.py:ro"
     healthcheck:

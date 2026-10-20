@@ -37,7 +37,9 @@
 # harness/lib/exit_codes.sh for the full contract.
 #
 # Environment passthrough: everything run.sh honors (AK_TEST_ROOT,
-# SCANNER_ADAPTER_IMAGE, TRIVY_DB_REPOSITORY, UPGRADE_OLD_IMAGE, ...).
+# SCANNER_ADAPTER_IMAGE, TRIVY_DB_REPOSITORY, UPGRADE_OLD_IMAGE, ...). DTF_SLOT_PIN=N
+# runs every tier of this invocation on slot N, so several groups can be
+# proven side by side on one host.
 # =============================================================================
 set -uo pipefail
 

@@ -127,6 +127,13 @@ backend:
     # the reclaim is observable inside the gate's poll window.
     BLOB_GC_ENABLED: "true"
     BLOB_GC_SWEEP_GRACE_SECS: "5"
+    # Blob GC also skips any blob younger than BLOB_GC_MIN_AGE_SECS (default
+    # 24h, the shield for a push whose manifest lands after its blobs). 60 is
+    # the backend's floor (artifact-keeper#2906): test-oci-gc-mark-sweep.sh
+    # waits out that minute and then asserts the same-session reclaim. A test
+    # whose manifest lands more than 60 s after its blobs could lose a blob to
+    # the 10 s GC cron below, which no gate suite does.
+    BLOB_GC_MIN_AGE_SECS: "60"
     # OCI blob GC runs only via the scheduler cron (GC_SCHEDULE, default
     # hourly); the gate's oci-gc test polls for ~30s, so mark+sweep must fire
     # every few seconds for the grace=5 reclaim to be observable. 6-field cron

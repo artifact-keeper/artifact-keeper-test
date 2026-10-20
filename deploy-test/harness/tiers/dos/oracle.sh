@@ -31,6 +31,24 @@
 #       BOUNDED BY DESIGN: this is a test, not a real DoS. The burst concurrency
 #       and total request count are capped (DOS_BURST, default 20) with per-
 #       request timeouts, one single wave, so it cannot wedge the shared rig.
+#
+# Two token-exchange cases run first, on a clean limiter state:
+#
+#   (T1) THE LOGIN 429 DESCRIBES THE LOGIN LIMITER (#4664). Eleven wrong
+#        logins for one throwaway username: the first ten answer 401, the
+#        eleventh 429 with `X-RateLimit-Limit: 10` (the login bucket) and a
+#        positive `Retry-After`. Pre-#4664 (1.11.0) the outer API limiter
+#        overwrote the header with its own bucket (`X-RateLimit-Limit:
+#        10000`). RED there. (/v2/token is NOT asserted at 10: since #4562,
+#        1.11.0, it has its own per-user bucket, RATE_LIMIT_TOKEN_EXCHANGE_
+#        PER_WINDOW, default 300.)
+#   (T2) SUCCESSFUL /v2/token EXCHANGES DO NOT SPEND THE LOGIN BUDGET (#4558).
+#        Fifteen good admin exchanges (more than the ten-per-window login
+#        bucket), then a password login for the same user still answers 200.
+#        An OCI client re-exchanges per scope, so a shared bucket made one
+#        push + sign + verify lock the user out of the UI. A regression guard:
+#        it holds on every released image this host has (1.10.0 to main), so
+#        it proves nothing red today; it fails if the buckets are ever merged.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${COMMON_SH:?}"
@@ -48,6 +66,61 @@ for _ in $(seq 1 20); do
   sleep 2
 done
 [ "$ready" = "1" ] || { echo "FATAL: backend not ready at ${BASE_URL}"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# T1 — eleven wrong logins for one username: 10x401, then a 429 whose
+# X-RateLimit-* headers describe the login limiter, not the API bucket (#4664).
+# ---------------------------------------------------------------------------
+HDR_USER="dtf-dos-hdr-${RUN_ID}"
+begin_test "11th wrong login is 429 with X-RateLimit-Limit: 10 and Retry-After (#4664)"
+t_codes=""; t_401=0
+for i in $(seq 1 10); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -X POST "${BASE_URL}/api/v1/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"username\":\"${HDR_USER}\",\"password\":\"wrong-${i}\"}" 2>/dev/null) || code="000"
+  t_codes="${t_codes} ${code}"
+  [ "$code" = "401" ] && t_401=$(( t_401 + 1 ))
+done
+t_hdr="${WORK_DIR}/login-11.hdr"
+code11=$(curl -s -o /dev/null -D "$t_hdr" -w '%{http_code}' --max-time 10 \
+  -X POST "${BASE_URL}/api/v1/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"${HDR_USER}\",\"password\":\"wrong-11\"}" 2>/dev/null) || code11="000"
+t_limit=$(grep -i '^X-RateLimit-Limit:' "$t_hdr" 2>/dev/null | tr -d '\r' | awk '{print $2}' | head -1 || true)
+t_retry=$(grep -i '^Retry-After:' "$t_hdr" 2>/dev/null | tr -d '\r' | awk '{print $2}' | head -1 || true)
+echo "  attempts 1-10:${t_codes}"
+echo "  attempt 11: ${code11}  X-RateLimit-Limit=${t_limit:-<absent>}  Retry-After=${t_retry:-<absent>}"
+if [ "$t_401" -eq 10 ] && [ "$code11" = "429" ] && [ "$t_limit" = "10" ] \
+   && [[ "$t_retry" =~ ^[0-9]+$ ]] && [ "$t_retry" -gt 0 ]; then
+  pass
+else
+  fail "wrong logins: want 10x401 then 429 with X-RateLimit-Limit: 10 and Retry-After > 0" \
+       "got 401x${t_401}, then ${code11} with X-RateLimit-Limit=${t_limit:-<absent>} Retry-After=${t_retry:-<absent>} (10000 = the outer API bucket overwrote the login limiter's headers, #4664)"
+fi
+
+# ---------------------------------------------------------------------------
+# T2 — successful /v2/token exchanges have their own bucket: a password login
+# for the same user still works afterwards (#4558).
+# ---------------------------------------------------------------------------
+T2_EXCHANGES="${DOS_TOKEN_EXCHANGES:-15}"
+begin_test "Successful /v2/token exchanges (${T2_EXCHANGES}) leave /api/v1/auth/login at 200 (#4558)"
+t2_ok=0; t2_codes=""
+for i in $(seq 1 "$T2_EXCHANGES"); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -u "${ADMIN_USER}:${ADMIN_PASS}" "${BASE_URL}/v2/token?scope=repository:x/y:pull" 2>/dev/null) || code="000"
+  t2_codes="${t2_codes} ${code}"
+  [ "$code" = "200" ] && t2_ok=$(( t2_ok + 1 ))
+done
+login_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+  -X POST "${BASE_URL}/api/v1/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) || login_code="000"
+echo "  exchanges:${t2_codes}"
+echo "  login after ${T2_EXCHANGES} exchanges: ${login_code}"
+if [ "$t2_ok" -eq "$T2_EXCHANGES" ] && [ "$login_code" = "200" ]; then
+  pass
+else
+  fail "after ${T2_EXCHANGES} good /v2/token exchanges (${t2_ok} answered 200) the password login answered ${login_code}; want every exchange 200 and login 200" \
+       "A token exchange must not spend the interactive login bucket (#4558)."
+fi
 
 # ---------------------------------------------------------------------------
 # Half A — the login limiter must engage (429) on repeated failed logins.

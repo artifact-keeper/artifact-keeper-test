@@ -16,11 +16,13 @@
 #   2. Deletes image A's manifest so B1 is genuinely unreferenced.
 #   3. Triggers GC (POST /api/v1/admin/storage-gc {"dry_run":false}) a few times
 #      to run the sweep.
-#   4. RECLAIM (B1 GET -> 404) is NOT assertable at the gate and is SKIPPED: the
-#      backend enforces a compile-time MIN_BLOB_AGE_SECS = 24h shield on blob
-#      deletion (storage_gc_service.rs:123), so a blob pushed this session can
-#      never be swept during the run. Tracked for an env-configurable age shield
-#      in artifact-keeper#2906 (see artifact-keeper-test#292).
+#   4. RECLAIM: waits until B1 is older than the backend's minimum blob age,
+#      then triggers GC until B1 GET -> 404. The age shield defaults to 24h;
+#      since artifact-keeper#2906 (1.11.0) BLOB_GC_MIN_AGE_SECS lowers it (floor
+#      60 s), and the release gate's deploy sets it to 60 (helm
+#      values-test-full.yaml), so a blob pushed this session is reclaimable
+#      about a minute later. OCI_GC_MIN_AGE_SECS tells this script the value the
+#      target was deployed with (default 60).
 #   5. Asserts NO DANGLING: image B's manifest still resolves (200) and its
 #      referenced blob B2 still resolves (200) -- GC did not sweep a live blob.
 #
@@ -30,9 +32,11 @@
 # current endpoint is a single atomic run_gc call, so the race cannot be driven
 # deterministically at the gate layer. See v130-test-gates-plan.md G3.
 #
-# Target-capability note: the deploy overlay must set BLOB_GC_ENABLED=true and a
+# Target-capability note: the deploy overlay must set BLOB_GC_ENABLED=true, a
 # short BLOB_GC_SWEEP_GRACE_SECS (the backend default grace is 3600s and blob GC
-# is opt-in) for the reclaim assertion to complete inside the gate timeout.
+# is opt-in) and BLOB_GC_MIN_AGE_SECS=60 for the reclaim assertion to complete
+# inside the gate timeout. The script takes about two minutes (it waits out the
+# age shield), so the lifecycle job raises TEST_TIMEOUT.
 #
 # Feature-gated on `oci_gc_two_phase` so it auto-skips on a 1.2.x backend
 # (which does not run the manifest-dereference blob sweep) instead of hard-failing.
@@ -155,6 +159,7 @@ st=$(push_image "$IMG_A" "${WORK_DIR}/layer-b1.bin" "$TAG")
 # sets never reaches this parent shell. Recompute B1's digest here in the
 # parent using the same formula push_image uses, so it is defined under set -u.
 B1_DIGEST="sha256:$(shasum -a 256 "${WORK_DIR}/layer-b1.bin" | awk '{print $1}')"
+B1_PUSHED_AT=$(date +%s)
 if [ "$st" = "201" ] || [ "$st" = "200" ]; then
   pass
 else
@@ -202,22 +207,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Trigger GC. We still RUN the sweep so the no-dangling-ref checks below prove
-# it does not touch a live blob, but the B1 reclaim itself is NOT assertable at
-# the gate: the backend enforces a compile-time MIN_BLOB_AGE_SECS = 24h shield
-# on blob deletion (storage_gc_service.rs:123) that protects in-flight pushes,
-# so a blob pushed this session can never be swept during the run no matter how
-# short BLOB_GC_SWEEP_GRACE_SECS is. This is the same "not drivable at the gate
-# layer" situation as the resurrection sub-test below; it is skipped pending an
-# env-configurable age shield (backend artifact-keeper#2906).
+# Trigger GC and assert the reclaim. Blob GC only considers a blob older than
+# the backend's minimum blob age (default 24h, the in-flight push shield). The
+# gate deploys with BLOB_GC_MIN_AGE_SECS=60 (artifact-keeper#2906), so wait
+# until B1 is past that age, then run GC until B1 is gone. The no-dangling-ref
+# checks below then prove the same sweeps did not touch a live blob.
 # ---------------------------------------------------------------------------
 
 begin_test "GC reclaims unreferenced blob B1 (GET -> 404)"
-for _attempt in $(seq 1 3); do
+GC_MIN_AGE="${OCI_GC_MIN_AGE_SECS:-60}"
+GC_DEADLINE_SECS="${OCI_GC_RECLAIM_TIMEOUT_SECS:-60}"
+wait_secs=$(( B1_PUSHED_AT + GC_MIN_AGE + 2 - $(date +%s) ))
+if [ "$wait_secs" -gt 0 ]; then
+  echo "  waiting ${wait_secs}s for B1 to pass the ${GC_MIN_AGE}s minimum blob age"
+  sleep "$wait_secs"
+fi
+b1_final=""
+gc_deadline=$(( $(date +%s) + GC_DEADLINE_SECS ))
+while :; do
   api_post "/api/v1/admin/storage-gc" '{"dry_run":false}' >/dev/null 2>&1 || true
-  sleep 2
+  sleep 3
+  b1_final=$(blob_status "$IMG_A" "$B1_DIGEST")
+  [ "$b1_final" = "404" ] && break
+  [ "$(date +%s)" -ge "$gc_deadline" ] && break
 done
-skip "same-session blob reclaim is untestable at the gate: backend MIN_BLOB_AGE_SECS is a compile-time 24h shield for in-flight pushes (storage_gc_service.rs:123); tracked for an env-configurable age shield in artifact-keeper#2906 (artifact-keeper-test#292)"
+if [ "$b1_final" = "404" ]; then
+  pass
+else
+  fail "unreferenced blob B1 still answers ${b1_final} ${GC_DEADLINE_SECS}s after it passed the ${GC_MIN_AGE}s minimum age (is the target deployed with BLOB_GC_ENABLED=true and BLOB_GC_MIN_AGE_SECS=${GC_MIN_AGE}? artifact-keeper#2906)"
+fi
 
 # ---------------------------------------------------------------------------
 # No dangling reference: image B's manifest + referenced blob survive

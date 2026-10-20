@@ -2008,6 +2008,12 @@ jobs:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
       ADMIN_PASS: TestRunner!2026secure
       JUNIT_OUTPUT_DIR: /tmp/test-results
+      # Per-script timeout for run-suite.sh (default 120 s). The OCI GC
+      # reclaim case in test-oci-gc-mark-sweep.sh waits out the deploy's
+      # BLOB_GC_MIN_AGE_SECS=60 (helm/values-test-full.yaml,
+      # artifact-keeper#2906) before it sweeps, so that script runs about two
+      # minutes.
+      TEST_TIMEOUT: '240'
       # RELEASE_GATE=1 turns common.sh's skip_suite() into a hard fail.
       # A silently-skipped test in release-gate context is exactly the
       # silent-success class (#870/#871/#888) the gate exists to catch.
@@ -2939,10 +2945,15 @@ jobs:
   # sso tier, the one former violator, now refuses to build its probe
   # when RELEASE_GATE=1.
   #
-  # The legacy-data `upgrade` tier is deliberately NOT wired: its
-  # UPGRADE_OLD_IMAGE (ak-backend:nexus2457-v157base) is a rig-local
-  # image with no published equivalent. The #2688 origin tiers cover the
-  # upgrade class with published origins.
+  # The legacy-data `upgrade` tier (matrix row 6) runs in upgrade-origins:
+  # its UPGRADE_OLD_IMAGE default is now the published 1.5.6 tag (a clean
+  # pre-attribution migration ancestor, the same origin
+  # upgrade-v156-origin uses) instead of the rig-local
+  # nexus2457-v157base image that kept it out of the gate.
+  #
+  # Tiers that reach a real public upstream (pypi.org, registry.npmjs.org,
+  # the Alpine package CDN) are NOT required; they run in dtf-advisory
+  # (`scanning`, `external-clients`).
   #
   # Runs on the dind pool (ak-docker-runners): the DTF harness is
   # docker-compose based and the ak-e2e-runners k8s pods have no docker
@@ -2968,7 +2979,7 @@ jobs:
           - group: core
             tiers: smoke isolation
           - group: upgrade-origins
-            tiers: upgrade-v156-origin upgrade-v158-origin
+            tiers: upgrade-v156-origin upgrade-v158-origin upgrade
           - group: security-authz
             tiers: vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race oci-push-scope api-alias-repo-key oci-rest-delete-digest-authority empty-repo-key-no-body-read
           - group: security-boundary
@@ -2995,6 +3006,59 @@ jobs:
             tiers: format-catalog-fixes npm-unpublish-and-push-sync conda-channel-types migration-package-catalog
           - group: fixes-1.11.2-ops
             tiers: proxy-cache-empty-object audit-event-coverage
+          # 1.11.3 fix coverage (artifact-keeper-test#464-#469, #472, #473,
+          # #477): green on 1.11.3 and main, red on 1.11.2. api is HTTP + DB
+          # plus the npm and terraform clients against the candidate itself;
+          # ops stands up a second AK instance (peer.second-instance), a second
+          # replica (topology.two-replica) and a hanging scanner mock, and
+          # carries the slowest leg (readyz-hung-dependency, ~1.5 min). Local
+          # containers only, so required.
+          - group: fixes-1.11.3-api
+            tiers: openapi-curation-optional migration-items-filters npm-anon-audit ingest-archive-entries-limit terraform-origin-registry
+          - group: fixes-1.11.3-ops
+            tiers: remote-instance-relay push-sync-native-formats ops-log-noise readyz-hung-dependency
+          # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
+          # #499-#502): green on main, red on 1.11.3. api is pure HTTP + DB
+          # plus the mock OIDC IdP; features stands up the conda, BSR, static
+          # and OTLP mocks and needs the prebuilt SAML signer for
+          # deps-1.12.0-controls (staged below); ops covers storage (MinIO
+          # part caps, trash purge) and the backend recreates of
+          # secrets-file-env. age-gate-repo-admin is not here: it needs
+          # registry.npmjs.org, so it is advisory (external-clients).
+          - group: fixes-1.12.0-api
+            tiers: token-virtual-catalog admin-hidden-nav oidc-group-preprovision device-auth-flow
+          - group: fixes-1.12.0-features
+            tiers: signing-trust-attestations conda-virtual-shadow-and-cache deps-1.12.0-controls protobuf-bsr-proxy proxy-stale-if-error
+          - group: fixes-1.12.0-ops
+            tiers: trash-purge s3-max-parts secrets-file-env
+          # 1.11.x security coverage (artifact-keeper-test#480-#489,
+          # #492-#498): each green on the fixed 1.11.x release and on main,
+          # red on the release before it. tokens = token scoping, refresh and
+          # CI OIDC identity; authz = REST mutation authorization, existence
+          # hiding, virtual member gates, setup and plugin gates; boundary =
+          # request-plane limits, upstream credential hygiene, XFF trust and
+          # plugin SSRF. Every upstream is a local mock, so all required.
+          - group: security-1.11.x-tokens
+            tiers: token-repo-restriction restricted-token-refresh download-route-token-basic ci-oidc-exchange
+          - group: security-1.11.x-authz
+            tiers: rest-mutation-authz-1-11 repo-read-hiding virtual-member-gates generic-route-scan-gate admin-setup-gate plugins-disabled
+          - group: security-1.11.x-boundary
+            tiers: image-build-spec-validation index-metadata-cred-scoping upstream-url-userinfo-redaction plugin-reload-ssrf xff-authz-trust http-edge-limits upload-slot-exhaustion
+          # Older tiers the 1.11.x coverage audit relies on, wired now that
+          # they are green on main. storage-integrity covers the reindex /
+          # ghost-object classes (#3910, #3919, #1570) on filesystem and MinIO;
+          # the s3 leg waits out the 5-minute fresh-ghost guard (~5.5 min).
+          # regressions-authz and regressions-data are the 1.7.x-1.10.x
+          # authz, credential-scoping, ledger, quota and curation regressions;
+          # sso-ldap stands up OpenLDAP and the mock OIDC IdPs.
+          - group: storage-integrity
+            tiers: storage-integrity storage-integrity-s3
+          - group: regressions-authz
+            tiers: repo-mutation-authz migration-authz token-colon-scope ci-token-basic redact-userinfo-leak nuget-cred-scoping
+          - group: regressions-data
+            tiers: ledger-triggers-authoritative quota-admission-o1 virtual-usage rpm-p3-curation inline-scan-hosted-gate-2954 openapi-signing-tags
+          - group: sso-ldap
+            tiers: ldaps oidc-group-sync oidc-env-config
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
@@ -3023,17 +3087,18 @@ jobs:
           chmod +x deploy-test/harness/ghcr-docker-auth.sh
           ./deploy-test/harness/ghcr-docker-auth.sh
 
-      # Hand the sso tier its prebuilt signer. Only the group that runs the
-      # tier needs it, so the other legs skip the download entirely.
+      # Hand the sso and deps-1.12.0-controls tiers their prebuilt signer.
+      # Only the groups that run them need it, so the other legs skip the
+      # download entirely. Both tiers read it from the same path.
       - name: Download the prebuilt DTF probes
-        if: contains(matrix.tiers, 'sso')
+        if: contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls')
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dtf-probes
           path: /tmp/dtf-probes
 
-      - name: Stage the SAML XSW probe for the sso tier
-        if: contains(matrix.tiers, 'sso')
+      - name: Stage the SAML XSW probe for the sso and deps-1.12.0-controls tiers
+        if: contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls')
         run: |
           set -euo pipefail
           ARCH="$(uname -m)"
@@ -3099,6 +3164,16 @@ jobs:
   #              client image pulls) dominate runtime and flake-rate on
   #              the shared dind pool; these have never run under ARC
   #              load (deploy-test/ARCHITECTURE.md section 7).
+  #   scanning (inline-scan-fail-open-2954, inline-scan-proxy-pypi-2954,
+  #             scan-verdict-dbversion):
+  #     reason:  scan-on-proxy over a real https://pypi.org Remote plus the
+  #              adapter's Trivy DB pull; a pypi.org or ghcr hiccup is not a
+  #              statement about the candidate. inline-scan-hosted-gate-2954
+  #              needs no network and is required (regressions-data).
+  #   external-clients (signing, age-gate-repo-admin):
+  #     reason:  signing installs alpine-sdk from the Alpine CDN inside its
+  #              apk client; age-gate-repo-admin proxies is-odd from
+  #              registry.npmjs.org. Both are green on main.
   #   owner:   release-engineering
   #   expires: 2026-10-01 — on/after this date either promote the leg
   #            into dtf-gate or re-justify the waiver in a PR.
@@ -3117,6 +3192,10 @@ jobs:
             tiers: supply-chain
           - group: heavy-topology
             tiers: migration native-client format-conformance
+          - group: scanning
+            tiers: inline-scan-fail-open-2954 inline-scan-proxy-pypi-2954 scan-verdict-dbversion
+          - group: external-clients
+            tiers: signing age-gate-repo-admin
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
