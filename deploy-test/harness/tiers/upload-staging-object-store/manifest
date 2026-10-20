@@ -1,0 +1,47 @@
+# DTF tier manifest: upload-staging-object-store
+#   artifact-keeper#3916 (raw PUT into an object-storage repository stages on
+#   the repository's backend, not local disk; PR #4321), #4404 (multipart
+#   POST stages the same way; PR #4413), #3918/#3922 (chunked-upload chunks
+#   are storage objects and are purged on cancel and on a failed completion;
+#   PR #4301). All 1.11.0. Single instance; the two-replica side is the
+#   replicated-and-chunked-uploads tier.
+#   Profile-set: s3 (MinIO, bucket ak-artifacts, STORAGE_BACKEND=s3).
+#
+# THE BUGS
+# * #3916 / #4404: every upload body was spooled to a scratch file under
+#   STORAGE_PATH (`<STORAGE_PATH>/.incoming/ak-incus-upload-<uuid>`) before it
+#   reached the repository's backend, even when that backend was S3/GCS/Azure.
+#   A multi-GiB upload needed local disk of its own size (pods evicted on a
+#   small emptyDir). The fix streams the body into
+#   `generic-upload-staging/<uuid>` on the repository's backend, tracked in
+#   the new `generic_upload_staging` table (row written before the first
+#   byte, deleted with the object once the upload is promoted).
+# * #3918 / #3922: chunked sessions (`/api/v1/uploads`) assembled into
+#   `<STORAGE_PATH>/.uploads/<session_id>` on the replica that created the
+#   session; a failed completion (checksum mismatch) left that file behind
+#   forever. The fix stores each chunk as `upload-staging/<session>/<index>`
+#   in the repository's backend and deletes the chunks on completion, on a
+#   terminal failure and on cancel, stamping `upload_sessions.staging_purged_at`.
+#
+# Observation: a long-lived probe container (`--volumes-from` the backend;
+# the backend image has no shell) lists the backend's /data volume while a
+# rate-limited upload is in flight; MinIO is listed through a transient `mc`
+# container in the minio container's network namespace; Postgres through
+# DB_CONTAINER.
+#
+# Gates: (CONTROL) raw PUT, multipart POST and a chunked upload into the S3
+# repository all land byte-exact (both images); (FIX) no local scratch file
+# exists while a raw PUT or multipart POST is in flight and a
+# generic_upload_staging row does, both gone afterwards with an empty
+# generic-upload-staging/ prefix; a PATCHed chunk is an object in MinIO, not
+# a local file, and cancel removes it and stamps staging_purged_at; a
+# checksum-mismatch completion (409) leaves no `.uploads/<session>` file and
+# no staged chunk.
+#
+# RATE_LIMIT_ENABLED=false: the oracle polls Postgres and the API while
+# uploads are in flight.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and main.
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
