@@ -1,0 +1,68 @@
+# DTF tier manifest: token-repo-restriction
+#   (artifact-keeper#4219, #4225, #4226, GHSA-2mfv-xg68-gq4p and
+#    GHSA-gvhj-8vg9-358g; all shipped in 1.11.0, the last two via #4588)
+# Profile-set: filesystem / single. Every fix lives in the token mint
+# handlers, the authentication middleware and the download-ticket store, ahead
+# of any storage backend, so the oracle is pure HTTP plus direct DB reads (and
+# one direct DB write that plants an unparseable stored selector).
+#
+# THE BUGS
+#   #4219  POST /api/v1/auth/tokens had no repo_selector field and ignored
+#          unknown fields, so the selector the web UI sends was dropped and the
+#          personal token was minted unrestricted. Fixed: the selector is stored
+#          (api_tokens.repo_selector) and enforced on every read, write and
+#          listing path; an empty selector, a misspelled criterion and any
+#          unknown field are 400.
+#   #4225  A repository-restricted credential (personal repo_selector, or a
+#          service-account token's repository_ids) could mint an unrestricted
+#          sibling on /auth/tokens and /profile/access-tokens. Fixed: the new
+#          token inherits the restriction as a match_repos selector, naming its
+#          own selector is 403, and a restriction that matches nothing cannot
+#          mint at all (403).
+#   #4226  A stored repo_selector that did not parse was read as "no
+#          restriction"; service-account token creation stored a selector as
+#          given and accepted an empty repository_ids; the other mint endpoints
+#          ignored unknown fields. Fixed: an unparseable stored selector grants
+#          no repository, and every mint request refuses unknown fields and
+#          non-restricting selectors with 400.
+#   GHSA-2mfv  POST /auth/ticket stored only the user, so a redeemed ticket
+#          carried the user's full reach, not the minting token's restriction.
+#          This was latent because redemption itself was broken (the user
+#          lookup's column list had drifted, so every ticket fell through to
+#          anonymous). Fixed together: the ticket records the minter's
+#          restriction (download_tickets.allowed_repo_ids, scope_recorded),
+#          redemption works again and restores the restriction, and minting
+#          needs the read:artifacts scope.
+#   GHSA-gvhj  PUT /repositories/{key}/security checked the repository admin
+#          action but not the token scope, so a read:artifacts-only token held
+#          by a repository admin could switch scanning off. Fixed: the route
+#          requires write:repositories (403 otherwise).
+#
+# THE FIXTURE
+#   A, B   private generic repositories, each holding dir/obj.txt with distinct
+#          bytes. U is a plain user granted read, write and admin on both, so
+#          every denial below is the TOKEN's restriction, never U's reach.
+#   TA     U's personal token, read+write:artifacts, repo_selector match_repos [A].
+#   TU     U's personal token with no selector (the unrestricted control).
+#   SR     a service-account token with repository_ids [A] (the restriction
+#          mechanism that already worked before 1.11.0; the control).
+#
+# THE GATES
+#   (FIX)      RED on 1.10.0 (the image before all five fixes), GREEN on 1.11.0
+#              and later: every case named FIX in the oracle.
+#   (CONTROL)  must hold on BOTH: TU and the U session read, write and list A
+#              and B; SR reads A and not B; an unauthenticated mint is 401 and
+#              a forged ticket or no credential reads none of the private bytes;
+#              the U session and a write:repositories token may change the scan
+#              configuration.
+#
+# The ticket cases tolerate the 1.10.0 shape on purpose: there every ticket is
+# anonymous, so "a restricted ticket cannot read B" holds trivially. The FIX
+# case therefore requires the SAME restricted token's ticket to read A, and an
+# unrestricted ticket to read B, before it accepts the B refusal as the
+# restriction at work.
+#
+# RATE_LIMIT_ENABLED=false: ~90 authenticated calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
