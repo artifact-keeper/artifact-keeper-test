@@ -29,9 +29,10 @@
 #             MOCK_BIG_INDEX_MIB (default 9.5) MiB, past the 8 MiB first-try
 #             tier and under the 64 MiB ceiling (#4612)
 #   /huge/    the same at MOCK_HUGE_INDEX_MIB (default 70) MiB, past 64 MiB
-#   /slow/    no shard index; EVERY request under it is answered after
-#             MOCK_SLOW_SECS (default 8) seconds (holds a virtual merge slot,
-#             #4608)
+#   /slow/    no shard index; its documents (repodata.json, channeldata.json,
+#             and the 404s for repodata.json.zst / .bz2) are answered after
+#             MOCK_SLOW_SECS (default 3) seconds each, so a virtual merge over
+#             it holds its merge slot for about 9 s (#4608)
 #
 # Every channel also serves `noarch/repodata.json` (the same packages,
 # monolithic, hex digests as JSON requires) and `channeldata.json`; anything
@@ -62,7 +63,7 @@ import cep16  # noqa: E402
 
 PORT = int(os.environ.get("MOCK_PORT", "80"))
 MARKER = os.environ.get("MOCK_MARKER", "dtfmockcondash")
-SLOW_SECS = float(os.environ.get("MOCK_SLOW_SECS", "8"))
+SLOW_SECS = float(os.environ.get("MOCK_SLOW_SECS", "3"))
 BIG_MIB = float(os.environ.get("MOCK_BIG_INDEX_MIB", "9.5"))
 HUGE_MIB = float(os.environ.get("MOCK_HUGE_INDEX_MIB", "70"))
 
