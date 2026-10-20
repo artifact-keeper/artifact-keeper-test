@@ -1,0 +1,12 @@
+# Tier-local override for bind-ip-and-otel: the oracle recreates only the
+# backend with this file layered on the manifest's profiles, exporting the
+# V_* variables for the variant it wants. METRICS_PORT turns the separate
+# metrics listener on so its bind address can be probed.
+services:
+  backend:
+    environment:
+      METRICS_PORT: "9091"
+      GRPC_BIND_IP: ${V_GRPC_BIND_IP:?}
+      METRICS_BIND_IP: ${V_METRICS_BIND_IP:?}
+      OTEL_TRACES_SAMPLER: ${V_SAMPLER:?}
+      OTEL_TRACES_SAMPLER_ARG: ${V_SAMPLER_ARG:-}

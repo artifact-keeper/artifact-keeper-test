@@ -1,0 +1,50 @@
+# =============================================================================
+# profiles/telemetry.otlp-spans.yml: OTLP http/protobuf export to a decoding sink
+# =============================================================================
+# Adds `otlp-spans`, a stdlib-only Python OTLP/HTTP receiver
+# (harness/tiers/bind-ip-and-otel/fixtures/otlp_spans.py) that decodes every
+# ExportTraceServiceRequest and appends each span (trace id, parent span id,
+# name, kind, attributes, service.name) as a JSON line to
+# /tmp/otlp/spans.jsonl, so a tier can assert on span content with
+# `docker exec` (telemetry.otlp-sink.yml only counts and greps raw bodies).
+# Nothing is published on the host. The container also serves as the
+# "sibling container" a tier probes the backend's ports from.
+#
+# The overlay PATCHES backend: OTEL_EXPORTER_OTLP_ENDPOINT (used verbatim by
+# the exporter builder, so it carries the /v1/traces path),
+# OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf (the default is gRPC), a 500 ms
+# batch schedule, and the json-file log driver.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  otlp-spans:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-otlp-spans
+    command: ["python3", "/app/otlp_spans.py"]
+    volumes:
+      - "${DTF_DIR}/harness/tiers/bind-ip-and-otel/fixtures/otlp_spans.py:/app/otlp_spans.py:ro"
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:4318/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otlp-spans:
+        condition: service_healthy
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otlp-spans:4318/v1/traces"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
+      OTEL_BSP_SCHEDULE_DELAY: "500"
+    logging:
+      driver: json-file
