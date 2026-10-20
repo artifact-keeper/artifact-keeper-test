@@ -1,0 +1,89 @@
+# =============================================================================
+# profiles/upstreams.mock-index-foreign.yml -- an index host and a foreign host
+# =============================================================================
+# For the index-metadata-cred-scoping tier (GHSA-24rf-2gv2-j47c).
+#
+# The overlay:
+#   * ADDS  `mock-idx` (ROLE=index), the upstream a credentialed Remote is
+#     configured with, and `mock-foreign` (ROLE=foreign), the other host its
+#     PyPI simple page and Helm index.yaml name by absolute URL. Both run
+#     harness/tiers/index-metadata-cred-scoping/fixtures/mock_index_hosts.py
+#     (stdlib python) and record the Authorization header of every request;
+#     the oracle reads that with `docker exec`, so nothing is published.
+#     Same port, different host: a different origin, which is what the fix
+#     compares (scheme, host, port).
+#   * Both sit on a per-slot 172.16.<slot>.0/24 subnet (below Docker's default
+#     address pool, see upstreams.mock-static.yml), allowlisted for the
+#     backend's create-time SSRF check through AK_SSRF_ALLOW_PRIVATE_CIDRS.
+#   * PATCHES backend onto that network and pins the json-file log driver: the
+#     tier reads the sampled `security` WARN from `docker logs`.
+#   * label=disable on the mocks: an SELinux-enforcing host cannot read the
+#     bind-mounted script otherwise.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+x-mock-index-host: &mock-index-host
+  image: python:3.12-slim
+  command: ["python3", "/app/mock_index_hosts.py"]
+  volumes:
+    - "${DTF_DIR}/harness/tiers/index-metadata-cred-scoping/fixtures/mock_index_hosts.py:/app/mock_index_hosts.py:ro"
+  security_opt:
+    - label=disable
+  logging:
+    driver: json-file
+  healthcheck:
+    test:
+      - "CMD-SHELL"
+      - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 5s
+
+services:
+  mock-idx:
+    <<: *mock-index-host
+    container_name: ak-dtf${DTF_SLOT}-mock-idx
+    environment:
+      MOCK_PORT: "80"
+      ROLE: index
+      INDEX_HOST: mock-idx
+      FOREIGN_HOST: mock-foreign
+    networks:
+      mockindexforeign:
+        ipv4_address: 172.16.${DTF_SLOT}.73
+
+  mock-foreign:
+    <<: *mock-index-host
+    container_name: ak-dtf${DTF_SLOT}-mock-foreign
+    environment:
+      MOCK_PORT: "80"
+      ROLE: foreign
+      INDEX_HOST: mock-idx
+      FOREIGN_HOST: mock-foreign
+    networks:
+      mockindexforeign:
+        ipv4_address: 172.16.${DTF_SLOT}.74
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-idx:
+        condition: service_healthy
+      mock-foreign:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockindexforeign: {}
+
+networks:
+  mockindexforeign:
+    name: ak-dtf${DTF_SLOT}-mockindexforeign
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
