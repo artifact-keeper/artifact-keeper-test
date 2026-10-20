@@ -31,6 +31,10 @@ services:
       MOCK_PKG: "dtfpkg"
       # The lie: a valid PEP 691 JSON body served as octet-stream (#2801).
       MOCK_CTYPE: "application/octet-stream"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (the process exits on open).
+    security_opt:
+      - label=disable
     volumes:
       - "${DTF_DIR}/harness/tiers/pypi-contenttype/fixtures/mock_pypi.py:/app/mock_pypi.py:ro"
     healthcheck:

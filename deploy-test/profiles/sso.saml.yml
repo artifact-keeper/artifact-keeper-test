@@ -42,6 +42,10 @@ services:
       KC_HTTP_PORT: "8080"
       KC_HEALTH_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (the process exits on open).
+    security_opt:
+      - label=disable
     volumes:
       - "${DTF_DIR}/harness/tiers/sso/fixtures/keycloak-realm.json:/opt/keycloak/data/import/dtf-realm.json:ro"
     ports:

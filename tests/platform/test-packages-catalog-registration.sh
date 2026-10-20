@@ -14,7 +14,7 @@
 #   catalog upsert CTE into a packages.size_bytes NOT NULL violation (23502),
 #   leaving NO catalog row. This script fires 20 parallel identical uploads;
 #   pre-fix the row is often missing (and the backend logs 23502), post-fix
-#   all uploads succeed and the row exists.
+#   every upload ends in 2xx or the #3924 immutable-path 409 and the row exists.
 #
 #   #4191 (go backfill sidecar size) is deliberately NOT covered here: its
 #   precondition is legacy artifact rows with no catalog rows, which no public
@@ -85,20 +85,38 @@ fi
 api_upload "/api/v1/repositories/${GEN_REPO}/artifacts/race-pkg/1.0.0/race.bin" \
   "$WORK_DIR/race.bin" "application/octet-stream" >/dev/null || true
 
-begin_test "#3931: 20 parallel identical uploads all succeed"
+begin_test "#3931: 20 parallel identical uploads complete without a server error"
+# Since #3924 an occupied release path is immutable: an upload that loses the
+# race to an identical earlier one is refused 409 CONFLICT ("Artifact version
+# already exists and is immutable") rather than accepted. So the race passes
+# when every request ends in 2xx or that 409, at least one wins, and (next
+# test) the catalog row exists. Pre-#3931 the losers hit the 23502 NOT NULL
+# violation and answered 500, leaving no row.
 printf 'race-payload' > "$WORK_DIR/race.bin"
 pids=""
 for i in $(seq 1 20); do
-  api_upload "/api/v1/repositories/${GEN_REPO}/artifacts/race-pkg/1.0.0/race.bin" \
-    "$WORK_DIR/race.bin" "application/octet-stream" >/dev/null 2>&1 &
+  curl -s -o "$WORK_DIR/race-${i}.body" -w '%{http_code}' $CURL_TIMEOUT -X PUT \
+    -H "$(auth_header)" -H "Content-Type: application/octet-stream" \
+    --data-binary "@$WORK_DIR/race.bin" \
+    "${BASE_URL}/api/v1/repositories/${GEN_REPO}/artifacts/race-pkg/1.0.0/race.bin" \
+    > "$WORK_DIR/race-${i}.status" 2>/dev/null &
   pids="$pids $!"
 done
-rc=0
-for p in $pids; do wait "$p" || rc=1; done
-if [ "$rc" = "0" ]; then
+for p in $pids; do wait "$p" || true; done
+ok=0; bad=""
+for i in $(seq 1 20); do
+  st="$(cat "$WORK_DIR/race-${i}.status" 2>/dev/null)"
+  case "$st" in
+    200|201) ok=$((ok + 1)) ;;
+    409) grep -q 'immutable' "$WORK_DIR/race-${i}.body" 2>/dev/null \
+           || bad="${bad} #${i}:409($(head -c 120 "$WORK_DIR/race-${i}.body" 2>/dev/null))" ;;
+    *) bad="${bad} #${i}:${st:-000}($(head -c 120 "$WORK_DIR/race-${i}.body" 2>/dev/null))" ;;
+  esac
+done
+if [ -z "$bad" ] && [ "$ok" -ge 1 ]; then
   pass
 else
-  fail "one or more parallel uploads failed"
+  fail "parallel identical uploads: ${ok} succeeded; unexpected outcomes:${bad:- none (but no upload succeeded)}"
 fi
 
 begin_test "#3931: catalog row exists after the race"
