@@ -1,0 +1,42 @@
+# DTF tier manifest: startup-config-and-format-indexes
+#   (artifact-keeper#4211, #4427: 1.11.0)
+# Profile-set: filesystem + upstreams.mock-recorder (a run-time file table:
+# the oracle PUTs repomd.xml and primary.xml.* into it and an RPM Remote
+# points at it).
+#
+# THE FIXES AND THEIR GATES (RED ak-backend:1.10.0, GREEN 1.11.0 and main)
+# #4211 JWT_SECRET strength is an entropy estimate (4 bits/char for hex, 128
+#   bits minimum) instead of "at least 16 distinct characters", and a short
+#   unit repeated is refused. Asserted on throwaway containers of the image
+#   under test, given only JWT_SECRET and an unreachable DATABASE_URL: config
+#   validation runs before the database is dialled, so a refused secret exits
+#   at once with "JWT_SECRET is unsuitable", an accepted one keeps running
+#   (or logs its database-pool failure).
+#   (CONTROL) a 48-byte base64 secret is accepted; 40 characters drawn from
+#             five letters are refused, on every image.
+#   (FIX)     a random 64-character hex secret without 'f' is accepted.
+#             1.10.0: refused (15 distinct characters).
+#   (FIX)     "0123456789abcdef" x4 is refused. 1.10.0: accepted.
+# #4427 the RPM curation sync decodes primary.xml by magic bytes (gzip, zstd,
+#   xz, bzip2, plain) and fails a sync that ingests nothing from a non-empty
+#   primary. Curation is wired DB-side as rpm-p3-curation and
+#   deps-1.12.0-controls do (staging repo, curation_enabled,
+#   curation_allow_unverified, curation_source_repo_id = the Remote); the
+#   sync is POST /api/v1/curation/repos/{key}/sync.
+#   (CONTROL) a gzip primary with 3 packages ingests 3; a truly empty primary
+#             (packages="0", no <package>) is a successful empty sync.
+#   (FIX)     zstd, xz and bzip2 primaries each ingest their 3 packages.
+#             1.10.0: 0 packages and succeeded:true.
+#   (FIX)     uncompressed XML behind a primary.xml.zst href, and a primary
+#             declaring packages="3" with none, answer succeeded:false.
+#             1.10.0: succeeded:true (the first even ingests the 3 packages
+#             by reading the "zst" as plain text).
+#
+# NOT COVERED: #4406 RPM_VERSION_RETENTION_KEEP pruning runs on the hourly
+# scheduler pass with no interval knob, so it cannot be observed within a
+# tier's budget. #4427's GPG-refusal and checksum-chain failure modes, the
+# decompression budget, and the sweep continuing past a failing repository.
+PROFILES="storage.filesystem upstreams.mock-recorder"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
