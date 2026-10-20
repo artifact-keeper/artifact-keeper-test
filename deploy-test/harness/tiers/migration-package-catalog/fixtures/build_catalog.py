@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# build_catalog.py OUTDIR — build the migration SOURCE's real files
+# build_catalog.py OUTDIR [RPMDIR]: build the migration SOURCE's real files
 # =============================================================================
 # Writes, under OUTDIR, one directory per mock Artifactory repository:
 #
@@ -16,6 +16,25 @@
 #     pool/main/d/dtfpkg/dtfpkg_1.0_amd64.deb  pool/<component>/ layout
 #     pool/dtfflat_2.0_all.deb                 Artifactory "Set Me Up" layout
 #
+# Source-fidelity repositories (artifact-keeper#3925, #3926, #2525, #4740):
+#
+#   dtfcat-rpm/   (packageType rpm) the #3801 fixture RPMs copied from RPMDIR
+#     akdep-lib-1.0-1.noarch.rpm               Provides akdep-libfoo
+#     akdep-app-2.0-1.noarch.rpm               Requires akdep-libfoo >= 1.0
+#
+#   dtfcat-debc/  (packageType debian) component placement (#4740)
+#     pool/d/dtfletter/dtfletter_1.0_amd64.deb Nexus pool/<letter>/<name>/ layout
+#     pool/d/dtfuniv/dtfuniv_1.0_amd64.deb     same layout, deb.component=universe
+#   __props/dtfcat-debc/pool/d/dtfuniv/dtfuniv_1.0_amd64.deb.json
+#                                              that item's Artifactory properties
+#
+#   dtfcat-cran/  (packageType cran) (#2525)
+#     src/contrib/dtfr_1.0.tar.gz              an R source package (DESCRIPTION)
+#     src/contrib/PACKAGES                     the source's own index (skipped)
+#
+#   dtfcat-slow/  (packageType generic) (#3926)
+#     slow-blob.bin                            the mock streams it over ~36 s
+#
 # The `.deb`s are real ar archives (debian-binary, control.tar.gz,
 # data.tar.gz) whose control file carries Package/Version/Architecture and a
 # Description no file name can supply, which is how the oracle tells "indexed
@@ -26,7 +45,9 @@
 import gzip
 import hashlib
 import io
+import json
 import os
+import shutil
 import sys
 import tarfile
 import zipfile
@@ -123,7 +144,28 @@ def deb(package, version, arch, description):
     )
 
 
-def main(out):
+def cran_source(package, version, title):
+    description = (
+        f"Package: {package}\nVersion: {version}\nTitle: {title}\n"
+        f"Description: {title} for artifact-keeper 2525.\n"
+        f"License: MIT\nDepends: R (>= 3.5.0)\nImports: utils\n"
+        f"NeedsCompilation: no\nAuthor: DTF\nMaintainer: DTF <dtf@example.invalid>\n"
+    ).encode()
+    return targz(
+        [
+            (f"{package}/DESCRIPTION", description, 0o644),
+            (f"{package}/NAMESPACE", b"export()\n", 0o644),
+            (f"{package}/R/{package}.R", b"dtf <- function() 1\n", 0o644),
+        ]
+    )
+
+
+# The source's own CRAN index. A migration that copies it verbatim makes the
+# served index list a package called PACKAGES (#2525 skips it).
+CRAN_SOURCE_INDEX = b"Package: dtfr\nVersion: 1.0\n\nPackage: dtfsourceonly\nVersion: 9.9\n"
+
+
+def main(out, rpmdir=None):
     mvn = os.path.join(out, "dtfcat-mvn", "com", "dtf", "demo")
     j = jar()
     write(f"{mvn}/1.0.0/demo-1.0.0.jar", j)
@@ -143,8 +185,38 @@ def main(out):
         deb("dtfflat", "2.0", "all", "DTF flat-layout fixture for artifact-keeper 4657"),
     )
 
+    if rpmdir:
+        rpms = os.path.join(out, "dtfcat-rpm")
+        os.makedirs(rpms, exist_ok=True)
+        for name in ("akdep-lib-1.0-1.noarch.rpm", "akdep-app-2.0-1.noarch.rpm"):
+            shutil.copyfile(os.path.join(rpmdir, name), os.path.join(rpms, name))
+
+    debc = os.path.join(out, "dtfcat-debc", "pool", "d")
+    write(
+        f"{debc}/dtfletter/dtfletter_1.0_amd64.deb",
+        deb("dtfletter", "1.0", "amd64", "DTF letter-layout fixture for artifact-keeper 4740"),
+    )
+    write(
+        f"{debc}/dtfuniv/dtfuniv_1.0_amd64.deb",
+        deb("dtfuniv", "1.0", "amd64", "DTF universe-property fixture for artifact-keeper 4740"),
+    )
+    write(
+        os.path.join(out, "__props", "dtfcat-debc", "pool", "d", "dtfuniv",
+                     "dtfuniv_1.0_amd64.deb.json"),
+        json.dumps({"deb.component": ["universe"], "deb.distribution": ["stable"],
+                    "deb.architecture": ["amd64"]}).encode(),
+    )
+
+    cran = os.path.join(out, "dtfcat-cran", "src", "contrib")
+    write(f"{cran}/dtfr_1.0.tar.gz", cran_source("dtfr", "1.0", "DTF R Fixture"))
+    write(f"{cran}/PACKAGES", CRAN_SOURCE_INDEX)
+
+    # 1 MiB of deterministic bytes; the mock streams any `slow-*` file slowly.
+    blob = b"".join(hashlib.sha256(str(i).encode()).digest() for i in range(32768))
+    write(os.path.join(out, "dtfcat-slow", "slow-blob.bin"), blob)
+
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: build_catalog.py OUTDIR")
-    main(sys.argv[1])
+    if len(sys.argv) not in (2, 3):
+        sys.exit("usage: build_catalog.py OUTDIR [RPMDIR]")
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None)

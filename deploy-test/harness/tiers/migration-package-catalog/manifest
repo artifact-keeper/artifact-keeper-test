@@ -1,4 +1,5 @@
-# DTF tier manifest: migration-package-catalog  (artifact-keeper#4691 / #4657)
+# DTF tier manifest: migration-package-catalog  (artifact-keeper#4691 / #4657,
+# plus source fidelity: #3925, #3926, #3927, #3928, #4740/#4797, #2525)
 # Profile-set: filesystem / single + upstreams=mock-artifactory-catalog. Both
 # defects are in the migration importer's registration step, after the bytes
 # are stored, so the storage dimension is irrelevant; a migration SOURCE that
@@ -53,6 +54,29 @@
 #              both). With the Debian control documents and catalog deleted
 #              (a pre-fix import), RE-RUNNING the migration re-registers both
 #              packages, which is #4741's documented recovery (RED on 1.11.1).
+#
+# SOURCE FIDELITY (added by the audit's `migration-source-fidelity` group; the
+# same source serves four more repositories, see the profile's MOCK_REPOS):
+#   (FIX #3927) GET /maven/<migrated>/com/dtf/demo/maven-metadata.xml is
+#              generated with <latest>/<release> 1.0.0 (404 on 1.10.0).
+#   (FIX #3928) the assessment's total_artifacts equals the seeded file count
+#              per repository and in total, with the *_exact flags true
+#              (1.10.0: one per repository, no flags).
+#   (FIX #3925) a migrated RPM repository is native (`rpm`), and its
+#              primary.xml carries the akdep-app header summary and
+#              <rpm:requires> akdep-libfoo >= 1.0 (the #3801 fixture RPMs).
+#   (FIX #3926) a file the mock streams over ~36 s migrates intact (1.10.0:
+#              "error decoding response body" under a 30 s request timeout).
+#   (FIX #4740/#4797, 1.11.3) a `pool/d/<name>/` .deb is filed under
+#              pool/main/, one with Artifactory property deb.component=universe
+#              under pool/universe/, and a re-run moves a misfiled row back and
+#              retires the old one (red on 1.11.2).
+#   (FIX #2525) an Artifactory `cran` repository becomes a native CRAN
+#              repository; PACKAGES lists dtfr 1.0 and not the source's own
+#              PACKAGES file (1.10.0: the job fails).
+# Red images: #4691/#4657 on 1.11.1, #4740 on 1.11.2, the other source-fidelity
+# cases on 1.10.0 (where several of the #4657 controls are also red: Debian
+# then migrated into a generic repository).
 #
 # NOTE on the pooled .deb on 1.11.1: its Packages stanza is NOT absent there.
 # The index falls back to the file name for a `pool/<component>/` row with no
