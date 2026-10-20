@@ -1,0 +1,63 @@
+# =============================================================================
+# profiles/db.keepalive-off-peer.yml - database dimension = a second backend
+#   with DATABASE_TCP_KEEPALIVES=false beside the default one
+#   (db-keepalive-startup-retry tier, artifact-keeper#4549)
+# =============================================================================
+# From 1.11.2 every pooled Postgres session is armed with
+# tcp_keepalives_idle=15 / interval=5 / count=3 right after connect, unless
+# DATABASE_TCP_KEEPALIVES=false. The setting is per session on the SERVER
+# side, so it is observable from the Postgres container's network namespace:
+# `ss -to` shows each 5432 socket's keepalive timer, which counts down from
+# 15 s on an armed session and from the kernel default (7200 s) otherwise.
+#
+# Adds `backend-nokeep`: the same image and configuration as `backend`, on
+# the same database and /data volume, with DATABASE_TCP_KEEPALIVES=false. It
+# sits on the base `dtf` network with its OWN address (not in backend's
+# network namespace), so the oracle can tell its Postgres sessions from
+# backend's by peer IP. It listens on 8080 inside its own namespace; nothing
+# is published on the host. It starts after backend is healthy, so the
+# migrations and the admin bootstrap ran once.
+#
+# Both backends pin the json-file log driver: the oracle reads the startup
+# retry lines from `docker logs`, and a host journald (rootless podman on
+# Fedora) can rate-limit a restart burst.
+#
+# Required vars (run.sh exports them): DTF_SLOT, BACKEND_IMAGE.
+# =============================================================================
+services:
+  backend:
+    logging:
+      driver: json-file
+
+  backend-nokeep:
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
+    container_name: ak-dtf${DTF_SLOT}-backend-nokeep
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://registry:registry@postgres:5432/artifact_registry
+      DATABASE_TCP_KEEPALIVES: "false"
+      STORAGE_PATH: /data/storage
+      BACKUP_PATH: /data/backups
+      PLUGINS_DIR: /data/plugins
+      JWT_SECRET: ${JWT_SECRET:-dtf-nonprod-cobalt-harbor-lantern-7f3a9c2e5b81}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-TestRunner!2026secure}
+      RUST_LOG: ${RUST_LOG:-info}
+      HOST: 0.0.0.0
+      PORT: "8080"
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+    volumes:
+      - dtf_data:/data
+    logging:
+      driver: json-file
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 10s
+      start_period: 40s
+      retries: 24
+    networks: [dtf]

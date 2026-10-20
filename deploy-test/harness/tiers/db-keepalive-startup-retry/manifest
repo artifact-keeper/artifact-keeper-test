@@ -1,0 +1,47 @@
+# DTF tier manifest: db-keepalive-startup-retry  (artifact-keeper#4549, fixed by
+# #4695, 1.11.2)
+# Profile-set: filesystem + db.keepalive-off-peer (a second backend on the same
+# Postgres with DATABASE_TCP_KEEPALIVES=false, on its own address).
+#
+# THE BUG (#4549)
+# A force-killed backend pod left its Postgres sessions open for the OS's ~2 h
+# TCP keepalive default; across replicas the ghosts filled max_connections and
+# the replacement pod died on its first `Sqlx(PoolTimedOut)` at boot and
+# crash-looped for hours. The fix arms tcp_keepalives_idle=15 / interval=5 /
+# count=3 with a query right after connect on every pooled session (opt out:
+# DATABASE_TCP_KEEPALIVES=false), retries the initial pool connect up to five
+# times with a jittered 1-8 s backoff (about 40 s with the defaults) instead of
+# exiting, and counts failures in ak_db_pool_connection_failures_total{stage}.
+#
+# THE PRIMITIVES
+#   * Keepalives are a per-session SERVER setting, so `SHOW` on another
+#     session cannot see them; the kernel can. `ss -to` in a throwaway
+#     netshoot container in the Postgres netns prints each 5432 socket's
+#     keepalive timer: <= 15 s on an armed session, ~119 min (the 7200 s
+#     kernel default) otherwise. Sessions are attributed to a backend by peer
+#     IP, which is why backend-nokeep has its own address.
+#   * The boot outage: `docker stop` the backend, `docker pause` this slot's
+#     own Postgres (the kernel still accepts the TCP connect, the server never
+#     answers, so each attempt ends in the 5 s acquire timeout: PoolTimedOut),
+#     `docker start` the backend, `docker unpause` 12 s later. An EXIT trap
+#     unpauses Postgres if the oracle dies mid-outage.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) both images: both backends hold established sessions that carry
+#             a keepalive timer; the DATABASE_TCP_KEEPALIVES=false peer's timers
+#             are all >= 60 min, before and after the outage, and it still
+#             serves; the docker pause took; with Postgres up a restarted
+#             backend comes up and serves an authenticated request.
+#   (FIX)     every session of the default backend has a timer <= 15 s; the
+#             backend booted during the 12 s freeze comes up by itself; its
+#             log has "database pool: initial connect attempt 1/5 failed ...
+#             retrying". RED on 1.11.1: timers ~119 min, the container exits
+#             on the first PoolTimedOut, no retry line.
+#   (KNOWN-RED #4828) ak_db_pool_connection_failures_total{stage="startup"}
+#             is never exported: the retry counts before main.rs installs the
+#             Prometheus recorder. Reported as a note, not failed.
+#
+# RATE_LIMIT_ENABLED=false: the oracle logs in again after every restart.
+PROFILES="storage.filesystem db.keepalive-off-peer"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
