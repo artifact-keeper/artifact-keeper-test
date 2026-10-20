@@ -1,0 +1,52 @@
+# DTF tier manifest: sbom-license-expression
+#   (artifact-keeper#3866, #4096, #4095; all shipped in 1.11.0)
+# Profile-set: filesystem + upstreams.mock-osv + api.swagger.
+#   * upstreams.mock-osv: the dependency scanner that runs beside Grype asks a
+#     local mock instead of the internet (no answers here; it only keeps the
+#     tier offline), and its AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 admits
+#     the self-proxying Remote below.
+#   * api.swagger: ENABLE_SWAGGER=true, so /api/v1/openapi.json is served.
+#
+# Licenses come from the image's bundled Grype: its directory scan catalogs a
+# package-lock.json (v3) with each entry's `license` string. The tier stores
+# one lockfile in a generic repository (hosted SBOM: POST /api/v1/sbom) and
+# ships the same lockfile inside npm tarballs that a scan_on_proxy Remote
+# fetches from this backend's own hosted npm repository, addressed by the
+# backend's IP on the mock-osv network (proxy SBOM:
+# GET /repositories/{key}/security/proxy-sbom).
+#
+# THE BUGS (all RED on 1.10.0)
+#   #3866  A compound SPDX license (`MIT AND PSF-2.0`, `Apache-2.0 WITH
+#          LLVM-exception`) was written as CycloneDX `license.name`, which
+#          Dependency-Track stores as unresolved free text. Fixed: emitted as
+#          `{"expression": ...}`; known single ids stay `license.id`, free text
+#          stays `license.name`.
+#   #4096  The proxy-cache SBOM always rendered as complete: the inline proxy
+#          scan never recorded whether its inventory was whole. Fixed:
+#          completeness stored with the verdict (migration 252) and emitted as
+#          the CycloneDX `artifact-keeper:scan-completeness` property / SPDX
+#          creationInfo comment. A Grype inventory over SCAN_INVENTORY_CAP
+#          (10000) is truncated and graded partial, so a tarball whose lockfile
+#          lists 10050 packages yields a genuinely partial inline scan.
+#   #4095  GET /repositories/{key}/security/proxy-sbom and
+#          GET /artifacts/{id}/package-analysis were routed but missing from
+#          the OpenAPI document.
+#
+# THE GATES
+#   (CONTROL) every image: single id -> license.id, free text -> license.name
+#     (hosted SBOM); the proxy SBOM of a small proxied tarball lists its
+#     inventory with no completeness marker; the OpenAPI document is served
+#     and lists /api/v1/sbom.
+#   (FIX) #3866 x2 (hosted and proxy SBOM), #4096 (CycloneDX and SPDX), #4095:
+#     RED on 1.10.0, GREEN on 1.11.0 and later.
+#
+# NOT GATED: #3866's scanner multi-license join (AND, not OR): Syft keeps only
+# one entry of a lockfile license array, so no Grype-cataloged package carries
+# two licenses here.
+#
+# RATE_LIMIT_ENABLED=false; UPSTREAM_ALLOW_PRIVATE_IPS=true for the
+# self-proxying Remote.
+PROFILES="storage.filesystem upstreams.mock-osv api.swagger"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
