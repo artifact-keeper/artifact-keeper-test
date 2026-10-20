@@ -1,0 +1,56 @@
+# DTF tier manifest: trash-blob-gc-remote-cache
+#   1.11.0 storage reclaim features: the soft-delete trash with
+#   GC_TRASH_RETENTION_DAYS, list and restore (#2072); the configurable
+#   unreferenced-blob age shield BLOB_GC_MIN_AGE_SECS (#2906); lifecycle
+#   eviction of a Remote repository's proxy cache (#3734); and the 1.11.2 fix
+#   that counts scheduled cache-only evictions (#4451).
+#   The 1.12.0 permanent purge (DELETE /admin/trash/{id}, ?permanent=true) is
+#   the trash-purge tier; this tier covers the 1.11.0 list/restore facets.
+#
+# Profile-set: filesystem + upstreams.mock-static (a generic Remote's upstream
+# whose request counter the oracle reads) + gc.trash-blob-fast:
+#   GC_TRASH_RETENTION_DAYS=1, BLOB_GC_ENABLED=true, BLOB_GC_MIN_AGE_SECS=60,
+#   BLOB_GC_SWEEP_GRACE_SECS=0, GC_SCHEDULE every 10 s (OCI blob
+#   mark-and-sweep runs only on the scheduled tick), LIFECYCLE_CHECK_INTERVAL_SECS=10.
+# Stored objects are inspected on the backend's /data volume through a
+# throwaway postgres:16-alpine container (--volumes-from), as trash-purge and
+# proxy-cache-empty-object do.
+#
+# THE GATES (RED ak-backend:1.10.0 for every FIX case; #4451 alone is also
+# RED on ak-backend:1.11.1)
+#   (CONTROL)  both images: an API delete soft-deletes and the path 404s; a
+#              trashed artifact past the retention window (deleted_at moved
+#              back with SQL; on 1.10.0 there is no column and GC reclaims at
+#              once anyway) is reclaimed by storage GC, row and object.
+#   (FIX #2072) admin storage GC inside the window keeps the trashed row and
+#              object; GET /admin/trash lists it with retention_days=1,
+#              purge_eligible_at = deleted_at + 86400 s, restorable=true;
+#              POST /admin/trash/{id}/restore -> 200, row live, byte-exact
+#              download. A trashed OCI manifest's restore -> 409, row kept.
+#   (FIX #3734) a max_age_days policy explicitly assigned to a generic Remote
+#              previews proxy_cache.entries_matched=1, executes
+#              entries_removed=1 with bytes_freed>0; the expired entry's
+#              proxy_cache_artifacts row and __content__ are gone, the young
+#              entry stays, and a re-fetch reaches the upstream again. An
+#              applies_to_all policy reports proxy_cache.skipped_reason and
+#              matches nothing in the cache.
+#   (FIX #2906) image A's layer B1, unreferenced once A's manifest is deleted,
+#              answers 404 once the scheduled GC tick has run past the 60 s
+#              floor (the GC scheduler starts 120 to 150 s after boot; the 24 h
+#              default shield keeps it on 1.10.0); image B's manifest and blob
+#              stay 200 (no dangling reference).
+#   (FIX #4451) a never-run (so due) max_age_days policy on a second Remote is
+#              run by the lifecycle scheduler (startup delay 60 to 90 s, then
+#              10 s ticks): the expired entry is evicted,
+#              ak_cleanup_items_removed_total{type="lifecycle"} grows by >= 1
+#              and the summary line counts "1 proxy-cache entries". 1.11.1
+#              evicts but counts only artifacts.
+#
+# Wall clock: about 3.5 min (the blob age floor and both schedulers' startup
+# delay overlap).
+# RATE_LIMIT_ENABLED=false: ~80 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-static gc.trash-blob-fast"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
