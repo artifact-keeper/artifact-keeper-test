@@ -1,0 +1,42 @@
+# DTF tier manifest: upgrade-v270-origin (1.10.0 -> candidate upgrade leg for
+# artifact-keeper#4153, #4465, #4228/#4271/#4270, #4483/#4545, #4557/#4152)
+# Profile-set: filesystem / single + a mock Artifactory migration source
+# (upstreams.mock-artifactory-catalog, patched by upstreams.mock-artifactory-
+# docker to add a docker and a plain generic repository).
+#
+# Every fix here is a DATA migration or a startup repair that only matters for
+# rows written by an older release, so the tier is upgrade-class: the oracle
+# stands the stack up on the 1.10.0 origin image, writes the pre-upgrade state
+# through the 1.10.0 API, then swaps ONLY the backend to the candidate against
+# the same Postgres volume (the upgrade-v156/v158-origin shape) and asserts
+# what the candidate's migrations and startup tasks made of that state:
+#
+#   #4153  migration 270: artifacts imported by a 1.10.0 migration job are
+#          re-stamped origin {kind: migration, upstream_url: <source>}; a
+#          later hand upload of the same bytes and file name stays hosted.
+#   #4465  the OCI migration reindex repairs only migration-imported manifests:
+#          an image pushed by tag and deleted by digest on 1.10.0 stays deleted
+#          after the restart (1.10.0's reindex re-registers it, #4450), while a
+#          migrated image whose index rows are missing is still repaired.
+#   #4271  migration 237: a repository token whose only repository was deleted
+#          on 1.10.0 (and so fell open to every repository) is recovered from
+#          its API_TOKEN_CREATED audit row as restricted: deny-all.
+#   #4483  migration 288: a Docker repository's usage no longer counts the
+#          manifest rows on top of the blobs (1.10.0 reports >= 2x).
+#   #4557  migration 284 (with 228): an upload into a staging repository made
+#          on 1.10.0 ends up with origin kind `hosted`, not `virtual`.
+#
+# RED: `--backend-image ak-backend:1.10.0` (the origin image re-created on its
+# own volume, i.e. no upgrade). GREEN: 1.11.0 and later.
+#
+# RATE_LIMIT_ENABLED=false: many back-to-back API calls across two phases.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the migration source sits on a private
+# subnet.
+# UPGRADE_OLD_IMAGE: the origin. The oracle asserts its ledger signature
+# (max migration version 221, no artifacts.origin column) before phase 2, so
+# pointing it elsewhere fails loudly.
+PROFILES="storage.filesystem upstreams.mock-artifactory-catalog upstreams.mock-artifactory-docker"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ak-backend:1.10.0}"
