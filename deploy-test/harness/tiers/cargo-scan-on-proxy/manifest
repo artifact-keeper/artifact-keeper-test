@@ -1,0 +1,21 @@
+# DTF tier manifest: cargo-scan-on-proxy  (artifact-keeper 1.11.0: #4101,
+# issue #4097)
+# Profile-set: filesystem + the mock-scan-formats upstream (a Cargo sparse
+# registry with crates whose Cargo.toml names known coordinates). LOCAL-ONLY:
+# the verdicts come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: before 1.11.0 a Cargo Remote (or a Virtual over one) with
+# scan_on_proxy=true streamed every .crate unscanned (200, no X-AK-Scan). 1.11.0
+# routes the crate download through the shared inline scan gate: vulnerable ->
+# 403 scan_blocked, clean -> 200 X-AK-Scan: clean (immutable cache), a crate
+# whose Cargo.toml does not back the requested coordinate -> 423 under
+# fail_closed, a crate that disagrees with the sparse-index cksum -> 502 and
+# evicted, fail_open -> served pending (no-store) and blocked once the async
+# verdict lands; /api/v1/formats reports cargo as enforced.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and newer.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
