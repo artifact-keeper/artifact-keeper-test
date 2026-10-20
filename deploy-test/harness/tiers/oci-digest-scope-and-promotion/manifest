@@ -1,0 +1,52 @@
+# DTF tier manifest: oci-digest-scope-and-promotion
+#   artifact-keeper#4466, #4525, #4450, #4449 (delete by digest is scoped to
+#   the image name, by-digest pulls resolve under the name, the delete
+#   survives a restart, last-tag delete drops the manifest record),
+#   #4568 (anonymous manifest PUT with a declared but unsent body is a 401
+#   challenge, not a 500), #4558 / #4020 (/v2/token has its own bucket; wrong
+#   passwords are still bounded), #4578 (a promoted Docker image is pullable
+#   from the target). All 1.11.0. Profile-set: filesystem / single.
+#
+# THE BUGS (1.10.0 baseline)
+# * #4466: `DELETE /v2/<repo>/xa/manifests/<digest>` removed the digest's tags
+#   under EVERY image name in the repository, so `xb:v1` (same manifest bytes)
+#   vanished with `xa`.
+# * #4525: `GET/HEAD /v2/<repo>/xa/manifests/<digest>` resolved the digest
+#   repository-wide, so a digest deleted under `xa` kept answering under `xa`
+#   while `xb` tagged it.
+# * #4450: the delete soft-deleted only the `artifacts` row at the digest path;
+#   the tag's own row stayed live and the startup OCI reindex re-registered
+#   the tag on the next restart: a deleted (for example compromised) image was
+#   pullable again after any rollout.
+# * #4449: deleting the last tag of a tag-only image left its `oci_manifests`
+#   record (#4441) behind. The table does not exist on 1.10.0; the case is
+#   red there by absence and asserts the row content on the green image.
+# * #4568: the manifest PUT read the whole body before checking credentials.
+#   crane's retry reuses the spent request (Content-Length set, 0 bytes
+#   written): the body read failed and the client got 500 instead of the 401
+#   push challenge.
+# * #4578: promotion copied only the tag's `artifacts` row and the manifest
+#   object. The target answered MANIFEST_UNKNOWN / NAME_UNKNOWN while the API
+#   said `promoted: true`; a source with a missing blob still "promoted".
+# * #4558 / #4020: /v2/token drew from the login endpoint's 10-per-15-min
+#   per-(username, IP) bucket (#4020, 1.11.0 dev), so an ordinary push + sign +
+#   verify got 429; #4558 gave it its own bucket
+#   (RATE_LIMIT_TOKEN_EXCHANGE_PER_WINDOW, default 300). 1.10.0 does not limit
+#   /v2/token at all, so "twelve good exchanges, then the login still 200" is
+#   a CONTROL against 1.10.0 (it was red only on 1.11.0 dev builds). The
+#   discriminating half: profiles/limits.token-exchange.yml sets the bucket to
+#   20 and the 21st exchange must answer 429 + Retry-After (never on 1.10.0).
+#
+# PRIMITIVES: raw /v2 wire pushes (no docker daemon), `docker restart` of this
+# slot's backend, `psql` against this slot's DB (the source `oci_blobs` row is
+# deleted to make an incomplete source image), a python socket for the
+# truncated PUT.
+#
+# RATE_LIMIT_ENABLED stays ON (the base default): the token-bucket legs need
+# the limiter, and the oracle authenticates once as admin and reuses the JWT
+# (the API bucket is 10000/min). The token legs run LAST because they exhaust
+# the token user's /v2/token bucket.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and main.
+PROFILES="storage.filesystem limits.token-exchange"
+ORACLE="oracle.sh"

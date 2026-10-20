@@ -1,0 +1,16 @@
+# =============================================================================
+# profiles/limits.token-exchange.yml: a small /v2/token bucket
+# =============================================================================
+# Patches the backend with RATE_LIMIT_TOKEN_EXCHANGE_PER_WINDOW=20 (default
+# 300, #4558), the per-(username, IP) budget for OCI /v2/token credential
+# exchanges per RATE_LIMIT_LOGIN_WINDOW_SECS. 20 sits above the login
+# endpoint's per-(username, IP) budget of 10, so a tier can show both that
+# eleven-plus exchanges are NOT refused (the exchange no longer spends the
+# login budget) and that the exchange IS bounded (429 + Retry-After at 21),
+# in a couple of seconds. A backend that predates the setting ignores it.
+# Requires RATE_LIMIT_ENABLED=true (the base default).
+# =============================================================================
+services:
+  backend:
+    environment:
+      RATE_LIMIT_TOKEN_EXCHANGE_PER_WINDOW: "20"
