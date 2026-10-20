@@ -1,0 +1,68 @@
+# =============================================================================
+# profiles/webhooks.mock-receiver.yml - a recording webhook receiver/upstream
+# =============================================================================
+# Adds `mock-hooks`, a stdlib-only Python HTTP server that records every
+# webhook delivery (headers and raw body) and every upstream fetch it sees,
+# and serves deterministic bytes under /up/<path> so it can also stand in as a
+# Remote repository's upstream. See
+# harness/tiers/api-contracts-1110/fixtures/mock_hooks.py.
+#
+# The overlay:
+#   * ADDS  `mock-hooks` on a per-slot 172.16.<slot>.0/24 subnet at .78 (the
+#     same subnet scheme as upstreams.mock-static / mock-recorder), so AK's
+#     SSRF guard admits it through AK_SSRF_ALLOW_PRIVATE_CIDRS for both
+#     webhook targets and upstream URLs, on every release (the CIDR list is
+#     honoured by the webhook guard since before 1.10). Tier manifests also
+#     set UPSTREAM_ALLOW_PRIVATE_IPS=true for proxy fetches.
+#   * PUBLISHES the control port on 127.0.0.1:${TRIVY_PORT} (8250+N, the spare
+#     per-slot port) so the oracle reads /__log from the host.
+#   * PATCHES backend onto that network and sets AK_SSRF_ALLOW_PRIVATE_CIDRS to
+#     the mock's /32 only.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-hooks:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-hooks
+    command: ["python3", "/app/mock_hooks.py"]
+    environment:
+      MOCK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/api-contracts-1110/fixtures/mock_hooks.py:/app/mock_hooks.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockhooks:
+        ipv4_address: 172.16.${DTF_SLOT}.78
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-hooks:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.78/32
+    networks:
+      dtf: {}
+      mockhooks: {}
+
+networks:
+  mockhooks:
+    name: ak-dtf${DTF_SLOT}-mockhooks
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
