@@ -1,0 +1,65 @@
+# =============================================================================
+# profiles/upstreams.mock-composer-v1.yml: a Composer v1 provider upstream
+# =============================================================================
+# Adds `mock-composer`, a stdlib-python server that speaks the Composer v1
+# provider protocol (root packages.json with providers-url and
+# provider-includes, a hash-named include file, hash-named package documents)
+# and 404s every p2/ and hashless p/ path, so a Remote Composer repository on
+# it always takes the v1 provider fallback (artifact-keeper#4162). See
+# harness/tiers/upload-slot-exhaustion/fixtures/mock_composer_v1.py.
+#
+# The overlay:
+#   * ADDS  `mock-composer` on a per-slot 172.16.<slot>.0/24 subnet at .72,
+#     allowlisted by AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 (the narrow
+#     escape hatch upstreams.mock-static.yml uses). The tier manifest also
+#     sets UPSTREAM_ALLOW_PRIVATE_IPS=true for the fetch itself.
+#   * PATCHES backend onto that network.
+# No host port: the oracle reads the mock's request log with `docker logs`.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-composer:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-composer
+    command: ["python3", "/app/mock_composer_v1.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_PACKAGES: "dtf/widget dtf/gadget"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/upload-slot-exhaustion/fixtures/mock_composer_v1.py:/app/mock_composer_v1.py:ro"
+    # SELinux-enforcing hosts refuse the bind-mounted fixture without this.
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    logging:
+      driver: json-file
+    networks:
+      mockcomposer:
+        ipv4_address: 172.16.${DTF_SLOT}.72
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-composer:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockcomposer: {}
+
+networks:
+  mockcomposer:
+    name: ak-dtf${DTF_SLOT}-mockcomposer
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
