@@ -1,0 +1,74 @@
+# DTF tier manifest: remote-instance-relay  (artifact-keeper#4776, fixed by #4789, 1.11.3)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}). Instance A is `backend`; B is the
+# remote instance A relays to over the slot's compose network.
+#
+# THE BUG (#4776)
+# The remote-instance relay, GET/POST/PUT/DELETE
+# /api/v1/instances/{id}/proxy/{*path} (handlers/remote_instances.rs), lets a
+# user reach a registered remote instance with the API key A stores for it.
+# Before #4789 it:
+#   * dropped the query string (the handlers never read RawQuery), so
+#     ?page=, ?per_page=, ?q= and every filter were lost and the remote
+#     answered its unfiltered default page;
+#   * hard-coded Content-Type: application/json on every POST/PUT body, so a
+#     multipart (or any non-JSON) body reached the remote mislabelled;
+#   * relayed back only content-type and content-length;
+#   * accepted a proxy path under api/v1/instances, so one relay could drive
+#     the remote's own instance registry and chain through the remote's
+#     relay to a third server.
+# #4789 appends the raw query, passes the caller's Content-Type through
+# (application/json only when the caller sent none), relays an allow-list of
+# response headers (content-disposition, accept-ranges, etag, link,
+# x-total-count, ...), and validate_proxy_path refuses api/v1/instances and
+# anything under it (lowercased, slashes collapsed) with 400 VALIDATION_ERROR.
+# There is no relay header or marker: the refusal is path based, so "a relay
+# of a relay" is a proxy path that targets the remote's /api/v1/instances.
+#
+# THE PEER
+# The oracle mints a `*`-scoped API key on B and registers B on A
+# (POST /api/v1/instances, url http://peer-backend:8080). It also registers B
+# on B itself, so the relay-of-relay chain A -> B's relay -> B has a real
+# second hop. Whether a request reached B is read from B's access log
+# (api::middleware::tracing logs `uri=<path?query>` per request; the profile
+# pins the json-file log driver) and from B's database.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: B's /health direct and relayed agree; a
+#             relayed GET without a query returns what B returns; a relayed
+#             JSON POST creates a repository on B; B accepts a multipart
+#             upload sent directly; a relay path outside api/ and health is
+#             refused 400 by the pre-existing guard.
+#   (FIX)     RED on 1.11.2:
+#             query     relayed GET api/v1/repositories?q=<one key>&per_page=1
+#                       returns the same single key and pagination as the
+#                       direct call, and B's log shows the query.
+#                       1.11.2: all three repos, per_page 20.
+#             ctype     relayed multipart POST .../artifacts -> 2xx and B has
+#                       the row with the uploaded sha256.
+#                       1.11.2: 400 "Invalid `boundary` for multipart/form-data".
+#             headers   a relayed download carries B's Content-Disposition and
+#                       Accept-Ranges. 1.11.2: both missing.
+#             refusal   GET api/v1/instances, a chained
+#                       api/v1/instances/{B-self}/proxy/..., a POST to
+#                       api/v1/instances, and api//v1/Instances/... are each
+#                       400 VALIDATION_ERROR naming api/v1/instances; B's log
+#                       records no new /api/v1/instances request and B's
+#                       remote_instances table does not grow.
+#                       1.11.2: 200 [] / 200 with the chained repo / 200 and a
+#                       new row on B.
+#
+# Teardown note: `harness/run.sh down --slot N` only knows the --<dimension>
+# profiles, not this one. A tier run without --keep tears B down itself; after
+# --keep, use `docker compose -p ak-dtf<N> -f compose.base.yml
+# -f profiles/peer.second-instance.yml down -v`.
+#
+# RATE_LIMIT_ENABLED=false: ~30 authenticated calls back to back on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: remote-instance URLs go through
+# validate_outbound_url (on A, and on B for its self registration) and B sits
+# on a private compose address.
+PROFILES="storage.filesystem peer.second-instance"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
