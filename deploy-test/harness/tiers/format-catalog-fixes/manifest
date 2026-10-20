@@ -1,7 +1,7 @@
-# DTF tier manifest: format-catalog-fixes  (artifact-keeper#4694, #4633, #4645)
-# Profile-set: s3 (MinIO). #4694 only exists where several repositories share
-# one object-key namespace, i.e. on cloud storage; the other two fixes are
-# storage-independent and ride the same stack.
+# DTF tier manifest: format-catalog-fixes  (artifact-keeper#4694, #4633, #4645, #4293)
+# Profile-set: s3 (MinIO). #4694 and #4293 only exist where several
+# repositories share one object-key namespace, i.e. on cloud storage; the
+# other two fixes are storage-independent and ride the same stack.
 #
 # THE BUGS
 # #4694 (conan): recipe and package files were written to the flat key
@@ -26,6 +26,13 @@
 #   [qa-gem, 2-1.0.0, ruby] and `gem install qa-gem-2` could not resolve it.
 #   The fix (#4724) uses the stored columns when the filename agrees with them
 #   and moves the filename fallback to the LAST hyphen-digit boundary.
+# #4293 (npm, 1.11.0): npm tarballs were written to a key shared by every npm
+#   repository on S3/GCS/Azure, so publishing a name@version a second
+#   repository already held got `409 ... refusing cross-repository
+#   overwrite`. The fix (#4626) writes new tarballs under
+#   `npm/{repository_id}/...` (the Maven scheme); existing tarballs keep
+#   their keys. Red on 1.10.0 (the conan/maven/rubygems fixes are red on
+#   1.11.1).
 #
 # THE PRIMITIVES
 #   PUT  /conan/{repo}/v2/conans/{n}/{v}/_/_/revisions/{rrev}/files/{f}
@@ -33,6 +40,8 @@
 #        published by its conanmanifest.txt (common.sh conan_publish_revision)
 #   PUT  /maven/{repo}/{g}/{a}/{v}/{file}
 #   POST /gems/{repo}/api/v1/gems   (a .gem built by fixtures/build_gem.py)
+#   PUT  /npm/{repo}/{name}          (publish document with _attachments)
+#   GET  /npm/{repo}/{name}, /npm/{repo}/{name}/-/{name}-{version}.tgz
 #   GET  /gems/{repo}/specs.4.8.gz, latest_specs.4.8.gz (decoded by
 #        fixtures/marshal_specs.py, a small Marshal 4.8 reader)
 #   GET  /api/v1/packages?repository_key=..., /api/v1/packages/{id}/versions
