@@ -1,0 +1,105 @@
+# =============================================================================
+# profiles/upstreams.mock-git.yml: git smart-HTTP plugin sources (admitted and internal)
+# =============================================================================
+# Adds two copies of a stdlib-only Python git smart-HTTP server that serves one
+# signed WASM plugin repository (see
+# harness/tiers/plugin-reload-ssrf/fixtures/mock_git.py), for the
+# plugin-reload-ssrf tier (artifact-keeper#4757, GHSA-r8fc-5fvw-rvh4):
+#
+#   * mock-git           172.16.<slot>.80, network alias `plugin-src`. The ONLY
+#                        address AK_SSRF_ALLOW_PRIVATE_CIDRS admits (a /32), so
+#                        it plays the operator-approved plugin host.
+#   * mock-git-internal  172.16.<slot>.81, network alias `plugin-src-internal`.
+#                        Not admitted: it plays an internal service the backend
+#                        can reach but must never be steered to.
+#
+# The tier re-points the `plugin-src` name from .80 to .81 after install
+# (docker network disconnect/connect --alias), which is the advisory's DNS
+# flip: the stored source_url never changes, only what its host resolves to.
+#
+# Both mocks print one `MOCKGIT <name> <METHOD> <path>` line per request, so
+# the oracle proves from `docker logs` whether a clone was attempted.
+#
+# The overlay PATCHES backend onto the mock network and sets:
+#   AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.<slot>.80/32  (admit the approved host only)
+#   PLUGINS_TRUSTED_PUBKEY=<base64 Ed25519 key>       (the fixture's signature
+#       verifies against it; the private half was discarded after signing)
+# UPSTREAM_ALLOW_PRIVATE_IPS stays at the base default (false): setting it
+# would admit every RFC1918 address on the Upstream surface the plugin git
+# guard uses, and the internal mock with it.
+#
+# SUBNET CHOICE: 172.16.<slot>.0/24 as upstreams.mock-static.yml documents
+# (below Docker's default pool, so never overlapping an auto-allocated base
+# network). Not stacked with the other 172.16 mock profiles.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+x-mock-git: &mock-git
+  image: python:3.12-slim
+  command: ["python3", "/app/mock_git.py"]
+  volumes:
+    - "${DTF_DIR}/harness/tiers/plugin-reload-ssrf/fixtures/mock_git.py:/app/mock_git.py:ro"
+  # The bind-mounted fixture is unreadable to the container on an
+  # SELinux-enforcing host without this (python exits 2: can't open file).
+  security_opt:
+    - label=disable
+  logging:
+    driver: json-file
+  healthcheck:
+    test:
+      - "CMD-SHELL"
+      - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 5s
+
+services:
+  mock-git:
+    <<: *mock-git
+    container_name: ak-dtf${DTF_SLOT}-mock-git
+    environment:
+      MOCK_PORT: "80"
+      MOCK_NAME: "approved"
+    networks:
+      mockgit:
+        ipv4_address: 172.16.${DTF_SLOT}.80
+        aliases: [plugin-src]
+
+  mock-git-internal:
+    <<: *mock-git
+    container_name: ak-dtf${DTF_SLOT}-mock-git-internal
+    environment:
+      MOCK_PORT: "80"
+      MOCK_NAME: "internal"
+    networks:
+      mockgit:
+        ipv4_address: 172.16.${DTF_SLOT}.81
+        aliases: [plugin-src-internal]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-git:
+        condition: service_healthy
+      mock-git-internal:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.80/32
+      PLUGINS_TRUSTED_PUBKEY: "HjHuPg1NO+5FNtAqS3+sMnwZWPXS5aJPCZ/4uDfCuzg="
+    # The loopback case greps the backend's own request log for the clone it
+    # must not make. Pin the json-file driver so that does not depend on a
+    # host journald that may rate-limit container lines.
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockgit: {}
+
+networks:
+  mockgit:
+    name: ak-dtf${DTF_SLOT}-mockgit
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
