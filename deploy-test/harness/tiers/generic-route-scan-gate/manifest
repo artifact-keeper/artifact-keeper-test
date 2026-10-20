@@ -1,0 +1,31 @@
+# DTF tier manifest: generic-route-scan-gate  (artifact-keeper#4442, #4513, #4420; all 1.11.0)
+# Profile-set: filesystem + upstreams.mock-static (the steerable static
+# upstream from proxy-cache-empty-object: deterministic bytes under /f/<name>,
+# per-path GET counters on 127.0.0.1:${TRIVY_PORT}). Every Remote here points
+# at http://172.16.<slot>.70/f/, so the oracle can prove a refusal happened
+# before any upstream request.
+#
+# No scanner profile: the #4442 refusal is decided from the repository's
+# scan_on_proxy flag alone, before any routing-rule read, cache read, upstream
+# request or scan, so no verdict is ever produced on these routes. A scanner
+# would only add weight (and internet access for its CVE database).
+#
+# THE FIXES (1.11.0; red on 1.10.0)
+#   #4442 (part of #4097): GET /api/v1/repositories/{key}/download/*path (and
+#     /general/{key}/*path) streamed a Remote's proxied bytes with no scan
+#     gate, for every format, so a file the format route refused could be
+#     downloaded here. A Remote of an enforced format with scan_on_proxy on now
+#     answers 403 {"error":"scan_on_proxy_route_required","file","handler"};
+#     a Virtual with such a member refuses the same way on download and
+#     artifacts, while a hosted member's own path still serves.
+#   #4513: a client path holding '?', '#', ';', '\', a control character or a
+#     stray '%' is refused 400 before any upstream request on the npm, PyPI,
+#     Cargo and VS Code routes and the generic route's Remote arm, so
+#     x.tgz%3FversionId=abc can no longer smuggle a query upstream.
+#   #4420: POST /api/v1/uploads, the generic PUT and both multipart POSTs
+#     accepted Remote and Virtual targets and planted artifacts there; they now
+#     answer 405 (Remote) and 400 (Virtual) before any session row.
+PROFILES="storage.filesystem upstreams.mock-static"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="true"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
