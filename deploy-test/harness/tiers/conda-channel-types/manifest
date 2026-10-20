@@ -61,6 +61,22 @@
 #             All RED on 1.11.1: empty hosted-shape documents, 200 stubs, a
 #             .sig that does not verify, zero audit rows, absent metrics.
 #
+# conda-channel-hardening (artifact-keeper#4067 / #4038 / #4151 / #4149, all
+# shipped in 1.11.0; RED on 1.10.0, GREEN on 1.11.0+, so they pass on the
+# 1.11.1 baseline of the cases above). The tier's full GREEN image is 1.11.2+.
+# #4067  a v1 package written by a parallel bzip2 (several concatenated bzip2
+#        streams) was read with a single-stream decoder: info/index.json past
+#        the first stream boundary was "missing" and the upload refused.
+# #4038  a legacy list-spelled info/run_exports.json was served verbatim;
+#        CEP-12 wants {"weak": [...]}.
+# #4151  an environment SBOM gave a noarch member the scope's platform as its
+#        purl subdir, so it never joined its own artifact's identity.
+# #4149  a remote's uncompressed repodata.json over the 128 MiB buffered
+#        ceiling was a 502; it is now streamed and cached (the mock's /huge/
+#        channel, built on first request), and the warm read stays local.
+# The oracle runs with errexit off so a 1.10.0 baseline (which lacks the
+# allowlist and environments routes) reaches every case.
+#
 # RATE_LIMIT_ENABLED=false: one admin login then ~40 authenticated calls
 # back to back (repo/member/allowlist/signing setup, four uploads, metric
 # scrapes); the base default (ON) would turn a setup call into a 429.

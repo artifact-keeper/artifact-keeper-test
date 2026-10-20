@@ -36,6 +36,10 @@
 #   /fail/  answers 500 to everything: a member that cannot be fetched.
 #   /big/   publishes a ~2 MiB noarch/repodata.json (padding records): over a
 #           lowered CONDA_VIRTUAL_MEMBER_MAX_BYTES.
+#   /huge/  publishes a ~140 MiB noarch/repodata.json, past the backend's
+#           128 MiB LARGE_METADATA_MAX_BYTES buffered ceiling (conda-channel-
+#           types, artifact-keeper#4149). Built on first request, not at
+#           startup, so tiers that never ask for it pay nothing.
 #
 # Env: MOCK_PORT (default 80), MOCK_MARKER (default dtfmockconda).
 # `/__readyz` answers `ok` for the compose healthcheck.
@@ -46,6 +50,7 @@ import io
 import json
 import os
 import tarfile
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("MOCK_PORT", "80"))
@@ -167,6 +172,32 @@ BIG_REPODATA = {
     "repodata_version": 1,
 }
 
+HUGE_PATH = "/huge/noarch/repodata.json"
+HUGE_RECORDS = 1400
+HUGE_PAD = 100 * 1024
+_huge = []
+_huge_lock = threading.Lock()
+
+
+def huge_repodata():
+    """~140 MiB repodata.json: HUGE_RECORDS records with 100 KiB summaries."""
+    with _huge_lock:
+        if not _huge:
+            pad = "p" * HUGE_PAD
+            doc = {
+                "info": {"subdir": "noarch"},
+                "packages": {
+                    f"dtfhuge-{i:05d}-1.0-0.tar.bz2": dict(record(f"dtfhuge-{i:05d}", "1.0"), summary=pad)
+                    for i in range(HUGE_RECORDS)
+                },
+                "packages.conda": {},
+                "removed": [],
+                "repodata_version": 1,
+            }
+            _huge.append(json.dumps(doc, separators=(",", ":")).encode())
+        return _huge[0]
+
+
 PREFIXED = {
     "/m2/noarch/repodata.json.bz2": ("application/x-bzip2", bz2.compress(js(M2_REPODATA))),
     "/big/noarch/repodata.json": ("application/json", js(BIG_REPODATA)),
@@ -205,7 +236,10 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/fail/"):
             self._send(500, "text/plain", b"mock-conda: forced failure", head)
             return
-        if path.startswith(("/m2/", "/big/")):
+        if path == HUGE_PATH:
+            self._send(200, "application/json", huge_repodata(), head)
+            return
+        if path.startswith(("/m2/", "/big/", "/huge/")):
             hit = PREFIXED.get(path)
         else:
             hit = FILES.get(path)
