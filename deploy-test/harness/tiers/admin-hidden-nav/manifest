@@ -1,0 +1,54 @@
+# DTF tier manifest: admin-hidden-nav  (artifact-keeper#4574, fixed by #4575)
+# Profile-set: filesystem / single. The feature lives entirely in the
+# management API and the key/value system_settings table, ahead of any storage
+# backend, so the oracle is pure HTTP plus direct reads and writes of the DB.
+#
+# THE FEATURE (#4574)
+# The web sidebar lists every feature and most instances use a few. #4575 adds
+# hidden_nav_items to the runtime settings endpoint (GET/PATCH
+# /api/v1/admin/settings/system), stores it in system_settings under
+# ui.hidden_nav_items, audits each write as SETTING_CHANGED with
+# details {setting, from, to}, and publishes it to every caller, anonymous
+# included (guests see the sidebar too), as ui.hidden_nav_items on
+# GET /api/v1/system/config.
+# The identifiers are OPAQUE to the server (the web UI sends route paths such
+# as /peers). The server checks shape only: 1-128 bytes of ASCII letters,
+# digits, '/', '-', '_', '.', at most 200 entries; it trims, sorts and
+# de-duplicates; one bad entry refuses the whole request (400) before anything
+# is written. There is no allowed set and no un-hideable entry on the server.
+# A missing, unreadable or malformed stored value reads as an empty list.
+#
+# THE PRIMITIVES
+#   store     admin PATCH ["/webhooks","/peers","/peers"," /plugins "]
+#             fixed:  200 ["/peers","/plugins","/webhooks"], admin GET and the
+#                     DB row agree, guest_access_enabled untouched.
+#             1.11.3: 422 unknown field `hidden_nav_items`.
+#   publish   anonymous and non-admin GET /system/config.
+#             fixed:  ui.hidden_nav_items is the stored list.
+#             1.11.3: no ui key.
+#   refuse    "not allowed", "", "<script>", a 129-byte id, 201 entries, and a
+#             valid guest flag beside an invalid list.
+#             fixed:  400 naming hidden_nav_items, stored list unchanged.
+#             1.11.3: 422.
+#   audit     audit_log SETTING_CHANGED rows with details.setting =
+#             ui.hidden_nav_items: one per accepted write (user = the admin,
+#             from [] to the list), none for the refused ones.
+#   malformed {"not":"a list"}, "/peers", [1,2] and JSON null written straight
+#             into system_settings.
+#             fixed:  admin GET and /system/config answer 200 with [].
+#             1.11.3: no such field (null).
+#
+# THE GATES
+#   (FIX)      the primitives above, RED on 1.11.3.
+#   (CONTROL)  must hold on BOTH images: /system/config keeps exactly its four
+#              pre-#4575 keys (auth, demo_mode, guest_access_enabled,
+#              max_upload_size_bytes) apart from ui, and their values are the
+#              same before and after the navigation writes; the admin settings
+#              read is refused to a non-admin (403/404) and to anonymous; a
+#              non-admin or anonymous PATCH is refused and writes no row; the
+#              guest-access PATCH still round-trips.
+#
+# RATE_LIMIT_ENABLED=false: ~50 back-to-back calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
