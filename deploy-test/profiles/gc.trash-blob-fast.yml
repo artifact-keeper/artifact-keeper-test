@@ -1,0 +1,36 @@
+# =============================================================================
+# profiles/gc.trash-blob-fast.yml — trash retention on, blob GC live and fast,
+# a short lifecycle scheduler tick
+# =============================================================================
+# The trash-blob-gc-remote-cache tier needs the 1.11.0 GC knobs set to values
+# a short-lived deployment can observe end to end:
+#
+#   GC_TRASH_RETENTION_DAYS=1      a soft-deleted artifact stays in the trash
+#                                  (listed, restorable) for a day before
+#                                  storage GC may reclaim it (#2072). Default 0.
+#   BLOB_GC_ENABLED=true           blob GC deletes instead of dry-running
+#                                  (#1408). Default false.
+#   BLOB_GC_MIN_AGE_SECS=60        the unreferenced-blob age shield (#2906),
+#                                  at its 60 s floor. Default 86400; a release
+#                                  without #2906 ignores it and keeps 24 h.
+#   BLOB_GC_SWEEP_GRACE_SECS=0     a marked blob is swept on the next pass.
+#   GC_SCHEDULE="*/10 * * * * *"  the scheduled storage-GC tick (6-field cron)
+#                                  every 10 s. OCI blob mark-and-sweep runs only
+#                                  on this tick, never from the admin
+#                                  POST /api/v1/admin/storage-gc. Default hourly.
+#   LIFECYCLE_CHECK_INTERVAL_SECS=10
+#                                  the lifecycle scheduler ticks every 10 s so
+#                                  a never-run (hence due) policy runs inside
+#                                  the oracle's wait (#4451). Default 60.
+#
+# Nothing else changes, so it composes onto any storage / upstream profile.
+# =============================================================================
+services:
+  backend:
+    environment:
+      GC_TRASH_RETENTION_DAYS: "1"
+      BLOB_GC_ENABLED: "true"
+      BLOB_GC_MIN_AGE_SECS: "60"
+      BLOB_GC_SWEEP_GRACE_SECS: "0"
+      GC_SCHEDULE: "*/10 * * * * *"
+      LIFECYCLE_CHECK_INTERVAL_SECS: "10"
