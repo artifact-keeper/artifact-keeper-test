@@ -1,0 +1,45 @@
+# =============================================================================
+# profiles/storage.s3-copy-411.yml -- an S3 endpoint that answers 411 to a
+#   CopyObject without Content-Length (Google Cloud Storage's S3 API)
+# =============================================================================
+# Layered on storage.s3.yml (MinIO). Adds `s3-copy-411`, a stdlib-python
+# pass-through in front of MinIO
+# (harness/tiers/s3-copy-length-required/fixtures/s3_length_required_shim.py)
+# and points the backend's S3_ENDPOINT at it. Every request is forwarded with
+# its Host header intact, so SigV4 still verifies at MinIO; only a PUT that
+# carries `x-amz-copy-source` and no Content-Length is refused with
+# `411 Length Required`, which is what GCS's XML API does (#3737).
+#
+# The shim's /__shim/stats counters are not published on a host port (so the
+# profile composes with upstreams.mock-static, which takes the spare port);
+# an oracle reads them with `docker exec` into the shim container.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  s3-copy-411:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-s3-copy-411
+    command: ["python3", "/app/shim.py"]
+    environment:
+      SHIM_PORT: "9000"
+      SHIM_UPSTREAM: "minio:9000"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/s3-copy-length-required/fixtures/s3_length_required_shim.py:/app/shim.py:ro"
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9000/__shim/readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      s3-copy-411:
+        condition: service_healthy
+    environment:
+      S3_ENDPOINT: http://s3-copy-411:9000
