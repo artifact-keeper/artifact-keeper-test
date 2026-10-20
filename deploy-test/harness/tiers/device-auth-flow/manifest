@@ -1,0 +1,44 @@
+# DTF tier manifest: device-auth-flow  (artifact-keeper#3549, closes #3461)
+# Profile-set: filesystem / single + auth.device (DEVICE_AUTH_ENABLED=true,
+# poll interval 2 s, device-code request limit raised to 100 per window).
+#
+# THE FEATURE (#3461, shipped by #3549 as 5fb190bd, migration 292, 1.12.0)
+# The OAuth 2.0 Device Authorization Grant (RFC 8628) as a plain AK grant:
+#   POST /api/v1/auth/device/code   (no auth)  -> device_code, user_code,
+#                                                 verification_uri, interval,
+#                                                 expires_in
+#   POST /api/v1/auth/device/token  (no auth)  -> authorization_pending /
+#                                                 slow_down / access_denied /
+#                                                 invalid_grant, then ONE token
+#   POST /api/v1/auth/device/{verify,approve,deny}  (interactive session JWT)
+#   GET  /device                                (the approval page)
+# Off unless DEVICE_AUTH_ENABLED=true; while off every route answers 404.
+# Security model asserted here (read from api/handlers/device.rs and
+# services/device_service.rs, not the PR body):
+#   * `*` and `admin` are never grantable: /code answers 400 invalid_scope;
+#     a non-admin approver's admin-only scopes (delete:artifacts ...) are
+#     withheld, and a request of only those is refused at approve (403).
+#   * the token is minted for the APPROVING user at the granted scopes.
+#   * single use: a second redemption is invalid_grant + DEVICE_TOKEN_REJECTED
+#     (reason replay).
+#   * failed-code budget (5 per user per 900 s, shipped default) reserved
+#     BEFORE the code lookup: once spent, even the correct code answers 429.
+#   * only an interactive session may approve: API tokens, Basic, device-
+#     issued (scoped) tokens and a locked account are refused (403, audited).
+#   * signing out the approving session after approval voids it: the next
+#     poll is invalid_grant + DEVICE_TOKEN_REJECTED (approver_sessions_revoked).
+#   * codes are stored as SHA-256 digests only; audit rows for every step.
+#
+# THE GATES
+#   (FIX)      the flow and every refusal above. RED on 1.11.3, where no
+#              device route exists.
+#   (CONTROL)  must hold on BOTH images: local login + /auth/me, API-token use;
+#              and, after the oracle recreates the backend on the SAME compose
+#              project with DEVICE_AUTH_ENABLED=false, every device route
+#              answers 404 to an authenticated caller and login still works.
+#
+# RATE_LIMIT_ENABLED=false: ~60 calls back to back from one IP. The device
+# failed-code throttle under test ignores RATE_LIMIT_ENABLED by design.
+PROFILES="storage.filesystem auth.device"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
