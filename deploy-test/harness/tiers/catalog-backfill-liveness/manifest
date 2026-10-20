@@ -1,0 +1,35 @@
+# DTF tier manifest: catalog-backfill-liveness
+#   (artifact-keeper#4168, #4191, #4305: 1.11.0)
+# Profile-set: filesystem + upstreams.mock-npm (the stdlib npm registry from
+# virtual-member-gates, serving dtf-held 1.0.0 under any prefix).
+#
+# THE FIXES AND THEIR GATES (RED ak-backend:1.10.0, GREEN 1.11.0 and main)
+# Each backfill case deletes the Go repo's `packages` rows and runs
+# POST /api/v1/admin/packages/backfill, so what is asserted is what the
+# backfill alone rebuilds (read back from packages/package_versions).
+#   (CONTROL) a Go module version with only a .zip row is catalogued at the
+#             zip's size, on every image.
+#   #4191 Go `.mod`/`.info` (and Helm `.prov`) sidecar rows are no longer
+#     backfill candidates. The catalog keeps the version row with the
+#     smallest (checksum, size), so the oracle crafts a go.mod whose sha256
+#     starts with 0 and a zip whose sha256 starts at 8 or above: a backfill
+#     that considers the go.mod at all records its size, deterministically.
+#     (FIX) v1.0.0 = the zip's size. 1.10.0: the go.mod's 48 bytes.
+#   #4168 the walk skips quarantine_status quarantined/rejected rows.
+#     (FIX) v2.0.0 quarantined and v3.0.0 rejected through
+#     POST /api/v1/quarantine/{id}/quarantine|reject are absent from the
+#     rebuilt catalog; v0.9.0 is present. 1.10.0: both are catalogued.
+#   #4305 for the npm family a cached path without `/-/` is a packument.
+#     (FIX) after fetching the dtf-held packument and tarball through an npm
+#     Remote, GET /api/v1/repositories/{key}/artifacts?count=exact lists only
+#     dtf-held/-/dtf-held-1.0.0.tgz with total 1. 1.10.0: also `dtf-held`,
+#     total 2.
+#
+# NOT COVERED: #4169's Maven/Gradle backfill (already asserted by the wired
+# migration-package-catalog and format-catalog-fixes tiers); the Helm .prov
+# half of #4191 (same predicate, needs a provenance file); #4305's
+# proxy-scans view.
+PROFILES="storage.filesystem upstreams.mock-npm"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
