@@ -1,0 +1,43 @@
+# =============================================================================
+# profiles/client.terraform-modules.yml - a module-registry front for terraform
+# =============================================================================
+# Terraform resolves a registry module address `<host>/<namespace>/<name>/<provider>`
+# through host-rooted service discovery (`https://<host>/.well-known/terraform.json`,
+# key `modules.v1`), over TLS only. The backend serves discovery per repository
+# (`/terraform/<repo>/.well-known/terraform.json`), and the host-rooted route
+# exists only from 1.12.0 (TERRAFORM_DEFAULT_REPO, #4356), so a 1.10.0 or 1.11.0
+# backend cannot be named as a module host directly.
+#
+# This overlay ADDS `caddy-tfmod`, a caddy:2 TLS terminator aliased as
+# `tfm.dtf.local` that runs the tier's Caddyfile
+# (harness/tiers/native-client-modules-and-lfs/fixtures/Caddyfile):
+#   * /.well-known/terraform.json answers {"modules.v1":"/tfm/"};
+#   * /tfm/<repo>/<name>/<provider>/... is rewritten to the backend's
+#     /terraform/<repo>/v1/modules/dtf/<name>/<provider>/..., so the registry
+#     NAMESPACE in a module address is the AK repository key and every module
+#     lives under the AK namespace `dtf`;
+#   * everything else (the relative `X-Terraform-Get` archive location the
+#     backend answers with) is reverse-proxied unchanged.
+# The module protocol itself (versions, download, the 204 + X-Terraform-Get and
+# the archive) is entirely the backend's. Pair with client.terraform (the CLI).
+#
+# Required vars (exported by run.sh): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  caddy-tfmod:
+    image: caddy:2
+    container_name: ak-dtf${DTF_SLOT}-caddy-tfmod
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - "${DTF_DIR}/harness/tiers/native-client-modules-and-lfs/fixtures/Caddyfile:/etc/caddy/Caddyfile:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this.
+    security_opt:
+      - label=disable
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      dtf:
+        aliases:
+          - tfm.dtf.local

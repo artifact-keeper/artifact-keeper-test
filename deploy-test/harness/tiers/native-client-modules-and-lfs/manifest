@@ -1,0 +1,53 @@
+# DTF tier manifest: native-client-modules-and-lfs
+#   (artifact-keeper#4590, #4598, #4570, #4528, #4476; all fixed in 1.11.0)
+# Profile-set: filesystem + client.terraform (the real hashicorp/terraform CLI)
+# + client.terraform-modules (caddy-tfmod: a TLS module-registry front aliased
+# as tfm.dtf.local, see that profile) + client.gitlfs (alpine with git and
+# git-lfs) + upstreams.mock-files (an oracle-filled upstream at
+# 172.16.<slot>.76 that matches paths case-sensitively and logs every GET).
+#
+# THE BUGS
+#   #4590 a hosted module's /download answered 204 with an X-Terraform-Get that
+#         named no archive type, so terraform's getter fetched the archive as
+#         an HTML page and failed (XML syntax error ... U+0003). Fixed: the
+#         type is sniffed at upload (ZIP or gzip tar), advertised as
+#         .../archive?archive=zip|tar.gz, /archive is served with the matching
+#         filename and Content-Type, and an uncompressed tar upload is a 400.
+#   #4598 a virtual Terraform repository streamed the member's archive as a
+#         200 from /download and listed no module versions, so terraform
+#         stopped at "Module not found". Fixed: union /versions, and a 204
+#         whose X-Terraform-Get points at the virtual's own /archive.
+#   #4570 git-lfs batch download actions were marked authenticated with an
+#         empty header, so git-lfs sent the object GET with no credentials and
+#         retried a 401 forever on a private repository. Fixed: the caller's
+#         Authorization is handed back in the download action, authenticated
+#         only when present, and the batch answers Cache-Control: no-store.
+#   #4528 a NuGet Remote lowercased only the id segment of a flat-container
+#         path, so .../Newtonsoft.Json/13.0.3/Newtonsoft.Json.13.0.3.nupkg asked
+#         the upstream for a mixed-case file name it does not serve.
+#   #4476 since 1.10.0 (#3839) a second PUT of the same timestamped snapshot
+#         file (obj-1.0-20261006.124037-3-clear.jar) answered 409.
+#
+# THE GATES
+#   (FIX)     X-Terraform-Get hint + /archive type + plain-tar 400; virtual
+#             union /versions and 204 to its own /archive; a real
+#             `terraform init` + `apply` installing a hosted ZIP, a hosted
+#             tar.gz and both versions through the virtual (the modules'
+#             outputs prove the installed content); private-repo batch
+#             download action header + no-store; a real `git lfs pull` from
+#             the private repo (60 s timeout; the bug hangs); NuGet mixed-case
+#             download 200 with no mixed-case upstream request; snapshot
+#             redeploy 2xx with the second bytes served. RED on 1.10.0.
+#   (CONTROL) both images: hosted module upload, /versions, X-Terraform-Get
+#             resolving to the uploaded bytes; a real git push of an LFS object
+#             to a private repo, anonymous object GET refused, authenticated
+#             GET returns the bytes, upload actions carry Authorization; the
+#             lowercase NuGet flat-container path proxies the upstream bytes;
+#             Maven release coordinates and a 1.0-SNAPSHOT-rc1 version answer
+#             409 on a second PUT and keep the first bytes.
+#
+# RATE_LIMIT_ENABLED=false: ~50 authenticated calls back to back.
+PROFILES="storage.filesystem client.terraform client.terraform-modules client.gitlfs upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
