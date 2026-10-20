@@ -1,0 +1,46 @@
+# DTF tier manifest: upstream-url-userinfo-redaction
+#   (artifact-keeper #4452, #4463, #4467, #4503; all released in 1.11.0)
+# Profile-set: filesystem / single + upstreams.mock-userinfo (two recording
+# stdlib upstreams, mock-up-a and mock-up-b, on a per-slot 172.16/12 subnet).
+# The oracle first recreates only the backend with S3_BUCKET and an
+# S3_PUBLIC_ENDPOINT carrying a per-run random password, so the secondary-S3
+# WARN fires at startup without a credentialed URL committed to the repo.
+#
+# THE BUGS
+#   #4452  A Remote created with `http://user:password@host/` had the URL echoed
+#          verbatim, password included, by create / GET / list / update /
+#          test-upstream. Fixed: userinfo removed, new boolean
+#          `upstream_url_has_credentials`. Writes are unchanged: the
+#          credentials still go upstream as HTTP Basic.
+#   #4463  The same URL, userinfo included, was copied into
+#          `artifacts.origin->>'upstream_url'` and `proxy_cache_artifacts.
+#          upstream_url`. Fixed in the database (fill trigger normalizes, a
+#          new trigger strips the proxy-cache column on every write) and a URL
+#          with whitespace / control characters is refused (the WHATWG parser
+#          drops a tab, so it validated and was stored raw).
+#   #4467  `PATCH /api/v1/repositories/{key}` returned 200 and ignored
+#          `upstream_url`. Fixed: applied, validated as on create, response
+#          redacted, audit records both URLs redacted plus
+#          `credentials_changed`; a cross-origin move while upstream-auth
+#          credentials are configured is 409.
+#   #4503  A rejected S3_PUBLIC_ENDPOINT carrying `user:password@` printed the
+#          value verbatim in the `Additional S3 storage backend skipped` WARN.
+#          Fixed: shown as `http://***@host:port`.
+#
+# DISCRIMINATION: red on ak-backend:1.10.0 (11 FIX cases), green on 1.11.0 and
+# on today's main. On 1.10.0 `upstream_url_has_credentials`,
+# `artifacts.origin` and S3_PUBLIC_ENDPOINT do not exist yet, so those cases go
+# red by absence; each also asserts the fixed content on the green image.
+# CONTROLS (green on both): the fetch still authenticates upstream as Basic,
+# an unrelated PATCH applies, no password reaches the backend log or the
+# audit_log table.
+#
+# Not duplicated: redact-userinfo-leak (#2926) owns the proxy-fetch 5xx log
+# line.
+#
+# RATE_LIMIT_ENABLED=false: ~30 admin calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstreams are on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-userinfo"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
