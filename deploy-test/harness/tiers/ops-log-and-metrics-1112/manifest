@@ -1,0 +1,61 @@
+# DTF tier manifest: ops-log-and-metrics-1112  (artifact-keeper#4674 / #4763,
+# #4676 / #4767, #4677 / #4766, all 1.11.2; plus #4434 and #3914, 1.11.0)
+# Profile-set: filesystem + logging.json-text-ansi (the JSON-format backend
+# the API assertions drive, two text-format sidecars, default and LOG_ANSI=true,
+# on the same database, a VS Code gallery mock and a trusted-gateway subnet).
+#
+# THE CHANGES
+# #4674: the text log format always wrote ANSI colour, with escapes between
+#   each `key=` and its value, so Loki / SIEM filters on `status=500` never
+#   matched; LOG_ANSI=auto (default) now colours only a TTY. LOG_FORMAT=json
+#   lines gain top-level method, uri, correlation_id, http.route and, on
+#   "Request completed", status (int), user (absent when anonymous), ip,
+#   latency_ms.
+# #4676: new /metrics series ak_http_connections_open,
+#   ak_rate_limit_rejections_total{limiter}, ak_ssrf_blocks_total{surface},
+#   ak_auth_failures_total{surface,reason}; OCI /v2 requests labelled with the
+#   spec route template instead of path="unmatched".
+# #4677: a login refused 429 writes ONE LOGIN_RATE_LIMITED audit row per
+#   source IP per window; a successful external-findings ingest writes an
+#   EXTERNAL_FINDINGS_INGESTED row; an X-Request-ID from a peer inside
+#   RATE_LIMIT_TRUSTED_PROXY_CIDRS becomes the correlation id (echoed, on audit
+#   rows, in logs), from any other peer it is ignored.
+# #4434 (1.11.0): ak_http_request_duration_seconds is a histogram (_bucket{le})
+#   instead of a summary (quantile=).
+# #3914 (1.11.0): the gallery sub-budget gauge
+#   ak_proxy_metadata_sub_budget_saturation_ratio{family="vscode_gallery"}.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) every image: the exporter serves ak_http_requests_total; 13
+#             wrong logins for one username are 401 x10 then 429 x3 and the 10
+#             write LOGIN_FAILED rows; a 10.10.10.10 Remote is refused 400 and
+#             not stored; /v2/<unknown>/manifests/latest is 404 NAME_UNKNOWN; a
+#             public vscode Remote serves a gallery query from the mock; the
+#             findings ingest answers 200; X-Request-ID from the untrusted
+#             peer is ignored and an explicit X-Correlation-ID is echoed and
+#             stamped on the audit row; the JSON backend logs one Request
+#             completed object with fields.correlation_id; both text sidecars
+#             log the request; LOG_ANSI=true output carries ESC[.
+#   (FIX, red on 1.11.1 and 1.10.0) ak_http_connections_open >= 1; the login
+#             limiter counter +3; auth failures +10 unknown_user and +1
+#             bad_password with no username label; exactly one
+#             LOGIN_RATE_LIMITED row without the password; ssrf_blocks
+#             {surface=upstream} +1; the OCI request under
+#             path="/v2/{name}/manifests/{reference}"; the
+#             EXTERNAL_FINDINGS_INGESTED row with scanner, class counts and the
+#             MAL-* id; the trusted X-Request-ID echoed, on the LOGIN_FAILED
+#             row and in the JSON log; top-level JSON request fields on an
+#             authenticated and an anonymous line; no ESC in the default text
+#             log and a plain `status=NNN` in its Request completed line.
+#   (FIX, red on 1.10.0 only) the _bucket{le} histogram without quantile
+#             series (#4434); the vscode_gallery gauge at 0 (#3914).
+#
+# RATE_LIMIT_ENABLED=true is deliberate: the login limiter's 429 is the input
+# to the rate-limit counter and the LOGIN_RATE_LIMITED row. The oracle stays
+# far under every other budget (about 40 API calls, 14 failed logins from the
+# host address, 3 from the gateway peers).
+# UPSTREAM_ALLOW_PRIVATE_IPS stays false: the mock is admitted by the profile's
+# AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12, so 10.10.10.10 is still refused.
+PROFILES="storage.filesystem logging.json-text-ansi"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="true"
