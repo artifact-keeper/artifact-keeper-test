@@ -1,0 +1,70 @@
+# =============================================================================
+# profiles/upstreams.mock-files.yml - an upstream the oracle fills at run time
+# =============================================================================
+# Adds `mock-files` (harness/tiers/proxy-download-ledger/fixtures/mock_files.py),
+# a stdlib-python server whose file table the oracle writes over a control API
+# (PUT /__file?path=...), and which counts every GET / HEAD / conditional
+# request per path. One mock therefore stands in for a generic, Maven, npm, Go
+# or Cargo upstream: the oracle stores the packument, @v/list or crate tarball
+# at the path that protocol asks for. Used by the proxy-download-ledger and
+# proxy-cache-ttl-and-refill tiers.
+#
+# The overlay:
+#   * ADDS  `mock-files` at 172.16.<slot>.76 on a per-slot 172.16.<slot>.0/24
+#     subnet (the SUBNET CHOICE note in upstreams.mock-static.yml applies; do
+#     not combine this profile with another 172.16.<slot>.0/24 mock).
+#   * PUBLISHES its control endpoints on 127.0.0.1:${TRIVY_PORT} (8250+N, the
+#     spare per-slot port) so the oracle on the host can write files and read
+#     the request counters.
+#   * PATCHES backend onto that network, admits ONLY the mock's /32 through
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS and sets UPSTREAM_ALLOW_PRIVATE_IPS so the
+#     Remote create and the proxy fetch reach it.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-files:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-files
+    command: ["python3", "/app/mock_files.py"]
+    environment:
+      MOCK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/proxy-download-ledger/fixtures/mock_files.py:/app/mock_files.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockfiles:
+        ipv4_address: 172.16.${DTF_SLOT}.76
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-files:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.76/32
+    networks:
+      dtf: {}
+      mockfiles: {}
+
+networks:
+  mockfiles:
+    name: ak-dtf${DTF_SLOT}-mockfiles
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
