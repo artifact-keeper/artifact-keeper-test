@@ -1,0 +1,82 @@
+# =============================================================================
+# profiles/upstreams.mock-multi.yml: one multi-format upstream that can be
+# healthy, failing or blackholed per path
+# =============================================================================
+# Adds `mock-multi` (harness/tiers/virtual-member-failure-policy/fixtures/
+# mock_multi.py), a stdlib-python server that answers as a Helm, CRAN,
+# RubyGems, npm and NuGet (V2 OData, V3, V2-with-erroring-index.json, V3 in an
+# outage) upstream. The first path segment picks the behaviour: /ok and /ok2
+# are healthy, /fail answers 500, /hang accepts the request and never answers.
+# So one container is every Remote member a virtual-member tier needs: a
+# healthy member, a member whose metadata fails, and a member whose upstream is
+# down with connections blackholed (artifact-keeper#4192, #4508, #4280, #4327,
+# #4122, #4021, #3870, #3767). The request log (`MOCKMULTI <METHOD> <path>
+# <status>` on stdout) tells the oracle which member fetched what.
+#
+# Used by the virtual-member-failure-policy, virtual-member-metadata-timeout,
+# npm-virtual-isolate-disttag-feed and nuget-protocol-translation tiers.
+#
+# The overlay:
+#   * ADDS  `mock-multi` at 172.16.<slot>.91 on a per-slot 172.16.<slot>.0/24
+#     subnet (the SUBNET CHOICE note in upstreams.mock-static.yml applies; no
+#     tier uses this profile together with another 172.16 mock).
+#   * PATCHES backend onto that network, admits ONLY the mock's /32 through
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS and sets UPSTREAM_ALLOW_PRIVATE_IPS so the
+#     Remote create and the proxy fetch reach it.
+#   * Passes two optional tier knobs to the backend (empty = backend default):
+#     AK_VIRTUAL_MEMBER_METADATA_TIMEOUT_SECS (#4508 member deadline) and
+#     NPM_UPSTREAM_FEED_URL (#3069 status endpoint; the feed stays disabled).
+#   * Pins the json-file log driver on the mock (podman maps it to k8s-file)
+#     so `docker logs` returns its request log.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-multi:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-multi
+    command: ["python3", "-u", "/app/mock_multi.py"]
+    environment:
+      MOCK_PORT: "80"
+      HANG_SECS: "180"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/virtual-member-failure-policy/fixtures/mock_multi.py:/app/mock_multi.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    logging:
+      driver: json-file
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockmulti:
+        ipv4_address: 172.16.${DTF_SLOT}.91
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-multi:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.91/32
+      AK_VIRTUAL_MEMBER_METADATA_TIMEOUT_SECS: ${AK_VIRTUAL_MEMBER_METADATA_TIMEOUT_SECS:-}
+      NPM_UPSTREAM_FEED_URL: ${NPM_UPSTREAM_FEED_URL:-}
+    networks:
+      dtf: {}
+      mockmulti: {}
+
+networks:
+  mockmulti:
+    name: ak-dtf${DTF_SLOT}-mockmulti
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
