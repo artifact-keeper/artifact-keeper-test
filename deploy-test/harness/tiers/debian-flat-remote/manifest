@@ -1,0 +1,56 @@
+# DTF tier manifest: debian-flat-remote  (artifact-keeper#4619, #4216; both in 1.11.0)
+# Profile-set: filesystem + client.apt (debian:12) + client.dnf (fedora:40) +
+# upstreams.mock-files (an oracle-filled upstream at 172.16.<slot>.76 that
+# counts GETs per path).
+#
+# THE FEATURES / BUGS
+#   #4619 a Debian remote only spoke the dists/<suite> layout, so a flat APT
+#         repository (`deb <uri> /`, e.g. pkgs.k8s.io) could not be mirrored:
+#         GET /debian/<repo>/InRelease was 404 and dists/stable/InRelease 502.
+#         Fixed: the flat layout is served from the repository root;
+#         InRelease/Release/Release.gpg pass through byte-for-byte, every index
+#         is checked against the signed Release, a package is cached only when
+#         it matches the SHA-256 its cached Packages records, only APT paths
+#         are proxied; `debian.flat_repository = true` answers dists/ with 404
+#         and the flat sources line without contacting upstream, and an unset
+#         remote whose dists/ request fails against a flat upstream does too.
+#   #4216 hosted RPM `repodata_depth`: on an empty local RPM repository,
+#         depth N keeps nested upload paths and serves independent YUM
+#         metadata per directory at that depth; depth 0 is unchanged; a
+#         non-empty repository refuses a change.
+#
+# THE PRIMITIVES
+#   The oracle builds a .deb with the real dpkg-deb in the Debian client,
+#   writes Packages, Packages.gz and Release on the host, signs InRelease and
+#   Release.gpg with an ephemeral ed25519 key (host gpg, throwaway GNUPGHOME)
+#   and stores the set under /flat/ on mock-files. apt trusts only that key
+#   (signed-by). Three noarch RPMs are built with rpmbuild in the Fedora client.
+#
+# THE GATES
+#   (FIX)     #4619: InRelease, Release, Release.gpg and Packages.gz at the
+#             repository root are 200 and byte-identical to upstream; a
+#             Packages whose bytes do not match the signed Release is 502 and
+#             not served; a non-APT path is
+#             404 and never fetched; a real `apt-get update` + `install`
+#             through `deb [signed-by=...] <base>/debian/<repo>/ /` installs
+#             the marker; the verified .deb is then served from the cache;
+#             dists/stable/InRelease on the unset remote is 404 with the flat
+#             sources line; a remote created with debian.flat_repository=true
+#             reports it, answers dists/ 404 with the sources line without an
+#             upstream GET, and still serves InRelease.
+#             #4216: PATCH repodata_depth=1 on an empty repo answers 200 with
+#             repodata_depth 1; the same PATCH on a non-empty repo is a 4xx
+#             naming repodata_depth; uploads to a/ and b/ produce a/repodata
+#             listing only dtf-dep-a and b/repodata only dtf-dep-b, root
+#             repodata 404; a real dnf install from <repo>/a/ installs
+#             dtf-dep-a and cannot install dtf-dep-b. RED on 1.10.0.
+#   (CONTROL) both images: a Debian remote proxies dists/stable/Release from a
+#             conventional upstream byte-for-byte; a depth-0 hosted RPM repo
+#             lists an uploaded package in its root repodata and a real dnf
+#             install from it succeeds.
+#
+# RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back.
+PROFILES="storage.filesystem client.apt client.dnf upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
