@@ -1,0 +1,35 @@
+# DTF tier manifest: nuget-protocol-translation
+#   (artifact-keeper#4122, #4021, #3870; all fixed in 1.11.0)
+# Profile-set: filesystem / single + upstreams=mock-multi (the stdlib-python
+# upstream at 172.16.<slot>.91 serves a V2 OData NuGet feed at
+# /nuget/v2/api/v2 (index.json -> 404), a V3 feed at /nuget/v3/index.json with
+# a PAGED registration (the index links its page, the page holds the leaves)
+# and autocomplete, and a V3 feed in an outage at /nuget/v3down (503)).
+#
+# THE BUGS
+# #4122  Each NuGet surface required the upstream to speak it: a Remote with a
+#        V2 upstream answered 502 on every V3 leg (registration, flat
+#        container), and a Remote with a V3 upstream proxied the V2 OData
+#        verbs verbatim, so FindPackagesById() and the V2 package download
+#        404'd. Fixed: the protocol is probed once and translated both ways,
+#        every synthesized URL pointing back at AK. A probe error (5xx) never
+#        downgrades a V3 feed to V2.
+# #4021  A virtual's legacy V2 feed (FindPackagesById(), the
+#        /v2/package/{id}/{version} download) answered from hosted members
+#        only: a remote member's packages were neither listed nor
+#        downloadable. Fixed: remote members are merged in priority order,
+#        the hosted copy of a shared (id, version) wins.
+# #3870  A remote's paged registration index pointed at
+#        /v3/registration/{id}/page/{lo}/{hi}.json URLs AK answered 404, so
+#        `dotnet list package --outdated` failed. Fixed: pages are proxied and
+#        rewritten onto AK; the service index advertises
+#        RegistrationsBaseUrl/3.6.0 and a SearchAutocompleteService, and
+#        autocomplete answers from the upstream.
+#
+# RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
+#
+# RATE_LIMIT_ENABLED=false: one admin login and ~30 API calls back to back.
+PROFILES="storage.filesystem upstreams.mock-multi"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
