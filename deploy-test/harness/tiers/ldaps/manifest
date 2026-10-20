@@ -30,10 +30,36 @@
 # does NOT do a TLS handshake), so it does NOT discriminate on cert trust; the
 # oracle uses the actual login bind, which does.
 #
+# 1.11.x SSO CASES (appended; profiles/sso.ldap-env-bootstrap.yml adds an
+# LDAP_* env-bootstrapped provider `dtf-env-ldap` on plain ldap://389):
+#   #4648 (1.11.2) LDAP login returns expires_in=1800 and the access cookie's
+#     Max-Age is 1800 (the default 30-minute token), not a fixed 3600.
+#     RED on 1.11.1 and older.
+#   #4638 (1.11.2) saving ldap://100.64.1.1 is 400 naming
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS=100.64.1.1; 169.254.169.254 is 400 and
+#     names no allowlist. RED on 1.11.1 and older (bare "not allowed").
+#   #3505 (1.11.0) a search miss is followed by a decoy BIND to
+#     cn=ak-login-decoy-<random>,<base> in the slapd log (asserted from
+#     `docker logs` of the LDAP container), never carrying the username; the
+#     miss and a wrong password are both 401 with identical bodies. RED on
+#     1.10.0: the miss returns right after the search.
+#   #4475 (1.11.0) the SAML HTTP-Redirect SAMLRequest is base64(raw
+#     DEFLATE(AuthnRequest)). RED on 1.10.0: base64 of bare XML.
+#   #3904 (1.11.0) is_enabled=false, priority=7 and user_filter set through
+#     the admin API on dtf-env-ldap survive `docker restart` of the backend,
+#     while the env-owned server_url is re-applied from LDAP_URL (control half,
+#     holds on every image). RED on 1.10.0: is_enabled and priority revert.
+# NOT COVERED: #3830 scheduled re-sync. The job's first pass starts 600-630 s
+# after boot (jittered_startup_delay(600) in scheduler_service.rs) whatever
+# LDAP_SYNC_INTERVAL is, so asserting a demotion or deactivation would cost
+# over 10 minutes of wall clock. #4474 lives in lifecycle-signing-webhook-config
+# (it needs SSO_ALLOW_PRIVATE_IPS, which would also admit the CGNAT LDAP
+# address #4638 asserts is refused here).
+#
 # RATE_LIMIT_ENABLED=false: the oracle drives admin login + several provider
 # create/update + LDAP logins back-to-back through one admin; the base default
 # (ON) would throttle them. Disabled explicitly per design section 2.2 (same as
 # the sso / proxy-egress tiers).
-PROFILES="storage.filesystem sso.ldap"
+PROFILES="storage.filesystem sso.ldap sso.ldap-env-bootstrap"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
