@@ -1,0 +1,13 @@
+# =============================================================================
+# profiles/webhooks.v2-producer.yml - turn on the webhook delivery producer
+# =============================================================================
+# The backend only turns EventBus events into `webhook_deliveries` rows when
+# WEBHOOKS_V2_PRODUCER_ENABLED is true (default off since 1.1.9, see
+# backend/src/main.rs). Without it no event-driven webhook is ever delivered;
+# only the explicit `POST /webhooks/{id}/test` sends. The retry scheduler then
+# POSTs each enqueued row on its 30-second tick.
+# =============================================================================
+services:
+  backend:
+    environment:
+      WEBHOOKS_V2_PRODUCER_ENABLED: "true"
