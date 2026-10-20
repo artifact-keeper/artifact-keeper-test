@@ -1,0 +1,59 @@
+# DTF tier manifest: proxy-download-ledger  (artifact-keeper#4535, #4539, #4551,
+# #4267, #4341; all fixed in 1.11.0)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files:
+# a stdlib-python server on a per-slot 172.16.<slot>.0/24 subnet whose files
+# the oracle writes over a control API and which counts every request per
+# path). The oracle reads proxy_download_statistics, download_statistics and
+# proxy_cache_artifacts directly. Every request of a case carries its own
+# User-Agent, so a case counts only its own rows; user_agent exists in both
+# statistics tables on every image, so the counts are portable to 1.10.0.
+#
+# THE BUGS
+# #4535  Both two-phase virtual resolvers recorded only a HOSTED winner. A
+#        virtual download answered by a Remote member (cache hit or upstream
+#        fetch) landed in neither download table.
+# #4539  proxy_download_statistics was keyed only on proxy_cache_id, ON
+#        DELETE CASCADE from the catalog, so evicting or purging a cache entry
+#        erased its download history; /admin/downloads listed hosted rows
+#        only and /admin/stats total_downloads ignored proxy serves.
+# #4551  An object larger than the Remote's quota is streamed without a cache
+#        write, but the download recorder still upserted a catalog
+#        placeholder, which stayed behind as a "cached" 0-byte entry.
+# #4267  A Maven GET through a virtual answered by a hosted member was not
+#        counted.
+# #4341  An npm tarball GET through a Remote without scan-on-proxy was not
+#        counted.
+#
+# THE GATES
+#   (FIX)      RED on 1.10.0, GREEN on 1.11.0 and main:
+#              #4535 virtual [Remote that 404s, Remote that serves] GET -> one
+#                    row under the winning member's (repository_id, path), none
+#                    for the losing member, none for a HEAD;
+#              #4539 POST cache/invalidate on a downloaded entry -> catalog row
+#                    gone, download row kept with proxy_cache_id NULL and its
+#                    (repository_id, path); /admin/downloads?source=proxy&
+#                    repository_id= lists it (source proxy, artifact_id null,
+#                    path) and source=hosted does not; one proxy serve moves
+#                    /admin/stats total_downloads and proxy_download_count by 1;
+#              #4551 the over-quota Remote has no catalog row at all and its two
+#                    download rows carry the (repository_id, path) key;
+#              #4267 Maven virtual GET from a hosted member -> one
+#                    download_statistics row on the member's artifact, HEAD none;
+#              #4341 npm Remote tarball GET -> one row, HEAD none.
+#   (CONTROL)  must hold on BOTH images: a direct generic Remote GET serves the
+#              upstream bytes and is counted once (HEAD not); a direct hosted
+#              Maven GET is counted once (HEAD not); the over-quota object is
+#              served in full from upstream on every GET (never cached) and each
+#              GET is counted.
+#
+# NOT GATED HERE (see the PR): the age-gated virtual npm last-known-good
+# tarball counted under its member (#4341's second half) needs a held version
+# plus a cached older one; the lifecycle-policy eviction path of #4539 (this
+# tier evicts through POST cache/invalidate, the same catalog delete).
+#
+# RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
