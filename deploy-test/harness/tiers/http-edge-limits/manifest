@@ -1,0 +1,31 @@
+# DTF tier manifest: http-edge-limits  (artifact-keeper#4665, #4672, #4664, #4671, #4673; all 1.11.1)
+# Profile-set: filesystem + profiles/limits.http-edge.yml, which sets
+# MAX_UPLOAD_SIZE=1048576 and HTTP_HEADER_READ_TIMEOUT_SECS=5 so the oracle can
+# cross both in a few seconds and a few KiB. The rate limiter stays ON (the
+# compose default, set explicitly here): the release gate deploys with it
+# OFF, so the login limiter's headers (#4664) have never been exercised there.
+#
+# THE FIXES (1.11.1; red on 1.11.0)
+#   #4665 (PR #4685): axum::serve set no hyper timer, so a client that sent a
+#         partial request head, or nothing, held its socket indefinitely. The
+#         new accept loop closes it after HTTP_HEADER_READ_TIMEOUT_SECS and
+#         counts it in ak_http_header_read_timeouts_total.
+#   #4672 (PR #4682): POST /v2/<name>/blobs/uploads/ (session create with a
+#         body, and the monolithic ?digest= form) streamed the body until it
+#         crossed MAX_UPLOAD_SIZE; a client that declared more than it sent
+#         waited for the stall watchdog. The declared length is now checked
+#         first, as PATCH already did.
+#   #4664 (PR #4686): the outer API limiter overwrote the login limiter's
+#         429 headers with its own X-RateLimit-Limit: 10000.
+#   #4671 (PR #4684): POST /api/v1/plugins/install/local resolved the path on
+#         the server and answered 500 (existing path) or 400 (missing); it is
+#         now a fixed 501 NOT_IMPLEMENTED.
+#   #4673 (PR #4682): a .vsix with '..', absolute, backslash-rooted or
+#         drive-qualified entry names was stored and served verbatim.
+#
+# The oracle drives the raw-socket cases with fixtures/edge_probe.py (stdlib
+# python, every wait bounded, so a red backend fails a case instead of
+# hanging the tier).
+PROFILES="storage.filesystem limits.http-edge"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="true"

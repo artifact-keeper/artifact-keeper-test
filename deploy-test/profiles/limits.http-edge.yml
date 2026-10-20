@@ -1,0 +1,23 @@
+# =============================================================================
+# profiles/limits.http-edge.yml: small, explicit request-plane limits
+# =============================================================================
+# Patches the backend with request-plane limits small enough that a tier can
+# cross them in a few seconds and a few KiB:
+#   * MAX_UPLOAD_SIZE=1048576 (1 MiB): the cap an OCI blob upload start checks
+#     its declared Content-Length against (artifact-keeper#4672).
+#   * HTTP_HEADER_READ_TIMEOUT_SECS=5: how long a connection may take to
+#     deliver a complete request head before it is closed and
+#     ak_http_header_read_timeouts_total is incremented (artifact-keeper#4665).
+# A backend that predates either setting ignores it and still boots, which is
+# exactly what the tier's RED leg measures.
+#
+# The json-file log driver is pinned for the reason listener.backlog-explicit
+# records (journald on a rootless podman host can drop container lines).
+# =============================================================================
+services:
+  backend:
+    environment:
+      MAX_UPLOAD_SIZE: "1048576"
+      HTTP_HEADER_READ_TIMEOUT_SECS: "5"
+    logging:
+      driver: json-file
