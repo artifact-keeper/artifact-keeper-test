@@ -1,0 +1,40 @@
+# DTF tier manifest: virtual-member-gates
+#   (artifact-keeper#4098/#4343, #4286, #4346; all fixed in 1.11.0)
+# Profile-set: filesystem / single + upstreams=mock-npm (a stdlib-python npm
+# registry serving `dtf-held` 1.0.0 under any path prefix at 172.16.<slot>.90,
+# logging every request).
+#
+# A virtual repository must apply each member's own gates: a caller must not
+# reach THROUGH the virtual what the member itself would refuse. This tier is
+# about the member gates; virtual-usage (aggregation + member editability)
+# and virtual-no-transfer / nexus-group-virtual (migration) are not repeated.
+#
+# THE BUGS
+# #4098/#4343  quarantine hold: a scan-on-proxy npm (PyPI, VS Code) virtual
+#        walked past a member that answered 409 (quarantine hold) and served
+#        the very tarball from the next member. Fixed: the hold is final.
+# #4286  scan policy: the npm virtual tarball path discarded the gated
+#        lookup's 403/409 and served the row its `{pkg}/%/{file}` pattern
+#        lookup found, so a hosted tarball a `block_unscanned` policy refuses
+#        was served through any virtual over that hosted repository. Same
+#        class in Maven: the virtual member closure swallowed the refusal, and
+#        a `-SNAPSHOT` alias resolved to its timestamped jar with no download
+#        gate at all (direct and through a virtual).
+# #4346  visibility: RPM virtual repodata (repomd.xml, primary.xml.gz) was
+#        built from EVERY member, so an anonymous caller of a public virtual
+#        read the names/versions/digests of a private member's packages. Also,
+#        attaching an `internal` repository as a member now needs a read grant
+#        (a delegated virtual admin could otherwise re-export it).
+#
+# RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later. On 1.10.0 the
+# `internal` visibility does not exist yet, so the attach case is red there
+# because the repository cannot be made internal; its refusal body is asserted
+# on green.
+#
+# RATE_LIMIT_ENABLED=false: one admin login, a second user, ~50 API calls back
+# to back. UPSTREAM_ALLOW_PRIVATE_IPS=true: the npm remotes' upstream is the
+# mock on a private address (the profile also sets it).
+PROFILES="storage.filesystem upstreams.mock-npm"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

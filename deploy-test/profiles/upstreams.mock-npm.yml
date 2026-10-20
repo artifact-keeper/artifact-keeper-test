@@ -1,0 +1,68 @@
+# =============================================================================
+# profiles/upstreams.mock-npm.yml: a stdlib-python npm registry upstream
+# =============================================================================
+# Adds `mock-npm` (harness/tiers/virtual-member-gates/fixtures/mock_npm.py), a
+# static npm registry serving one package, `dtf-held` 1.0.0, under ANY path
+# prefix, so two Remote repositories can share it with different prefixes and
+# the request log (`MOCKNPM <METHOD> <path> <status>` on stdout) tells which
+# member fetched what. Used by the virtual-member-gates tier
+# (artifact-keeper#4098/#4343) to prove a virtual's walk stopped at a member's
+# quarantine hold instead of fetching the tarball through the next member.
+#
+# The overlay:
+#   * ADDS  `mock-npm` at 172.16.<slot>.90 on a per-slot 172.16.<slot>.0/24
+#     subnet (the SUBNET CHOICE note in upstreams.mock-static.yml applies).
+#   * PATCHES backend onto that network, admits ONLY the mock's /32 through
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS and sets UPSTREAM_ALLOW_PRIVATE_IPS so the
+#     Remote create and proxy fetch reach it.
+#   * Pins the json-file log driver on the mock (podman maps it to k8s-file)
+#     so `docker logs` returns its request log instead of a host journald.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-npm:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-npm
+    command: ["python3", "/app/mock_npm.py"]
+    environment:
+      MOCK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/virtual-member-gates/fixtures/mock_npm.py:/app/mock_npm.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    logging:
+      driver: json-file
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mocknpm:
+        ipv4_address: 172.16.${DTF_SLOT}.90
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-npm:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.90/32
+    networks:
+      dtf: {}
+      mocknpm: {}
+
+networks:
+  mocknpm:
+    name: ak-dtf${DTF_SLOT}-mocknpm
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
