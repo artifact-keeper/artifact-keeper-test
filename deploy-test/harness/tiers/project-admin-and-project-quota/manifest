@@ -1,0 +1,46 @@
+# DTF tier manifest: project-admin-and-project-quota
+#   (artifact-keeper#2473 and #2474 / #2475, all shipped in 1.11.0)
+# Profile-set: filesystem / single. Everything under test is the management
+# API and upload admission ahead of the storage backend; the oracle is HTTP
+# plus direct reads of the DB.
+#
+# THE FEATURES
+#   #2473  A principal holding `admin` in a project grant (the four actions
+#          admin/read/write/delete through POST /projects/{id}/members) may
+#          GET/PUT that project and list/add/remove its members, and may
+#          POST /repositories when the request assigns the repository to that
+#          project. Listing/creating/deleting projects, changing quota_bytes
+#          and the global /permissions API stay global-admin-only; a token
+#          restricted to a repository allowlist is never a project admin. A
+#          repository created through project admin alone records created_by
+#          but gets no repository-owner role, so removing the creator from the
+#          project removes their access. A key that uses another project's
+#          `<project.key>-` prefix is a 400, even for the global admin.
+#          Reassigning a repository to another project needs project admin on
+#          the destination; repository admin alone is a 403.
+#   #2474  projects.quota_bytes was stored but ignored. Upload admission now
+#          checks the project aggregate: 507 QUOTA_EXCEEDED "Project storage
+#          quota exceeded".
+#   #2475  npm publish skipped the quota check entirely; it is now admitted
+#          against the repository and project quotas.
+#
+# ORACLE (discriminating, RELEASE_GATE=1)
+#   (CONTROL) every image: the global admin manages projects and members; a
+#     grant-less user and a project admin are both refused project list /
+#     create, a quota change, the global /permissions API, a repository
+#     outside the project; a repository-restricted token of the project admin
+#     is refused the project; a repository key with the project's OWN prefix
+#     and an unprefixed key are accepted; the repository admin can still PATCH
+#     the description; uploads into a repository outside any project and an
+#     npm publish into an npm repository outside any project succeed.
+#   (FIX) RED on 1.10.0, GREEN on 1.11.0 and later: project admin GET/PUT,
+#     member list/add/remove, repository create in the project without an
+#     owner role, access ends when the membership is removed; another
+#     project's key prefix 400; reassignment by a repository admin 403; the
+#     second upload across two member repositories 507 with the project
+#     message; npm publish over the project quota 507.
+#
+# RATE_LIMIT_ENABLED=false: four principals, ~70 back-to-back calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
