@@ -1,0 +1,56 @@
+# DTF tier manifest: ops-log-noise  (artifact-keeper#4552 / #4794, #4526 / #4798, 1.11.3)
+# Profile-set: filesystem + upstreams.mock-ops (a slow file upstream and a
+# refusing OCI registry on a per-slot 172.16.<slot>.0/24 subnet) +
+# topology.two-replica (a second backend on the same Postgres and /data
+# volume, both with PROXY_SINGLEFLIGHT_ADVISORY_LOCKS_ENABLED=true).
+# Both fixes are log-level fixes, so the oracle asserts on `docker logs` of
+# the backend containers (json-file driver, pinned by the mock profile and
+# the topology profile).
+#
+# THE BUG (#4552, fixed by #4794)
+# With cross-replica proxy single-flight on, the replica that loses the cold
+# fill blocks on `SELECT pg_advisory_lock($1, $2)` until the leader publishes
+# (designed behaviour: one upstream fetch cluster-wide). The wait ran on a
+# pooled-then-detached connection with sqlx's default 1 s slow-statement
+# threshold, so every waiting replica logged
+#   WARN sqlx::query: slow statement ... SELECT pg_advisory_lock($1, $2) elapsed=...
+# per cold object. The fix opens the wait session from the pool's connect
+# options with slow-statement logging off and logs the outcome once at DEBUG.
+# The oracle: replica A (host port) starts a Maven Remote GET of a 2 MiB file
+# the mock streams over 4 s; 0.7 s later replica B (docker exec ... curl
+# 127.0.0.1:8081) GETs the same path and waits on A's advisory lock.
+#
+# THE BUG (#4526, fixed by #4798)
+# An OCI Remote without upstream credentials whose upstream refuses a manifest
+# (401 / 403) answers the client 404 MANIFEST_UNKNOWN and logs the refusal
+# once at INFO, but the catch-all of map_proxy_error also logged an unsampled
+#   WARN Proxy fetch failed: Bad gateway: Upstream returned error status 401 ...
+# on every pull. The fix logs that line at DEBUG for a refusal of a request
+# that carried no credentials; credentialed refusals, upstream 5xx and other
+# refusals (400) still WARN.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (FIX #4552)  no "slow statement" line naming pg_advisory_lock in either
+#                replica's log for the contended fill. RED on 1.11.2.
+#   (FIX #4526)  three pulls each of a 401 and a 403 manifest through the
+#                anonymous OCI Remote log no "Proxy fetch failed" WARN. RED on
+#                1.11.2 (one WARN per pull).
+#   (CONTROL)    both replicas serve the file byte-identical to the upstream,
+#                the upstream saw exactly ONE fetch (the lock-protected fill
+#                ran once cluster-wide) and B waited for it (>= 2 s); every
+#                refused pull still reaches the upstream and gets 404
+#                MANIFEST_UNKNOWN; the INFO refusal line is in the log (the
+#                log is read from the right container); a 400 refusal still
+#                logs one "Proxy fetch failed" WARN per pull; a working image
+#                still proxies its manifest byte-identical.
+#
+# Teardown after --keep: backend-b lives in backend's network namespace, so
+# a bare `run.sh down --slot N` (base file only) cannot remove the stack. Use
+#   harness/run.sh down --slot N --upstreams mock-ops --topology two-replica
+#
+# RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-ops topology.two-replica"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
