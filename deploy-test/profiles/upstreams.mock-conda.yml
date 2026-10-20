@@ -48,6 +48,12 @@ services:
     # relabelling the checkout with :z. A no-op where SELinux is off.
     security_opt:
       - label=disable
+    # The conda-virtual-shadow-and-cache tier greps this container's request
+    # log (`docker logs`) to prove a download was never proxied upstream. Pin
+    # the json-file driver (podman maps it to k8s-file) so the log is readable
+    # rather than handed to a host journald.
+    logging:
+      driver: json-file
     healthcheck:
       test:
         - "CMD-SHELL"
