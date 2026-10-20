@@ -1,0 +1,77 @@
+# =============================================================================
+# profiles/telemetry.otlp-sink.yml: OTLP/HTTP export toward a steerable sink
+# =============================================================================
+# Adds `otlp-sink`, a stdlib-only Python server
+# (harness/tiers/deps-1.12.0-controls/fixtures/otlp_sink.py) that accepts
+# OTLP/HTTP POSTs (/v1/traces, /v1/metrics), counts them per path, keeps the
+# bodies so a tier can grep them for a marker, and can be told to answer every
+# export with a status of its choosing (503 for the retry case). It also serves
+# fixtures the oracle PUTs into it, so the same container doubles as a static
+# upstream (a NuGet V2 feed, RPM repodata) without a second service.
+#
+# The overlay:
+#   * ADDS  `otlp-sink` on a per-slot 172.16.<slot>.0/24 subnet at .71, so the
+#     create-time SSRF check on a Remote upstream URL allowlists it via
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 (the escape hatch
+#     upstreams.mock-static.yml and upstreams.mock-artifactory.yml use). The
+#     tier manifest sets UPSTREAM_ALLOW_PRIVATE_IPS=true for the fetches.
+#   * PUBLISHES the sink's control endpoints on 127.0.0.1:${TRIVY_PORT}
+#     (8250+N, the spare per-slot port).
+#   * PATCHES backend: OTEL_EXPORTER_OTLP_ENDPOINT (read by main.rs and handed
+#     to the exporter builder, which uses a programmatic endpoint verbatim, so
+#     it carries the /v1/traces path), OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+#     (telemetry.rs; the default is gRPC), a 500 ms batch schedule so spans
+#     reach the sink quickly, and the json-file log driver.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  otlp-sink:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-otlp-sink
+    command: ["python3", "/app/otlp_sink.py"]
+    environment:
+      SINK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/deps-1.12.0-controls/fixtures/otlp_sink.py:/app/otlp_sink.py:ro"
+    # The bind-mounted script is unreadable on an SELinux-enforcing host
+    # without this.
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      otlpsink:
+        ipv4_address: 172.16.${DTF_SLOT}.71
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otlp-sink:
+        condition: service_healthy
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://172.16.${DTF_SLOT}.71/v1/traces"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
+      OTEL_BSP_SCHEDULE_DELAY: "500"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      otlpsink: {}
+
+networks:
+  otlpsink:
+    name: ak-dtf${DTF_SLOT}-otlpsink
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

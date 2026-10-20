@@ -1,0 +1,12 @@
+# =============================================================================
+# profiles/http.cors-origins.yml: an explicit production CORS allowlist
+# =============================================================================
+# Sets CORS_ORIGINS on the backend so main.rs builds tower-http's CorsLayer
+# with AllowOrigin::list([...]) and the production method/header lists (with
+# CORS_ORIGINS unset the layer is a bare same-origin CorsLayer that answers no
+# preflight). ENVIRONMENT stays unset: this is the production branch.
+# =============================================================================
+services:
+  backend:
+    environment:
+      CORS_ORIGINS: "http://dtf-cors-allowed.example"

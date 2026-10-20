@@ -1,0 +1,15 @@
+# =============================================================================
+# profiles/storage.s3-oss.yml: S3 storage pinned to the OSS dialect
+# =============================================================================
+# Layer AFTER storage.s3. Sets S3_PROVIDER=oss on the backend, which pre-arms
+# the #3593 LIST fallback (storage/s3.rs `list_fallback_latched`): every
+# listing then goes through Artifact Keeper's own ListObjectsV2 request and
+# its quick-xml `parse_list_bucket_result`, instead of object_store's parser.
+# Against MinIO that is the only way to reach that parser from outside the
+# container. The OSS dialect also switches copy to a streaming PUT, which
+# MinIO accepts.
+# =============================================================================
+services:
+  backend:
+    environment:
+      S3_PROVIDER: oss

@@ -1,0 +1,65 @@
+# DTF tier manifest: deps-1.12.0-controls  (artifact-keeper#4375, #4377, #4811)
+# Profile-set: S3 (MinIO) pinned to the OSS dialect + an OTLP/HTTP sink that
+# doubles as a static upstream + an explicit production CORS allowlist.
+#
+# WHAT THIS IS
+# Regression controls for three dependency bumps merged to backend main for
+# 1.12.0. They are not fixes: most cases must hold identically on the release
+# before the bumps (1.11.3) and on main. They exist because each bump changed
+# code paths that nothing else in DTF drives end to end.
+#
+#   #4375 quick-xml 0.41 -> 0.42 (squash caf873a5f7). 0.42 makes names, event
+#         payloads and attribute values UTF-8 str; seven readers were adapted.
+#         Each reachable one gets real input carrying entities (&amp; &lt;),
+#         numeric references (&#233; &#xE8;), non-ASCII text and, where the
+#         format allows, a UTF-8 BOM and CDATA:
+#     NuGet      parse_v2_feed_entries: a Remote over a V2 OData upstream
+#                (index.json 404) projected onto V3 registration + search.
+#     PyPI       parse_xmlrpc_call: POST /pypi/<repo>/pypi browse/list_packages
+#                (there is no XML-RPC `search` method; browse is the call that
+#                carries a free-text string to match).
+#     VSIX       parse_vsix_package_manifest: TargetPlatform and the
+#                PreRelease property read from extension.vsixmanifest at
+#                publish, read back through the gallery extensionquery.
+#     curation   parse_rpm_primary_xml: POST /api/v1/curation/repos/<k>/sync
+#                over repodata the sink serves, with a block rule.
+#     SAML       SamlResponseParser: the ACS, unsigned (status message echoed)
+#                and signed with the sso tier's dtf-saml-xsw-probe.
+#     S3         parse_list_bucket_result: only used by the #3593 REST LIST
+#                fallback, which S3_PROVIDER=oss pre-arms (storage.s3-oss);
+#                driven by the admin storage reindex dry run.
+#     Artifactory import (artifactory_import.rs) is NOT reachable: its only
+#                caller is cli/migrate_runner.rs, which main.rs never invokes.
+#   #4377 tower-http 0.6 -> 0.7.1. AK uses its CorsLayer (main.rs), TraceLayer
+#         (main.rs, request_span.rs) and CompressionLayer (npm metadata only).
+#   #4811 opentelemetry/opentelemetry_sdk/opentelemetry-otlp 0.33 and
+#         tracing-opentelemetry 0.34 (squash b77f2195de). Traces only: AK
+#         builds no OTLP metrics exporter, so nothing is ever POSTed to
+#         /v1/metrics; /api/v1/admin/metrics is the Prometheus side.
+#
+# THE GATES
+#   (CONTROL)  every case not marked below: identical on 1.11.3 and main.
+#   (BEHAVIOUR CHANGE, RED on 1.11.3 by design) two upstream changes that
+#              reach AK's wire behaviour:
+#     #4811  opentelemetry-otlp 0.33 retries OTLP/HTTP 429/502/503/504 by
+#            default (3 retries, 4 attempts); 0.32 sent a batch once. The sink
+#            counts the bodies carrying one request's correlation id: 4 vs 1.
+#     #4377  tower-http 0.7 answers `Accept-Encoding: identity;q=0` with 406
+#            Not Acceptable (RFC 9110 12.5.3) on the compressed npm metadata
+#            routes; 0.6 served identity 200.
+#   (KNOWN-RED) real backend defects found here, reported and not failed so
+#              the controls stay a usable gate: artifact-keeper#4816 (NuGet V2
+#              feed text loses entity references) and #4817 (S3 reindex
+#              mismatches percent-encoded keys). Neither is from the bumps.
+#
+# The SAML case needs the sso tier's signer: DTF_SAML_XSW_PROBE, or the
+# prebuilt harness/tiers/sso/probe/target/release/dtf-saml-xsw-probe that the
+# release gate's build-dtf-probes job provides.
+#
+# RATE_LIMIT_ENABLED=false: ~80 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the NuGet/RPM upstream is the sink, on a
+# private per-slot subnet.
+PROFILES="storage.s3 storage.s3-oss telemetry.otlp-sink http.cors-origins"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
