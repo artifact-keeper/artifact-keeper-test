@@ -1,0 +1,59 @@
+# DTF tier manifest: trash-purge  (artifact-keeper#4700, fixed by #4701)
+# Profile-set: filesystem. Stored objects are inspected directly on the
+# backend's /data volume through a throwaway postgres:16-alpine container with
+# --volumes-from the backend (the backend image has no shell), as the
+# storage-integrity and proxy-cache-empty-object tiers do.
+#
+# THE BUG (#4700)
+# A deleted artifact stays in the trash as a soft-deleted row until storage GC
+# hard-deletes it. For a Maven release the upload path counts that row, so a
+# different-bytes re-upload at the same path is refused with 409 "Artifact
+# version already exists and is immutable" for the whole trash retention
+# window. There was no way to remove one trashed artifact at once.
+#
+# THE FIX (#4701, including the maintainer commit 357a7414)
+#   DELETE /api/v1/admin/trash/{id}
+#       purges one trashed artifact: 200 PurgedArtifact {id, ...,
+#       storage_reclaimed}. The row is hard-deleted; the stored object is
+#       deleted only when no other artifacts row or artifact_versions revision
+#       in the same storage scope references it. ARTIFACT_PURGED is audited.
+#       404 for an id not in the trash; 409 for OCI manifests and blobs. A
+#       repository-restricted admin token (#4225) only purges inside its
+#       allow-list; any other id is 404, like an unknown one.
+#   DELETE /api/v1/repositories/{key}/artifacts/{path}?permanent=true
+#       the ordinary delete, then the same purge. Non-admins are refused (403)
+#       before anything is deleted; an OCI repository is refused (409) after
+#       the repository access gates, so a caller that cannot write to the
+#       repository gets the access denial, not the format.
+#
+# THE PRIMITIVES
+#   Maven release rel-1.0 uploaded, deleted, re-upload of other bytes -> 409
+#   (both images); then the by-id purge and the re-upload.
+#   Maven rel-2.0 deleted with ?permanent=true by the admin; a generic path by a
+#   non-admin who holds read,write,delete on the repository.
+#   Two generic paths with the same bytes share one content-addressed object.
+#   An admin-owned `*`-scoped API token with repo_selector.match_repos = [B].
+#   A minimal OCI image (config blob + manifest) pushed over /v2.
+#
+# THE GATES
+#   (FIX)      by-id purge frees the path (row, object, audit, 201 re-upload,
+#              new bytes served); ?permanent=true does the same in one call;
+#              a non-admin ?permanent=true is 403 and the row stays live;
+#              purging one of two artifacts sharing an object keeps the object
+#              (storage_reclaimed=false) and the other downloads byte-exact;
+#              the restricted token gets 404 outside its repository (row kept)
+#              and 200 inside it; an admin ?permanent=true on OCI is 409 and
+#              the row stays live, and the by-id purge of a trashed OCI
+#              manifest is 409.
+#              RED on 1.11.3: the by-id route does not exist (404) and
+#              ?permanent=true is ignored (a plain soft delete, so the row is
+#              trashed and the re-upload is still 409).
+#   (CONTROL)  both images: delete -> trash list -> restore -> byte-exact
+#              download; a non-admin with delete can soft-delete; the #4700
+#              409 precondition; a scoped token without access to the OCI
+#              repository gets 403/404 (not 409) on ?permanent=true.
+#
+# RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
