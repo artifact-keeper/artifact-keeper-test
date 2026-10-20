@@ -1,0 +1,70 @@
+# DTF tier manifest: token-virtual-catalog
+#   (artifact-keeper#4808 fixed by #4213; artifact-keeper#4215 fixed by #4217)
+# Profile-set: filesystem / single. Both fixes live in the management API (the
+# Packages catalog handlers and the service-account handlers) ahead of any
+# storage backend, so the oracle is pure HTTP plus direct reads/writes of the DB.
+#
+# THE BUG (#4808, fixed by #4213)
+# Since #4586 a token scoped to a virtual repository reads the virtual's
+# members through it on the format routes and /repositories/{key}/artifacts.
+# The Packages catalog was left out: GET /api/v1/packages?repository_key=<V>
+# expanded V to its leaf members and intersected them with the token's
+# allowed_repo_ids, which name only V, so the page was empty (200, total 0);
+# GET /api/v1/packages/{id}?repository_key=<V> and .../{id}/versions applied
+# the direct per-repository scope to the owning member and answered 404. The
+# detail and versions lookups also ignored repository_key as a constraint: a
+# package was returned under any context. The fix resolves the context through
+# the same member authorization as the other virtual reads (parent visible,
+# each private member granted and read-capable for the token's owner) and
+# requires the package to belong to that context.
+#
+# THE FEATURE (#4215, fixed by #4217)
+# A virtual-scoped token can read nothing through its virtual for two silent
+# reasons: the account holds no grant on a member, or the scope misses it.
+# GET /api/v1/service-accounts/{id}/tokens/{token_id}/scope-analysis (admin)
+# names each virtual and each unreachable member with a reason from a closed
+# set (no_grant, out_of_token_scope); the token list carries
+# unreachable_member_count per token and scope_error (invalid_selector,
+# selector_matches_nothing, deleted_pinned_repositories); the selector preview
+# parses strictly (an unknown key is a 400) and, given service_account_id,
+# reports what that account's token would not reach. The analysis and the
+# preview's account must be a service account (else 404), and the token must
+# belong to the account in the path (else 404).
+#
+# THE FIXTURE
+#   M1, M2   private maven locals; M1 holds com.dtf:tvc-a (1.0.0, 1.1.0),
+#            M2 holds com.dtf:tvc-b. OTHER (not in V) holds com.dtf:tvc-c.
+#   V        private maven virtual over M1, M2.
+#   SA       service account granted read on V and M1, NOT M2 (until the last
+#            case); token TV with read:artifacts and repository_ids [V].
+#
+# THE GATES
+#   (FIX)      RED on 1.11.3:
+#     #4213  TV list V -> exactly tvc-a reported under V (tvc-b stays out: no
+#            grant on M2); TV detail and versions of tvc-a in V -> 200, versions
+#            1.0.0,1.1.0, key V; TV detail of tvc-b in V -> 404. Admin detail
+#            and versions of a package under a repository_key that does not hold
+#            it (another hosted repo, the virtual, a sibling member) -> 404.
+#     #4217  analysis of TV -> exactly [{V, [{M2, no_grant}]}], count 1, no
+#            scope_error, token list count 1; admin-only (non-admin and the token
+#            itself 403/404) and 404 under another service account, a
+#            non-service-account user, or an unknown token id; preview refuses
+#            {"match_formatz":...} with 400 "unknown field" and a non-object
+#            selector; preview on behalf of SA reports [{V, [{M2, no_grant}]}];
+#            preview on behalf of a plain user is 404; a selector tampered in
+#            api_tokens to an unknown key reports scope_error=invalid_selector
+#            on the token list and the analysis.
+#     both   after granting SA read on M2: analysis [] / 0, TV list V shows
+#            tvc-a and tvc-b, and TV still lists nothing from M2 directly.
+#   (CONTROL)  must hold on BOTH images: the unscoped admin lists both members'
+#              packages under V and reads tvc-a directly and under V; TV reads
+#              nothing outside the virtual context (M1 listing empty, unfiltered
+#              listing has no fixture package, detail/versions without context
+#              404, GET /repositories/M1 403/404, OTHER empty); the preview of a
+#              valid selector matches V alone; the token list shows TV pinned
+#              to [V]; a non-admin preview is refused.
+#
+# RATE_LIMIT_ENABLED=false: ~70 back-to-back calls across four principals.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
