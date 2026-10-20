@@ -1,0 +1,51 @@
+# DTF tier manifest: restricted-token-refresh  (artifact-keeper#4261, fixed by
+# #4683 in 1.11.1; plus the refresh-path half of #4663, same PR)
+# Profile-set: filesystem / single. The fix lives in the auth service's token
+# pair minting; the oracle is HTTP, JWT claim decoding and refresh_token_jti
+# reads.
+#
+# THE BUG (#4261)
+# generate_token_pair_capped signed every REFRESH token with
+# allowed_repo_ids: None, and POST /api/v1/auth/refresh re-mints the access
+# token from the presented refresh token's claims. A repository-restricted
+# session therefore kept its restriction for exactly one rotation: the refresh
+# token that rotation hands back is unrestricted, and the next refresh mints an
+# unrestricted access token. The action-scope ceiling was already carried
+# (#2430). Fixed: the refresh claims carry the allow-list too.
+#
+# HOW THE TIER REACHES IT
+# As the issue says, no endpoint hands a restricted refresh token to a client
+# today: the /v2/token API-token exchange suppresses the refresh token, the CI
+# OIDC exchange returns only the access token, Conan discards it, and the
+# device grant refuses restricted approvers. So the oracle builds the starting
+# credential itself: it logs U in (a real refresh-token family, its jti in
+# refresh_token_jti), and re-signs that refresh token with the deployment's
+# JWT_SECRET (read from the backend container, the DTF compose default) adding
+# allowed_repo_ids [A] and scopes [read:artifacts]. That is the refresh token a
+# restricted session would hold. Everything after that is the server's own
+# output: the first rotation's response carries a SERVER-MINTED refresh token,
+# and the gate is what that token says and what the second rotation mints.
+#
+# THE GATES
+#   (FIX #4261) the server-minted refresh token carries allowed_repo_ids [A]
+#     and scopes [read:artifacts]; the second and third rotations mint access
+#     tokens restricted to A (B 403/404, A 200, write refused).
+#     1.11.0: allowed_repo_ids null on the rotated refresh token, the second
+#     rotation's access token is unrestricted and reads B.
+#   (FIX #4663, refresh half) a refresh token 5 s past its exp is 401.
+#     1.11.0: accepted inside the 60 s validation leeway.
+#   (CONTROL, both images) the /v2/token exchange of a restricted API token
+#     returns a restricted access token and no refresh token; the first
+#     rotation of the restricted refresh token mints a restricted access token
+#     (the refresh path honours the claims it is given); the OCI offline-token
+#     refresh (grant_type=refresh_token) keeps the restriction across two
+#     rotations; logout revokes the family (the rotated token is then 401 and
+#     every refresh_token_jti row of the family is revoked); replaying a
+#     consumed refresh token is 401; a deactivated user cannot refresh; a
+#     refresh token 120 s past exp and an access token presented as a refresh
+#     token are 401.
+#
+# RATE_LIMIT_ENABLED=false: ~40 auth calls back to back from one client.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
