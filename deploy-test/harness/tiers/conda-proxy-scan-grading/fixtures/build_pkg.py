@@ -3,14 +3,17 @@
 # build_pkg.py - build a conda v1 (.tar.bz2) package with a chosen payload,
 #                for the conda scan-on-proxy tiers
 # =============================================================================
-#   build_pkg.py OUT_DIR NAME VERSION BUILD [PATH=CONTENT ...]
+#   build_pkg.py OUT_DIR NAME VERSION BUILD [@KEY=VALUE ...] [PATH=CONTENT ...]
 #
 # Writes OUT_DIR/NAME-VERSION-BUILD.tar.bz2 (noarch) holding info/index.json,
 # info/paths.json, info/files and every PATH=CONTENT payload file (CONTENT is
 # literal text; "\n" is a newline). A payload of
 #   site-packages/<Dist>-<ver>.dist-info/METADATA=Metadata-Version: 2.1\n...
 # is what a scanner catalogs as the vendored Python distribution <Dist>; no
-# payload at all is a data-only package with nothing to catalog. Members are
+# payload at all is a data-only package with nothing to catalog. An @KEY=VALUE
+# argument overrides one info/index.json key (`@license=GPL-3.0-only`); the
+# special `@subdir=linux-64` also drops the noarch markers and sets the
+# platform, making an arch-specific package. Members are
 # written in sorted order with mtime 0, so the bytes (and the digest the
 # proxy verdict is keyed on) depend only on the arguments.
 # =============================================================================
@@ -28,14 +31,22 @@ def main(argv):
         return 2
     out_dir, name, version, build = argv[1:5]
     payload = {}
+    overrides = {}
     for spec in argv[5:]:
         path, _, content = spec.partition("=")
+        if path.startswith("@"):
+            overrides[path[1:]] = content
+            continue
         payload[path] = content.replace("\\n", "\n").encode()
     index = {
         "name": name, "version": version, "build": build, "build_number": 0,
         "noarch": "generic", "platform": None, "subdir": "noarch",
         "depends": [], "license": "MIT",
     }
+    if overrides.get("subdir", "noarch") != "noarch":
+        index.pop("noarch")
+        index["platform"] = overrides["subdir"].split("-", 1)[0]
+    index.update(overrides)
     paths = {
         "paths_version": 1,
         "paths": [

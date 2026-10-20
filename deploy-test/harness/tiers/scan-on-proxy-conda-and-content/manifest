@@ -1,0 +1,41 @@
+# DTF tier manifest: scan-on-proxy-conda-and-content  (artifact-keeper 1.11.0:
+# #4585 conda scan-on-proxy gate, #4041 build-qualified conda purls, #4042 /
+# #4088 / #4089 conda -> PyPI identity, #4058 conda policy predicates, #4556
+# passed predicates in promotion gate_results, #4516 admin hold queues)
+# Profile-set: filesystem + upstreams.mock-conda-scan (a stdlib http.server
+# conda channel the oracle fills with host-built packages via docker cp; the
+# builder is harness/tiers/conda-proxy-scan-grading/fixtures/build_pkg.py).
+# LOCAL-ONLY: verdicts come from the backend image's bundled Grype and its
+# pre-seeded vulnerability DB; no scanner sidecar, no OSV, no internet. No
+# package this tier scans names a dependency, and none of them maps to a PyPI
+# distribution the dependency scanner would ask OSV about.
+#
+# WHAT IT GUARDS
+# #4585  before 1.11.0 a conda Remote with scan_on_proxy streamed every
+#        package unscanned. Now .conda/.tar.bz2 downloads run the inline gate
+#        (vulnerable 403 scan_blocked, clean X-AK-Scan: clean, an identity the
+#        package's own index.json does not back 423 under fail_closed), on the
+#        plain route, both /t/<token>/ forms and through a Virtual; a blocked
+#        package's .sigs sidecar is refused; the generic download route refuses
+#        proxied conda files (403 scan_on_proxy_route_required); GET
+#        /api/v1/formats says conda and conda_native are `enforced`.
+# #4041  a conda artifact's stored identity purl, and its own scan-inventory
+#        row, name the build: pkg:conda/<n>@<v>?build=..&channel=..&subdir=..
+#        (two subdir builds, two purls; noarch stays subdir=noarch).
+# #4042/#4088/#4089  the identity records the PyPI alias (py-opencv ->
+#        opencv-python) or that PyPI advisories were NOT queried (unmapped).
+# #4058  scan-policy predicates.conda.denied_licenses blocks the download of a
+#        hosted package declaring that license (quarantined with a
+#        [conda.license] reason); #4556 a promotion under the same predicate
+#        lists the passed policy-predicate in gate_results.
+# #4516  GET /api/v1/admin/holds/{summary,quarantine} list that hold; a
+#        repository-scoped admin token is refused.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and newer.
+#
+# RATE_LIMIT_ENABLED=false: admin setup plus ~40 calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock sits on a private per-slot subnet.
+PROFILES="storage.filesystem upstreams.mock-conda-scan"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
