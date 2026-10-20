@@ -1,0 +1,15 @@
+# =============================================================================
+# profiles/ingest.archive-entries.yml: ingest dimension = archive entry cap
+# =============================================================================
+# Passes MAX_INGEST_ARCHIVE_ENTRIES (artifact-keeper#4093, #4802) through to the
+# backend: the tar/zip entry-count ceiling the upload metadata extractors
+# (Composer, Swift, Helm, conda, Debian, protobuf, PyPI, NuGet, VS Code) apply
+# before refusing an archive as a suspected entry-count bomb. A tier sets the
+# value by exporting it from its manifest. Unset or blank falls back to the
+# backend default (10000), so layering this overlay without a value changes
+# nothing. Backends before #4802 ignore the variable.
+# =============================================================================
+services:
+  backend:
+    environment:
+      MAX_INGEST_ARCHIVE_ENTRIES: ${MAX_INGEST_ARCHIVE_ENTRIES:-}
