@@ -1,0 +1,58 @@
+# =============================================================================
+# profiles/mail.mock-smtp.yml: outbound mail toward a steerable mock SMTP server
+# =============================================================================
+# Adds `mock-smtp`, a stdlib-only Python SMTP server
+# (harness/tiers/upload-receive-and-ops-errors/fixtures/mock_smtp.py) with
+# three listeners:
+#   :25   plaintext, no STARTTLS; accepts, answers AUTH with 535, or holds a
+#         connection without a greeting, per /tmp/smtp/mode in the container
+#   :465  implicit TLS, :587 STARTTLS; both present the certificate a tier
+#         copies into /tmp/smtp/tls/ (no key material is committed; see
+#         ops-endpoints-1110, which generates a throwaway CA at run time)
+# Accepted messages are appended to /tmp/smtp/messages.jsonl and every
+# connection to /tmp/smtp/conns.log; the oracle reads and steers them with
+# `docker exec`, so nothing is published on the host.
+#
+# The overlay PATCHES backend: SMTP_HOST=mock-smtp on port 25 with
+# SMTP_TLS_MODE=none and credentials (so lettre authenticates and the 535
+# path is reachable), and pins the json-file log driver so the oracle can
+# read the backend's log with `docker logs`.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-smtp:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-smtp
+    command: ["python3", "/app/mock_smtp.py"]
+    volumes:
+      - "${DTF_DIR}/harness/tiers/upload-receive-and-ops-errors/fixtures/mock_smtp.py:/app/mock_smtp.py:ro"
+    # The bind-mounted script is unreadable on an SELinux-enforcing host
+    # without this.
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8025/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-smtp:
+        condition: service_healthy
+    environment:
+      SMTP_HOST: mock-smtp
+      SMTP_PORT: "25"
+      SMTP_TLS_MODE: none
+      SMTP_USERNAME: dtf-mailer
+      SMTP_PASSWORD: dtf-mailer-pass
+      SMTP_FROM_ADDRESS: artifact-keeper@dtf.test
+    logging:
+      driver: json-file
