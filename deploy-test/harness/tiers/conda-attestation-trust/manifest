@@ -1,0 +1,36 @@
+# DTF tier manifest: conda-attestation-trust  (artifact-keeper#4556, #4155,
+# #4058, #4709, #4711)
+# Profile-set: filesystem / single. Entirely local: the signing key is a P-256
+# key pair the oracle generates at run time (openssl), so no Fulcio, no Rekor
+# and no network are involved, and no key material is committed.
+#
+# THE FEATURES / FIXES
+# #4556 (1.11.0)  operator CEP-27 trust policy. CONDA_ATTESTATION_PUBLIC_KEYS
+#        trusts public keys for key-based bundles (`cosign attest-blob --key`);
+#        GET /api/v1/attestations/policy reports the policy (fingerprints, never
+#        key bytes); a verified record says `method: sigstore-key` and the key
+#        fingerprint; CEP-50 sidecars `<file>.sigs` / `.sigs.<sha256>` serve
+#        the stored bundles (append-only, identical bundle not duplicated) and
+#        every repodata record advertises `attestations_sha256`; a verified
+#        attestation satisfies `predicates.conda.min_attestation_state` on the
+#        download gate and `require_signature` on promotion, whose response
+#        lists passed `gate_results`.
+# #4155 (1.11.0)  attestations are verified, fail closed; the
+#        CONDA_ATTESTATION_REQUIRE_VERIFIED=false opt-out stores the failed
+#        record instead of refusing.
+# #4058 (1.11.0)  scan-policy `predicates.conda` are enforced on download.
+# #4709 / #4711 (1.11.2)  ATTESTATION_VERIFIED audit rows and the
+#        ak_conda_attestation_total{outcome="verified"|"failed"} counters.
+#
+# The oracle recreates the backend twice with fixtures/attestation-keys.yml
+# (first with the generated key trusted, then also with the opt-out), so the
+# manifest's profile set is only the starting stack.
+#
+# RED: ak-backend:1.10.0 for every 1.11.0 case (no policy route, key bundles
+# refused by the old shape check, predicates ignored, no sidecars);
+# ak-backend:1.11.1 for the 1.11.2 audit/metric cases only.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~40 authenticated calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
