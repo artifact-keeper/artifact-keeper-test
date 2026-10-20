@@ -1,0 +1,33 @@
+# DTF tier manifest: conda-sharded-remote-virtual  (artifact-keeper#4577)
+# Profile-set: filesystem / single + upstreams=mock-conda-sharded (a stdlib
+# Python 3.14 server publishing upstream conda channels with CEP-16 sharded
+# repodata on the slot's own 172.16.<slot>.0/24 subnet; see
+# fixtures/mock_conda_sharded.py and fixtures/cep16.py).
+#
+# THE FEATURE (1.11.0, #4577)
+# A remote conda channel proxies its upstream's CEP-16 shard index, rewritten
+# so packages and shards resolve against the registry, and each shard by
+# address through the proxy cache (immutable), refusing a shard that does not
+# hash to its address with 502. A virtual merges its members' shard indexes:
+# hosted shards first, a hosted-owned name never taken from a remote, the
+# allowlist applied per name (X-AK-Allowlist-Dropped), and a shard request
+# answered only for an address the merge lists. On 1.10.0 a remote or virtual
+# channel answered 404 for every CEP-16 document.
+#
+# THE PRIMITIVES
+#   GET /conda/{repo}/noarch/repodata_shards.msgpack.zst  (hosted, remote,
+#       virtual, allowlisted virtual, private hosted)
+#   GET /conda/{repo}/noarch/shards/{sha256}.msgpack.zst
+#   PUT /api/v1/repositories/{virtual}/allowlist
+#   mock: /__manifest (addresses), /__requests (upstream hits), /__heal
+#   proxy_cache_artifacts rows (the KNOWN-RED #4829 pin only)
+#
+# Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~40 calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the remotes' upstream is the mock on a
+# private address (the profile also sets it, scoped to 172.16.0.0/12).
+PROFILES="storage.filesystem upstreams.mock-conda-sharded"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
