@@ -1,0 +1,65 @@
+# =============================================================================
+# profiles/topology.two-replica.yml - a second backend replica on the same
+#                                     database and the same /data volume
+# =============================================================================
+# Adds `backend-b`: the same image and configuration as `backend`, sharing its
+# Postgres and its /data volume, so the pair behaves like two pods of one
+# deployment (cluster leases, advisory locks, one storage). Both replicas get
+# PROXY_SINGLEFLIGHT_ADVISORY_LOCKS_ENABLED=true, which the backend's config
+# documents as the setting for multi-replica deployments (#1609): one replica
+# fills a cold proxy object and the other waits on a Postgres advisory lock.
+#
+# backend-b joins backend's network namespace (`network_mode:
+# service:backend`) and listens on 8081 / gRPC 9091 (BIND_ADDRESS, GRPC_PORT), so it reaches every
+# network an overlay attached `backend` to (a mock upstream subnet, for
+# example) without this file having to know them, and without a host port of
+# its own: an oracle reaches it with
+#   docker exec ak-dtf<slot>-backend curl http://127.0.0.1:8081/...
+# (the backend image ships curl for its healthcheck). Its log is
+# `docker logs ak-dtf<slot>-backend-b`.
+#
+# backend-b starts after backend is healthy, so migrations and the admin
+# bootstrap have run once.
+#
+# Required vars (run.sh exports them): DTF_SLOT, BACKEND_IMAGE.
+# =============================================================================
+services:
+  backend:
+    environment:
+      PROXY_SINGLEFLIGHT_ADVISORY_LOCKS_ENABLED: "true"
+
+  backend-b:
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
+    container_name: ak-dtf${DTF_SLOT}-backend-b
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    network_mode: "service:backend"
+    environment:
+      DATABASE_URL: postgresql://registry:registry@postgres:5432/artifact_registry
+      STORAGE_PATH: /data/storage
+      BACKUP_PATH: /data/backups
+      PLUGINS_DIR: /data/plugins
+      JWT_SECRET: ${JWT_SECRET:-dtf-nonprod-cobalt-harbor-lantern-7f3a9c2e5b81}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-TestRunner!2026secure}
+      RUST_LOG: ${RUST_LOG:-info}
+      BIND_ADDRESS: 0.0.0.0:8081
+      GRPC_PORT: "9091"
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
+      STORAGE_KEY_SCHEME: ${STORAGE_KEY_SCHEME:-}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      UPSTREAM_ALLOW_PRIVATE_IPS: ${UPSTREAM_ALLOW_PRIVATE_IPS:-false}
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: ${AK_SSRF_ALLOW_PRIVATE_CIDRS:-}
+      PROXY_SINGLEFLIGHT_ADVISORY_LOCKS_ENABLED: "true"
+    volumes:
+      - dtf_data:/data
+    logging:
+      driver: json-file
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 10s
+      start_period: 40s
+      retries: 24
