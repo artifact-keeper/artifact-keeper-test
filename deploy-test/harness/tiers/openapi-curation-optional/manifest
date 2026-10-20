@@ -1,0 +1,27 @@
+# DTF tier manifest: openapi-curation-optional  (artifact-keeper#4330, fixed by #4793, 1.11.3)
+# Profile-set: filesystem + api.swagger (ENABLE_SWAGGER=true, so the backend
+# serves /api/v1/openapi.json; since #3489 nothing else mounts it).
+#
+# THE BUG (#4330)
+# UpdateRepositoryRequest.curation_default_action is an Option<String> in the
+# handler (absent leaves the stored value unchanged), but its utoipa override
+# was `#[schema(value_type = String, ...)]`. The override replaced the Option,
+# so the served spec listed the field under `required` and every generated SDK
+# had to read-modify-write it on each repository update. The fix (#4793)
+# changes the override to `value_type = Option<String>`. Spec only: the handler
+# already treated the field as optional.
+#
+# Oracle (oracle.sh):
+#   (FIX)     the served UpdateRepositoryRequest schema does not list
+#             curation_default_action under `required`. RED on 1.11.2.
+#   (CONTROL) the spec parses as JSON and the property is still declared;
+#             `required` of UpdateRepositoryRequest minus that field is exactly
+#             the 1.11.2 list; a real PATCH without the field succeeds and
+#             leaves the stored default untouched (API and DB row); a PATCH
+#             with it set changes it; "block" is refused with 400.
+#
+# RATE_LIMIT_ENABLED=false: a handful of admin calls; parity with the other
+# API tiers so a re-run under load never throttles a probe.
+PROFILES="storage.filesystem api.swagger"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
