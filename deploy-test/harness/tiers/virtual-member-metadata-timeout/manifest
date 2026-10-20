@@ -1,0 +1,33 @@
+# DTF tier manifest: virtual-member-metadata-timeout
+#   (artifact-keeper#4508; fixed in 1.11.0)
+# Profile-set: filesystem / single + upstreams=mock-multi (the stdlib-python
+# upstream at 172.16.<slot>.91; its /hang/... paths accept a request and never
+# answer, i.e. a Remote member whose upstream is down with connections
+# blackholed rather than refused).
+#
+# THE BUG
+# #4508  A virtual repository whose Remote member stopped answering held every
+#        metadata request that reached that member for the upstream client's
+#        60 s read timeout, longer than a reverse proxy allows a request, so
+#        clients saw 504 and builds crawled (reported on Maven
+#        `maven-metadata.xml`). Fixed: each Remote member's metadata fetch is
+#        bounded by AK_VIRTUAL_MEMBER_METADATA_TIMEOUT_SECS (default 20); a
+#        member that misses it fails the request promptly with a 502 naming
+#        it (Maven merges, Helm/CRAN/Hex/Bazel indexes), or is reported in
+#        `X-AK-Partial-Members` when the virtual allows partial merges.
+#        Metric: ak_virtual_member_metadata_timeouts_total{member}. Artifact
+#        downloads are not bounded by it.
+#
+# The deadline is lowered to 8 s so the tier is quick and the knob itself is
+# proven (the 502 body names the 8 s it missed); the fixed image must answer
+# well inside 15 s, the 1.10.0 baseline needs the full 60 s and the oracle
+# gives up on it at 40 s.
+#
+# RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
+#
+# RATE_LIMIT_ENABLED=false: one admin login and ~20 API calls back to back.
+PROFILES="storage.filesystem upstreams.mock-multi"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+export AK_VIRTUAL_MEMBER_METADATA_TIMEOUT_SECS="8"
