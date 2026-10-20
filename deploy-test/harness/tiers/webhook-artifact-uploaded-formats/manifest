@@ -1,0 +1,38 @@
+# DTF tier manifest: webhook-artifact-uploaded-formats
+#   (artifact-keeper#3939, fixed in #4388: 1.11.0)
+# Profile-set: filesystem + webhooks.mock-receiver (records every delivery's
+# headers and raw body) + webhooks.v2-producer (WEBHOOKS_V2_PRODUCER_ENABLED,
+# without which no event-driven webhook is ever enqueued).
+#
+# THE FIX
+# CRAN, Hex, Ansible, Puppet and RubyGems publishes, single and bulk
+# promotion, approved promotion, Git LFS uploads and chunked-upload completion
+# wrote their `artifacts` row directly and never produced artifact.uploaded,
+# so an artifact_uploaded webhook heard nothing. Each now emits exactly one,
+# carrying the new artifact's id (`entity_id`) and the uploader (`actor`); a
+# promotion's event belongs to the target repository. The native publishes
+# also now appear in /api/v1/packages.
+#
+# HOW IT IS OBSERVED
+# The producer turns each event into a `webhook_deliveries` row at once; the
+# retry scheduler POSTs rows on a 30 s tick. Every case counts the rows whose
+# payload entity_id is the artifact the publish created (found as the one new
+# live row in that repository) and checks the actor; the final control waits
+# for the scheduler and checks the receiver got each one exactly once.
+#
+# CONTROL (every image): a direct generic upload enqueues exactly one row,
+#   actor = admin, and it reaches the receiver.
+# FIX (RED on ak-backend:1.10.0, GREEN on 1.11.0 and main): one row each for
+#   a CRAN PUT, a Hex POST /publish, an Ansible Galaxy multipart publish, a
+#   Puppet Forge multipart publish, a gem push, a Git LFS object PUT, and a
+#   chunked-upload completion (actor = admin); one each for a single, a bulk
+#   and an approved promotion (approved by a second admin, actor = the
+#   approver), each also enqueued for a webhook scoped to the TARGET
+#   repository; the CRAN package and the gem are listed by
+#   /api/v1/packages?repository_key=. On 1.10.0 every one of these enqueues
+#   nothing and the two packages are not listed.
+#
+# RATE_LIMIT_ENABLED=false: many quick publishes.
+PROFILES="storage.filesystem webhooks.mock-receiver webhooks.v2-producer"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
