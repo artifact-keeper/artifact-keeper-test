@@ -1,0 +1,39 @@
+# DTF tier manifest: plugin-reload-ssrf  (artifact-keeper#4757, GHSA-r8fc-5fvw-rvh4)
+# Profile-set: filesystem + upstreams.mock-git (two stdlib-python git
+# smart-HTTP servers serving one signed WASM plugin repository: an approved
+# host at 172.16.<slot>.80 that AK_SSRF_ALLOW_PRIVATE_CIDRS admits as a /32,
+# and an internal host at .81 that nothing admits).
+#
+# THE BUG (#4757, fixed in 1.11.2 by #4761)
+# POST /api/v1/plugins/{id}/reload re-cloned a git-sourced plugin's stored
+# source_url through fetch_from_git -> clone_repository with no outbound-URL
+# check. Install validates the URL once, so a source whose host later moved
+# to (or started resolving to) a private, loopback or internal address was
+# cloned from anyway: reload became a mapper of services reachable from the
+# backend. The fix runs the same validate_outbound_url guard install uses
+# before every re-fetch and refuses with install's 400 ("Plugin git URL IP
+# '<ip>' is not allowed (private/internal network)", naming
+# AK_SSRF_ALLOW_PRIVATE_CIDRS for an address an operator can admit).
+#
+# THE ORACLE
+#   * installs a signed plugin over the real API from http://plugin-src/...
+#     (resolves to the approved host) and reloads it once to 2.0.0
+#     (CONTROLS: the legitimate install and reload work on both images);
+#   * re-points the `plugin-src` name to the internal host (the advisory's
+#     DNS flip; the stored URL never changes) and reloads: FIXED = 400 naming
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS, the internal host sees no request, the
+#     version stays put. BASELINE = the internal host serves the clone and
+#     the plugin is replaced from it;
+#   * reloads plugins whose stored source names loopback (the backend's own
+#     port), cloud metadata, a blocked service name and a file:// path:
+#     FIXED = 400 from the guard and (loopback) no request in the backend's
+#     own log. BASELINE = a clone attempt;
+#   * CONTROLS on both images: install refuses the internal host; a reload
+#     whose clone carries a bad or missing detached signature is refused by
+#     the signing gate (PLUGINS_TRUSTED_PUBKEY) and leaves the version alone.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives a dozen admin API calls back to
+# back; the base default (ON) is not what this tier is about.
+PROFILES="storage.filesystem upstreams.mock-git"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
