@@ -1,0 +1,59 @@
+# DTF tier manifest: github-release-mirror  (artifact-keeper#3656, #3657, #3658;
+# all shipped in 1.11.0)
+# Profile-set: filesystem + a two-origin, header-recording upstream
+# (upstreams.mock-recorder: one stdlib-python server on :80 and :81 of
+# 172.16.<slot>.77 with a shared run-time file table). :80 plays github.com /
+# api.github.com, :81 the objects host a release download is redirected to.
+# Proxy-cache sidecars are read and aged through a throwaway postgres:16-alpine
+# container with --volumes-from the backend (the backend image has no shell).
+#
+# THE BEHAVIOUR
+# #3657  `github`, `mise` and `aqua` Remote formats share the generic handler
+#        and the /general route; a release asset
+#        <o>/<r>/releases/download/<tag>/<asset> gets a finite seven-day cache
+#        lifetime instead of the 300 s mutable default. Generic Remotes are
+#        unchanged.
+# #3656  A repository's upstream token (upstream-auth bearer) must reach the
+#        release host but never the objects host the release host redirects
+#        to (github.com -> objects.githubusercontent.com in production).
+# #3658  On those formats the GitHub API release-by-tag lookup
+#        repos/<o>/<r>/releases/tags/<tag> gets the same seven days;
+#        releases/latest keeps the 300 s default.
+#
+# WHAT CORPUS ALREADY COVERS (artifact-keeper-test #399,
+# tests/formats/test-github-mirror.sh, not in DTF): format round-trip, private
+# rejection, and a real `mise install --locked` through url_replacements. This
+# tier adds the facets that script cannot see: the Authorization header on
+# each hop, and the cache lifetimes.
+#
+# THE PRIMITIVE FOR "15 MINUTES LATER"
+# The stamped lifetime is read from the entry's __cache_meta__.json
+# (expires_at - cached_at), then cached_at and expires_at are both moved back
+# 900 s and the path is requested again. A 300 s entry must revalidate
+# upstream; a seven-day entry must not. No sleeping.
+#
+# THE GATES
+#   (FIX)      RED on 1.10.0 (no github/mise/aqua format: create answers 400,
+#              every later case 404), GREEN on 1.11.0 and main:
+#              #3657 github, mise and aqua Remotes create and read back their
+#                    format.
+#              #3656 through the github Remote: 200 with the objects host's
+#                    exact bytes; the release host saw `Bearer <token>`; the
+#                    objects host saw no Authorization header.
+#              #3657 github and mise release assets stamped 604800 s; aged
+#                    15 minutes, served with no upstream request.
+#              #3658 releases/tags/<tag> stamped 604800 s and not revalidated
+#                    at 15 minutes; releases/latest stamped 300 s and
+#                    revalidated.
+#   (CONTROL)  must hold on BOTH images, on a generic Remote with the same
+#              upstream and token: the token reaches the release host and not
+#              the objects host (reqwest strips it cross-origin; #3656 pinned
+#              this, it never regressed), and a release asset keeps 300 s and
+#              revalidates at 15 minutes.
+#
+# RATE_LIMIT_ENABLED=false: ~30 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-recorder"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
