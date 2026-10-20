@@ -1,0 +1,42 @@
+# DTF tier manifest: signing-trust-attestations  (artifact-keeper#4282, PR #4274)
+# Profile-set: filesystem only. The external issuer keys are throwaway gpg keys
+# generated in a temporary GNUPGHOME on the harness host (gpg is a hard
+# requirement, as for the `signing` tier).
+#
+# THE FEATURE (#4282, merged as #4274 / cb6aae90, migration 291, milestone 1.12.0)
+# An out-of-band OpenPGP issuer (e.g. a root key on a hardware token) can
+# attest an AK signing key:
+#   GET  /api/v1/signing/keys/{id}/trust-attestation/challenge
+#        deterministic payload "AK-SIGNING-ATTESTATION-V1" + signing_key_id,
+#        fingerprint, key_id, key_type, algorithm, sha256(public key),
+#        created_at (signing_service::signing_key_attestation_payload)
+#   POST /api/v1/signing/keys/{id}/trust-attestation/verify   (admin only)
+#        {issuer_name, issuer_public_key_armored, signature_armored};
+#        verifies a binary detached signature over that payload with the
+#        issuer PRIMARY key and upserts signing_key_trust_attestations;
+#        a different issuer -> 409; bad / SHA-1 / text-mode signature,
+#        issuer_name > 255 chars, revoked or inactive key -> 400
+#        VALIDATION_ERROR; writes audit_log SIGNING_KEY_TRUST_ATTESTED and
+#        signing_key_audit trust_attestation_verified
+#   GET  /api/v1/signing/keys/{id}/trust-attestation           (stored record)
+#
+# THE GATES
+#   (FIX)     the table exists and the challenge equals the payload the oracle
+#             rebuilds from the key's public fields; non-admin 403/404 while
+#             the admin's valid attestation is stored (row bound to the key,
+#             issuer fingerprint, signature_valid, created_by admin, stored
+#             payload carrying the key fingerprint); same issuer idempotent
+#             (same row id), different issuer 409 with the row unchanged; bad,
+#             SHA-1, text-mode and over-long-name requests 400 with nothing
+#             stored, then a good one succeeds; a revoked key is refused; two
+#             audit_log rows by the admin naming issuer and key fingerprint and
+#             two signing_key_audit rows. RED on 1.11.3 (routes 404, no table).
+#   (CONTROL) both images: gpg key create / get / list, the served public key
+#             imports into gpg with the fingerprint the API reports, the key
+#             signs an artifact through POST /signing/artifacts/{id}/sign, and
+#             revoke sets is_active=false.
+#
+# RATE_LIMIT_ENABLED=false: ~40 calls back to back through one admin.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
