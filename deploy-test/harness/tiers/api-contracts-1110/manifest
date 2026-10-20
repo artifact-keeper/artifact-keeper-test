@@ -1,0 +1,80 @@
+# DTF tier manifest: api-contracts-1110
+#   (artifact-keeper 1.11.0: #4399/#840, #4400, #4401, #4402, #4405/#3427,
+#    #3869, #4083, #4095, #3977, #3924, #3917, #3066, #4423, #4157, #4258)
+# Profile-set: filesystem + api.swagger (ENABLE_SWAGGER, for the served
+# OpenAPI document) + secrets.webhook-key (AK_WEBHOOK_SECRET_KEY, which
+# asymmetric webhooks need) + webhooks.mock-receiver (a stdlib receiver that
+# records every delivery's headers and raw body and doubles as a counting
+# upstream for a Remote repository).
+#
+# Every case is a pure API contract added or fixed in 1.11.0. RED image:
+# ak-backend:1.10.0. GREEN: ak-backend:1.11.0 and today's main.
+#
+# CONTROLS (pass on every image)
+#   generic upload round-trips; repo GET carries key/format
+#   an hmac webhook's test delivery carries t= and a v1= HMAC that verifies
+#     with its secret, and no v2= token
+#   a Remote generic repo fetches an unfiltered path from the mock
+#   a Debian local repo without a debian object is created; a chunked upload
+#     to a fresh path completes
+#   the OpenAPI document is served
+#
+# FIX CASES (RED on 1.10.0, GREEN on 1.11.0)
+#   #4399/#840 PUT /repositories/{key}/upstream-filter {include:[^ok/]} ->
+#     200 active; a non-matching path answers 404 with ZERO requests at the
+#     mock; a matching path still 200; "(" -> 400 naming include_patterns[0];
+#     on a hosted repo 400; a plain user is denied. 1.10.0: no route, and the
+#     "filtered" path is fetched from upstream.
+#   #4400 /api/v1/bundles: format {format: akbundle, container: tar, layout},
+#     manifest/validate reports valid:false with problems and a sha256,
+#     exports 501 NOT_IMPLEMENTED (400 for an empty list), imports 501, a
+#     plain user denied. 1.10.0: no route.
+#   #4401 signing_mode asymmetric is stored and returned (the default is
+#     hmac); GET /webhooks/jwks needs no credentials and serves an Ed25519
+#     key; the test delivery carries X-ArtifactKeeper-Webhook-Id = the
+#     webhook id and v2=<kid>:<sig>, no v1=, and the signature verifies
+#     (openssl) over "<t>.<webhook_id>.<body>" but not for another id.
+#     1.10.0: signing_mode null, no jwks, v1= only.
+#   #4402 a .safetensors in an mlmodel repo gets metadata.safetensors
+#     {tensors{w:F32[2,3], b:F16[4]}, total_parameters 10, tensor_count 2,
+#     tensors_truncated false, metadata.format pt}; a header claiming 1e9
+#     bytes is still accepted and records safetensors_error. 1.10.0: 404.
+#   #4405/#3427 POST /repositories/{key}/artifacts-missing lists only the
+#     checksum_mismatch and not_found items in order; 1001 items 400; a
+#     non-reader 404; POST /uploads {skip_if_present:true} for the identical
+#     artifact -> 200 already_present with its id and no session. 1.10.0: no
+#     route; skip_if_present opens a session (201).
+#   #3869 lifecycle create {enabled:false} -> response and DB row false;
+#     omitted -> true. 1.10.0: true.
+#   #4083 wasm_oci / helm_oci / conda_native read back verbatim. 1.10.0:
+#     wasmoci / helmoci / condanative.
+#   #4095 + #3977 openapi.json has /repositories/{key}/security/proxy-sbom and
+#     /artifacts/{id}/package-analysis, and every promotion .../promote POST
+#     documents 400. 1.10.0: absent.
+#   #3924 completing a chunked upload onto an occupied immutable path -> 409
+#     {code: CONFLICT}, the session stays open, the stored bytes unchanged.
+#     1.10.0: 200 and the bytes are replaced.
+#   #3917 storage_backend on repo GET and the listing equals the DB column.
+#     1.10.0: null.
+#   #3066 quick, advanced and recent search items carry quarantine_status.
+#     1.10.0: absent.
+#   #4423 a virtual's storage_used_bytes is 0 and member_storage_used_bytes is
+#     the member's usage; a hosted repo's member_storage_used_bytes is null.
+#     1.10.0: the virtual reports the members' bytes as its own.
+#   #4157 PUT /general/{repo}/{path} -> 405 JSON METHOD_NOT_ALLOWED naming
+#     PUT /api/v1/repositories/{repo}/artifacts/{path}, Allow "GET, HEAD";
+#     repo_type "hosted" -> 201 as local. 1.10.0: bare 405, hosted 400.
+#   #4258 Debian local with an all-empty debian object -> 201; a non-empty one
+#     still 400. 1.10.0: 400 for both.
+#
+# NOT COVERED: #4117 (CI OIDC group_binding_ids) is already asserted by the
+# wired ci-oidc-exchange tier; #3070 format_key needs an installed WASM format
+# plugin; #4401's 422 without AK_WEBHOOK_SECRET_KEY needs a second topology;
+# #3066's OpenSearch path needs an OpenSearch profile.
+#
+# RATE_LIMIT_ENABLED=false: many quick API calls.
+PROFILES="storage.filesystem api.swagger secrets.webhook-key webhooks.mock-receiver"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+export DTF_WEBHOOK_SECRET_KEY="$(printf 'dtf-api-contracts-1110-key-32byt' | base64)"
