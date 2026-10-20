@@ -1,0 +1,51 @@
+# DTF tier manifest: age-gate-repo-admin  (artifact-keeper#4238, PR #4239)
+# Profile-set: filesystem / single. Like age-gate-review-reopen, the held
+# versions come from proxying the real `is-odd` packument from
+# registry.npmjs.org (egress required). The gate runs in `first_seen` mode,
+# so on a fresh stack every version is "young" and held (7 reviews per repo),
+# independent of how old the upstream releases are.
+#
+# THE FEATURE (#4238, merged as #4239 / ae91da02, migration 290, milestone 1.12.0)
+# The age gate was configured per repository but operable only by an instance
+# admin. Now a principal holding the fine-grained `repository:admin` action
+# (permissions table: principal, group, or project inheritance) on a
+# repository can, for THAT repository only:
+#   GET/PUT /api/v1/repositories/{key}/age-gate
+#   GET     /api/v1/repositories/{key}/age-gate/reviews[/{id}]   (filter from
+#           the path; ?repository_key= ignored; another repo's id -> 404)
+#   POST    /api/v1/repositories/{key}/age-gate/reviews/{id}/{approve|reject|reopen}
+# Responses name the decider (reviewed_by_username, _is_service_account).
+# Migration 290 adds the instance-admin lock: an instance-admin policy write
+# (unless it sends instance_locked:false) and an instance-admin review decision
+# are locked; a repository admin may tighten but not disable, lower, re-mode
+# or unlock a locked policy, and may reject but not approve or reopen a locked
+# review. Audit: REPOSITORY_UPDATED details.age_gate_change{actor_tier,
+# relaxed,...}, AGE_GATE_APPROVED/REJECTED/REOPENED details.actor_tier,
+# AGE_GATE_LOCK_SET / AGE_GATE_LOCK_RELEASED {lock: policy|review}.
+#
+# THE PRIMITIVES
+#   Two public remote npm repos A and B on registry.npmjs.org; a non-admin
+#   user U granted [admin] on A through POST /api/v1/permissions; nothing on B.
+#   "served" = the version key is present in a fresh proxied packument.
+#
+# THE GATES
+#   (FIX)     U reads and enables A's gate (stored unlocked); U lists A's
+#             pending reviews (A only, also with ?repository_key=B), reads one,
+#             a B review id through A's route is 404 for GET and approve, an
+#             unknown decision is 400; U approves one (released in the
+#             packument, reviewed_by_username U, unlocked) and the /admin queue
+#             shows it approved by U; an instance-admin reject locks a review
+#             (U approve/reopen 403); an instance-admin policy write locks A
+#             (U lower/disable/re-mode/unlock 403, policy unchanged; tighten
+#             200); the instance admin hands both back and U may then relax and
+#             approve; audit rows carry actor and tier. RED on 1.11.3 (U gets
+#             403 "Admin access required" on A's gate, no scoped queue).
+#   (CONTROL) both images: instance-admin PUT/GET of B's gate, the hold, the
+#             /admin queue, approve releases and reject re-blocks the version;
+#             U is refused (403/404) on every B gate and queue route and on the
+#             instance queue, and B's policy and review do not change.
+#
+# RATE_LIMIT_ENABLED=false: ~60 calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
