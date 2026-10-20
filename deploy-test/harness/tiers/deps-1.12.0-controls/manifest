@@ -47,10 +47,11 @@
 #     #4377  tower-http 0.7 answers `Accept-Encoding: identity;q=0` with 406
 #            Not Acceptable (RFC 9110 12.5.3) on the compressed npm metadata
 #            routes; 0.6 served identity 200.
-#   (KNOWN-RED) real backend defects found here, reported and not failed so
-#              the controls stay a usable gate: artifact-keeper#4816 (NuGet V2
-#              feed text loses entity references) and #4817 (S3 reindex
-#              mismatches percent-encoded keys). Neither is from the bumps.
+#   (FIX, RED on main 2f08663f, GREEN from main adfa0206) two backend
+#              defects this tier found, first pinned KNOWN-RED and asserted
+#              since their fixes merged: artifact-keeper#4816 (NuGet V2 feed
+#              text loses entity references) and #4817 (S3 reindex mismatches
+#              percent-encoded keys). Neither is from the bumps.
 #
 # The SAML case needs the sso tier's signer: DTF_SAML_XSW_PROBE, or the
 # prebuilt harness/tiers/sso/probe/target/release/dtf-saml-xsw-probe that the

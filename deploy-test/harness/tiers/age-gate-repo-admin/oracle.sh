@@ -311,4 +311,41 @@ chk "no lock transition by U" "action LIKE 'AGE_GATE_LOCK_%' AND user_id='${U_ID
 chk "no age-gate audit by U outside A" "(action LIKE 'AGE_GATE_%' OR action='REPOSITORY_UPDATED') AND user_id='${U_ID}' AND resource_id <> '${RA_ID}'" eq 0
 finish_case "age-gate actions are not audited with actor and tier (#4238)"
 
+# =============================================================================
+# FIX artifact-keeper#4818 (RED on main 2f08663f and every 1.11.x release,
+# GREEN from main adfa0206): a `repository-owner` ROLE member (role_assignments,
+# no fine-grained grant) is a repository admin for the age gate too. Before the
+# fix require_repo_admin read fine-grained `permissions` rows only and refused
+# the role. Read-only, after the audit case, so no earlier count moves.
+# =============================================================================
+begin_test "FIX #4818: a repository-owner role member on A reads A's gate and review queue; B stays refused"
+reset_case
+O_NAME="agra-o-${DTF_SLOT}-${SUF}"; O_PASS="AgraOwner_${SUF}_Aa1!"
+call "$TOK" POST /api/v1/users "$W/o.out" \
+  "{\"username\":\"${O_NAME}\",\"password\":\"${O_PASS}\",\"email\":\"${O_NAME}@dtf.invalid\"}" >/dev/null
+docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc "
+  INSERT INTO role_assignments (user_id, role_id, repository_id)
+  SELECT u.id, r.id, repo.id FROM users u, roles r, repositories repo
+  WHERE u.username='${O_NAME}' AND r.name='repository-owner' AND repo.key='${RA}'
+  ON CONFLICT DO NOTHING;" >/dev/null 2>&1 || true
+n_role="$(psql_q "SELECT count(*) FROM role_assignments ra JOIN users u ON u.id=ra.user_id WHERE u.username='${O_NAME}'")"
+n_perm="$(psql_q "SELECT count(*) FROM permissions p JOIN users u ON u.id=p.principal_id WHERE u.username='${O_NAME}'")"
+OTOK="$(login "$O_NAME" "$O_PASS")"
+if [ "$n_role" != "1" ] || [ -z "$OTOK" ]; then
+  infra_fail "could not set up the repository-owner role member (role rows ${n_role}, login ${OTOK:+ok})"; end_suite
+fi
+note "O=${O_NAME}: role rows ${n_role}, fine-grained permission rows ${n_perm:-0}"
+c="$(call "$OTOK" GET "/api/v1/repositories/${RA}/age-gate" "$W/o.get")"
+note "O GET A gate: HTTP ${c} $(head -c 160 "$W/o.get")"
+[ "$c" = "200" ] && [ "$(jqr '.repository_key' < "$W/o.get")" = "$RA" ] \
+  || fail_g "#4818: repository-owner role member GET A's age gate answered HTTP ${c}, expected 200"
+c="$(call "$OTOK" GET "/api/v1/repositories/${RA}/age-gate/reviews?per_page=100" "$W/o.q")"
+note "O list A reviews: HTTP ${c}, keys $(jqr '[.items[].repository_key] | unique | join(",")' < "$W/o.q")"
+[ "$c" = "200" ] && [ "$(jqr "[.items[].repository_key] | unique | join(\",\")" < "$W/o.q")" = "$RA" ] \
+  || fail_g "#4818: repository-owner role member listing A's reviews answered HTTP ${c}, expected 200 confined to A"
+c="$(call "$OTOK" GET "/api/v1/repositories/${RB}/age-gate" "$W/o.b")"
+note "O GET B gate (CONTROL, no role on B): HTTP ${c}"
+case "$c" in 403|404) ;; *) fail_g "CONTROL: the role member read B's age gate (HTTP ${c}), expected 403/404";; esac
+finish_case "#4818: a repository-owner role member is refused its own repository's age gate"
+
 end_suite

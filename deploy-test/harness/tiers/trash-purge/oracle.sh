@@ -6,8 +6,8 @@
 #   (DELETE /api/v1/repositories/{key}/artifacts/{path}?permanent=true), so a
 #   deleted release can be re-uploaded with different bytes at once. A shared
 #   stored object survives the purge; a repository-restricted admin token stays
-#   inside its repositories; OCI content is refused with 409, and only after
-#   the access gates.
+#   inside its repositories for purge (#4701) and for list and restore (#4813);
+#   OCI content is refused with 409, and only after the access gates.
 # See the manifest for THE BUG, the primitives and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
@@ -281,6 +281,30 @@ c="$(trash_purge "$SB" "$STOK" "$W/o")"
 note "scoped token purges ${R_GB} artifact: HTTP ${c}; row $(row_state "$SB")"
 [ "$c" = "200" ] && [ "$(row_state "$SB")" = "gone" ] || fail_g "in-scope purge was HTTP ${c} and left the row $(row_state "$SB"), expected 200 and gone"
 finish_case "#4701 scope: a repository-restricted admin token is not held to its repositories, or cannot purge in them"
+
+# =============================================================================
+# #4813: the trash list and restore hold a repository-restricted admin token to
+# its repositories, like the purge (#4701). SA (repository A) is still trashed
+# after the case above; the token is restricted to repository B.
+# =============================================================================
+begin_test "FIX #4813 (scope): a repository-restricted admin token's trash list omits another repository's artifact and its restore of it is 404 (row kept); the unrestricted admin still lists it"
+reset_case
+c="$(http GET "$BASE/api/v1/admin/trash?per_page=100" "$TOK" "$W/o")"
+n_admin="$(jq -r --arg i "$SA" '[.items[]? | select(.id == $i)] | length' < "$W/o" 2>/dev/null || true)"
+note "admin trash list: HTTP ${c}, contains ${SA}: ${n_admin}"
+[ "$c" = "200" ] && [ "$n_admin" = "1" ] || fail_g "CONTROL: the unrestricted admin's trash list does not show ${SA} (HTTP ${c})"
+c="$(http GET "$BASE/api/v1/admin/trash?per_page=100" "$STOK" "$W/o")"
+n_scoped="$(jq -r --arg i "$SA" '[.items[]? | select(.id == $i)] | length' < "$W/o" 2>/dev/null || true)"
+foreign="$(jq -r --arg r "$ID_GB" '[.items[]? | select(.repository_id != $r)] | length' < "$W/o" 2>/dev/null || true)"
+note "scoped trash list: HTTP ${c}, contains ${SA}: ${n_scoped}, items outside ${R_GB}: ${foreign}"
+[ "$c" = "200" ] || fail_g "the scoped token's trash list was HTTP ${c}, expected 200 (filtered)"
+[ "$n_scoped" = "0" ] || fail_g "the scoped token's trash list shows ${R_GA}'s trashed artifact ${SA}"
+[ "$foreign" = "0" ] || fail_g "the scoped token's trash list carries ${foreign} item(s) from repositories outside its scope"
+c="$(http POST "$BASE/api/v1/admin/trash/${SA}/restore" "$STOK" "$W/o")"
+note "scoped token restores ${R_GA} artifact: HTTP ${c} $(body "$W/o"); row $(row_state "$SA")"
+[ "$c" = "404" ] || fail_g "out-of-scope restore was HTTP ${c}, expected 404 (reads like an unknown id)"
+[ "$(row_state "$SA")" = "trashed" ] || fail_g "the out-of-scope artifact's row is $(row_state "$SA"), expected still trashed"
+finish_case "#4813: a repository-restricted admin token sees or restores another repository's trash"
 
 # =============================================================================
 # OCI: refused with 409, and only after the access gates.

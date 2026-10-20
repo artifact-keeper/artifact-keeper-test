@@ -193,16 +193,13 @@ note "PUT on a local repo: HTTP ${code} $(abody | head -c 160)"
 [ "${code:0:1}" = "4" ] && [ "$code" != "404" ] || fail_g "PUT on a local repo answered HTTP ${code}, expected a 4xx refusal (Remote only)"
 finish_case "#4581: the per-repository stale-if-error grace API is missing or wrong"
 
-# Known issue artifact-keeper#4815 (open, 1.12.0): the grace GET has no
-# authentication or repository-visibility check, so on the fixed image an
-# anonymous caller and a signed-in user with no grant on the private repo both
-# get 200 with the grace config. This case does NOT pin that either way: it
-# records the statuses and gates only what must hold before and after #4815 is
-# fixed, namely that the answer is a refusal (401/403/404) or the four
-# documented grace fields and nothing else (no upstream URL, no credentials).
-begin_test "CONTROL: the grace GET answers an anonymous / no-grant caller with a refusal or only the grace fields (status recorded, artifact-keeper#4815)"
+# FIX artifact-keeper#4815 (RED on main 2f08663f, GREEN from main adfa0206):
+# the grace GET checks repository visibility, so an anonymous caller and a
+# signed-in user with no grant on the private repo get 404, as for any other
+# read of a repository they cannot see. Before the fix both got 200 with the
+# grace config.
+begin_test "FIX #4815: the grace GET on a private Remote is 404 to an anonymous and to a no-grant caller"
 reset_case
-GRACE_KEYS='["last_stale_served_at","override_seconds","repository_key","stale_if_error_grace_seconds"]'
 for who in anonymous no-grant; do
   if [ "$who" = "anonymous" ]; then
     code="$(curl -s --max-time 10 -o "$W/who.body" -w '%{http_code}' "$BASE/api/v1/repositories/${R_FRESH}/stale-if-error-grace" || true)"
@@ -210,15 +207,10 @@ for who in anonymous no-grant; do
     code="$(curl -s --max-time 10 -o "$W/who.body" -w '%{http_code}' -H "Authorization: Bearer $T_USER" \
       "$BASE/api/v1/repositories/${R_FRESH}/stale-if-error-grace" || true)"
   fi
-  note "${who} GET on private ${R_FRESH}: HTTP ${code} $(head -c 200 "$W/who.body" 2>/dev/null) (status not gated: artifact-keeper#4815)"
-  case "$code" in
-    401|403|404) ;;
-    200) [ "$(jq -c 'keys' "$W/who.body" 2>/dev/null)" = "$GRACE_KEYS" ] \
-           || fail_g "${who}: the 200 body carries more than the four grace fields: $(head -c 200 "$W/who.body")";;
-    *) fail_g "${who}: unexpected HTTP ${code}";;
-  esac
+  note "${who} GET on private ${R_FRESH}: HTTP ${code} $(head -c 200 "$W/who.body" 2>/dev/null)"
+  [ "$code" = "404" ] || fail_g "#4815: ${who} GET of the private repo's grace answered HTTP ${code}, expected 404"
 done
-finish_case "the grace GET leaks more than the grace config to an unprivileged caller"
+finish_case "#4815: the grace GET discloses a private repository's settings to a caller who cannot read it"
 
 # =============================================================================
 # #4581 FIX: a stale-if-error serve inside the grace is marked and counted.

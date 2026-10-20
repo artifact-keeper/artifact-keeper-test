@@ -3036,6 +3036,8 @@ jobs:
   #   upgrade-origins — upgrade-v156-origin + upgrade-v158-origin
   #                     (#2688 migration-ledger divergence; origins are
   #                     the published immutable 1.5.6/1.5.8 ghcr tags)
+  #                     + upgrade-v270-origin (1.10.0 rows through the
+  #                     1.11 upgrade; origin is the published 1.10.0 tag)
   #   security-authz  — the 1.6.1 advisory-class regression tiers
   #                     (vvc3 scoped-admin keystone, qcmj webhook authz,
   #                     f7qf peer authz, 5f2q upload scope, qxxr refresh
@@ -3103,7 +3105,7 @@ jobs:
           - group: core
             tiers: smoke isolation
           - group: upgrade-origins
-            tiers: upgrade-v156-origin upgrade-v158-origin upgrade
+            tiers: upgrade-v156-origin upgrade-v158-origin upgrade upgrade-v270-origin
           - group: security-authz
             tiers: vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race oci-push-scope api-alias-repo-key oci-rest-delete-digest-authority empty-repo-key-no-body-read
           - group: security-boundary
@@ -3183,6 +3185,73 @@ jobs:
             tiers: ledger-triggers-authoritative quota-admission-o1 virtual-usage rpm-p3-curation inline-scan-hosted-gate-2954 openapi-signing-tags
           - group: sso-ldap
             tiers: ldaps oidc-group-sync oidc-env-config
+          # P2-P9 coverage (artifact-keeper-test#504-#570): the 1.11.0 feature
+          # and fix surface the 1.11.x coverage audit found ungated, plus the
+          # 1.11.1/1.11.2 facets it named. Each tier is green on the first
+          # release that carries its fix and on main, red on the release
+          # before it. Grouped by theme, every group well under 25 min
+          # measured (most tiers take 20-70 s; the slow ones are
+          # trash-blob-gc-remote-cache ~3 min, conda-environments-reverse-
+          # index ~4 min and upload-receive-and-ops-errors ~2 min). Every
+          # upstream is a local mock: the OSV mock pins api.osv.dev to a
+          # local container, scanning uses the image's bundled Grype and
+          # seeded DB, Azure is Azurite, S3 is MinIO. Tiers whose
+          # 172.16.<slot>.0/24 mocks share a subnet run one after another in
+          # a group (each tier tears down before the next), never two in
+          # one tier. Required.
+          #   access/policy: k8s SA pull tokens, project admins and quota,
+          #     guest access; lifecycle assignments, Ed25519 signing
+          #     rotation, trash/blob GC and Remote cache eviction.
+          #   ops: log/metrics fields, DB keepalives and startup retry, bind
+          #     IPs and OTel, upload receive errors, presigned redirects,
+          #     readyz dependencies and SMTP TLS.
+          - group: features-1.11.0-access
+            tiers: k8s-sa-pull-token project-admin-and-project-quota guest-access-runtime-visibility-banners
+          - group: features-1.11.0-policy
+            tiers: lifecycle-assignments-min-keep signing-ed25519-rotation-overlap-legacy trash-blob-gc-remote-cache
+          - group: ops-1.11.x
+            tiers: db-keepalive-startup-retry ops-log-and-metrics-1112 bind-ip-and-otel upload-receive-and-ops-errors ops-endpoints-1110
+          #   proxy/virtual/OCI: download accounting, cache TTL and refill,
+          #     virtual member failure and timeout policy, npm isolate,
+          #     NuGet protocol translation; OCI digest scope, promotion,
+          #     upstream auth, presigned blobs, scrub and blob journal.
+          - group: proxy-virtual-1.11.0
+            tiers: virtual-member-failure-policy nuget-protocol-translation npm-virtual-isolate-disttag-feed proxy-cache-ttl-and-refill proxy-download-ledger virtual-member-metadata-timeout
+          - group: oci-1.11.0
+            tiers: oci-usage-counts-layers-once oci-manifest-scrub oci-presigned-redirect oci-remote-upstream-auth oci-blob-journal-per-repo oci-digest-scope-and-promotion
+          #   conda: a = channel surface, merge policy and CEP-16 shards;
+          #     b = attestation trust and proxy scan gates; c = the
+          #     environments reverse index on its own (three 60 s scheduler
+          #     ticks).
+          - group: conda-1.11.0-a
+            tiers: conda-virtual-merge-policy conda-channel-1110-surface conda-sharded-remote-virtual conda-hosted-cep16-and-upload conda-virtual-shards
+          - group: conda-1.11.0-b
+            tiers: conda-attestation-trust conda-proxy-scan-grading scan-on-proxy-conda-and-content
+          - group: conda-1.11.0-c
+            tiers: conda-environments-reverse-index
+          #   scanning: a = scan-on-proxy/upload gates (bundled Grype);
+          #     b = OSV findings, ingest, SBOM licenses and severity counts
+          #     against the local OSV mock.
+          - group: scanning-1.11.0-a
+            tiers: cargo-scan-on-proxy proxy-scan-record-only-provenance scan-on-proxy-maven-nuget scan-on-upload-native-and-completeness
+          - group: scanning-1.11.0-b
+            tiers: severity-counts-agree osv-positional-findings sbom-license-expression scan-ingest-and-workspace
+          - group: promotion-1.11.0
+            tiers: promotion-and-curation-validation promotion-gate-results-and-origin
+          #   formats: GitHub release mirror, VS Code gallery, a real pacman
+          #     client (pinned archlinux image, nothing installed), bazel
+          #     registry. storage: S3 staging and 411 CopyObject, Azurite,
+          #     two replicas on S3, native quota and RPM races, Maven upload
+          #     transactions on S3.
+          - group: formats-1.11.0
+            tiers: bazel-bzlmod-registry github-release-mirror vscode-gallery-protocol pacman-hosted
+          - group: storage-1.11.0
+            tiers: quota-native-and-rpm-races maven-upload-tx-and-quality-s3 s3-copy-length-required azure-default-backend replicated-and-chunked-uploads upload-staging-object-store
+          #   api-contracts: 1.11.0 API shapes, artifact.uploaded webhooks
+          #     per format, catalog backfill, startup config, private-IP
+          #     toggles, the stock Caddyfile's routes.
+          - group: api-contracts-1.11.0
+            tiers: lifecycle-signing-webhook-config api-contracts-1110 catalog-backfill-liveness webhook-artifact-uploaded-formats stock-compose-caddy startup-config-and-format-indexes
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
@@ -3298,6 +3367,16 @@ jobs:
   #     reason:  signing installs alpine-sdk from the Alpine CDN inside its
   #              apk client; age-gate-repo-admin proxies is-odd from
   #              registry.npmjs.org. Both are green on main.
+  #   clients-1.11.0 (debian-flat-remote, conan-protocol-1-11,
+  #                   native-client-modules-and-lfs):
+  #     reason:  real clients installed from the public internet at run
+  #              time: rpm-build from the Fedora mirrors, conan from
+  #              pypi.org, git-lfs from the Alpine CDN. Green on main.
+  #   scanner-server (trivy-server-mode):
+  #     reason:  the trivy server sidecar downloads the Trivy DB (~70 MB)
+  #              from ghcr at start; its red/green axis is the scanner
+  #              adapter image, not the backend. Green on main with the
+  #              published adapter :1.
   #   owner:   release-engineering
   #   expires: 2026-10-01 — on/after this date either promote the leg
   #            into dtf-gate or re-justify the waiver in a PR.
@@ -3320,6 +3399,10 @@ jobs:
             tiers: inline-scan-fail-open-2954 inline-scan-proxy-pypi-2954 scan-verdict-dbversion
           - group: external-clients
             tiers: signing age-gate-repo-admin
+          - group: clients-1.11.0
+            tiers: debian-flat-remote conan-protocol-1-11 native-client-modules-and-lfs
+          - group: scanner-server
+            tiers: trivy-server-mode
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

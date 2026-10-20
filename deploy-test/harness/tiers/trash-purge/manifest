@@ -52,6 +52,10 @@
 #              download; a non-admin with delete can soft-delete; the #4700
 #              409 precondition; a scoped token without access to the OCI
 #              repository gets 403/404 (not 409) on ?permanent=true.
+#   (FIX #4813) RED on main 2f08663f, GREEN from main adfa0206: the
+#              restricted token's trash list omits other repositories' items
+#              and its restore of one is 404 (row kept); the unrestricted
+#              admin still lists it (control).
 #
 # RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back.
 PROFILES="storage.filesystem"
