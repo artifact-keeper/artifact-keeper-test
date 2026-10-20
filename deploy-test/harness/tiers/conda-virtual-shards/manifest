@@ -1,0 +1,41 @@
+# DTF tier manifest: conda-virtual-shards  (artifact-keeper#4607 / #4612 / #4608)
+# Profile-set: filesystem / single + upstreams=mock-conda-sharded (the CEP-16
+# upstream channels of harness/tiers/conda-sharded-remote-virtual/fixtures)
+# + limits.conda-merge-gate (passes the merge gate's env knobs through)
+# + logging.json-file (the #4612 case greps the backend's warn line).
+#
+# THE BUGS (all fixed in 1.11.0, on top of #4577's remote/virtual shards)
+# #4607  a virtual listed an upstream shard that holds only a `removed` entry
+#        (conda-forge's 90-byte cuda-nvcc_linux-64 noarch shard) and then
+#        answered 404 for it, which pixi/rattler treat as fatal.
+# #4612  an upstream shard index past the 8 MiB metadata tier answered 502 on
+#        the remote (conda-pypi's noarch index is 28.6 MB); now read again
+#        under a 64 MiB ceiling, and an index past THAT is 404 ("publishes no
+#        CEP-16 shard index ... use repodata.json") on the remote and on a
+#        virtual over it, never 502.
+# #4608  every virtual merge request ran its own merge (20 concurrent solves
+#        took the backend to 20.8 GB); now one shared merge kept under one
+#        ETag, a cap on concurrent merges and a 503 + Retry-After queue
+#        deadline, with ak_conda_virtual_merge_* metrics.
+#
+# THE PRIMITIVES
+#   GET /conda/{virtual}/noarch/repodata_shards.msgpack.zst + every shard
+#   GET /conda/{remote|virtual}/noarch/repodata_shards.msgpack.zst over a
+#       9.7 MiB and a 70.4 MiB upstream index
+#   20 x GET /conda/{virtual}/noarch/repodata.json in parallel, If-None-Match
+#   GET /api/v1/admin/metrics (ak_conda_virtual_merge_*)
+#   a merge held 9 s by a slow upstream while a second virtual's merge queues
+#
+# Merge gate: ONE merge slot and a 2 s queue deadline, so the second merge is
+# shed with 503 while the slow one runs. Every other case is sequential (one
+# merge at a time), so the cap does not change their outcome.
+#
+# RATE_LIMIT_ENABLED=false: ~60 calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the remotes' upstream is the mock on a
+# private address.
+PROFILES="storage.filesystem upstreams.mock-conda-sharded limits.conda-merge-gate logging.json-file"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+export CONDA_VIRTUAL_MAX_CONCURRENT_MERGES="1"
+export CONDA_VIRTUAL_MERGE_QUEUE_SECS="2"

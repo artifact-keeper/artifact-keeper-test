@@ -1,0 +1,22 @@
+# =============================================================================
+# profiles/limits.conda-merge-gate.yml: pass the virtual conda merge gate's
+# knobs (artifact-keeper#4608) through to the backend
+# =============================================================================
+# The gate bounds virtual conda merges (repodata.json in every encoding,
+# channeldata.json, the CEP-16 shard index): concurrent requests for one
+# document share one merge, the result is kept for
+# CONDA_VIRTUAL_MERGE_CACHE_TTL_SECS, at most CONDA_VIRTUAL_MAX_CONCURRENT_MERGES
+# merges run at once, and a merge that waits longer than
+# CONDA_VIRTUAL_MERGE_QUEUE_SECS for a slot answers 503 with Retry-After.
+#
+# A tier sets the values by exporting them from its manifest. Unset, each is
+# passed as an empty string, which the backend treats as unset (an
+# unparseable value takes the default), so stacking this overlay without
+# exporting anything leaves the defaults in force.
+# =============================================================================
+services:
+  backend:
+    environment:
+      CONDA_VIRTUAL_MAX_CONCURRENT_MERGES: ${CONDA_VIRTUAL_MAX_CONCURRENT_MERGES:-}
+      CONDA_VIRTUAL_MERGE_QUEUE_SECS: ${CONDA_VIRTUAL_MERGE_QUEUE_SECS:-}
+      CONDA_VIRTUAL_MERGE_CACHE_TTL_SECS: ${CONDA_VIRTUAL_MERGE_CACHE_TTL_SECS:-}
