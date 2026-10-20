@@ -1,0 +1,45 @@
+# DTF tier manifest: osv-positional-findings
+#   (artifact-keeper#4079, #4081, #4150, #4080; all shipped in 1.11.0)
+# Profile-set: filesystem + upstreams.mock-osv (api.osv.dev resolves to a
+# stdlib-python OSV mock trusted through CUSTOM_CA_CERT_PATH; the oracle
+# registers every advisory and can flip the feed into an outage).
+#
+# The dependency scanner had no end-to-end coverage at all: `osv` and
+# `querybatch` were unreferenced in this repo, and the pinned-CVE gates depend
+# on live OSV.dev. Here a generic repository holds pip manifests
+# (<dir>/requirements.txt, parsed by the dependency scanner on every image)
+# naming run-unique PyPI packages the mock alone knows about, and the oracle
+# reads the `dependency` scan row and its findings straight from Postgres.
+#
+# THE BUGS (all RED on 1.10.0)
+#   #4081  Every finding's affected_component was deps.first(): a manifest
+#          listing a clean package before a vulnerable one filed the finding
+#          against the clean one (and the SBOM join named the wrong component).
+#   #4150  querybatch answers ids only; the scanner never fetched the record,
+#          so findings had no cve_id, no fixed_version and the title
+#          "Vulnerability <id>"; a batch-wide dedup reported one CVE shared by
+#          two packages only once. Fixed: /v1/vulns/{id} hydration (budget
+#          OSV_RECORD_FETCH_BUDGET_SECS), per-dependency dedup.
+#   #4079  The batch response was flattened and cached under EVERY dependency
+#          of the batch for the 1 h advisory TTL, so a later artifact naming
+#          only the clean package inherited the vulnerable one's finding.
+#   #4080  A feed outage (transport error, non-2xx, unparseable body) returned
+#          an empty list and the scan was graded `complete`: a false all-clear.
+#          Fixed: graded `partial`.
+#
+# THE GATES
+#   (CONTROL) every image: a manifest with no advisories is queried and grades
+#     complete with 0 findings; after the outage ends the same package is
+#     asked again and reported; the backend reached the mock as api.osv.dev.
+#   (FIX) #4081, #4150 x2, #4079, #4080: RED on 1.10.0, GREEN on 1.11.0 and
+#     later.
+#
+# NOT GATED: the GitHub Advisory half of #4080 (a 403 from api.github.com
+# degrades, no token does not): it needs GITHUB_TOKEN and a second TLS
+# hostname; OSV_RECORD_FETCH_BUDGET_SECS exhaustion (a slow /v1/vulns keeps
+# the bare finding, not degraded).
+#
+# RATE_LIMIT_ENABLED=false: ~20 API calls plus scan polling.
+PROFILES="storage.filesystem upstreams.mock-osv"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
