@@ -1,0 +1,49 @@
+# DTF tier manifest: trivy-server-mode   ADVISORY (needs internet)
+#   (artifact-keeper#4351: 1.11.0, scanner-adapter 1.4.x; #4712: 1.11.2,
+#    scanner-adapter 1.5.0)
+# Profile-set: filesystem + scanners.trivy (the scanner adapter, image
+# $SCANNER_ADAPTER_IMAGE) + scanners.trivy-server (a stock `trivy server`,
+# image ${TRIVY_SERVER_IMAGE:-ghcr.io/aquasecurity/trivy:0.76.0}, and
+# SCANNER_TRIVY_SERVER=http://trivy-server:4954 on the adapter). The server
+# downloads the vulnerability DB from TRIVY_DB_REPOSITORY
+# (ghcr.io/aquasecurity/trivy-db:2) at start, about 70 MB compressed and
+# 1.6 GB on disk per volume, so the tier needs internet and belongs in the
+# advisory group.
+#
+# THE VARIABLE IS THE ADAPTER IMAGE, NOT THE BACKEND IMAGE. The adapter is
+# driven directly on its published port (TRIVY_PORT): readiness, metadata,
+# and POST /api/v1/filesystem/scan of a workspace whose requirements.txt pins
+# jinja2==2.10. For the mismatch cases the oracle copies the server's DB into
+# a second volume (a trivy server locks its cache), starts a trivy server on
+# the OTHER release (0.74.0 when the adapter bundles 0.76.x, else 0.76.0)
+# with --skip-db-update, and a second adapter of the image under test pointed
+# at it; both are removed on exit.
+#
+# CONTROL: the adapter becomes ready and its metadata names Trivy (every
+#   adapter image).
+# #4351 (FIX) the server-mode scan completes with findings, its
+#   vulnerability_db.downloaded_at is the server's, and the adapter has no
+#   local DB directory. RED on adapter 1.2.4 (no server mode, no filesystem
+#   scan endpoint).
+# #4351 (FIX) the adapter pointed at the other-release server answers
+#   /probe/ready 503 ("client/server mode needs matching releases"). RED on
+#   1.2.4: 200.
+# #4351/#4712 (FIX) a scan through that adapter fails closed naming the
+#   mismatch. RED on 1.2.4. Already true on 1.4.2.
+# #4712 (FIX) the adapter bundles trivy >= 0.76.0, the release of the stock
+#   server sidecar. RED on 1.4.2 (0.74.0) and 1.2.4 (0.71.2).
+#
+# Proofs (run.sh inherits these from the environment):
+#   adapter :1 (1.5.x)              -> PASS
+#   SCANNER_ADAPTER_IMAGE=...:1.4.2 TRIVY_SERVER_IMAGE=...trivy:0.74.0 -> #4712 only
+#   SCANNER_ADAPTER_IMAGE=...:1.2.4 -> every FIX case
+#
+# NOT COVERED: SCANNER_TRIVY_SERVER_INSECURE with an https server, the
+# readiness re-check interval, SCANNER_TRIVY_CACHE_PARTITION, and the
+# backend's own scans routed through a server-mode adapter (the inline-scan
+# tiers exercise the backend side of the adapter).
+PROFILES="storage.filesystem scanners.trivy scanners.trivy-server"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+NEEDS_INTERNET="true"
+export SCANNER_ADAPTER_IMAGE="${SCANNER_ADAPTER_IMAGE:-ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:1}"
