@@ -1,0 +1,41 @@
+# DTF tier manifest: s3-max-parts  (artifact-keeper#4805, fixed by #4806)
+# Profile-set: storage.s3 (MinIO) plus storage.s3-max-parts, which passes
+# S3_MAX_PARTS (exported below) through to the backend.
+#
+# THE BUG (#4805)
+# The S3 backend sized multipart parts for AWS's 10,000-part cap: an
+# unknown-length stream used 5 MiB parts for the first 1,000 parts. On an
+# S3-compatible store that caps an upload at 1,000 parts every streamed blob
+# above ~4.88 GiB failed at part 1,001, and there was no knob.
+#
+# THE FIX (#4806)
+# S3_MAX_PARTS (default 10,000, clamped into [1, 10,000]) is the part budget.
+# A streamed part at index i is min(5 GiB, 5 MiB << (i / max(budget/10, 1))),
+# the known-size target is 90 % of the budget, and the per-part guard and the
+# multipart-copy part-count check use it. Unset or unparsable = 10,000, so the
+# schedule is byte-for-byte the historical one.
+#
+# THE PRIMITIVE
+# A generic upload on an S3 repository streams the request body into a staging
+# object with put_stream (a multipart upload), then copies it to its
+# content-addressed key. The oracle runs `mc admin trace --json` inside the
+# MinIO container and reads the PutObjectPart calls of that multipart upload:
+# their count and sizes are the schedule the backend used.
+#   S3_MAX_PARTS=10, 40 MiB: budget/10 = 1 part per tier, so the parts are
+#   5, 10, 20 MiB and a 5 MiB remainder: four parts.
+#   S3_MAX_PARTS unset (or 1.11.3, which ignores it): eight 5 MiB parts.
+# 10 is the smallest budget that makes the doubling visible on a small object;
+# its ~5 GiB streaming capacity is irrelevant at 40 MiB.
+#
+# THE GATES
+#   (FIX)      S3_MAX_PARTS=10: parts [5 10 20 5]. RED on 1.11.3: [5 5 5 5 5 5 5 5].
+#   (CONTROL)  both images: a 1 MiB upload and the 40 MiB upload download
+#              byte-exact; after the oracle recreates only the backend with
+#              S3_MAX_PARTS empty, a 40 MiB upload is eight 5 MiB parts and
+#              both large objects still download byte-exact.
+#
+# RATE_LIMIT_ENABLED=false: a handful of large authenticated transfers.
+PROFILES="storage.s3 storage.s3-max-parts"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+export S3_MAX_PARTS=10
