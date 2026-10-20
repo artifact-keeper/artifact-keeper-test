@@ -1,0 +1,22 @@
+# =============================================================================
+# profiles/limits.conda-virtual-merge.yml: small conda virtual-merge ceilings
+# =============================================================================
+# Patches the backend with buffered-metadata limits small enough that a tier
+# can cross them with a 2 MiB mock document, and that make a hold-and-wait on
+# the shared metadata budget show up with two requests instead of eight:
+#   * CONDA_VIRTUAL_MEMBER_MAX_BYTES=1048576 (1 MiB): the per-member ceiling
+#     on a remote member's repodata as fetched (artifact-keeper#4555 / #4180,
+#     handlers/conda/virtual_merge.rs MemberLimits::from_env).
+#   * AK_PROXY_METADATA_BUDGET_BYTES=268435456 (256 MiB): the process-wide
+#     buffered-metadata budget (#2684), two LARGE_METADATA_MAX_BYTES (128 MiB)
+#     repodata buffers. With the #4129 nested reservation (#4145) two
+#     concurrent remote repodata.json requests would each hold 128 MiB and
+#     wait forever for 8 MiB more.
+# A backend that predates either setting ignores it and still boots.
+# Used with upstreams.mock-conda by the conda-virtual-merge-policy tier.
+# =============================================================================
+services:
+  backend:
+    environment:
+      CONDA_VIRTUAL_MEMBER_MAX_BYTES: "1048576"
+      AK_PROXY_METADATA_BUDGET_BYTES: "268435456"
