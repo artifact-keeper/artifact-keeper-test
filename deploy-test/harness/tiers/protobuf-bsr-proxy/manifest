@@ -1,0 +1,58 @@
+# DTF tier manifest: protobuf-bsr-proxy  (artifact-keeper#4284, PR #4276)
+# Profile-set: filesystem + a steerable BSR Connect upstream (upstreams.mock-bsr:
+# a stdlib-python server on a per-slot 172.16.<slot>.0/24 subnet that answers
+# buf.registry.* Connect unary calls with canned JSON, counts calls and records
+# request headers per path, and can be told per path to answer 500 / 404 with
+# a secret-looking body, send 17 MiB, stall 75 s, or reset the connection).
+#
+# THE FEATURE (#4284)
+# `buf` talks to a BSR over Connect RPCs. AK had explicit routes for the
+# handful it serves from its own store (GetModules, GetCommits, ListCommits,
+# GetLabels, GetGraph, GetResources, Download, Upload, ...); every other
+# buf.registry.module.v1 read (ListModules, ListLabels, GetModule, GetLabel,
+# GetCommit, GetResource) had no route at all, so a remote protobuf repository
+# could not proxy them. PR #4276 adds `POST /proto/{repo}/*bsr_path`: an
+# explicit allowlist of read-only module.v1 RPCs is reverse-proxied to a
+# remote's upstream_url, or to the readable remote members of a virtual
+# (authorized_virtual_members). The maintainer commit (e813b109) then:
+#   * forwards only content-type, connect-protocol-version,
+#     connect-timeout-ms, accept and user-agent upstream, and relays only
+#     content-type, connect-* and trailer-* back;
+#   * turns a non-2xx upstream answer into AK's own Connect error
+#     (404 -> not_found, 400 -> invalid_argument, else 502 unavailable),
+#     never the upstream body, and logs the status with the URL redacted
+#     (debug); a transport error answers a fixed message and logs a warn;
+#   * caps the buffered body at 16 MiB and the call at 60 s, on the shared
+#     http client.
+# A non-allowlisted method is a Connect 404 `unimplemented`.
+#
+# THE GATES
+#   (FIX)      allowlisted ListModules / ListLabels proxied with both header
+#              allowlists; non-allowlisted methods are Connect unimplemented
+#              without an upstream call; upstream 500 -> 502 unavailable with
+#              no upstream body plus the redacted debug log line; upstream
+#              404 -> 404 not_found; 17 MiB -> 502 naming the 16 MiB cap;
+#              reset -> 502 fixed message plus the redacted warn; a 75 s stall
+#              cut at ~60 s; a virtual proxies through its remote member for a
+#              caller who can read the member.
+#              RED on 1.11.3: the catch-all route does not exist, every one of
+#              these POSTs is a bare 404 and the upstream is never contacted.
+#   (CONTROL)  must hold on BOTH images: the explicit GetModules / GetLabels
+#              routes answer locally (empty) for a remote and never contact
+#              the upstream; a caller with only read on a remote is refused
+#              on POST (the /proto write gate) with no upstream call; a caller
+#              with write on the virtual but no read on its member is refused
+#              with no upstream call; the remotes' upstream password never
+#              appears in the backend log.
+#
+# The profile raises artifact_keeper_backend::api::handlers::protobuf_bsr to
+# debug (the non-2xx upstream line is a debug event) and pins the json-file
+# log driver; the mock runs with label=disable (SELinux-enforcing hosts cannot
+# read the bind-mounted script).
+#
+# RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-bsr"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
