@@ -1,0 +1,21 @@
+# =============================================================================
+# profiles/imagebuild.no-buildkit.yml: image builds configured, BuildKit absent
+# =============================================================================
+# Sets the two variables that turn the image builder on
+# (AK_BUILDKIT_ADDR, AK_IMAGE_BUILD_PUSH_REGISTRY) so POST
+# /api/v1/repositories/{key}/image-builds validates and records a build
+# instead of answering 503 "image builds are not configured". The BuildKit
+# address is a closed port on the backend's own loopback, so an accepted
+# build is recorded and then fails to dispatch; nothing is ever built. That
+# is enough for a tier that asserts what the server accepts and records
+# (the image-build-spec-validation tier, GHSA-59mx-6fq9-pp9p), and it needs
+# no BuildKit daemon, no privileged container and no network.
+#
+# AK_IMAGE_BUILD_ALLOW_RUN is left unset (default false): the advisory is a
+# bypass of exactly that setting.
+# =============================================================================
+services:
+  backend:
+    environment:
+      AK_BUILDKIT_ADDR: "tcp://127.0.0.1:1"
+      AK_IMAGE_BUILD_PUSH_REGISTRY: "127.0.0.1:8080"
