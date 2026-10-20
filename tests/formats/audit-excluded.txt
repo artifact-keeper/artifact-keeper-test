@@ -11,9 +11,14 @@
 # audited, or listed here -- and that nothing is listed here AND blocking
 # at the same time.
 #
-# Empty as of this writing: no formats script currently needs a full
-# opt-out. The 59 scripts that were silently unregistered went into the
-# audit lane instead (see the formats-autodiscovery issue), on the
-# reasoning that "never run" and "run non-blocking" are different claims,
-# and only a maintainer with visibility into why a script was carved out
-# should promote it to this list.
+# The scripts that were silently unregistered went into the audit lane
+# instead (see the formats-autodiscovery issue), on the reasoning that
+# "never run" and "run non-blocking" are different claims, and only a
+# maintainer with visibility into why a script was carved out should
+# promote it to this list.
+
+# Moves about 10 GiB per run (20 rounds of two 256 MiB chunked sessions) and
+# needs an s3-backed deploy to open its race window. Run by hand or from a
+# nightly job, never concurrently with the gate's other suites
+# (artifact-keeper-test#415).
+test-oci-cross-repo-concurrent-push.sh
