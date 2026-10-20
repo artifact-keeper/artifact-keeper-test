@@ -1,0 +1,12 @@
+# =============================================================================
+# profiles/api.swagger.yml: api dimension = swagger (serve the OpenAPI document)
+# =============================================================================
+# Since artifact-keeper#3489 the backend mounts the Swagger UI and the generated
+# OpenAPI document (/api/v1/openapi.json) only on an explicit
+# ENABLE_SWAGGER=true; ENVIRONMENT no longer turns them on. A tier that asserts
+# on the SERVED spec layers this overlay; it only patches backend.environment.
+# =============================================================================
+services:
+  backend:
+    environment:
+      ENABLE_SWAGGER: "true"
