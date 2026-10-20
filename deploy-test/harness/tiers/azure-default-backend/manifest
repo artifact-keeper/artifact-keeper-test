@@ -1,0 +1,51 @@
+# DTF tier manifest: azure-default-backend
+#   artifact-keeper#3920 (concurrent identical uploads 500 on Azure with
+#   InvalidBlockList) and #3923 (the backend refuses to start once a remote
+#   repository exists while the default storage backend is Azure). Both fixed
+#   by PR #4321, 1.11.0.
+#   Profile-set: azurite (new; Azure Blob as the DEFAULT backend, see
+#   profiles/storage.azurite.yml) + upstreams.mock-static (a counting static
+#   upstream for the remote repository).
+#
+# THE BUGS
+# * #3920: a streamed write to Azure stages blocks and commits them with Put
+#   Block List. Two uploads of the same bytes stream to the same
+#   content-addressed blob; the first commit discards every uncommitted block
+#   of that blob, so the loser's Put Block List answers 400 InvalidBlockList
+#   and the upload failed with 500 STORAGE_ERROR. The fix checks the
+#   committed blob (size, then SHA-256) and treats identical content as
+#   success, logging "Azure Put Block List lost a race to a concurrent writer
+#   of identical content; ... (#3920)".
+#   Reached here through the generic artifacts route of an RPM repository
+#   (an `*.rpm` path keeps the local spool by design and streams to the
+#   content-addressed key with put_stream). A plain generic repository is not
+#   usable for this on the fixed image: since #3916 it stages on the backend
+#   and promotes with Put Blob From URL, which Azurite 3.37 refuses on a SAS
+#   destination (500, "OPERATION_BLOB_SAS_BLOB_PERMISSIONS doesn't have
+#   configuration for operation BlockBlob_PutBlobFromUrl"); real Azure
+#   supports it. That is an emulator gap, not asserted.
+# * #3923: with STORAGE_BACKEND=azure the proxy cache had no backend, so a
+#   remote repository (created on `azure` by default) made the next startup
+#   fail: "STORAGE_BACKEND=azure cannot serve remote/proxy repositories ...
+#   Refusing to start". The fix keeps the proxy cache on the filesystem under
+#   STORAGE_PATH on an Azure default, creates a remote without
+#   `storage_backend` on `filesystem`, and refuses an explicit unservable
+#   backend with 400.
+#
+# Gates: (CONTROL) a single RPM-path upload and a chunked session into
+# Azure-backed repositories land byte-exact with the blob in Azurite (both
+# images); (FIX) six parallel uploads of one 12 MiB body all 201, each path
+# downloads byte-exact, and the backend logged the #3920 race at least once;
+# a remote created without storage_backend is on `filesystem`; an explicit
+# `azure` remote is 400 naming filesystem; the backend restarts healthy with
+# that remote present; the remote then serves from the mock upstream with
+# the cache entry on the local proxy cache and no second upstream GET.
+#
+# RATE_LIMIT_ENABLED=false: parallel uploads. UPSTREAM_ALLOW_PRIVATE_IPS=true:
+# the mock upstream is on a private subnet.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and main.
+PROFILES="storage.azurite upstreams.mock-static"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
