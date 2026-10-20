@@ -1,0 +1,13 @@
+# =============================================================================
+# profiles/storage.s3-max-parts.yml: pass S3_MAX_PARTS through to the backend
+# =============================================================================
+# Layered on top of storage.s3 (MinIO). The multipart part budget of the S3
+# backend (artifact-keeper#4805, #4806) is read from S3_MAX_PARTS at start-up.
+# A tier exports S3_MAX_PARTS from its manifest; unset or empty passes an empty
+# string, which the backend does not parse as a number and so treats as unset
+# (the 10,000-part default).
+# =============================================================================
+services:
+  backend:
+    environment:
+      S3_MAX_PARTS: ${S3_MAX_PARTS:-}
