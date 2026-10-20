@@ -1,0 +1,46 @@
+# DTF tier manifest: pacman-hosted  (artifact-keeper#3343, #4424; both shipped
+# in 1.11.0)
+# Profile-set: filesystem + the real pacman client (client.pacman: the
+# official archlinux image idling on the DTF network). Packages are built in
+# that container with bsdtar in makepkg's layout (.MTREE, .PKGINFO, files) and
+# signed with a throwaway gpg key; pacman is pointed at a pacman.conf naming
+# ONLY the AK repository, so no Arch mirror is contacted. Nothing is installed
+# on the host or in the image.
+#
+# THE BEHAVIOUR
+# #3343  A `pacman` repository accepts .pkg.tar.* uploads under
+#        /pacman/{repo}/ (filename checked against .PKGINFO; re-upload 409),
+#        renders {section}.db and {section}.files on demand for any section
+#        name, embeds an uploaded .sig as %PGPSIG%, serves a detached
+#        .db.sig when a gpg signing key is attached (404 otherwise), and
+#        deletes with DELETE /pacman/{repo}/{arch}/{package}.
+# #4424  .files is cached per repository package set; a publish or delete is
+#        picked up on the next request.
+#
+# THE GATES
+#   (FIX)      RED on 1.10.0 (no pacman format: create fails, every route
+#              404), GREEN on 1.11.0 and main:
+#              #3343 upload 201, .sig 201, misnamed 400, duplicate 409.
+#              #3343 dtfp.db lists dtf-hello and dtf-tool; dtf-hello's desc
+#                    carries %FILENAME%, the package's %SHA256SUM% and the
+#                    uploaded signature as %PGPSIG%.
+#              #3343 pacman -Syy / -S dtf-hello installs its file; pacman -Fyy;
+#                    pacman -F attributes a file to dtfp/dtf-tool; -Fl lists.
+#              #4424 publish dtf-extra -> pacman -Fl dtf-extra lists its file;
+#                    DELETE -> 204, then -Fl finds nothing and the .db no
+#                    longer lists it while dtf-hello stays.
+#              #3343 with a signing key attached (POST /api/v1/signing/keys
+#                    key_type gpg + /signing/repositories/{uuid}/config):
+#                    dtfs.db.sig is GOODSIG against /pacman/{repo}/gpg-key.asc;
+#                    with both keys lsigned in pacman's keyring, SigLevel =
+#                    Required installs dtf-tool; the same policy refuses the
+#                    unsigned repository (its .db.sig is 404).
+#   (CONTROL)  must hold on BOTH images: the fixture is a valid package
+#              (pacman -Qip, pacman -U installs and -R removes it from the
+#              file), and the client container reaches the backend. A red
+#              below is then the server's.
+#
+# RATE_LIMIT_ENABLED=false: a few dozen requests back to back.
+PROFILES="storage.filesystem client.pacman"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
