@@ -1,0 +1,27 @@
+# =============================================================================
+# profiles/limits.upload-slots.yml: small upload-admission and budget limits
+# =============================================================================
+# Patches the backend with limits small enough that a tier can fill them with
+# a handful of sockets in a few seconds (GHSA-9f9r-c4w8-rjv9, #4162):
+#   * GLOBAL_MAX_CONCURRENCY=32: the router-wide load-shed pool (default 512).
+#   * UPLOAD_MAX_IN_FLIGHT_PER_PRINCIPAL=8: concurrent uploads one principal
+#     may hold before further ones get 429 + Retry-After (default 64).
+#   * UPLOAD_PROGRESS_WINDOW_SECS=5: an upload body that delivers fewer than
+#     UPLOAD_MIN_PROGRESS_BYTES (default 16384) while waiting for data during
+#     one window is aborted 408 (default 60).
+#   * AK_PROXY_METADATA_BUDGET_BYTES=268435456 (256 MiB): the process-wide
+#     buffered-metadata budget, two worst-case (128 MiB) reservations instead
+#     of the default eight, so a Composer v1 provider fallback that nests a
+#     second reservation under a held one deadlocks with two callers.
+# A backend that predates a setting ignores it and still boots, which is
+# exactly what the tier's RED leg measures.
+# =============================================================================
+services:
+  backend:
+    environment:
+      GLOBAL_MAX_CONCURRENCY: "32"
+      UPLOAD_MAX_IN_FLIGHT_PER_PRINCIPAL: "8"
+      UPLOAD_PROGRESS_WINDOW_SECS: "5"
+      AK_PROXY_METADATA_BUDGET_BYTES: "268435456"
+    logging:
+      driver: json-file
