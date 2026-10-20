@@ -1,5 +1,5 @@
 # =============================================================================
-# profiles/gc.trash-blob-fast.yml — trash retention on, blob GC live and fast,
+# profiles/gc.trash-blob-fast.yml: trash retention on, blob GC live and fast,
 # a short lifecycle scheduler tick
 # =============================================================================
 # The trash-blob-gc-remote-cache tier needs the 1.11.0 GC knobs set to values
