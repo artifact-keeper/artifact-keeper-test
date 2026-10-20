@@ -1,0 +1,37 @@
+# DTF tier manifest: npm-anon-audit  (artifact-keeper#4317, fixed by #4785, 1.11.3)
+# Profile-set: filesystem / single + the real npm CLI client (client.npm). The
+# bug lives in repo_visibility_middleware, ahead of any storage backend, so the
+# storage dimension is irrelevant.
+#
+# THE BUG (#4317)
+# `npm audit` (and the audit step of `npm install`) POSTs the dependency tree to
+#     /npm/<repo>/-/npm/v1/security/advisories/bulk   (npm >= 7)
+#     /npm/<repo>/-/npm/v1/security/audits/quick      (npm 6, yarn, fallback)
+# repo_visibility_middleware treats every anonymous POST as a write (#508) and
+# answered 401, so an anonymous client of a PUBLIC npm repository got "Unable
+# to authenticate". The permission arm also classified the POST as a write, so
+# an authenticated non-admin without write got 403. The fix (#4785) adds exactly
+# those two routes to both read-classified POST allowlists
+# (is_anonymous_readable_format_post and is_non_mutating_format_post).
+# Repository visibility is unchanged: a private repo still refuses anonymous.
+#
+# Oracle (oracle.sh, RELEASE_GATE=1):
+#   (FIX)     RED on 1.11.2: anonymous bulk + quick on a public hosted npm repo
+#             and on a public remote npm repo answer 200 with the npm JSON
+#             shape; a non-admin user with no write answers 200 on the public
+#             repo and, with a read grant, on a private repo; a real anonymous
+#             `npm audit` against the public repo exits 0.
+#   (CONTROL) true on BOTH images: anonymous bulk + quick on a PRIVATE npm repo
+#             are refused (401, the unauthenticated challenge); admin bulk +
+#             quick work on public and private; anonymous publish (PUT) and an
+#             anonymous POST one segment past the audit route stay 401; the
+#             real anonymous `npm install` from the public repo succeeds.
+#
+# UPSTREAM_ALLOW_PRIVATE_IPS stays at the base default (false): the remote
+# repo's upstream is an unresolvable `.invalid` host, so its audit falls back
+# to the handler's built-in empty report; nothing is ever fetched.
+# RATE_LIMIT_ENABLED=false: ~40 calls incl. Basic-auth bcrypt; keep parity with
+# the other API tiers so a re-run under load never throttles a probe into a 429.
+PROFILES="storage.filesystem client.npm"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
