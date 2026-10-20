@@ -71,16 +71,6 @@ body() { head -c 300 "$WORK/body" 2>/dev/null || true; }
 jb() { jq -r "$1" "$WORK/body" 2>/dev/null || true; }
 db() { docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -Atc "$1" 2>/dev/null | tr -d '[:space:]' || echo "?"; }
 denied() { [ "$1" = "403" ] || [ "$1" = "404" ]; }
-# known_red ISSUE TEXT OK: a real backend defect this tier found (see the
-# manifest). It is reported and never failed, so the cases around it stay a
-# usable gate; when OK=1 the line says the pin should become an assertion.
-known_red() {
-  if [ "$3" = "1" ]; then
-    echo "   KNOWN-RED (artifact-keeper#$1) NOW PASSES: $2. Turn this pin into an assertion."
-  else
-    echo "   KNOWN-RED (artifact-keeper#$1): $2"
-  fi
-}
 
 setup_ok() { # WHAT CODE
   if [ "${2:0:1}" != "2" ]; then
@@ -343,23 +333,21 @@ if [ "$c1" = "200" ] && [ "$c2" = "200" ] && [ "$(build_status)" = "success" ] &
 else fail "creator build update: PUT ${c1}, artifacts ${c2}, status=$(build_status), rows=$(build_arts)" "$(body)"; fi
 
 # =============================================================================
-# KNOWN-RED: a `repository-owner` ROLE member is refused the two routes that
-# moved to the repository `admin` action, although the 1.11.0 CHANGELOG says
-# repository-owner members are unaffected. require_repo_admin asks
-# PermissionService::check_permission, which reads fine-grained `permissions`
-# rows only and never `role_assignments`; the role carries {read,write,delete,
-# admin} and check_repository_action honours it. Reported, not failed
-# (artifact-keeper#4818).
+# FIX artifact-keeper#4818 (RED on main 2f08663f and every 1.11.x release,
+# GREEN from main adfa0206): a `repository-owner` ROLE member may use the two
+# routes that moved to the repository `admin` action, as the 1.11.0 CHANGELOG
+# promised. require_repo_admin used to ask PermissionService::check_permission,
+# which reads fine-grained `permissions` rows only and never `role_assignments`;
+# the role carries {read,write,delete,admin}.
 # =============================================================================
-begin_test "KNOWN-RED pin: repository-owner role on email-subscriptions and release-target"
+begin_test "FIX #4818: a repository-owner role member may create email subscriptions and set the release target"
 c1="$(req POST "/api/v1/repositories/${P}/email-subscriptions" "$OT" \
   "$(jq -nc --arg m "rma-ownerrole-${SUF}@t.test" '{recipients:[$m],event_types:["artifact.uploaded"]}')")"
 b1="$(body)"
 c2="$(req PUT "/api/v1/promotion/repositories/${S}/release-target" "$OT" "$(jq -nc --arg k "$L1" '{release_repository_key:$k}')")"
 b2="$(body)"
-if [ "${c1:0:1}" = "2" ] && [ "$c2" = "200" ]; then ok=1; else ok=0; fi
-known_red "${OWNER_ISSUE}" "repository-owner role member: email-subscriptions POST -> ${c1} ${b1}, release-target PUT -> ${c2} ${b2} (expected 2xx/200)" "$ok"
-pass
+if [ "${c1:0:1}" = "2" ] && [ "$c2" = "200" ]; then pass
+else fail "#${OWNER_ISSUE}: repository-owner role member refused: email-subscriptions POST -> ${c1} ${b1}, release-target PUT -> ${c2} ${b2} (expected 2xx/200)"; fi
 
 # =============================================================================
 # GHSA-mvmh finding 8 - peers probe is admin-only

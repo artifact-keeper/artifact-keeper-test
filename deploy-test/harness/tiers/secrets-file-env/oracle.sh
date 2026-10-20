@@ -50,17 +50,6 @@ note(){ echo "   $1"; DETAIL="${DETAIL}$1
 "; }
 reset_case(){ FAILS=0; DETAIL=""; }
 finish_case(){ if [ "$FAILS" -eq 0 ]; then pass; else fail "$1" "$DETAIL"; fi; }
-# known_red <issue> <condition-description> <0 if the defect is still present>
-# A real backend defect this tier found. It is reported, never failed, so the
-# gates around it stay usable; when it starts passing the line says so and the
-# pin should be turned into an assertion (the deps-1.12.0-controls idiom).
-known_red(){
-  if [ "$3" = "0" ]; then
-    note "KNOWN-RED (artifact-keeper#$1): $2"
-  else
-    note "KNOWN-RED (artifact-keeper#$1) NOW PASSES: $2. Turn this pin into an assertion."
-  fi
-}
 
 # --- per-run secret values ---------------------------------------------------
 # Random per run so a grep for them in logs / bodies cannot hit anything else.
@@ -288,20 +277,20 @@ leaks "the refused-startup log" "$L6"
 finish_case "#4142: an unreadable ADMIN_PASSWORD_FILE does not fail startup with a clear error"
 
 # =============================================================================
-# KNOWN-RED artifact-keeper#4819: the deployment the docs show (only the
-# *_FILE variable set, nothing direct) inherits the image's baked
-# DATABASE_URL=set-database-url-at-runtime, which wins over DATABASE_URL_FILE.
+# FIX artifact-keeper#4819 (RED on main 2f08663f, GREEN from main adfa0206):
+# the deployment the docs show (only the *_FILE variable set, nothing direct)
+# used to inherit the image's baked DATABASE_URL=set-database-url-at-runtime,
+# which won over DATABASE_URL_FILE so the backend never started.
 # =============================================================================
-begin_test "KNOWN-RED #4819 + CONTROL: with every direct value absent (the documented shape) DATABASE_URL_FILE should reach Postgres (pinned, reported not failed); the startup log carries no secret value"
+begin_test "FIX #4819 + CONTROL: with every direct value absent (the documented shape) DATABASE_URL_FILE reaches Postgres and the backend starts; the startup log carries no secret value"
 reset_case
 export SF_DATABASE_URL_FILE="${MOUNT_DIR}/database_url" SF_JWT_SECRET_FILE="${MOUNT_DIR}/jwt_secret" SF_ADMIN_PASSWORD_FILE="${MOUNT_DIR}/admin_password"
 ST="$(recreate_backend image-env)"
-IMG_DBURL="$(backend_env | grep '^DATABASE_URL=' | head -1)"
+IMG_DBURL="$(backend_env | grep '^DATABASE_URL=' | head -1 || true)"
 note "backend: ${ST}; container ${IMG_DBURL:-has no DATABASE_URL}; last line: $(backend_logs | tail -1 | head -c 200)"
-dd=0; [ "$ST" = "up" ] && dd=1
-known_red 4819 "only *_FILE set: the image-baked ${IMG_DBURL:-DATABASE_URL} wins over DATABASE_URL_FILE and startup fails (${ST})" "$dd"
+[ "$ST" = "up" ] || fail_g "#4819: with only *_FILE set the backend is ${ST}: the image-baked ${IMG_DBURL:-DATABASE_URL} won over DATABASE_URL_FILE"
 leaks "the startup log" "$(backend_logs)"
-finish_case "a file-sourced secret is disclosed in the startup log of the documented deployment shape"
+finish_case "#4819: the documented *_FILE-only deployment does not start, or a file-sourced secret is disclosed in its startup log"
 
 # =============================================================================
 # Back to the stock environment: the default stack still boots and logs in.

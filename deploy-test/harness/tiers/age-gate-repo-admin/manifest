@@ -44,6 +44,10 @@
 #             /admin queue, approve releases and reject re-blocks the version;
 #             U is refused (403/404) on every B gate and queue route and on the
 #             instance queue, and B's policy and review do not change.
+#   (FIX #4818) RED on main 2f08663f, GREEN from main adfa0206: a user
+#             holding only the `repository-owner` ROLE on A (role_assignments,
+#             no fine-grained grant) reads A's gate and review queue (403
+#             before the fix); it stays refused on B (control).
 #
 # RATE_LIMIT_ENABLED=false: ~60 calls back to back.
 PROFILES="storage.filesystem"

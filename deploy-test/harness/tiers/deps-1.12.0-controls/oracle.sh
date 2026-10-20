@@ -44,17 +44,6 @@ note(){ echo "   $1"; DETAIL="${DETAIL}$1
 "; }
 reset_case(){ FAILS=0; DETAIL=""; }
 finish_case(){ if [ "$FAILS" -eq 0 ]; then pass; else fail "$1" "$DETAIL"; fi; }
-# known_red <issue> <condition-description> <0 if the defect is still present>
-# A real backend defect this tier found. It is reported, never failed, so the
-# controls around it stay a usable gate; when it starts passing the line says
-# so and the pin should be turned into an assertion.
-known_red(){
-  if [ "$3" = "0" ]; then
-    note "KNOWN-RED (artifact-keeper#$1): $2"
-  else
-    note "KNOWN-RED (artifact-keeper#$1) NOW PASSES: $2. Turn this pin into an assertion."
-  fi
-}
 
 # api <METHOD> <PATH> [JSON] -> sets API_CODE / API_BODY
 api(){
@@ -150,8 +139,12 @@ note "registration: HTTP ${API_CODE}, id=${reg_id}, versions=${reg_versions}, de
 [ "$reg_id" = "$NU_ID" ] || fail_g "registration id is \"${reg_id}\", expected ${NU_ID} (read through the BOM-prefixed feed)"
 [ "$reg_versions" = "1.0.0,2.0.0-beta" ] || fail_g "registration versions are \"${reg_versions}\", expected 1.0.0,2.0.0-beta"
 case "$reg_desc" in *"über") ;; *) fail_g "description \"${reg_desc}\" does not keep the non-ASCII text after the last reference";; esac
-dd=1; [ "$reg_desc" = "Fish & chips <b>café</b> über" ] && [ "$reg_auth" = "Renée & Jörg" ] && dd=1 || dd=0
-known_red 4816 "V2 description/authors lose every entity and the text before the last one (got \"${reg_desc}\" / \"${reg_auth}\")" "$dd"
+# artifact-keeper#4816 (fixed on main adfa0206): entity references in V2 feed
+# text survive whole, with the text around them.
+[ "$reg_desc" = "Fish & chips <b>café</b> über" ] \
+  || fail_g "#4816: V2 description is \"${reg_desc}\", expected \"Fish & chips <b>café</b> über\" (entity references lost)"
+[ "$reg_auth" = "Renée & Jörg" ] \
+  || fail_g "#4816: V2 authors is \"${reg_auth}\", expected \"Renée & Jörg\" (entity references lost)"
 api GET "/nuget/${R_NU}/v3/search?q=dtfxml&prerelease=true"
 s_hit="$(printf '%s' "$API_BODY" | jq -r --arg id "$NU_ID" '[.data[] | select(.id == $id) | .version] | join(",")' 2>/dev/null || true)"
 note "search: HTTP ${API_CODE}, ${NU_ID} -> ${s_hit}"
@@ -431,8 +424,10 @@ rx(){ printf '%s' "$RX" | jqr "$1"; }
 api POST "/api/v1/admin/repositories/${R_MVU}/reindex-storage" '{"dry_run":true}'
 umiss="$(printf '%s' "$API_BODY" | jqr '.missing_object_paths | join(",")')"
 note "reindex ${R_MVU}: HTTP ${API_CODE} ${API_BODY}"
-dd=1; [ "$(printf '%s' "$API_BODY" | jqr .missing_objects)" = "0" ] && dd=1 || dd=0
-known_red 4817 "a row whose path is non-ASCII is reported missing on S3 (its object key is stored percent-encoded): missing=[${umiss}]" "$dd"
+# artifact-keeper#4817 (fixed on main adfa0206): a non-ASCII path's
+# percent-encoded object key decodes back to its row.
+[ "$API_CODE" = "200" ] && [ "$(printf '%s' "$API_BODY" | jqr .missing_objects)" = "0" ] \
+  || fail_g "#4817: reindex of ${R_MVU} reports a non-ASCII row missing on S3 (HTTP ${API_CODE}, missing=[${umiss}])"
 finish_case "S3 ListObjectsV2 parser broken: keys with entities or <LastModified> no longer parse"
 
 # =============================================================================

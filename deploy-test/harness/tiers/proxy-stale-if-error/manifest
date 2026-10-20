@@ -45,10 +45,10 @@
 #              is red and the keep case is green.
 #   (CONTROL)  must hold on BOTH images: a cold fetch caches and the next fetch
 #              is a hit, neither marked; under the default policy an upstream
-#              404 on an expired entry answers 404, not the old body; the
-#              grace GET never gives an anonymous or no-grant caller more than
-#              a refusal or the four grace fields (its missing auth check is
-#              artifact-keeper#4815: recorded, not gated).
+#              404 on an expired entry answers 404, not the old body.
+#   (FIX #4815) RED on main 2f08663f, GREEN from main adfa0206: the grace GET
+#              on a private Remote is 404 to an anonymous and to a no-grant
+#              caller (it had no visibility check and answered 200).
 #
 # RATE_LIMIT_ENABLED=false: ~50 authenticated calls back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
