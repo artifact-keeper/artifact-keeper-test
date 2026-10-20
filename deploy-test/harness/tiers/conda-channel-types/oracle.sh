@@ -37,12 +37,30 @@
 #          (A, R), ak_conda_install_script_findings_total{kind="post-link"} for
 #          H, and ak_conda_attestation_total for H with outcome rejected and
 #          absent. CONTROL: A's repodata.json drops the non-allowlisted record.
+#
+# conda-channel-hardening cases (1.11.0 fixes, RED on 1.10.0, GREEN from
+# 1.11.0; at the end of the file):
+#   #4067  a pbzip2-style two-stream .tar.bz2 with info/index.json past the
+#          first stream boundary uploads and is indexed with its depends
+#          (CONTROL: the same layout as one stream).
+#   #4038  info/run_exports.json as a bare list is served as {"weak": [...]};
+#          a dict passes through.
+#   #4151  POST /api/v1/sbom/environment: a noarch conda-lock member in a
+#          linux-64 scope has a purl with subdir=noarch.
+#   #4149  RH, a remote to the mock's /huge/ channel: a ~140 MiB repodata.json
+#          (past the 128 MiB buffered ceiling) is served 200 in full, and the
+#          warm re-read makes no new upstream GET.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${DTF_DIR:?}"
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+# common.sh turns on errexit; every probe below captures its status and
+# asserts on it explicitly, so a helper that exits non-zero on a baseline
+# image (jq on a non-JSON 404 body from a route that image lacks) must not
+# end the suite before the assertion runs.
+set +e
 
 SUF="${RUN_ID##*-}-$$"
 SLOT="${DTF_SLOT:?}"
@@ -153,9 +171,13 @@ for v in "$V" "$A" "$S"; do
   api_post "/api/v1/repositories/${v}/members" "{\"member_key\":\"${R}\"}" >/dev/null \
     || setup_err+="add member to ${v}; "
 done
+# The allowlist is a 1.11.0 route: its failure is recorded for the #4711
+# cases that need it, not fatal, so the hardening cases below still run (and
+# go red) on a 1.10.0 baseline.
+ALLOW_SETUP=ok
 api_put "/api/v1/repositories/${A}/allowlist" \
   '{"enabled":true,"entries":[{"name":"dtfup-alpha"}]}' >/dev/null \
-  || setup_err+="set allowlist on ${A}; "
+  || ALLOW_SETUP="PUT /allowlist on ${A} failed"
 
 S_ID="$(api_get "/api/v1/repositories/${S}" | jq -r '.id // empty')"
 KEY_ID=""
@@ -421,12 +443,12 @@ fi
 # =============================================================================
 begin_test "CONTROL #4711: the allowlisted virtual's repodata.json drops the non-admitted record"
 st="$(hget "/conda/${A}/noarch/repodata.json" "$WORK/a_rd.json")"
-if [ "$st" = "200" ] \
+if [ "$ALLOW_SETUP" = "ok" ] && [ "$st" = "200" ] \
    && jq -e --arg a "$ALPHA1" --arg b "$ALPHA2" '(.packages | keys) == [$a, $b]' "$WORK/a_rd.json" >/dev/null 2>&1; then
   pass
 else
   fail "allowlist not applied to the virtual's repodata.json" \
-    "HTTP ${st}: keys=$(jq -c '.packages|keys' "$WORK/a_rd.json" 2>/dev/null)"
+    "allowlist setup: ${ALLOW_SETUP}; HTTP ${st}: keys=$(jq -c '.packages|keys' "$WORK/a_rd.json" 2>/dev/null)"
 fi
 
 begin_test "CONTROL #4711: /api/v1/admin/metrics answers with Prometheus text"
@@ -461,5 +483,161 @@ else
   fail "ak_conda_attestation_total for ${H}: want rejected >= 1 and absent >= ${UPLOADS}" \
     "rejected=$(metric_value ak_conda_attestation_total "repository=${H}" "outcome=rejected") absent=$(metric_value ak_conda_attestation_total "repository=${H}" "outcome=absent")"
 fi
+
+# =============================================================================
+# conda-channel-hardening: 1.11.0 conda ingest and serve fixes
+#   (artifact-keeper#4067, #4038, #4151, #4149). Each FIX case is RED on
+#   ak-backend:1.10.0; each CONTROL holds there too. These cases are 1.11.0
+#   fixes, so they PASS on 1.11.1 (the baseline of the cases above).
+# =============================================================================
+PBZ="dtfhost-pbz-1.0-0.tar.bz2"
+SBZ="dtfhost-sbz-1.0-0.tar.bz2"
+RXL="dtfhost-rxlist-1.0-0.tar.bz2"
+RXD="dtfhost-rxdict-1.0-0.tar.bz2"
+RH="cct-huge-${SUF}"
+
+# build_hardening_pkgs <dir>: the four packages the cases upload.
+#   PBZ  one tar as TWO concatenated bzip2 streams (pbzip2/lbzip2 layout),
+#        a 256 KiB payload first so info/index.json sits past the boundary
+#   SBZ  the same layout as ONE bzip2 stream (the control)
+#   RXL  info/run_exports.json is the legacy bare list
+#   RXD  info/run_exports.json is the CEP-12 dict
+build_hardening_pkgs() {
+  python3 -I - "$1" <<'PY'
+import bz2, io, json, os, sys, tarfile
+out = sys.argv[1]
+
+def tar_bytes(name, extra=None, payload=0):
+    index = {"name": name, "version": "1.0", "build": "0", "build_number": 0,
+             "noarch": "generic", "platform": None, "subdir": "noarch",
+             "depends": ["dtfdep-" + name + " >=1"], "license": "MIT"}
+    files = []
+    if payload:
+        files.append(("share/" + name + "/payload.bin", os.urandom(payload)))
+    files.append(("info/index.json", json.dumps(index).encode()))
+    files.append(("info/paths.json", b'{"paths_version":1,"paths":[]}'))
+    for k, v in (extra or {}).items():
+        files.append((k, v))
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for path, data in files:
+            ti = tarfile.TarInfo(path)
+            ti.size = len(data)
+            ti.mtime = 0
+            tar.addfile(ti, io.BytesIO(data))
+    return buf.getvalue()
+
+raw = tar_bytes("dtfhost-pbz", payload=256 * 1024)
+cut = 128 * 1024
+with open(os.path.join(out, "dtfhost-pbz-1.0-0.tar.bz2"), "wb") as f:
+    f.write(bz2.compress(raw[:cut]) + bz2.compress(raw[cut:]))
+with open(os.path.join(out, "dtfhost-sbz-1.0-0.tar.bz2"), "wb") as f:
+    f.write(bz2.compress(tar_bytes("dtfhost-sbz", payload=256 * 1024)))
+with open(os.path.join(out, "dtfhost-rxlist-1.0-0.tar.bz2"), "wb") as f:
+    f.write(bz2.compress(tar_bytes("dtfhost-rxlist", {"info/run_exports.json": b'["dtflibfoo >=1.2"]'})))
+with open(os.path.join(out, "dtfhost-rxdict-1.0-0.tar.bz2"), "wb") as f:
+    f.write(bz2.compress(tar_bytes("dtfhost-rxdict", {"info/run_exports.json": b'{"strong":["dtflibbar >=2"]}'})))
+PY
+}
+HARD_BUILD=ok
+build_hardening_pkgs "$WORK" || HARD_BUILD="python build of the hardening packages failed"
+
+begin_test "CONTROL #4067: a single-stream .tar.bz2 with a payload before info/ uploads and is indexed with its depends"
+st="$(conda_put "$H" "$WORK/${SBZ}" "$SBZ")"
+hget "/conda/${H}/noarch/repodata.json" "$WORK/h_rd_sbz.json" >/dev/null
+if [ "$HARD_BUILD" = "ok" ] && { [ "$st" = "201" ] || [ "$st" = "200" ]; } \
+   && jq -e --arg f "$SBZ" '.packages[$f].depends == ["dtfdep-dtfhost-sbz >=1"]' "$WORK/h_rd_sbz.json" >/dev/null 2>&1; then
+  pass
+else
+  fail "single-stream upload not indexed" "${HARD_BUILD}; HTTP ${st}: $(head -c 200 "$WORK/put.out"); record=$(jq -c --arg f "$SBZ" '.packages[$f]' "$WORK/h_rd_sbz.json" 2>/dev/null)"
+fi
+
+begin_test "#4067: a multi-stream (pbzip2) .tar.bz2 with info/index.json past the first stream boundary uploads and is indexed with its depends"
+st="$(conda_put "$H" "$WORK/${PBZ}" "$PBZ")"
+hget "/conda/${H}/noarch/repodata.json" "$WORK/h_rd_pbz.json" >/dev/null
+if [ "$st" = "201" ] || [ "$st" = "200" ]; then
+  if jq -e --arg f "$PBZ" '.packages[$f].name == "dtfhost-pbz" and .packages[$f].depends == ["dtfdep-dtfhost-pbz >=1"]' \
+       "$WORK/h_rd_pbz.json" >/dev/null 2>&1; then
+    pass
+  else
+    fail "multi-stream package indexed without its metadata" "record=$(jq -c --arg f "$PBZ" '.packages[$f]' "$WORK/h_rd_pbz.json" 2>/dev/null)"
+  fi
+else
+  fail "multi-stream package refused" "HTTP ${st}: $(head -c 300 "$WORK/put.out")"
+fi
+
+begin_test "#4038: a package whose info/run_exports.json is a bare list is served as {weak: [...]}; a dict passes through"
+st1="$(conda_put "$H" "$WORK/${RXL}" "$RXL")"
+st2="$(conda_put "$H" "$WORK/${RXD}" "$RXD")"
+st="$(hget "/conda/${H}/noarch/run_exports.json" "$WORK/h_rx.json")"
+if { [ "$st1" = "201" ] || [ "$st1" = "200" ]; } && { [ "$st2" = "201" ] || [ "$st2" = "200" ]; } && [ "$st" = "200" ] \
+   && jq -e --arg l "$RXL" --arg d "$RXD" \
+        '.packages[$l].run_exports == {"weak": ["dtflibfoo >=1.2"]} and .packages[$d].run_exports == {"strong": ["dtflibbar >=2"]}' \
+        "$WORK/h_rx.json" >/dev/null 2>&1; then
+  pass
+else
+  fail "legacy list run_exports not normalised" \
+    "uploads HTTP ${st1}/${st2}; run_exports.json HTTP ${st}: list=$(jq -c --arg l "$RXL" '.packages[$l]' "$WORK/h_rx.json" 2>/dev/null) dict=$(jq -c --arg d "$RXD" '.packages[$d]' "$WORK/h_rx.json" 2>/dev/null)"
+fi
+
+begin_test "#4151: an environment SBOM gives a noarch member subdir=noarch in a linux-64 scope; the linux-64 member keeps subdir=linux-64"
+cat > "$WORK/noarch-lock.yml" <<'YAML'
+version: 1
+metadata:
+  platforms:
+  - linux-64
+package:
+- name: tzdata
+  version: 2024a
+  build: h0c530f3_0
+  manager: conda
+  platform: linux-64
+  dependencies: {}
+  url: https://conda.anaconda.org/conda-forge/noarch/tzdata-2024a-h0c530f3_0.conda
+  hash:
+    sha256: eeee1111
+- name: libwebp
+  version: 1.3.2
+  build: h1234_0
+  manager: conda
+  platform: linux-64
+  dependencies: {}
+  url: https://conda.anaconda.org/conda-forge/linux-64/libwebp-1.3.2-h1234_0.conda
+  hash:
+    sha256: aaaa1111
+YAML
+st="$(curl -s --max-time 60 -o "$WORK/env_sbom.json" -w '%{http_code}' -X POST -H "$(auth_header)" \
+  -H 'Content-Type: application/octet-stream' --data-binary "@$WORK/noarch-lock.yml" \
+  "${BASE_URL}/api/v1/sbom/environment?filename=conda-lock.yml&format=cyclonedx" 2>/dev/null || echo 000)"
+tz="$(jq -r '[.. | objects | select(.name? == "tzdata") | .purl? // empty] | unique | join(" ")' "$WORK/env_sbom.json" 2>/dev/null)"
+wp="$(jq -r '[.. | objects | select(.name? == "libwebp") | .purl? // empty] | unique | join(" ")' "$WORK/env_sbom.json" 2>/dev/null)"
+if [ "$st" = "200" ] && [ -n "$tz" ] && [[ "$tz" == *"subdir=noarch"* ]] && [[ "$tz" != *"subdir=linux-64"* ]] \
+   && [[ "$wp" == *"subdir=linux-64"* ]]; then
+  pass
+else
+  fail "noarch member's environment purl does not carry its own subdir" \
+    "HTTP ${st}; tzdata purl='${tz}'; libwebp purl='${wp}'; $(head -c 200 "$WORK/env_sbom.json")"
+fi
+
+begin_test "#4149: an over-ceiling (>128 MiB) remote repodata.json is served 200 in full, and the warm re-serve does not go upstream again"
+huge_gets() { docker logs "ak-dtf${SLOT}-mock-conda" 2>&1 | grep -c '"GET /huge/noarch/repodata.json HTTP' || true; }
+create_repo "$RH" conda remote "http://172.16.${SLOT}.70/huge/" >/dev/null 2>&1
+# The cold read is two upstream GETs by design: the buffered attempt aborts at
+# the 128 MiB ceiling, then the streaming path fetches and tees the document
+# into the proxy cache. The warm read must add none.
+st1="$(curl -s --max-time 180 -o "$WORK/huge1.json" -w '%{http_code}' "${BASE_URL}/conda/${RH}/noarch/repodata.json" 2>/dev/null || echo 000)"
+up1="$(huge_gets)"
+st2="$(curl -s --max-time 180 -o "$WORK/huge2.json" -w '%{http_code}' "${BASE_URL}/conda/${RH}/noarch/repodata.json" 2>/dev/null || echo 000)"
+up2="$(huge_gets)"
+sz1="$(stat -c %s "$WORK/huge1.json" 2>/dev/null || echo 0)"
+sz2="$(stat -c %s "$WORK/huge2.json" 2>/dev/null || echo 0)"
+if [ "$st1" = "200" ] && [ "$st2" = "200" ] && [ "$sz1" -gt 134217728 ] && [ "$sz1" = "$sz2" ] \
+   && [ "$up1" -ge 1 ] 2>/dev/null && [ "$up2" = "$up1" ]; then
+  pass
+else
+  fail "over-ceiling repodata not streamed, or re-fetched upstream on the warm read" \
+    "cold HTTP ${st1} ${sz1} bytes, upstream GETs ${up1}; warm HTTP ${st2} ${sz2} bytes, upstream GETs ${up2} (want no new GET)"
+fi
+rm -f "$WORK/huge1.json" "$WORK/huge2.json"
 
 end_suite
