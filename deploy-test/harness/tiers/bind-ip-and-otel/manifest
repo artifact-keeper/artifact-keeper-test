@@ -1,0 +1,51 @@
+# DTF tier manifest: bind-ip-and-otel  (artifact-keeper#2161, #3833, #4029, #4455; 1.11.0)
+# Profile-set: filesystem + telemetry.otlp-spans (OTLP http/protobuf export to
+# a stdlib sink that decodes every span to JSON; the same container is the
+# "sibling" the listener probes connect from). Every leg recreates only the
+# backend with fixtures/backend.variant.yml (METRICS_PORT=9091 plus the bind
+# IPs and the sampler of that leg) layered on the same profiles.
+#
+# THE FEATURES AND FIXES AND THEIR GATES (all RED on ak-backend:1.10.0)
+# Leg A: binds 0.0.0.0, OTEL_TRACES_SAMPLER=parentbased_always_on (default).
+#   (CONTROL) backend:8080, :9090 (gRPC) and :9091 (metrics) accept a TCP
+#             connect from the sibling container, on both images.
+#   (CONTROL) a request with a traceparent header (valid, and all-zero ids)
+#             is served normally (404 for an unknown repository), on both.
+#   (FIX #3833) the collector receives spans from service.name
+#             artifact-keeper, and the backend never logs AfterShutdown or
+#             "no reactor running". RED: the async reqwest client panicked in
+#             the BatchSpanProcessor thread, nothing was exported.
+#   (FIX #4029) the http_request span of a request carrying
+#             traceparent 00-<tid>-<sid>-01 has trace_id == tid,
+#             parent_span_id == sid and kind SERVER (2). RED: no span (and,
+#             before #4029, a fresh trace of kind INTERNAL).
+#   (FIX #4029) all-zero ids are invalid: the span is a root (no parent) in
+#             a fresh, non-zero trace, still kind SERVER.
+#   (FIX #4455) the same span carries http.route == the route template
+#             (/api/v1/repositories/:key, not the raw path) and
+#             http.response.status_code == 404.
+# Leg B: GRPC_BIND_IP=127.0.0.1, METRICS_BIND_IP=127.0.0.1 (#2161).
+#   (FIX)     from the sibling container :9090 and :9091 refuse while :8080
+#             serves; the log says "gRPC server listening on 127.0.0.1:9090"
+#             and "Metrics listener on 127.0.0.1:9091". RED: both still bind
+#             0.0.0.0 and accept.
+# Leg C: GRPC_BIND_IP=not-an-ip.
+#   (FIX)     the backend exits 1 with "GRPC_BIND_IP must be an IP address
+#             ...". RED: the variable is ignored and the backend comes up.
+# Leg D: OTEL_TRACES_SAMPLER=always_off (#4029).
+#   (FIX)     the "OpenTelemetry tracing enabled" startup line reports
+#             sampler="always_off" and six requests (one with a sampled
+#             traceparent) export no http_request span.
+# Leg E: OTEL_TRACES_SAMPLER=traceidratio, OTEL_TRACES_SAMPLER_ARG=abc.
+#   (FIX)     the startup line reports sampler="traceidratio" with
+#             sampler_ratio=1 (the fallback), and all three requests export.
+#
+# NOT GATED HERE: the IPv6 bind literals (the compose networks are IPv4
+# only), oversized tracestate dropping, the CLIENT spans of upstream fetches
+# and the per-query DB spans of #4434/#4455 (they need a Remote repository
+# and sqlx::query=debug; the request-span facet above is the cheap one).
+#
+# RATE_LIMIT_ENABLED=false: five logins across the recreates.
+PROFILES="storage.filesystem telemetry.otlp-spans"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
