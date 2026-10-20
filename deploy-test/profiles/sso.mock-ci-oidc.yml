@@ -1,0 +1,90 @@
+# =============================================================================
+# profiles/sso.mock-ci-oidc.yml -- sso dimension = a CI OIDC issuer (mock)
+# =============================================================================
+# Adds the stdlib-python CI OIDC issuer of the ci-oidc-exchange tier
+# (harness/tiers/ci-oidc-exchange/fixtures/mock_ci_oidc.py) so the oracle can
+# drive POST /api/v1/auth/ci/token with assertions whose every claim it
+# chooses. Artifact Keeper's CI OIDC discovery refuses a non-https issuer, so
+# the mock serves discovery and JWKS over TLS:
+#
+#   * https://mock-ci-oidc/<iss>/...  on :443. At boot the mock generates a
+#     throwaway CA and a server certificate (SAN DNS:mock-ci-oidc) with the
+#     image's openssl into the per-slot volume ci_oidc_tls, deleting the CA
+#     key once it has signed. The backend mounts that volume read-only and
+#     trusts the CA through CUSTOM_CA_CERT_PATH, the operator setting for a
+#     private CA, which every image since 1.10.0 honours on its SSO/OIDC
+#     client. No key material is committed. Any path segment is an issuer, so
+#     one container serves https://mock-ci-oidc/iss1 and .../iss2.
+#   * http :80 is the oracle's control port (POST /mint, GET /__requests),
+#     published on the slot's spare ${TRIVY_PORT} (8250+N); this tier runs no
+#     scanner.
+#
+# SUBNET: 172.16.<slot>.0/24, as sso.oidc-entra-shape.yml (the base `dtf`
+# network is auto-allocated from 172.17-172.31, so 172.16 never collides).
+# SSRF: AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 admits the mock's address for
+# the SSO trust class the CI OIDC fetches use; nothing else is opened.
+#
+# Required vars (exported by run.sh): DTF_SLOT, TRIVY_PORT, DTF_DIR.
+# =============================================================================
+services:
+  mock-ci-oidc:
+    image: python:3.12.13-slim-bookworm
+    container_name: ak-dtf${DTF_SLOT}-mock-ci-oidc
+    command: ["python3", "-I", "/app/mock_ci_oidc.py"]
+    environment:
+      MOCK_HTTP_PORT: "80"
+      MOCK_HTTPS_PORT: "443"
+      MOCK_PUBLIC_BASE: "https://mock-ci-oidc"
+      MOCK_TLS_DIR: /tls
+      MOCK_TLS_HOST: mock-ci-oidc
+    volumes:
+      - "${DTF_DIR}/harness/tiers/ci-oidc-exchange/fixtures/mock_ci_oidc.py:/app/mock_ci_oidc.py:ro"
+      - ci_oidc_tls:/tls
+    # SELinux-enforcing hosts (rootless podman on Fedora) cannot read a
+    # bind-mounted file under $HOME; disable label separation for this
+    # container only. A no-op where SELinux is off.
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks:
+      mockcioidc:
+        ipv4_address: 172.16.${DTF_SLOT}.61
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-ci-oidc:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+      CUSTOM_CA_CERT_PATH: /etc/dtf-ci-oidc/ca.crt
+    volumes:
+      - ci_oidc_tls:/etc/dtf-ci-oidc:ro
+    # The oracle reads `docker logs` (the #4133 startup warning, the exchange's
+    # security line); pin json-file so a host journald cannot drop lines.
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockcioidc: {}
+
+networks:
+  mockcioidc:
+    name: ak-dtf${DTF_SLOT}-mockcioidc
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
+
+volumes:
+  ci_oidc_tls:
+    name: ak-dtf${DTF_SLOT}_ci_oidc_tls
