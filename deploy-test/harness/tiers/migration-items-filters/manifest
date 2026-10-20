@@ -1,0 +1,36 @@
+# DTF tier manifest: migration-items-filters  (artifact-keeper#4787 / #4778,
+# #4797 / #4740; backend 1.11.3)
+# Profile-set: filesystem / single + upstreams=mock-artifactory-items. Both
+# defects are in the migration subsystem (the items listing and the Debian
+# importer's destination path); one migration run from a scripted
+# Artifactory-shaped source feeds both.
+#
+# THE BUGS
+#   #4778 (fixed by #4787). `GET /api/v1/migrations/{id}/items` deserialised
+#   its `status` and `item_type` query filters and never bound them: every
+#   call returned the job's whole item list and `pagination.total` counted all
+#   of it, so `?status=failed` could not be used to find what failed.
+#
+#   #4740 item 1 (fixed by #4797). A migrated `.deb` was filed by its source
+#   path only, ignoring the `deb.component` property Artifactory records for
+#   it: a flat `pool/<file>.deb` went to `main`, a `pool/<letter>/<name>/`
+#   layout made the letter the component. apt then saw the package in the
+#   wrong `dists/<dist>/<component>/binary-<arch>/Packages`.
+#
+# PRIMITIVES
+#   * profiles/upstreams.mock-artifactory-items.yml mounts
+#     fixtures/mock_artifactory.py: the migration-package-catalog mock plus a
+#     control document (_mock.json) giving per-item properties, items whose
+#     advertised digest is wrong (FAILED) and items listed but never served
+#     (SKIPPED for a Debian index path).
+#   * fixtures/build_fixtures.py builds three real `.deb`s with different
+#     deb.component / deb.architecture properties, a phantom Release, two good
+#     generic files and one with a wrong digest; the oracle `docker cp`s them
+#     into the mock after the stack is up.
+#
+# RATE_LIMIT_ENABLED=false: the oracle polls job state once a second.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the source sits on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-artifactory-items"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
