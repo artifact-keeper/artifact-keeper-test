@@ -1355,6 +1355,12 @@ jobs:
               if ! command -v mvn &>/dev/null; then
                 sudo apt-get update -qq && sudo apt-get install -y -qq maven > /dev/null || true
               fi
+              # test-maven-prefixes.sh runs Maven 4, which needs Java 17+, and
+              # its skip_suite on an older JDK is a hard fail under
+              # RELEASE_GATE=1. Add a 17 JDK when the runner's default is older.
+              if ! java -version 2>&1 | grep -Eq 'version "(1[7-9]|[2-9][0-9])'; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-17-jdk-headless > /dev/null || true
+              fi
               ;;
             rust-go-swift)
               if ! command -v go &>/dev/null; then
