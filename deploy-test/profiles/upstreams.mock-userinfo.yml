@@ -1,0 +1,89 @@
+# =============================================================================
+# profiles/upstreams.mock-userinfo.yml -- two recording upstreams
+# =============================================================================
+# For the upstream-url-userinfo-redaction tier (artifact-keeper #4452, #4463,
+# #4467, #4503).
+#
+# The overlay:
+#   * ADDS  `mock-up-a` and `mock-up-b`, two copies of a stdlib-only Python
+#     server (harness/tiers/upstream-url-userinfo-redaction/fixtures/
+#     mock_cred_upstream.py) that serve /f/<name>, count every request and
+#     record the Authorization header it carried. Two hosts, so a PATCH of a
+#     Remote's upstream_url can be proven to move the next fetch from A to B,
+#     and so A to B is a cross-origin move for the #4467 409.
+#     Both sit on a per-slot 172.16.<slot>.0/24 subnet (below Docker's default
+#     address pool, as upstreams.mock-static.yml explains), which the backend's
+#     create-time SSRF check allowlists through AK_SSRF_ALLOW_PRIVATE_CIDRS.
+#     The oracle reads the counters with `docker exec`, so nothing is published.
+#   * PATCHES backend onto that network and pins the json-file log driver
+#     (the tier reads `docker logs`). The #4503 case needs S3_BUCKET and a
+#     credentialed S3_PUBLIC_ENDPOINT on the backend; the oracle adds those
+#     itself with a per-run random password (a tier-local override, backend
+#     recreated on the same compose project), so no URL with a password is
+#     committed here.
+#   * label=disable on the mocks: an SELinux-enforcing host cannot read the
+#     bind-mounted script otherwise.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+x-mock-up: &mock-up
+  image: python:3.12-slim
+  command: ["python3", "/app/mock_cred_upstream.py"]
+  volumes:
+    - "${DTF_DIR}/harness/tiers/upstream-url-userinfo-redaction/fixtures/mock_cred_upstream.py:/app/mock_cred_upstream.py:ro"
+  security_opt:
+    - label=disable
+  logging:
+    driver: json-file
+  healthcheck:
+    test:
+      - "CMD-SHELL"
+      - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 5s
+
+services:
+  mock-up-a:
+    <<: *mock-up
+    container_name: ak-dtf${DTF_SLOT}-mock-up-a
+    environment:
+      MOCK_PORT: "80"
+      MOCK_NAME: "mock-up-a"
+    networks:
+      mockuserinfo:
+        ipv4_address: 172.16.${DTF_SLOT}.71
+
+  mock-up-b:
+    <<: *mock-up
+    container_name: ak-dtf${DTF_SLOT}-mock-up-b
+    environment:
+      MOCK_PORT: "80"
+      MOCK_NAME: "mock-up-b"
+    networks:
+      mockuserinfo:
+        ipv4_address: 172.16.${DTF_SLOT}.72
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-up-a:
+        condition: service_healthy
+      mock-up-b:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockuserinfo: {}
+
+networks:
+  mockuserinfo:
+    name: ak-dtf${DTF_SLOT}-mockuserinfo
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
