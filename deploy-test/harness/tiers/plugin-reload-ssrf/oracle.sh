@@ -25,6 +25,10 @@ set -uo pipefail
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+# common.sh turns on errexit; every probe below captures its status and
+# asserts on it explicitly, so a non-zero helper (grep with no match, jq on a
+# non-JSON error body) must not end the suite before the assertion runs.
+set +e
 
 SL="$DTF_SLOT"
 SUF="${RUN_ID##*-}-$$"
