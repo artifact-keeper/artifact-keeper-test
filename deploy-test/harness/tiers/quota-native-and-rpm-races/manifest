@@ -1,0 +1,48 @@
+# DTF tier manifest: quota-native-and-rpm-races
+#   artifact-keeper#4422 (storage quotas enforced on every native publish,
+#   PR #4543), #4421 (concurrent publishes of one RPM curated version, PR
+#   #4497) and #4307 (concurrent RPM curated snapshot creates 500 with 40001,
+#   PR #4389). All 1.11.0.
+#   Profile-set: filesystem.
+#
+# THE BUGS
+# * #4422: only the generic upload API, chunked uploads and npm publish ran
+#   quota admission. Maven, Cargo, Conan, `docker push` (and ~25 other native
+#   handlers) wrote their rows directly, so a repository grew past its
+#   quota_bytes without a single refusal. The fix preflights before the bytes
+#   are written and admits under the quota lock in the INSERT transaction: a
+#   refusal is 507 {"code":"QUOTA_EXCEEDED"} (the registry envelope `DENIED`
+#   for docker) and leaves no row. Manifests are charged 0 but a descriptor
+#   with a negative or absurd size is now 400 MANIFEST_INVALID (it feeds the
+#   usage ledger).
+# * #4307: N parallel `POST /api/v1/curation/repos/{key}/versions` on one
+#   RPM staging repository hit PostgreSQL serialization failures (40001)
+#   past the retry budget and answered 500. Fixed: every create is 201 with
+#   a distinct version number.
+# * #4421: `mark_published` had no `published_at IS NULL` guard, so two
+#   in-flight publishes of one version both rewrote the repodata (both 200).
+#   Fixed: exactly one publishes, the others get 409 "Version N is already
+#   being published by another request", and the signature verifies.
+#
+# The RPM staging repository is seeded the way the rpm-p3-curation tier does
+# it: 30 approved curation_packages rows with structured primary metadata
+# (inserted through DB_CONTAINER) and a GPG signing key with metadata signing
+# on. The remote's upstream is never fetched.
+#
+# Gates: (CONTROL) a generic upload over the quota is 507 (enforced before
+# 1.11.0 too) and a native Maven upload under the quota is 201; a curated
+# version publishes, and its repomd.xml.asc verifies with gpg over
+# repomd.xml with the served key (both images). (FIX) over-quota Maven,
+# Conan, Cargo uploads answer 507 QUOTA_EXCEEDED and leave no artifacts row;
+# an over-quota docker blob answers 507 DENIED and leaves no oci_blobs row;
+# a manifest declaring a layer size of -1 is 400 MANIFEST_INVALID; four
+# rounds of 16 parallel version creates are all 201 with 64 distinct
+# numbers; four parallel publishes of one version give exactly one 200 and
+# three 409s.
+#
+# RATE_LIMIT_ENABLED=false: the oracle fires 70 requests in bursts.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and main.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
