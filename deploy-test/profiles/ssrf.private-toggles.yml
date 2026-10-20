@@ -1,0 +1,23 @@
+# =============================================================================
+# profiles/ssrf.private-toggles.yml - a CIDR allowlist plus the per-surface
+# private-IP toggles
+# =============================================================================
+# PATCHES backend.environment only. Stack it AFTER webhooks.mock-receiver: it
+# replaces that profile's AK_SSRF_ALLOW_PRIVATE_CIDRS (the receiver's /32)
+# with an unrelated address on the same per-slot subnet, so the receiver at
+# 172.16.<slot>.78 is OUTSIDE the configured list, and turns on
+# WEBHOOK_ALLOW_PRIVATE_IPS and SSO_ALLOW_PRIVATE_IPS.
+#
+# Since 1.11.0 (#4428, #4474) the toggles add to a configured CIDR list for
+# their own surface (webhook targets, OIDC/SSO endpoints). Before, a
+# configured list was the only rule and the toggles were silently ignored.
+# The list stays authoritative for upstream URLs (UPSTREAM_ALLOW_PRIVATE_IPS
+# is left at its default, false). 172.16.<slot>.79 is listed so a Remote can
+# be created there without anything listening.
+# =============================================================================
+services:
+  backend:
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.79/32
+      WEBHOOK_ALLOW_PRIVATE_IPS: "true"
+      SSO_ALLOW_PRIVATE_IPS: "true"
