@@ -1,0 +1,142 @@
+# =============================================================================
+# profiles/logging.json-text-ansi.yml - logging dimension = the three log
+#   shapes side by side, behind a trusted-gateway subnet, with a gallery mock
+#   (ops-log-and-metrics-1112 tier: artifact-keeper#4674, #4676, #4677, #3914)
+# =============================================================================
+# LOG_FORMAT and LOG_ANSI are read once at process start, so one backend can
+# show only one log shape. This overlay runs three on the same Postgres and
+# /data volume:
+#
+#   backend        LOG_FORMAT=json (the shape the JSON request-field assertions
+#                  read) and the API every metric / audit assertion drives.
+#   backend-text   LOG_FORMAT and LOG_ANSI unset: the default text format with
+#                  LOG_ANSI at its `auto` default. Its stdout is a pipe (no
+#                  TTY), so from 1.11.2 it carries no ANSI escape at all.
+#   backend-ansi   LOG_ANSI=true: colour forced back on (the pre-1.11.2 look).
+#
+# backend-text and backend-ansi join backend's network namespace
+# (`network_mode: service:backend`, like topology.two-replica.yml) and listen
+# on 8081 / 8082 (gRPC 9091 / 9092); the oracle reaches them with
+#   docker exec ak-dtf<slot>-backend curl http://127.0.0.1:808x/...
+# They start after backend is healthy, so migrations and the admin bootstrap
+# have run once.
+#
+# The `opsgw` network (172.16.<slot>.0/24, never auto-allocated, see
+# upstreams.mock-artifactory.yml) carries:
+#   * mock-gallery at .71: a stdlib VS Code gallery upstream, reachable by the
+#     create-time SSRF check through AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12
+#     while UPSTREAM_ALLOW_PRIVATE_IPS stays false, so a 10.10.10.10 upstream
+#     is still refused (the ak_ssrf_blocks_total leg);
+#   * the oracle's throwaway curl containers, pinned to .70 (inside the
+#     RATE_LIMIT_TRUSTED_PROXY_CIDRS /28, a trusted gateway) and .90 (outside
+#     it). The host-published port cannot be used for this: under rootless
+#     podman its peer address is not stable (see sso.oidc-entra-shape.yml).
+#
+# Every backend pins the json-file log driver: the tier reads `docker logs`,
+# and a host journald (rootless podman on Fedora) can rate-limit the burst.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, BACKEND_IMAGE.
+# =============================================================================
+services:
+  mock-gallery:
+    image: python:3.12.13-slim-bookworm
+    container_name: ak-dtf${DTF_SLOT}-mock-gallery
+    command: ["python3", "/app/mock_gallery.py"]
+    environment:
+      MOCK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/ops-log-and-metrics-1112/fixtures/mock_gallery.py:/app/mock_gallery.py:ro"
+    # SELinux-enforcing hosts: the bind-mounted fixture keeps user_home_t and
+    # is unreadable without this. A no-op where SELinux is off.
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      opsgw:
+        ipv4_address: 172.16.${DTF_SLOT}.71
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-gallery:
+        condition: service_healthy
+    environment:
+      LOG_FORMAT: json
+      # #4677: a peer inside this /28 is a trusted gateway whose X-Request-ID
+      # becomes the correlation id; .90 is outside it.
+      RATE_LIMIT_TRUSTED_PROXY_CIDRS: 172.16.${DTF_SLOT}.64/28
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      opsgw: {}
+
+  backend-text:
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
+    container_name: ak-dtf${DTF_SLOT}-backend-text
+    depends_on:
+      backend:
+        condition: service_healthy
+    network_mode: "service:backend"
+    environment: &sidecar_env
+      DATABASE_URL: postgresql://registry:registry@postgres:5432/artifact_registry
+      DATABASE_MIN_CONNECTIONS: "1"
+      STORAGE_PATH: /data/storage
+      BACKUP_PATH: /data/backups
+      PLUGINS_DIR: /data/plugins
+      JWT_SECRET: ${JWT_SECRET:-dtf-nonprod-cobalt-harbor-lantern-7f3a9c2e5b81}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-TestRunner!2026secure}
+      RUST_LOG: ${RUST_LOG:-info}
+      BIND_ADDRESS: 0.0.0.0:8081
+      GRPC_PORT: "9091"
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
+      RATE_LIMIT_ENABLED: "false"
+    volumes:
+      - dtf_data:/data
+    logging:
+      driver: json-file
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 10s
+      start_period: 40s
+      retries: 24
+
+  backend-ansi:
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
+    container_name: ak-dtf${DTF_SLOT}-backend-ansi
+    depends_on:
+      backend:
+        condition: service_healthy
+    network_mode: "service:backend"
+    environment:
+      <<: *sidecar_env
+      BIND_ADDRESS: 0.0.0.0:8082
+      GRPC_PORT: "9092"
+      LOG_ANSI: "true"
+    volumes:
+      - dtf_data:/data
+    logging:
+      driver: json-file
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 5s
+      timeout: 10s
+      start_period: 40s
+      retries: 24
+
+networks:
+  opsgw:
+    name: ak-dtf${DTF_SLOT}-opsgw
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
