@@ -1,0 +1,70 @@
+# DTF tier manifest: promotion-and-curation-validation
+#   (artifact-keeper#4204, #4245, #4246, #4251, #4506)
+# Profile-set: filesystem only. The Remotes proxy a hosted repository of the
+# same backend through the backend's own address on the compose network, so
+# no mock upstream is needed (loopback and the `backend` service name are
+# refused as upstream hosts; UPSTREAM_ALLOW_PRIVATE_IPS admits the private
+# network address).
+#
+# THE BUGS (all fixed in 1.11.0; RED image 1.10.0)
+# #4204: evaluate_gate_once downgraded EVERY quality-gate evaluation error
+#   to "not evaluated", so a database error while reading the gate or the
+#   health score promoted the artifact with no gate at all (fail-open). Now a
+#   genuine error refuses: single route 503 "Quality gate could not be
+#   evaluated; promotion refused for safety ...", bulk route fails that item
+#   ("Quality gate evaluation failed; item not promoted"). The two NotFound
+#   cases (no gate, no score) still proceed.
+# #4245: a curation rule with a top-level action outside {allow, block} hit
+#   the column's CHECK constraint and answered 500 DATABASE_ERROR (create and
+#   update). Now 400 listing the allowed actions.
+# #4246: a publisher_trust rule whose config the evaluator rejects (missing
+#   or empty trusted_publishers, unknown match mode, unknown config action)
+#   was stored with 201 and then judged nothing. Now 400 naming the field.
+# #4251: publisher_trust treated conda_native as NotApplicable; it is now
+#   conda's publisher family (about.json maintainer, CEP-27 attestations).
+#   (1.10.0 has no conda family either, so the conda_native rows fall to the
+#   default action there.)
+# #4506: proxied content of a Remote has no artifacts row, so origin
+#   predicates (allowed_kinds, denied_upstreams, ...) never gated it. Now the
+#   Remote's entry points refuse with 403 "Artifact download is blocked by the
+#   repository's scan policy" before the cache is read or the upstream
+#   contacted; a virtual over the Remote does not serve it either.
+#
+# THE PRIMITIVES
+#   #4204  ALTER TABLE artifact_health_scores RENAME (restored by the oracle
+#          and by an exit handler): the gate row is readable, the score read
+#          errors. A min_health_score 0 block gate on the staging repository,
+#          which always passes once the table is back.
+#   #4251  curation_packages rows seeded directly (the publisher signal reads
+#          only the metadata blob), then POST /curation/packages/re-evaluate.
+#   #4506  Remotes warmed (cached) before the policies are attached; one
+#          cached and one never-fetched path per Remote.
+#
+# THE GATES
+#   (CONTROL) on both images: Remotes and the virtual serve the upstream
+#             bytes before any policy; an admitting origin policy
+#             (allowed_kinds [proxy]) does not block; removing the policies
+#             restores the Remotes; an ungated promotion proceeds while the
+#             score table is unreadable; the gated promotion succeeds once it
+#             is back; valid pattern and publisher_trust rules are created
+#             201; an untrusted pypi publisher is blocked by the rule and a
+#             raw package passes through untouched.
+#   (FIX)     #4506 403 + body for cached and uncached paths of both Remotes,
+#             virtual not serving; #4204 single 503 + no copy + no history
+#             row, bulk item failed + no copy; #4245 create/update 400 listing
+#             allow/block; #4246 four bad configs 400 naming the field and an
+#             update to a bad config 400 with the stored config unchanged;
+#             #4251 conda_native untrusted blocked by the rule, trusted
+#             approved by the rule.
+#
+# NOT GATED HERE: #4254 (conda_native scanner-component dedup) needs a
+# scanner profile and a conda_native package vendoring a wheel; it belongs
+# with the scan-on-upload tiers.
+#
+# RATE_LIMIT_ENABLED=false: about 70 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the Remotes' upstream is the backend's
+# compose-network address.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
