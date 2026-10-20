@@ -1,0 +1,60 @@
+# DTF tier manifest: lifecycle-assignments-min-keep
+#   1.11.0 lifecycle policy features and fixes, with the lifecycle regex
+#   validation family folded in:
+#   #3794 explicit repository assignments, #2024 min_keep / match.path_prefix,
+#   #4456 composite / match.version_pattern / 36500-day cap, #3869 "enabled":
+#   false on create, #3734 inert-Remote 422, #4461 / #4502 / #4504 regex
+#   validation. Profile-set: filesystem only.
+#
+# THE FEATURES / FIXES (all shipped in 1.11.0; RED ak-backend:1.10.0)
+#   #3794  A policy now has `applies_to_all` and `repository_ids` (join table
+#          lifecycle_policy_repositories). A policy with neither is DORMANT:
+#          execute-all skips it. 1.10.0 read a missing repository_id as
+#          GLOBAL and deleted in every repository. New routes:
+#          PUT/DELETE /api/v1/admin/lifecycle/{id}/repositories/{rid}
+#          (idempotent, 200 with the policy), GET ?repository_id= lists by
+#          assignment, GET /capabilities -> explicit_repository_assignment.
+#   #2024  max_age_days accepts min_keep (the newest N of each package, grouped
+#          as max_versions groups them, survive even when expired); every type
+#          accepts match.path_prefix.
+#   #4456  composite policies AND their conditions; match.version_pattern
+#          scopes a policy to matching versions; `days` is capped at 36500.
+#   #3869  POST {"enabled": false} creates the policy disabled (1.10.0 dropped
+#          the field); a live run of a disabled policy is 400.
+#   #3734  a policy that cannot reclaim anything in a non-OCI Remote
+#          (max_versions on maven) is 422 UNPROCESSABLE_ENTITY.
+#   #4461  lifecycle regexes are checked against PostgreSQL rules: \b / \B
+#          (backspace in a PostgreSQL ARE) is 400 VALIDATION_ERROR naming \y;
+#          \y is accepted (1.10.0 validated with the Rust regex crate: \b
+#          accepted, \y refused).
+#   #4502  a STORED \b selector (match.version_pattern, tag_pattern_delete
+#          pattern) previews 200 with errors[] naming it and 0 matches; a live
+#          run is 400.
+#   #4504  a STORED pattern PostgreSQL cannot compile (foo\z) is 400
+#          VALIDATION_ERROR naming the field on execute (1.10.0: 500
+#          DATABASE_ERROR from mid-run).
+#
+# THE PRIMITIVES
+#   Generic artifacts at <name>/<version>/<name>.bin (the backend derives
+#   name=<name>, version=<version>), backdated with SQL on created_at (the
+#   max-age clock of a non-OCI artifact), one day apart so the per-package
+#   ordering is deterministic. A download_statistics row seeded with SQL for
+#   the composite no_downloads condition. Stored-regex cases write the config
+#   with SQL onto a policy the API created in a shape every release accepts.
+#   Every policy is deleted at the end of its case: on 1.10.0 an unscoped,
+#   "disabled" policy is global and enabled and would delete in later cases.
+#
+# THE GATES
+#   (CONTROL)  both images: legacy repository_id max_versions keep=1 previews
+#              2, executes 2, keeps the newest, leaves another repository.
+#   (FIX)      everything above; each case asserts response bodies and the
+#              live artifact rows, not status alone.
+#   Not covered: #4507 (epoch-aware version comparison). A curation block
+#   rule `< 10.0` vs an rpm `1:2.0-1` and an allow `>= 10.0` give the same
+#   statuses on 1.10.0 and main (probed), so it does not discriminate from
+#   the curation API; see the PR body.
+#
+# RATE_LIMIT_ENABLED=false: ~120 authenticated calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
