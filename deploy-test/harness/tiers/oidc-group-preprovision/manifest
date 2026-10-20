@@ -1,0 +1,40 @@
+# DTF tier manifest: oidc-group-preprovision  (artifact-keeper#4296, closes #4297)
+# Profile-set: filesystem / single + sso=oidc (the headless mock IdP from
+# profiles/sso.oidc.yml, script in tiers/oidc-group-sync/fixtures/mock_oidc.py).
+#
+# THE FEATURE (#4297, shipped by #4296, milestone 1.12.0)
+# Before #4296 an OIDC-managed group (groups.external_source='oidc', owned by
+# one provider) only came into existence on the first login whose claims named
+# it, so an operator could not grant it repository permissions ahead of time.
+# #4296 adds an admin-only endpoint:
+#   POST /api/v1/admin/sso/oidc/{provider_id}/groups  {"name": "<group>"}
+# It reuses the login path's ownership-safe upsert (ensure_federated_group):
+#   * 200 + {id, name, external_source:"oidc", external_provider_id} and no
+#     membership; the same call again returns the SAME id (idempotent, 200);
+#   * 409 when the name is owned by a local group or another provider;
+#   * 404 for an unknown provider, 400 when the provider's
+#     map_groups_to_groups is off or the name is empty;
+#   * behind admin_middleware (non-admin refused) and require_admin().
+# Membership stays IdP-managed: the groups API refuses manual member edits on
+# a federated group (409, #2874), and a later OIDC login whose claim names the
+# group joins THE SAME row, while a login without it prunes the membership.
+#
+# THE GATES
+#   (FIX)      admin pre-provision creates the row (oidc, provider, 0 members);
+#              idempotent repeat; manual membership writes on it refused; a
+#              later login joins the same id with no duplicate row and a login
+#              without the claim prunes it; the ownership / provider / name
+#              guards (409/409/404/400/400). RED on 1.11.3: the route is 404
+#              and the group only appears after a first login.
+#   (CONTROL)  must hold on BOTH images: the mock IdP serves discovery + JWKS;
+#              a non-admin POST to the route is refused (403 on the fix, 404
+#              on 1.11.3) and creates no row; login-time group sync
+#              auto-creates an oidc group, attaches the user, refuses a manual
+#              member write (409), and prunes the membership when the claim
+#              disappears.
+#
+# RATE_LIMIT_ENABLED=false: a dozen admin calls and SSO logins back to back
+# (same as oidc-group-sync).
+PROFILES="storage.filesystem sso.oidc"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
