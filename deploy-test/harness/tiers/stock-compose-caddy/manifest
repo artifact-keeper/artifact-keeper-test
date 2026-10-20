@@ -1,0 +1,37 @@
+# DTF tier manifest: stock-compose-caddy
+#   (artifact-keeper#4482 / #1772, #4564 / #4555: 1.11.0)
+# Profile-set: filesystem + proxy.stock-caddy: the backend repo's stock
+# `caddy` service (docker.io/library/caddy:2-alpine, its environment, the
+# Caddyfile at /etc/caddy/Caddyfile) in front of the DTF backend, with the
+# stock docker/Caddyfile copied into fixtures/Caddyfile (backend main at
+# 2f08663f; identical to the v1.11.0 tag's), and a stand-in for the web UI
+# (fixtures/web_standin.py: every path is a marked HTML 404, as the Next.js
+# UI answers an unknown path).
+#
+# Every probe is sent straight to the backend and through Caddy; the answers
+# must be identical and must not come from the web stand-in.
+#
+# THE VARIABLE IS THE CADDYFILE, NOT THE BACKEND IMAGE. STOCK_CADDYFILE
+# points the profile at another Caddyfile; the red proof uses the v1.10.0
+# one:  git -C <backend> show v1.10.0:docker/Caddyfile > /tmp/Caddyfile.v1.10.0
+#       STOCK_CADDYFILE=/tmp/Caddyfile.v1.10.0 harness/run.sh stock-compose-caddy ...
+#
+# CONTROL (every Caddyfile): /health, /api/v1/repositories/{key} and /npm/...
+#   reach the backend; an unrouted path reaches the web stand-in.
+# #4482 /general/{repo}/{path} serves the uploaded bytes through Caddy, and
+#   /pacman, /bazel and /lxc probes get the backend's own answer. RED with the
+#   v1.10.0 Caddyfile: all four get the web UI's HTML 404.
+# #4564 /t/<api token>/conda/{repo}/noarch/repodata.json (rattler's
+#   token-in-URL layout, #4555) gets the backend's repodata JSON. RED with
+#   the v1.10.0 Caddyfile: the web UI's HTML 404.
+#
+# NOT COVERED: the rest of the stock compose (postgres TLS init, OpenSearch,
+# Trivy, OpenSCAP, Dependency-Track, the real web image) and its packaging
+# fixes #4478 (no refused secret defaults), #4479 (every image names its
+# registry), #4481 (ARTIFACT_KEEPER_VERSION / _WEB_VERSION pins). Those are
+# static properties of docker-compose.yml and .env.example, which this repo
+# does not carry; the stock stack's fixed container names and host ports
+# also collide with any other stack on a shared host.
+PROFILES="storage.filesystem proxy.stock-caddy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
