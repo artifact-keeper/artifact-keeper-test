@@ -1,0 +1,23 @@
+# Module-registry front for the native-client-modules-and-lfs tier.
+# See profiles/client.terraform-modules.yml.
+{
+	admin off
+}
+
+tfm.dtf.local {
+	tls internal
+
+	handle /.well-known/terraform.json {
+		header Content-Type application/json
+		respond `{"modules.v1":"/tfm/"}` 200
+	}
+
+	handle /tfm/* {
+		uri path_regexp ^/tfm/([^/]+)/(.*)$ /terraform/$1/v1/modules/dtf/$2
+		reverse_proxy backend:8080
+	}
+
+	handle {
+		reverse_proxy backend:8080
+	}
+}
