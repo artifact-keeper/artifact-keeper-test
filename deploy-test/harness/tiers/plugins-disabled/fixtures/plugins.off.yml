@@ -1,0 +1,9 @@
+# Tier-local compose override for plugins-disabled (artifact-keeper#4650).
+# Layered alone on compose.base.yml: the operator switch under test, plus the
+# json-file log driver (the oracle reads the startup lines with docker logs).
+services:
+  backend:
+    environment:
+      PLUGINS_ENABLED: "false"
+    logging:
+      driver: json-file
