@@ -1,0 +1,65 @@
+# DTF tier manifest: secrets-file-env  (artifact-keeper#4142, fixed by #4775; 1.12.0)
+# Profile-set: filesystem / single. The oracle layers tier-local overrides
+# (fixtures/secrets.*.yml) on the backend and recreates it once per leg.
+#
+# THE FEATURE
+# Every credential-typed setting now also accepts a <NAME>_FILE companion that
+# names a mounted secret file (config::secret_or_env): DATABASE_URL,
+# JWT_SECRET, ADMIN_PASSWORD, OIDC_CLIENT_SECRET, LDAP_BIND_PASSWORD,
+# OPENSEARCH_PASSWORD, PEER_API_KEY, SMTP_PASSWORD, GITHUB_TOKEN,
+# MIGRATION_ENCRYPTION_KEY, SSO_ENCRYPTION_KEY, AK_WEBHOOK_SECRET_KEY,
+# S3_SECRET_ACCESS_KEY, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
+# S3_PRESIGN_SECRET_ACCESS_KEY, AZURE_STORAGE_ACCESS_KEY, AZURE_CLIENT_SECRET.
+# Rules (read from secret_or_env, not the PR body):
+#   * the direct value wins when it is set and not blank;
+#   * a blank direct value counts as unset, so the file decides;
+#   * file contents are trimmed of surrounding whitespace;
+#   * an empty <NAME>_FILE="" counts as unset;
+#   * a <NAME>_FILE naming an unreadable or empty file is an error naming the
+#     variable and the path, never the contents. For the startup settings
+#     (DATABASE_URL, JWT_SECRET, ADMIN_PASSWORD) the backend refuses to start:
+#       "<NAME>_FILE points at <path>, but the file could not be read: <io>"
+#       "<NAME>_FILE points at <path>, but the file is empty"
+# Before #4775 only INITIAL_ADMIN_PASSWORD_FILE and DEPENDENCY_TRACK_API_KEY_FILE
+# existed; every other _FILE variable is ignored.
+#
+# THE LEGS (each a backend recreate with secrets.mount.yml: the oracle's
+# per-run secrets directory bind-mounted read-only at /run/secrets/ak)
+#   1  fresh volume, DATABASE_URL / JWT_SECRET / ADMIN_PASSWORD removed from
+#      the environment (secrets.no-direct.yml, compose `!reset`), all three as
+#      *_FILE. Files carry surrounding whitespace.
+#   2  JWT_SECRET direct + JWT_SECRET_FILE; DATABASE_URL direct +
+#      DATABASE_URL_FILE naming an unreachable host.
+#   3  JWT_SECRET="" (secrets.blank-jwt.yml) + JWT_SECRET_FILE.
+#   4  JWT_SECRET_FILE -> a missing file (direct vars removed).
+#   5  DATABASE_URL_FILE -> an empty file (direct vars removed).
+#   6  ADMIN_PASSWORD_FILE -> a missing file (direct vars removed).
+#   7  the stock compose.base.yml environment.
+#
+# THE GATES
+#   (FIX)      leg 1: the backend boots, admin logs in with the trimmed file
+#              password (the compose default password is 401), the access
+#              token is HS256-signed with the trimmed file secret (verified by
+#              the oracle with the key, not just "a token came back"), and an
+#              authenticated DB read answers 200. Then the file values never
+#              appear in /api/v1/system/config (admin), a failed-login body, a
+#              tampered-token 401, a 404 body, docker inspect's environment or
+#              the backend log. Leg 3: boots and signs with the file secret.
+#              Legs 4-6: the container exits and the log carries the exact
+#              error naming the variable and the path, with no secret value.
+#              RED on 1.11.3: legs 1/4/5/6 exit with "DATABASE_URL not set"
+#              (the _FILE companions are ignored), leg 3 exits with
+#              "JWT_SECRET is unsuitable" (the blank direct value is used).
+#   (CONTROL)  both images: leg 2 boots, the token is signed with the direct
+#              JWT_SECRET (not the file one), the DB read works (so the direct
+#              DATABASE_URL won), and a leg-1 token is 401 under the new key;
+#              leg 7 boots and authenticates with the stock secret.
+#
+# NOT GATED HERE: the non-startup credentials (OIDC/LDAP/SMTP/S3/Azure/peer/
+# webhook/migration keys). They share secret_or_env with the three gated here;
+# reaching each needs its own provider topology.
+#
+# RATE_LIMIT_ENABLED=false: a dozen logins across seven boots.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
