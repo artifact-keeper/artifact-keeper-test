@@ -1,0 +1,33 @@
+# DTF tier manifest: oci-manifest-scrub
+#   (artifact-keeper#4666; shipped in 1.11.1)
+# Profile-set: filesystem. The oracle pushes an OCI image over /v2 (config, two
+# layers, manifest), runs POST /api/v1/admin/storage-scrub {"repair":false}
+# scoped to that repository, then truncates the stored manifest body through
+# a helper container that mounts the backend's volume, and scrubs again.
+#
+# THE BUG (RED on 1.11.0)
+#   #4666  Since #3601 an OCI manifest artifact's artifacts.size_bytes holds
+#          the IMAGE size (config plus layers); the scrub compared it with the
+#          stored manifest body, so every intact manifest was a `corrupt`
+#          finding (storage_scrub_findings) and real damage was buried in the
+#          noise. Fixed: a manifest is checked against oci_manifests.size_bytes
+#          (the body length; digest-only when no record exists yet), and that
+#          body length is a finding's expected_size.
+#
+# THE GATES
+#   (CONTROL) every image: the push records body length and image size as
+#     different numbers; the scrub walks the repository and counts the blobs
+#     intact; a manifest truncated by 20 bytes is reported corrupt.
+#   (FIX) intact image -> corrupt=0 and no finding row; the truncated
+#     manifest's finding has expected_size == oci_manifests.size_bytes. RED on
+#     1.11.0 (corrupt=1 with expected_size = image size on the intact image),
+#     GREEN on 1.11.1 and later.
+#
+# NOT GATED: a manifest with no oci_manifests record yet (digest-only check);
+# the S3 backend (storage-integrity-s3 covers the scrub there).
+#
+# This is the "add an OCI repository to storage-integrity" facet of the audit,
+# kept as its own small tier so storage-integrity's case count is unchanged.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
