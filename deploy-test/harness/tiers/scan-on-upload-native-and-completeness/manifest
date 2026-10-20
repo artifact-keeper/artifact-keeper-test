@@ -1,0 +1,26 @@
+# DTF tier manifest: scan-on-upload-native-and-completeness  (artifact-keeper
+# 1.11.0: #4166 scan_on_upload on native publish handlers (1.11.2 #4124 /
+# #4125 pin the mvn deploy and docker push halves), #4159 native conda,
+# #4036 / #4094 / #4154 not_cataloged completeness, #4425 one-hop scan reuse)
+# Profile-set: filesystem + the mock-scan-formats upstream, used ONLY as a
+# fixture server for the Maven jars and the NuGet package (nothing is
+# proxied). LOCAL-ONLY: scans run the backend image's bundled Grype with its
+# pre-seeded DB; no assertion depends on OSV or the internet, and no scanner
+# sidecar is needed (the OCI image is graded by the bundled Grype too).
+#
+# WHAT IT GUARDS:
+#   * Before 1.11.0, scan_on_upload fired only on the generic upload route
+#     (and NuGet push): mvn deploy, npm publish, docker push, cargo publish
+#     and native conda PUT into a scan_on_upload repository produced no scan.
+#   * A scan that cataloged nothing for an artifact that should have a catalog
+#     read as a clean grade-A scan; it is now `not_cataloged` with a reason,
+#     flags the repository (has_uncataloged_scan), floors the grade to F for
+#     package artifacts only, and is never reused.
+#   * A reused scan row could itself be reused, restarting the 30-day reuse
+#     window on every hop; reuse now copies only from an original scan.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and newer.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
