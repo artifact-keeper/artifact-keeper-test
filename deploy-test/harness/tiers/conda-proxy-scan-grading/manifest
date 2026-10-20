@@ -1,0 +1,30 @@
+# DTF tier manifest: conda-proxy-scan-grading  (artifact-keeper#4594, #4600,
+# #4582; all 1.11.0, follow-ups to the conda scan-on-proxy gate #4585)
+# Profile-set: filesystem + upstreams.mock-conda-scan (a stdlib http.server
+# conda channel the oracle fills with host-built packages via docker cp).
+# LOCAL-ONLY: verdicts come from the backend image's bundled Grype and its
+# pre-seeded vulnerability DB; no scanner sidecar, no OSV, no internet.
+#
+# THE FIXES
+# #4594  a fail_closed conda Remote locked (423) every package the scanner ran
+#        over to completion and cataloged nothing for (data packages such as
+#        tzdata). Now: `clean`, graded on contents, stored with
+#        components_cataloged = 0 and reused.
+# #4600  a package the scanner catalogs only under a vendored upstream name
+#        (libzlib cataloged as zlib) failed the identity check and stayed
+#        inconclusive. Now: graded on its findings (clean or vulnerable), stored
+#        with the count of what was cataloged.
+# #4582  the dashboard's policy_violations_blocked counted proxied content with
+#        a blocking verdict on a format that does not run the gate (generic,
+#        rpm, go...). Now: only digests a gated format's Remote refuses.
+#
+# Red: ak-backend:1.10.0 (no conda gate at all: every package streams 200
+# with no X-AK-Scan, no verdict row, the counter ignores proxy verdicts).
+# Green: ak-backend:1.11.0 and newer.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~30 calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock sits on a private per-slot subnet.
+PROFILES="storage.filesystem upstreams.mock-conda-scan"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
