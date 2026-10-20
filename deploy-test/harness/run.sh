@@ -5,7 +5,7 @@
 # Usage:
 #   run.sh <tier|all>  [--backend-image IMG] [--keep] [--slot N]
 #   run.sh up          [--storage X] [--sso Y] ... [--backend-image IMG] [--slot N]
-#   run.sh down        [--slot N]
+#   run.sh down        [--slot N]   (tears down every profile's services)
 #   run.sh ports       [--slot N]
 #
 # A <tier> resolves to a profile-set + an oracle from harness/tiers/<tier>/manifest.
@@ -88,6 +88,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# DTF_SLOT_PIN=N stands in for --slot N when the flag is absent. run-tiers.sh
+# passes the environment through, so several tier groups can run side by side
+# on one host each on its own slot (CI runs one group per runner and needs it
+# not); without it every tier claims the lowest free slot.
+[ -z "$SLOT_ARG" ] && SLOT_ARG="${DTF_SLOT_PIN:-}"
+
 # --- Overlay-list builders ----------------------------------------------------
 # Turn a space-separated list of overlay basenames into `-f` args, validating
 # each file exists (a missing overlay for a later brick is a clear error, not a
@@ -152,6 +158,56 @@ dtf_down() {
   export BACKEND_IMAGE="${BACKEND_IMAGE:-placeholder}"
   docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" down -v
   echo ">> DTF slot ${DTF_SLOT} down (volumes removed)"
+}
+
+# Tear a slot down without knowing which profiles brought it up. `down` after a
+# `--keep` run used to compose only the default storage overlay, so services
+# from any other profile (peer.second-instance, topology.two-replica, the
+# upstreams.mock-* sidecars, telemetry.otlp-sink, scanners.mock-hang, sso.*,
+# auth.device, storage.s3-*, ...) were left running and the slot stayed
+# occupied. This composes EVERY overlay in profiles/ so compose knows each
+# service (and orders backend-b, which shares backend's netns, before backend),
+# removes orphans (tier-local fixture overrides under the same project), then
+# sweeps anything still carrying the slot's name prefix or project label
+# (containers an oracle started with `docker run`, their networks/volumes).
+dtf_down_all() {
+  local f c
+  COMPOSE_FILES=(-f "${DTF_DIR}/compose.base.yml")
+  for f in "${DTF_DIR}"/profiles/*.yml; do COMPOSE_FILES+=(-f "$f"); done
+  # Interpolation placeholders: down never starts anything, but every
+  # `${VAR:?}` in the merged overlays must still resolve.
+  export BACKEND_IMAGE="${BACKEND_IMAGE:-placeholder}"
+  export DTF_WEBHOOK_SECRET_KEY="${DTF_WEBHOOK_SECRET_KEY:-placeholder}"
+  export DTF_DIR
+  docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" down -v --remove-orphans || true
+  # Sweep: containers that share another container's netns go first.
+  local ctrs=() dependents=() others=()
+  mapfile -t ctrs < <( { docker ps -a --format '{{.Names}}' | grep "^${PROJECT}-";
+                         docker ps -a --filter "label=com.docker.compose.project=${PROJECT}" --format '{{.Names}}'; } 2>/dev/null | sort -u)
+  for c in "${ctrs[@]}"; do
+    [ -z "$c" ] && continue
+    case "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$c" 2>/dev/null)" in
+      container:*) dependents+=("$c") ;;
+      *) others+=("$c") ;;
+    esac
+  done
+  [ ${#dependents[@]} -gt 0 ] && docker rm -f -v "${dependents[@]}" >/dev/null 2>&1
+  [ ${#others[@]} -gt 0 ] && docker rm -f -v "${others[@]}" >/dev/null 2>&1
+  local nets vols
+  nets="$( { docker network ls --format '{{.Name}}' | grep "^${PROJECT}[-_]";
+             docker network ls --filter "label=com.docker.compose.project=${PROJECT}" --format '{{.Name}}'; } 2>/dev/null | sort -u)"
+  # shellcheck disable=SC2086
+  [ -n "$nets" ] && docker network rm $nets >/dev/null 2>&1
+  vols="$( { docker volume ls --format '{{.Name}}' | grep "^${PROJECT}[-_]";
+             docker volume ls --filter "label=com.docker.compose.project=${PROJECT}" --format '{{.Name}}'; } 2>/dev/null | sort -u)"
+  # shellcheck disable=SC2086
+  [ -n "$vols" ] && docker volume rm -f $vols >/dev/null 2>&1
+  if docker ps -a --format '{{.Names}}' | grep -q "^${PROJECT}-"; then
+    echo "!! slot ${DTF_SLOT}: containers remain after down:" >&2
+    docker ps -a --format '{{.Names}}' | grep "^${PROJECT}-" >&2
+    return 1
+  fi
+  echo ">> DTF slot ${DTF_SLOT} down (every profile, orphans and slot-prefixed leftovers removed)"
 }
 
 # --- Tier runner --------------------------------------------------------------
@@ -262,8 +318,9 @@ case "$CMD" in
   down)
     if [ -z "$SLOT_ARG" ]; then echo "!! down needs --slot N" >&2; exit 2; fi
     dtf_slot_env "$SLOT_ARG"; PROJECT="ak-dtf${DTF_SLOT}"
-    profiles_str="$(dims_to_profiles)"
-    dtf_down "$profiles_str"
+    # Any --<dimension> flags are accepted for compatibility but no longer
+    # needed: down composes every overlay in profiles/ (see dtf_down_all).
+    dtf_down_all
     ;;
 
   ports)
@@ -295,6 +352,30 @@ case "$CMD" in
     # cache (#4630/#4646), auth under a DB outage (#4750), audit coverage
     # (#4710/#4718). audit-event-coverage is last: its retention leg waits for
     # the scheduler's first pass (~4.5 min).
+    # Then the 1.11.3 fix-coverage tiers (artifact-keeper-test#464-#473, #477),
+    # green on 1.11.3 and main 2f08663f, red on 1.11.2: OpenAPI curation field
+    # (#4793), migration items filters + Debian component (#4787/#4797), npm
+    # anonymous audit (#4785), ingest archive entry cap (#4802), terraform
+    # origin registry (#4357), readyz under a hung dependency (#4796), push
+    # sync for native formats (#4779), remote-instance relay (#4789), proxy log
+    # noise on two replicas (#4794/#4798). readyz-hung-dependency is slowest.
+    # Then the 1.12.0 fix-coverage tiers (#470-#479, #490, #491, #499-#502),
+    # green on main 2f08663f, red on 1.11.3: token virtual catalog (#4213/
+    # #4217), hidden admin nav (#4575), trash purge (#4701), S3 max parts
+    # (#4806), signing trust attestations (#4274), repo-admin age gate (#4239;
+    # needs registry.npmjs.org), 1.12.0 dependency controls (#4816/#4817
+    # KNOWN-RED pins), conda virtual shadowing (#4555/#4506), *_FILE secrets
+    # (#4775; #4819 KNOWN-RED pin), device authorization grant (#3549), OIDC
+    # group pre-provisioning (#4296), protobuf BSR proxy (#4276), proxy
+    # stale-if-error (#4697/#4783). proxy-stale-if-error is slowest.
+    # Then the 1.11.x security tiers (#480-#489, #492-#498), each green on the
+    # fixed 1.11.x release and on main 2f08663f, red on the release before it:
+    # token scoping and CI identity, REST mutation authz and existence hiding,
+    # request-plane limits, upstream credential hygiene, plugin SSRF, virtual
+    # member gates. upload-slot-exhaustion is slowest.
+    # Then the older tiers the 1.11.x coverage audit relies on (storage
+    # integrity, scan-on-proxy, authz regressions); storage-integrity-s3 is
+    # last of all, its fresh-ghost leg waits out the 5-minute guard.
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -305,7 +386,20 @@ case "$CMD" in
              maven-rollup-anchor-escape migration-progress-monotonic \
              repo-project-permissions metrics-and-backlog format-catalog-fixes npm-unpublish-and-push-sync \
              conda-channel-types migration-package-catalog oidc-exchange-and-login proxy-cache-empty-object \
-             auth-db-outage audit-event-coverage; do
+             auth-db-outage audit-event-coverage \
+             openapi-curation-optional migration-items-filters npm-anon-audit ingest-archive-entries-limit \
+             terraform-origin-registry remote-instance-relay ops-log-noise push-sync-native-formats readyz-hung-dependency \
+             token-virtual-catalog admin-hidden-nav signing-trust-attestations trash-purge s3-max-parts \
+             age-gate-repo-admin conda-virtual-shadow-and-cache oidc-group-preprovision device-auth-flow \
+             deps-1.12.0-controls secrets-file-env protobuf-bsr-proxy proxy-stale-if-error \
+             image-build-spec-validation repo-read-hiding restricted-token-refresh download-route-token-basic \
+             rest-mutation-authz-1-11 token-repo-restriction generic-route-scan-gate index-metadata-cred-scoping \
+             upstream-url-userinfo-redaction virtual-member-gates plugin-reload-ssrf http-edge-limits \
+             admin-setup-gate plugins-disabled xff-authz-trust ci-oidc-exchange upload-slot-exhaustion \
+             repo-mutation-authz migration-authz token-colon-scope ledger-triggers-authoritative quota-admission-o1 \
+             redact-userinfo-leak nuget-cred-scoping rpm-p3-curation inline-scan-hosted-gate-2954 \
+             inline-scan-fail-open-2954 inline-scan-proxy-pypi-2954 scan-verdict-dbversion \
+             storage-integrity storage-integrity-s3; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
