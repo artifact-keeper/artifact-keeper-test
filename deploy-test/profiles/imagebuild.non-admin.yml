@@ -1,0 +1,18 @@
+# =============================================================================
+# profiles/imagebuild.non-admin.yml - image builds open to non-administrators
+# =============================================================================
+# AK_IMAGE_BUILD_ADMIN_ONLY defaults to true, which refuses every non-admin
+# caller of `POST /api/v1/repositories/{key}/image-builds[/render]` before any
+# repository check. GHSA-mvmh-g8wm-r3cp is about the non-default posture where
+# that switch is off and the repository `write` action is the only gate, so a
+# tier that asserts it must turn the switch off.
+#
+# No BuildKit is configured (AK_BUILDKIT_ADDR unset): `/render` validates the
+# spec and returns the Containerfile without building, and a queued build is
+# refused 503 after the authorization checks, which is enough to tell an
+# authorization refusal (403) from a request that got past it.
+# =============================================================================
+services:
+  backend:
+    environment:
+      AK_IMAGE_BUILD_ADMIN_ONLY: "false"
