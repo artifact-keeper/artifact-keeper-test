@@ -1,0 +1,9 @@
+# Tier-local compose override for plugins-disabled (artifact-keeper#4650).
+# Layered alone on compose.base.yml. PLUGINS_ENABLED stays UNSET (the shipped
+# default: the WASM runtime is on); the only change from the base stack is the
+# json-file log driver, so the oracle can read the plugin startup lines with
+# docker logs (rootless podman's journald driver drops lines).
+services:
+  backend:
+    logging:
+      driver: json-file
