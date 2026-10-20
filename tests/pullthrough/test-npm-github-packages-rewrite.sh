@@ -126,9 +126,13 @@ create_virtual_with_priorities() {
   api_post "/api/v1/repositories" "$payload" > /dev/null
 }
 
+# The repos are public so the client can install with no credentials at all.
+# Since artifact-keeper#4662 (1.11.1) a public Remote refuses upstream
+# credentials unless the caller accepts that explicitly, so set_bearer sends
+# allow_public_with_upstream_credentials (older backends ignore the field).
 set_bearer() {  # set_bearer KEY
   api_put "/api/v1/repositories/${1}/upstream-auth" \
-    "$(jq -n --arg t "$GH_TOKEN" '{auth_type: "bearer", password: $t}')" > /dev/null
+    "$(jq -n --arg t "$GH_TOKEN" '{auth_type: "bearer", password: $t, allow_public_with_upstream_credentials: true}')" > /dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -167,7 +171,6 @@ GH_HASH=$(openssl dgst -sha256 "$GH_TGZ" | awk '{print $NF}')
 GH_TARBALL_PATH="/download/${PKG}/${VER}/${GH_HASH}"
 GH_TARBALL_URL="${GH_BASE}${GH_TARBALL_PATH}"
 GH_INTEGRITY=$(sri_of "$GH_TGZ")
-NPM_INTEGRITY=$(sri_of "$NPM_TGZ")
 mkdir -p "${GH_STATE}/files/download/${PKG}/${VER}" "${NPM_STATE}/files/${PKG}/-"
 cp "$GH_TGZ" "${GH_STATE}/files${GH_TARBALL_PATH}"
 write_packument "${GH_STATE}/files/${PKG_ENC}" "$GH_TARBALL_URL" "$GH_TGZ"
