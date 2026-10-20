@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+# =============================================================================
+# mock_scan_upstream.py - a Maven + NuGet V3 + Cargo sparse upstream whose
+# packages carry KNOWN identities, for the scan-on-proxy tiers
+# =============================================================================
+# The scan-on-proxy gate (artifact-keeper#4098, #4100 Maven, #4101 Cargo,
+# #4102 NuGet) buffers a proxied package, establishes what it is served as from
+# the package's OWN manifest (pom.properties / Cargo.toml / .nuspec), and
+# grades it with the backend's bundled Grype and its pre-seeded vulnerability
+# DB (no network). So the tier needs an upstream whose bytes name real
+# coordinates: some with long-published advisories (graded vulnerable by any
+# Grype DB the backend images ship), some that no advisory names (clean), and
+# some that lie about themselves (identity unestablished, checksum mismatch).
+# Every package is a few hundred bytes, built at start-up with stdlib zipfile
+# and tarfile and FIXED timestamps, so the bytes and digests are identical on
+# every run.
+#
+#   Maven  (upstream base http://<self>/maven2)
+#     org/apache/logging/log4j/log4j-core/2.14.1/log4j-core-2.14.1.{jar,pom,jar.sha1}
+#         Log4Shell (CVE-2021-44228, critical) via its pom.properties
+#     org/apache/commons/commons-text/1.9/commons-text-1.9.{jar,pom,jar.sha1}
+#         Text4Shell (CVE-2022-42889, critical); used by record-only tiers
+#     com/example/dtfscan/dtf-clean/1.0.0/dtf-clean-1.0.0.{jar,pom,jar.sha1}
+#         a coordinate no advisory names
+#     com/example/dtfscan/dtf-liar/2.0.0/dtf-liar-2.0.0.jar
+#         pom.properties declares version 1.0.0 (identity unestablished)
+#     com/example/dtfscan/dtf-badsha/1.0.0/dtf-badsha-1.0.0.{jar,jar.sha1}
+#         .sha1 sidecar names other bytes
+#   NuGet V3 (upstream base http://<self>/nuget/v3/index.json)
+#     v3/index.json                         PackageBaseAddress/3.0.0
+#     v3-flatcontainer/<id>/index.json      versions
+#     v3-flatcontainer/<id>/<v>/<id>.<v>.nupkg / <id>.nuspec
+#       newtonsoft.json 12.0.1  (GHSA-5crp-9r3c-p9vr, high)
+#       dtf.scanclean 1.0.0     (nuspec WITH an <?xml ?> declaration, #3603)
+#       dtf.scanliar 2.0.0      (nuspec declares 1.0.0)
+#   Cargo sparse (upstream base http://<self>/cargo)
+#     config.json                           {"dl": ".../cargo/api/v1/crates"}
+#     <sparse prefix>/<name>                index lines with the real cksum
+#     api/v1/crates/<name>/<v>/download     the .crate
+#       regex 1.5.4        (GHSA-m5pq-gvj9-9vr8, high)
+#       dtf-scanclean 1.0.0
+#       dtf-scanliar 2.0.0 (Cargo.toml declares 1.0.0)
+#       dtf-badsum 1.0.0   (index cksum is NOT the crate's sha256)
+#
+# Control endpoints (never counted):
+#   GET /__readyz                 healthcheck
+#   GET /__hits?prefix=<p>        {"prefix": p, "count": n} GETs whose path
+#                                 starts with <p> (raw request path, before
+#                                 decoding)
+#   GET /__golden/<path>          the exact bytes served at /<path>
+#   GET /__sha256/<path>          their sha256 hex
+#
+# Stdlib only, single file, stock python image.
+#   MOCK_PORT  listen port (default 80)
+#   MOCK_SELF  absolute base URL the backend reaches this mock at (used in the
+#              NuGet service index and the Cargo config.json)
+# =============================================================================
+import gzip
+import hashlib
+import io
+import json
+import os
+import tarfile
+import threading
+import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+PORT = int(os.environ.get("MOCK_PORT", "80"))
+SELF = os.environ.get("MOCK_SELF", "http://mock-scan").rstrip("/")
+FIXED = (2020, 1, 1, 0, 0, 0)
+
+LOCK = threading.Lock()
+HITS = []
+FILES = {}
+
+
+def zip_bytes(entries):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in entries:
+            info = zipfile.ZipInfo(name, date_time=FIXED)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            z.writestr(info, data)
+    return buf.getvalue()
+
+
+def crate_bytes(dirname, cargo_toml):
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for name, data in (
+            (f"{dirname}/Cargo.toml", cargo_toml),
+            (f"{dirname}/src/lib.rs", b"pub fn dtf() {}\n"),
+        ):
+            data = data.encode() if isinstance(data, str) else data
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            ti.mtime = 1577836800
+            ti.mode = 0o644
+            t.addfile(ti, io.BytesIO(data))
+    return gzip.compress(raw.getvalue(), mtime=0)
+
+
+def sha1(b):
+    return hashlib.sha1(b).hexdigest()
+
+
+def sha256(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+# ----------------------------------------------------------------- Maven
+def jar(group, artifact, declared_version):
+    props = (
+        "#Generated by Maven\n"
+        f"groupId={group}\nartifactId={artifact}\nversion={declared_version}\n"
+    )
+    return zip_bytes(
+        [
+            ("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: dtf\n\n"),
+            (f"META-INF/maven/{group}/{artifact}/pom.properties", props),
+            (f"META-INF/maven/{group}/{artifact}/pom.xml", pom(group, artifact, declared_version)),
+        ]
+    )
+
+
+def pom(group, artifact, version):
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <modelVersion>4.0.0</modelVersion>\n"
+        f"  <groupId>{group}</groupId>\n  <artifactId>{artifact}</artifactId>\n"
+        f"  <version>{version}</version>\n  <packaging>jar</packaging>\n</project>\n"
+    ).encode()
+
+
+def add_maven(group, artifact, version, declared=None, bad_sha=False, with_pom=True):
+    base = f"maven2/{group.replace('.', '/')}/{artifact}/{version}/{artifact}-{version}"
+    body = jar(group, artifact, declared or version)
+    FILES[base + ".jar"] = body
+    FILES[base + ".jar.sha1"] = (sha1(b"not-these-bytes") if bad_sha else sha1(body)).encode()
+    if with_pom:
+        p = pom(group, artifact, version)
+        FILES[base + ".pom"] = p
+        FILES[base + ".pom.sha1"] = sha1(p).encode()
+
+
+add_maven("org.apache.logging.log4j", "log4j-core", "2.14.1")
+add_maven("org.apache.commons", "commons-text", "1.9")
+add_maven("com.example.dtfscan", "dtf-clean", "1.0.0")
+add_maven("com.example.dtfscan", "dtf-liar", "2.0.0", declared="1.0.0", with_pom=False)
+add_maven("com.example.dtfscan", "dtf-badsha", "1.0.0", bad_sha=True, with_pom=False)
+
+
+# ----------------------------------------------------------------- NuGet
+def nuspec(pkg_id, version, xml_decl):
+    head = '<?xml version="1.0" encoding="utf-8"?>\n' if xml_decl else ""
+    return (
+        head
+        + '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">\n'
+        "  <metadata>\n"
+        f"    <id>{pkg_id}</id>\n    <version>{version}</version>\n"
+        "    <authors>dtf</authors>\n    <description>dtf scan fixture</description>\n"
+        "  </metadata>\n</package>\n"
+    ).encode()
+
+
+NUGET_VERSIONS = {}
+
+
+def add_nuget(pkg_id, version, declared=None, xml_decl=True):
+    low = pkg_id.lower()
+    spec = nuspec(pkg_id, declared or version, xml_decl)
+    body = zip_bytes(
+        [
+            (f"{pkg_id}.nuspec", spec),
+            ("lib/netstandard2.0/_._", b""),
+            (
+                "[Content_Types].xml",
+                '<?xml version="1.0" encoding="utf-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="nuspec" ContentType="application/octet" /></Types>',
+            ),
+        ]
+    )
+    base = f"nuget/v3-flatcontainer/{low}/{version}"
+    FILES[f"{base}/{low}.{version}.nupkg"] = body
+    FILES[f"{base}/{low}.nuspec"] = spec
+    NUGET_VERSIONS.setdefault(low, []).append(version)
+
+
+add_nuget("Newtonsoft.Json", "12.0.1")
+add_nuget("Dtf.ScanClean", "1.0.0")
+add_nuget("Dtf.ScanLiar", "2.0.0", declared="1.0.0")
+for low, versions in NUGET_VERSIONS.items():
+    FILES[f"nuget/v3-flatcontainer/{low}/index.json"] = json.dumps({"versions": versions}).encode()
+FILES["nuget/v3/index.json"] = json.dumps(
+    {
+        "version": "3.0.0",
+        "resources": [
+            {"@id": f"{SELF}/nuget/v3-flatcontainer/", "@type": "PackageBaseAddress/3.0.0"},
+            {"@id": f"{SELF}/nuget/v3/registration/", "@type": "RegistrationsBaseUrl/3.6.0"},
+            {"@id": f"{SELF}/nuget/v3/query", "@type": "SearchQueryService"},
+        ],
+    }
+).encode()
+
+
+# ----------------------------------------------------------------- Cargo
+def sparse_prefix(name):
+    n = len(name)
+    if n == 1:
+        return "1"
+    if n == 2:
+        return "2"
+    if n == 3:
+        return f"3/{name[0]}"
+    return f"{name[0:2]}/{name[2:4]}"
+
+
+CARGO_INDEX = {}
+
+
+def add_crate(name, version, declared=None, bad_cksum=False):
+    body = crate_bytes(
+        f"{name}-{version}",
+        f'[package]\nname = "{name}"\nversion = "{declared or version}"\nedition = "2018"\n'
+        'description = "dtf scan fixture"\nlicense = "MIT"\n',
+    )
+    FILES[f"cargo/api/v1/crates/{name}/{version}/download"] = body
+    entry = {
+        "name": name,
+        "vers": version,
+        "deps": [],
+        "cksum": sha256(b"not-these-bytes") if bad_cksum else sha256(body),
+        "features": {},
+        "yanked": False,
+    }
+    CARGO_INDEX.setdefault(name, []).append(json.dumps(entry))
+
+
+add_crate("regex", "1.5.4")
+add_crate("dtf-scanclean", "1.0.0")
+add_crate("dtf-scanliar", "2.0.0", declared="1.0.0")
+add_crate("dtf-badsum", "1.0.0", bad_cksum=True)
+for name, lines in CARGO_INDEX.items():
+    FILES[f"cargo/{sparse_prefix(name)}/{name}"] = ("\n".join(lines) + "\n").encode()
+FILES["cargo/config.json"] = json.dumps({"dl": f"{SELF}/cargo/api/v1/crates"}).encode()
+
+
+def ctype(path):
+    if path.endswith(".json") or path.endswith("config.json"):
+        return "application/json"
+    if path.endswith(".pom") or path.endswith(".nuspec"):
+        return "application/xml"
+    if path.endswith(".sha1"):
+        return "text/plain"
+    return "application/octet-stream"
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        print("mock-scan: " + (fmt % args), flush=True)
+
+    def _send(self, code, data, ct="application/octet-stream", head=False):
+        self.send_response(code)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if not head:
+            self.wfile.write(data)
+
+    def _serve(self, head):
+        raw = self.path
+        url = urlsplit(raw)
+        q = parse_qs(url.query)
+        if url.path == "/__readyz":
+            return self._send(200, b"ok", "text/plain", head)
+        if url.path == "/__hits":
+            p = q.get("prefix", [""])[0]
+            with LOCK:
+                n = sum(1 for h in HITS if h.startswith(p))
+            return self._send(200, json.dumps({"prefix": p, "count": n}).encode(), "application/json", head)
+        if url.path.startswith("/__golden/"):
+            key = url.path[len("/__golden/"):]
+            if key in FILES:
+                return self._send(200, FILES[key], "application/octet-stream", head)
+            return self._send(404, b"no such fixture", "text/plain", head)
+        if url.path.startswith("/__sha256/"):
+            key = url.path[len("/__sha256/"):]
+            if key in FILES:
+                return self._send(200, sha256(FILES[key]).encode(), "text/plain", head)
+            return self._send(404, b"no such fixture", "text/plain", head)
+        if not head:
+            with LOCK:
+                HITS.append(raw)
+        key = url.path.lstrip("/")
+        if key in FILES:
+            return self._send(200, FILES[key], ctype(key), head)
+        return self._send(404, b"not found", "text/plain", head)
+
+    def do_GET(self):
+        self._serve(False)
+
+    def do_HEAD(self):
+        self._serve(True)
+
+
+if __name__ == "__main__":
+    print(f"mock-scan: {len(FILES)} fixtures, self={SELF}", flush=True)
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

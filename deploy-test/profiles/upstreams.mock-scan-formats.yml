@@ -1,0 +1,78 @@
+# =============================================================================
+# profiles/upstreams.mock-scan-formats.yml - Maven / NuGet / Cargo upstream
+# whose packages carry known identities, for the scan-on-proxy tiers
+# =============================================================================
+# Adds `mock-scan`, a stdlib-only Python HTTP server that serves a small Maven
+# repository, a NuGet V3 feed and a Cargo sparse registry built at start-up
+# with fixed timestamps (identical bytes on every run). Some packages name
+# coordinates with long-published advisories (log4j-core 2.14.1, commons-text
+# 1.9, Newtonsoft.Json 12.0.1, regex 1.5.4), some name coordinates no advisory
+# covers, and some lie about themselves (manifest version differs from the
+# request, .sha1 sidecar or sparse-index cksum names other bytes). See
+# harness/tiers/scan-on-proxy-maven-nuget/fixtures/mock_scan_upstream.py.
+#
+# The verdicts come from the backend image's OWN bundled Grype and its
+# pre-seeded vulnerability DB (Dockerfile.backend, artifact-keeper#1001), which
+# the backend runs with GRYPE_DB_AUTO_UPDATE=false: no scanner sidecar, no
+# OSV, no internet. The tiers that use this profile are local-only.
+#
+# The overlay:
+#   * ADDS `mock-scan` at 172.16.<slot>.72 on a per-slot 172.16.<slot>.0/24
+#     subnet; AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 lets a Remote point at
+#     it (the tier manifest also sets UPSTREAM_ALLOW_PRIVATE_IPS=true).
+#   * PUBLISHES the mock's control endpoints (/__hits, /__golden, /__sha256)
+#     on 127.0.0.1:${TRIVY_PORT} (8250+N, the spare per-slot port), so this
+#     profile cannot be combined with another that publishes TRIVY_PORT.
+#   * PATCHES backend onto that network and pins the json-file log driver (the
+#     oracles grep backend warn lines from `docker logs`).
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-scan:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-scan
+    command: ["python3", "/app/mock_scan_upstream.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_SELF: http://172.16.${DTF_SLOT}.72
+    volumes:
+      - "${DTF_DIR}/harness/tiers/scan-on-proxy-maven-nuget/fixtures/mock_scan_upstream.py:/app/mock_scan_upstream.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockscan:
+        ipv4_address: 172.16.${DTF_SLOT}.72
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-scan:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockscan: {}
+
+networks:
+  mockscan:
+    name: ak-dtf${DTF_SLOT}-mockscan
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
