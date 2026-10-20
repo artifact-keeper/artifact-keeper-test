@@ -1,0 +1,65 @@
+# DTF tier manifest: terraform-origin-registry  (artifact-keeper#4356, PR #4357)
+# Profile-set: filesystem + client.terraform (caddy TLS terminator aliased as
+# tf.dtf.local in front of the backend, and the real hashicorp/terraform CLI).
+#
+# THE FEATURE (#4356, merged as #4357 / cae32abe, milestone 1.12.0)
+# A hosted Terraform repository could not act as an OpenTofu/Terraform ORIGIN
+# provider registry: the package document had no shasums_url /
+# shasums_signature_url and an empty gpg_public_keys, and discovery was only
+# served per repository, so `tofu init` / `terraform providers lock` against
+# <host>/<ns>/<type> failed. The fix adds, for hosted repos:
+#   GET /terraform/<repo>/v1/providers/<ns>/<type>/<ver>/SHA256SUMS
+#       deterministic, "<sha256>  terraform-provider-<type>_<ver>_<os>_<arch>.zip"
+#       per platform, sorted by filename, computed from stored artifacts
+#   GET .../SHA256SUMS.sig
+#       binary detached OpenPGP signature made with the repository's active
+#       gpg signing key (cached 5 min per key + digest)
+#   package document: shasums_url, shasums_signature_url,
+#       signing_keys.gpg_public_keys[{key_id, ascii_armor}]
+#   no key configured: both routes 404 "No signing key configured ..." and
+#       the document keeps the legacy unsigned shape (fail closed)
+#   GET /.well-known/terraform.json at the host root, answered from the repo
+#       named by TERRAFORM_DEFAULT_REPO (read once at boot); unset, missing or
+#       non-Terraform -> one generic 404
+# The maintainer commit adds single-use, path-bound `?ticket=` download
+# tickets (10 min TTL) on download_url, shasums_url and shasums_signature_url
+# for an AUTHENTICATED caller, so Terraform's credential-less follow-up
+# fetches work against a private repo; anonymous callers get plain paths.
+#
+# THE PRIMITIVES
+#   The oracle creates the repositories first, asserts the host route is 404
+#   with the env unset, then recreates ONLY the backend on the same compose
+#   project with TERRAFORM_DEFAULT_REPO=<public repo> through a tier-local
+#   override (the qcmj-webhook-authz pattern; the DB volume survives), and at
+#   the end once more with the key of a GENERIC repo.
+#   Signature checks import the served ascii_armor into a throwaway GNUPGHOME
+#   and require gpg's VALIDSIG fingerprint to equal the repo key's.
+#   The real-client case trusts caddy's internal CA in the terraform container
+#   and runs `terraform providers lock -platform=linux_amd64
+#   -platform=darwin_arm64` with NO provider_installation block, so the CLI
+#   uses host discovery (https://tf.dtf.local/.well-known/terraform.json), the
+#   package documents, SHA256SUMS and the .sig, exactly as against a public
+#   registry. The provider zips are inert fixtures (fixtures/terraform/build.sh)
+#   and are never executed; `providers lock` only downloads and verifies.
+#
+# THE GATES
+#   (FIX)     host discovery 200 naming /terraform/<repo>/v1/providers/; signed
+#             package document; SHA256SUMS exact and byte-stable; .sig verifies
+#             (tamper does not); no-key routes 404 naming the missing key;
+#             private-repo tickets on all three URLs, each good once without
+#             credentials and refused on reuse, not usable on another path;
+#             real terraform reports "signed, key ID <key>" and pins both zh:
+#             hashes. RED on 1.11.3 (routes absent, discovery 404).
+#   (CONTROL) both images: module upload / versions / X-Terraform-Get /
+#             archive bytes and per-repo discovery; provider versions list and
+#             the package document's core fields with download_url streaming
+#             the zip; a no-key document keeps the legacy unsigned shape; host
+#             discovery serves no document with the env unset (404; 1.11.3
+#             has no route and answers 401) and the same response for a
+#             non-Terraform default repo; a private repo refuses anonymous
+#             callers on the document and the plain paths.
+#
+# RATE_LIMIT_ENABLED=false: ~60 calls back to back through one admin.
+PROFILES="storage.filesystem client.terraform"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
