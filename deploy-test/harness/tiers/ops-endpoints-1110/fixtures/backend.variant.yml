@@ -1,0 +1,11 @@
+# Tier-local override for ops-endpoints-1110: the oracle recreates only the
+# backend with this file layered on the manifest's profiles, exporting the
+# V_* variables for the variant it wants (SMTP TLS mode, port and CA, and the
+# S3 public endpoint). Every V_* is always exported by the oracle.
+services:
+  backend:
+    environment:
+      SMTP_TLS_MODE: ${V_SMTP_TLS_MODE:?}
+      SMTP_PORT: ${V_SMTP_PORT:?}
+      SMTP_TLS_CA_CERT: ${V_SMTP_TLS_CA_CERT:-}
+      S3_PUBLIC_ENDPOINT: ${V_S3_PUBLIC_ENDPOINT:?}

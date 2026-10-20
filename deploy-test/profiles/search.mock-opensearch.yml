@@ -1,0 +1,47 @@
+# =============================================================================
+# profiles/search.mock-opensearch.yml: OPENSEARCH_URL toward a steerable mock
+# =============================================================================
+# Adds `mock-opensearch`, a stdlib-only Python stand-in
+# (harness/tiers/ops-endpoints-1110/fixtures/mock_opensearch.py) that answers
+# the backend's index-exists, count and _cluster/health calls, and can be
+# switched to answer 503 to everything through /tmp/os/mode in the container
+# (`docker exec`), which is how a tier takes "OpenSearch" down and back up
+# without stopping a container. A real OpenSearch node costs ~1 GiB and a
+# minute of startup for what is, to the backend, one health call.
+#
+# The overlay PATCHES backend: OPENSEARCH_URL=http://mock-opensearch:9200 and
+# READYZ_REQUIRE_SEARCH=true (#4610), so /readyz gates on the search
+# dependency, and pins the json-file log driver.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-opensearch:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-opensearch
+    command: ["python3", "/app/mock_opensearch.py"]
+    volumes:
+      - "${DTF_DIR}/harness/tiers/ops-endpoints-1110/fixtures/mock_opensearch.py:/app/mock_opensearch.py:ro"
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9200/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-opensearch:
+        condition: service_healthy
+    environment:
+      OPENSEARCH_URL: http://mock-opensearch:9200
+      READYZ_REQUIRE_SEARCH: "true"
+    logging:
+      driver: json-file
