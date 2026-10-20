@@ -1,0 +1,39 @@
+# DTF tier manifest: download-route-token-basic
+#   (artifact-keeper#4654 fixing #4593, and #4550; both in 1.11.1, RED on 1.11.0)
+# Profile-set: filesystem / single. Both fixes are in the HTTP auth layer and
+# the admin handlers, ahead of storage.
+#
+# THE BUGS
+#   #4593 / #4654  GET /api/v1/repositories/{key}/download/{path} answered a
+#          request with no credential on a private repository with the
+#          existence-hiding 404 and no WWW-Authenticate challenge, so clients
+#          that send credentials only after a challenge (wget, curl without
+#          pre-auth, Maven) never sent them. The route also sat under the
+#          /api/v1 Basic boundary (#2809), so `user:<api_token>` was refused
+#          401 even when sent. Fixed: no credential on a non-public or missing
+#          repository -> 401 with Basic and Bearer challenges (byte-identical
+#          for the two cases), Bearer only for a browser navigation; an API
+#          token as the Basic password resolves to its owner. /api/v1/auth/me
+#          and /api/v1/repositories keep refusing the token-as-Basic.
+#   #4550  An admin's repository-scoped API token could read
+#          /api/v1/admin/stats and /api/v1/admin/downloads* (client IPs, users,
+#          paths of every repository). Fixed: 403, like /admin/holds/*.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (FIX)     anonymous private -> 401 + Basic + Bearer; anonymous missing ->
+#             the same status, challenges and body; Accept: text/html -> 401
+#             Bearer only; `-u x:<token>` -> 200 with the bytes; curl --anyauth
+#             (credentials only after a challenge) -> 200; both downloads land
+#             in download_statistics under the token owner; the repo-scoped
+#             admin token gets 403 on stats, downloads, downloads/by-user and
+#             downloads/by-ip.
+#   (CONTROL) on both images: anonymous public download 200; Bearer token
+#             download 200; valid-but-not-entitled 404; token-as-Basic 401 on
+#             /auth/me and /repositories; unrestricted admin token 200 on stats
+#             and downloads and sees the owner's attributed download; scoped
+#             token 403 on /admin/holds/summary (pre-existing #4273).
+#
+# RATE_LIMIT_ENABLED=false: ~30 back-to-back calls including Basic attempts.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
