@@ -1,0 +1,45 @@
+# DTF tier manifest: xff-authz-trust
+#   (artifact-keeper #4681 / GHSA-59x8-r6jj-x95h, #4675, #4662; all in 1.11.1)
+# Profile-set: filesystem / single + sso.oidc-entra-shape, reused for its
+# topology only: RATE_LIMIT_TRUSTED_PROXY_CIDRS=172.16.<slot>.64/28 on the mock
+# network, so a throwaway curl container pinned to .70 is a TRUSTED proxy peer
+# and one pinned to .90 is not; json-file log driver; mock-oidc doubles as the
+# upstream of the Remotes below (its OIDC role is unused).
+#
+# THE BUGS
+#   #4681  For a request whose TCP peer is a trusted proxy, the client IP
+#          resolved from X-Forwarded-For was used for allowed_cidrs permission
+#          conditions and audit-row IPs, although the backend cannot verify
+#          the chain. Fixed: new XFF_TRUSTED_FOR_AUTHZ (default false); unset,
+#          such a request has an UNKNOWN client IP for authz and audit
+#          (IP-conditioned grants deny, audit rows record NULL) and startup
+#          warns. A non-proxy peer still uses its TCP address.
+#   #4675  The http_request span `uri` logged `ticket`, `X-Amz-Signature` and
+#          other URL-carried credentials verbatim. Fixed: redacted, names
+#          matched case-insensitively after percent-decoding (%74icket).
+#   #4662  A Remote could be made public while carrying upstream credentials,
+#          so anonymous callers spent them. Fixed: create, update and
+#          PUT upstream-auth answer 400 PUBLIC_REMOTE_UPSTREAM_CREDENTIALS
+#          unless allow_public_with_upstream_credentials is sent; responses
+#          report public_with_upstream_credentials; the audit row records the
+#          acceptance.
+#
+# TWO BOOTS, ONE COMPOSE PROJECT: phase 1 runs the profile as is (flag unset);
+# phase 2 recreates ONLY the backend with XFF_TRUSTED_FOR_AUTHZ=true through a
+# tier-local override (the qcmj-webhook-authz pattern), so `down -v` still
+# reclaims everything.
+#
+# DISCRIMINATION: red on ak-backend:1.11.0 (10 FIX cases), green on 1.11.1 and
+# on today's main. CONTROLS (green on both): an untrusted peer is judged by its
+# TCP address for grants and audit; `token=` was already redacted (#544) and
+# other parameters are logged unchanged; legitimate public / private Remote
+# writes succeed; with XFF_TRUSTED_FOR_AUTHZ=true the forwarded address
+# satisfies the grant and is recorded, and the warning is gone.
+#
+# RATE_LIMIT_ENABLED=false: ~40 calls back to back (exported by run.sh, so the
+# phase-2 recreate keeps it).
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the Remote fetches mock-oidc on a private subnet.
+PROFILES="storage.filesystem sso.oidc-entra-shape"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
