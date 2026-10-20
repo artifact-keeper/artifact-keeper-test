@@ -1,0 +1,40 @@
+# =============================================================================
+# profiles/scanners.trivy-server.yml - the scanner adapter as a trivy client
+# =============================================================================
+# Stack it AFTER scanners.trivy. It:
+#   * ADDS  `trivy-server`, a stock `trivy server` (image
+#     ${TRIVY_SERVER_IMAGE:-ghcr.io/aquasecurity/trivy:0.76.0}, the release
+#     the stock compose pairs with scanner-adapter 1.5.0) listening on :4954.
+#     It downloads the vulnerability DB from TRIVY_DB_REPOSITORY into the
+#     per-slot volume ak-dtf<slot>_trivysrv at start: this profile NEEDS
+#     INTERNET, and a tier using it is advisory.
+#   * PATCHES the adapter service (`trivy`, from scanners.trivy) with
+#     SCANNER_TRIVY_SERVER=http://trivy-server:4954, so every scan runs as
+#     `trivy --server` and /probe/ready reflects the server (#4351).
+# The adapter image is ${SCANNER_ADAPTER_IMAGE} as in scanners.trivy.
+#
+# Required vars (run.sh exports them): DTF_SLOT.
+# =============================================================================
+services:
+  trivy-server:
+    image: ${TRIVY_SERVER_IMAGE:-ghcr.io/aquasecurity/trivy:0.76.0}
+    container_name: ak-dtf${DTF_SLOT}-trivy-server
+    command: ["server", "--listen", "0.0.0.0:4954", "--cache-dir", "/cache"]
+    environment:
+      TRIVY_DB_REPOSITORY: ${TRIVY_DB_REPOSITORY:-ghcr.io/aquasecurity/trivy-db:2}
+      TRIVY_USERNAME: ${TRIVY_USERNAME:-}
+      TRIVY_PASSWORD: ${TRIVY_PASSWORD:-}
+    volumes:
+      - dtf_trivysrv:/cache
+    networks: [dtf]
+
+  trivy:
+    depends_on:
+      trivy-server:
+        condition: service_started
+    environment:
+      SCANNER_TRIVY_SERVER: http://trivy-server:4954
+
+volumes:
+  dtf_trivysrv:
+    name: ak-dtf${DTF_SLOT}_trivysrv
