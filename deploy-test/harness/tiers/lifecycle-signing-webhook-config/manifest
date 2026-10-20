@@ -1,0 +1,31 @@
+# DTF tier manifest: lifecycle-signing-webhook-config
+#   (artifact-keeper#4428, #4474: 1.11.0; #4529: 1.11.2)
+# Profile-set: filesystem + webhooks.mock-receiver (a recording receiver at
+# 172.16.<slot>.78) + ssrf.private-toggles, stacked after it:
+# AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.<slot>.79/32 (so the receiver is NOT
+# listed), WEBHOOK_ALLOW_PRIVATE_IPS=true, SSO_ALLOW_PRIVATE_IPS=true,
+# UPSTREAM_ALLOW_PRIVATE_IPS left at its default false.
+#
+# CONTROL (every image): a Remote at the unlisted receiver address is 400 (the
+#   list stays authoritative for upstreams) while one at the listed .79 is
+#   created; a webhook to 169.254.169.254 is 400.
+# #4428 (1.11.0) the webhook toggle adds to a configured CIDR list.
+#   (FIX) a webhook to http://172.16.<slot>.78/hook/... is created, and its
+#   test delivery reaches the receiver. RED on 1.10.0: 400 "Webhook URL IP
+#   ... is not allowed".
+# #4474 (1.11.0) the same for SSO.
+#   (FIX) an OIDC provider with issuer http://172.16.<slot>.78/oidc is
+#   created (create validates the URL only; nothing is fetched); a metadata
+#   issuer stays 400. RED on 1.10.0: 400 for the private issuer.
+# #4529 (1.11.2) PUT /repositories/{key}/upstream-auth audits.
+#   (FIX) basic auth set -> one REPOSITORY_UPDATED row whose
+#   details.upstream_auth_change is {auth_type: basic, previous_auth_type:
+#   null, credentials_changed: true}; the same credentials again -> a second
+#   row with credentials_changed false; auth_type none -> a third row; no
+#   audit row anywhere contains the password. RED on 1.11.1: no row.
+#
+# The tier name follows the audit's P9 list; it asserts exactly the three
+# entries the audit assigned to it.
+PROFILES="storage.filesystem webhooks.mock-receiver ssrf.private-toggles"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
