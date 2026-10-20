@@ -12,6 +12,12 @@
 #                                 ok     full body, honest Content-Length
 #                                 empty  Content-Length: N, then NO body, close
 #                                 short  Content-Length: N, half the body, close
+#                                 e500   500 with a short text body
+#                                 e404   404 (a definitive "not here")
+#                                 e410   410 (gone)
+#                                 stall  sleep MOCK_STALL_SECS, then serve ok
+#                               HEAD /f/<name> honours e500/e404/e410/stall
+#                               too (a conditional revalidation probe).
 #   POST /__mode?path=&mode=    set a path's mode (default ok). Not counted.
 #   GET  /__requests?path=      {"path": ..., "count": n} GETs seen for path.
 #   GET  /__golden/<name>       the exact bytes /f/<name> serves in mode ok.
@@ -25,16 +31,21 @@
 # Stdlib only, single file, stock python image.
 #   MOCK_PORT        listen port (default 80)
 #   MOCK_FILE_BYTES  bytes per artifact (default 262144)
+#   MOCK_STALL_SECS  how long mode `stall` holds a request (default 75)
 # =============================================================================
 import hashlib
 import json
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 PORT = int(os.environ.get("MOCK_PORT", "80"))
 FILE_BYTES = int(os.environ.get("MOCK_FILE_BYTES", "262144"))
+STALL_SECS = int(os.environ.get("MOCK_STALL_SECS", "75"))
+ERROR_MODES = {"e500": 500, "e404": 404, "e410": 410}
+MODES_ALLOWED = ("ok", "empty", "short", "stall") + tuple(ERROR_MODES)
 
 LOCK = threading.Lock()
 COUNTS = {}
@@ -84,6 +95,11 @@ class Handler(BaseHTTPRequestHandler):
                 COUNTS[url.path] = COUNTS.get(url.path, 0) + 1
                 mode = MODES.get(url.path, "ok")
             data = body_for(name)
+            if mode in ERROR_MODES:
+                return self._send(ERROR_MODES[mode], f"mock-static {mode}".encode(), "text/plain")
+            if mode == "stall":
+                time.sleep(STALL_SECS)
+                mode = "ok"
             if mode == "ok":
                 return self._send(200, data)
             self.send_response(200)
@@ -101,9 +117,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         url = urlsplit(self.path)
         if url.path.startswith("/f/"):
-            self.send_response(200)
+            with LOCK:
+                mode = MODES.get(url.path, "ok")
+            if mode == "stall":
+                time.sleep(STALL_SECS)
+            self.send_response(ERROR_MODES.get(mode, 200))
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(FILE_BYTES))
+            self.send_header("Content-Length", str(FILE_BYTES) if mode not in ERROR_MODES else "0")
             self.end_headers()
             return None
         self.send_response(404)
@@ -117,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/__mode":
             p = q.get("path", [""])[0]
             m = q.get("mode", ["ok"])[0]
-            if m not in ("ok", "empty", "short") or not p.startswith("/f/"):
+            if m not in MODES_ALLOWED or not p.startswith("/f/"):
                 return self._json(400, {"error": "bad path or mode"})
             with LOCK:
                 MODES[p] = m

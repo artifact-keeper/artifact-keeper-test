@@ -1,0 +1,58 @@
+# DTF tier manifest: proxy-stale-if-error  (artifact-keeper#4581 / PR #4697,
+# with #4640 / PR #4783)
+# Profile-set: filesystem + the steerable static upstream (upstreams.mock-static,
+# harness/tiers/proxy-cache-empty-object/fixtures/mock_static.py). This tier
+# adds four per-path modes to that mock: e500, e404, e410 (answer that status)
+# and stall (hold the request 75 s, then answer ok); HEAD honours them too.
+#
+# THE FIX (#4581)
+# A Remote revalidates a mutable cache entry past its TTL. When the upstream
+# answers 5xx, times out or fails in transport, the proxy serves the stale body
+# under RFC 5861 stale-if-error for a grace window past expiry. Before #4697
+# that window was a hard-coded 3600 s and a stale serve looked exactly like a
+# fresh one. #4697:
+#   * marks a stale serve with `Warning: 110 - "Response is stale"` and
+#     `X-AK-Stale-Since: <RFC 3339 expiry>`, counts it in
+#     ak_proxy_stale_if_error_responses_total{repo} and remembers it
+#     (last_stale_served_at);
+#   * makes the grace configurable: PROXY_STALE_IF_ERROR_GRACE_SECS (default
+#     3600, 0..2592000) and per Remote via
+#     PUT/GET /api/v1/repositories/{key}/stale-if-error-grace
+#     ({"stale_if_error_grace_seconds": N}); past the grace the upstream error
+#     is returned instead of the stale body;
+#   * leaves a fresh hit, a 304-confirmed body and a copy kept under
+#     on_upstream_not_found=keep (#4640, PR #4783) unmarked. The last one is the
+#     merge fix: a kept copy after a definitive 404/410 is not stale-if-error.
+#
+# THE PRIMITIVES
+#   Generic paths are mutable (cache_classifier: default formats), so a Remote
+#   with cache_ttl_seconds=2 expires an entry 2 s after it is cached. The
+#   oracle primes an entry, waits out the TTL, flips the mock path to an error
+#   mode and GETs again.
+#
+# THE GATES
+#   (FIX)      grace API (default 3600, PUT/GET round trip, 400 out of range,
+#              Remote only); upstream 500 inside the default grace -> 200 stale
+#              body + both markers + the counter + last_stale_served_at;
+#              upstream stall past the proxy's 60 s read timeout -> the same;
+#              a 6 s per-repo grace -> stale + markers inside it, the upstream
+#              error (503) past it; with on_upstream_not_found=keep an upstream
+#              404 / 410 serves the kept copy with NO markers, counted as kept
+#              and not as stale.
+#              RED on 1.11.3: no markers, no counter, no grace route (404),
+#              stale served past any short grace, no on-upstream-not-found
+#              route. On main 03edc6e6 (#4783 without #4697) every #4581 case
+#              is red and the keep case is green.
+#   (CONTROL)  must hold on BOTH images: a cold fetch caches and the next fetch
+#              is a hit, neither marked; under the default policy an upstream
+#              404 on an expired entry answers 404, not the old body; the
+#              grace GET never gives an anonymous or no-grant caller more than
+#              a refusal or the four grace fields (its missing auth check is
+#              artifact-keeper#4815: recorded, not gated).
+#
+# RATE_LIMIT_ENABLED=false: ~50 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-static"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
