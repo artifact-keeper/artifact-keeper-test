@@ -1,0 +1,61 @@
+# DTF tier manifest: signing-ed25519-rotation-overlap-legacy
+#   1.11.0 OpenPGP signing-key features and fixes for Debian/RPM metadata:
+#   #1326 Ed25519 OpenPGP keys (and key_type=ed25519 refused with a pointer at
+#   the gpg form), #1329 the rotation overlap window (dual signatures, both
+#   keys served, revoke ends it, =0 disables it), #1331 startup migration of
+#   legacy keys with SIGNING_AUTO_MIGRATE_LEGACY_KEYS, #4416 rotating an
+#   unscoped key repoints the repositories bound to it.
+#   RED ak-backend:1.10.0, GREEN ak-backend:1.11.0 and later.
+#
+# Profile-set: filesystem + client.apt (debian:12, the real apt-secure
+# verifier). gpg/gpgv on the host running the oracle (as the signing tier):
+# a hard preflight, not a skip. The oracle keeps its own GNUPGHOME.
+#
+# TWO BOOTS on the same compose project (the xff-authz-trust idiom):
+#   phase 1  default env: SIGNING_KEY_ROTATION_OVERLAP_SECS unset (14 days).
+#   phase 2  only the backend recreated with SIGNING_AUTO_MIGRATE_LEGACY_KEYS=true
+#            and SIGNING_KEY_ROTATION_OVERLAP_SECS=0 (json-file logging, so
+#            the startup migration line is readable with docker logs).
+#
+# THE PRIMITIVES
+#   Public Debian/RPM repositories (the apt client needs no credentials).
+#   Keys bound with POST /api/v1/signing/repositories/{id}/config. Signature
+#   packets counted with `gpg --list-packets` on the detached signature or the
+#   clearsigned block; verification with gpgv against the served keyring.
+#   apt-get update inside client-apt with signed-by= one key file and no
+#   [trusted=yes]; apt exits 0 on a refused InRelease ("previous index files
+#   will be used"), so the oracle reads its E:/W: lines too.
+#   The legacy binding (#1331): the API refuses an rsa key on Debian metadata,
+#   so a gpg binding is made through the API and its signing_key_id is set to
+#   a key_type=rsa key with SQL (InRelease is then 500 on every image).
+#
+# THE GATES
+#   (CONTROL)  both images: an unscoped gpg rsa2048 key bound to a Debian and
+#              an RPM repository; InRelease and repomd.xml.asc verify with
+#              gpgv; apt trusting it updates with no error line.
+#   (FIX #1326) key_type=ed25519 -> 400 whose message names key_type='gpg'
+#              with algorithm='ed25519'; gpg + ed25519 creates a key with a
+#              40-hex fingerprint whose served public key is algo 22 (EdDSA);
+#              InRelease and Release.gpg are one algo-22 / digest-10 (SHA-512)
+#              signature each and gpgv verifies both.
+#   (FIX #4416/#1329) rotate: both bindings point at the successor; InRelease,
+#              Release.gpg and repomd.xml.asc carry 2 signature packets incl.
+#              the old keyid; gpg-key.asc and repomd.xml.key serve 2 keys;
+#              old key inactive with expires_at = now + 1209600 s (+-120 s);
+#              the signing_key_audit 'rotated' row has overlap_ends_at and
+#              both repointed repository ids.
+#   (FIX #1329) apt trusting only the OLD key updates cleanly during the
+#              overlap; after revoke: expires_at <= now, one signature (not
+#              the old key), and the same client gets a NO_PUBKEY GPG error.
+#   (FIX #1331) after the phase-2 boot the legacy repository is bound to a new
+#              key_type=gpg key, the old key has an 'auto_migrated' audit row
+#              naming it, InRelease is 200 and verifies, and the startup log
+#              has the SIGNING_AUTO_MIGRATE_LEGACY_KEYS line.
+#   (FIX #1329) with SIGNING_KEY_ROTATION_OVERLAP_SECS=0 a rotation leaves one
+#              signature and one served key, the old key expires at the
+#              rotation time and the audit's overlap_ends_at is null.
+#
+# RATE_LIMIT_ENABLED=false: ~70 authenticated calls back to back.
+PROFILES="storage.filesystem client.apt"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
