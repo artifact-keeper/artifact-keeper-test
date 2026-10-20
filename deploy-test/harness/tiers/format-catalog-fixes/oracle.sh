@@ -2,7 +2,7 @@
 # =============================================================================
 # tiers/format-catalog-fixes/oracle.sh — conan repo-scoped cloud keys (#4694),
 #   Maven version size = total of its files (#4633), RubyGems hyphen-digit
-#   gem names in the specs index (#4645)
+#   gem names in the specs index (#4645), npm repo-scoped cloud keys (#4293)
 # =============================================================================
 # run.sh has stood up the `storage.s3` profile-set (MinIO, bucket
 # `ak-artifacts`) with RATE_LIMIT_ENABLED=false and exported BASE_URL,
@@ -26,6 +26,10 @@
 #                     version size is jar + pom + sources, in the packages API
 #                     and in package_versions; the admin catalog backfill
 #                     re-derives the same total.
+#   NPM      CONTROL  one-repo publish; packument + exact tarball (both).
+#            FIX      the SAME name@version publishes into a second repo (2xx,
+#                     not 409); both repos serve it; the two tarball rows carry
+#                     distinct `npm/{repo_id}/...` keys, both in MinIO.
 #   RUBYGEMS CONTROL  `demo` 1.0.0 and `dtf-s3` 1.2.3 index correctly (both).
 #            FIX      `dtf-gem-2` 1.2.3 is advertised as [dtf-gem-2, 1.2.3,
 #                     ruby] in specs.4.8.gz and latest_specs.4.8.gz.
@@ -310,6 +314,77 @@ BF="$(api_post "/api/v1/admin/packages/backfill?repository_key=${MR}" || echo FA
 DA_BF="$(db_version_size "${GID}:demo" 1.0.0)"
 if [ "$DA_BF" = "$SUM" ]; then pass; else
   fail "after POST /api/v1/admin/packages/backfill the version size is ${DA_BF}, expected ${SUM}" "backfill response: ${BF:0:300}"
+fi
+
+# =============================================================================
+# NPM (#4293)
+# =============================================================================
+NA="fcf-npm-a-${SUF}"
+NB="fcf-npm-b-${SUF}"
+for r in "$NA" "$NB"; do
+  if ! create_repo "$r" npm; then
+    begin_test "setup: create npm repository ${r}"
+    infra_fail "could not create npm repo ${r}"
+    end_suite
+  fi
+done
+NA_ID="$(repo_id "$NA")"; NB_ID="$(repo_id "$NB")"
+NPKG="fcf-npm-same"; NVER="1.0.0"; NTGZ="${NPKG}-${NVER}.tgz"
+mkdir -p "${WORK}/npm/package"
+printf '{"name":"%s","version":"%s","main":"index.js","license":"MIT"}\n' "$NPKG" "$NVER" > "${WORK}/npm/package/package.json"
+printf 'module.exports = "dtf %s";\n' "$SUF" > "${WORK}/npm/package/index.js"
+tar -czf "${WORK}/npm/${NTGZ}" -C "${WORK}/npm" package
+# npm_publish REPO -> status (body in $WORK/last.body); the same tarball every time
+npm_publish() {
+  local f="${WORK}/npm/${NTGZ}" payload="${WORK}/npm/publish-$1.json"
+  jq -n --arg name "$NPKG" --arg ver "$NVER" --arg tgz "$NTGZ" \
+    --arg url "${BASE_URL}/npm/$1/${NPKG}/-/${NTGZ}" \
+    --arg shasum "$(sha1sum "$f" | cut -d' ' -f1)" \
+    --arg integrity "sha512-$(openssl dgst -sha512 -binary "$f" | base64 | tr -d '\n')" \
+    --arg data "$(base64 < "$f" | tr -d '\n')" --arg len "$(wc -c < "$f" | tr -d ' ')" \
+    '{name:$name, "dist-tags":{latest:$ver},
+      versions:{($ver):{name:$name, version:$ver, main:"index.js", license:"MIT",
+                        dist:{tarball:$url, shasum:$shasum, integrity:$integrity}}},
+      _attachments:{($tgz):{content_type:"application/octet-stream", data:$data, length:($len|tonumber)}}}' > "$payload"
+  curl -s -o "${WORK}/last.body" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -X PUT \
+    -H "$(format_auth_header)" -H "Content-Type: application/json" \
+    --data-binary "@${payload}" "${BASE_URL}/npm/$1/${NPKG}" 2>/dev/null || echo 000
+}
+# npm_serves REPO -> 0 when the packument lists the version and its tarball downloads byte-exact
+npm_serves() {
+  local c1 c2 tb
+  c1="$(get_file "${BASE_URL}/npm/$1/${NPKG}" "${WORK}/npm/packument-$1.json")"
+  tb="$(jq -r --arg v "$NVER" '.versions[$v].dist.tarball // empty' "${WORK}/npm/packument-$1.json" 2>/dev/null)"
+  c2="$(get_file "${BASE_URL}/npm/$1/${NPKG}/-/${NTGZ}" "${WORK}/npm/dl-$1.tgz")"
+  [ "$c1" = "200" ] && [ -n "$tb" ] && [ "$c2" = "200" ] && cmp -s "${WORK}/npm/dl-$1.tgz" "${WORK}/npm/${NTGZ}"
+}
+
+begin_test "CONTROL npm: ${NPKG}@${NVER} publishes into repo A and A serves the packument and the exact tarball (both images)"
+NSA="$(npm_publish "$NA")"
+if is2xx "$NSA" && npm_serves "$NA"; then pass; else
+  fail "publish into ${NA}: HTTP ${NSA}; packument/tarball served: $(npm_serves "$NA" && echo yes || echo no)" "$(last_body)"
+fi
+
+begin_test "FIX #4293: the SAME ${NPKG}@${NVER} publishes into a second npm repo on the shared bucket (2xx, not 409 cross-repository overwrite)"
+NSB="$(npm_publish "$NB")"
+if is2xx "$NSB"; then pass; else
+  fail "publish into ${NB}: HTTP ${NSB}. On shared cloud storage every npm repository wrote the same tarball key, so guard_cross_repo_write refused the second repository" "$(last_body)"
+fi
+
+begin_test "FIX #4293: repo B serves the packument and the exact tarball, and repo A still does"
+if npm_serves "$NB" && npm_serves "$NA"; then pass; else
+  fail "served by ${NB}: $(npm_serves "$NB" && echo yes || echo no); by ${NA}: $(npm_serves "$NA" && echo yes || echo no)"
+fi
+
+begin_test "FIX #4293: the two tarball rows carry distinct repo-scoped keys npm/{repo_id}/... and both objects are in MinIO"
+NROWS="$(psqlq "SELECT r.id || ' ' || a.storage_key FROM artifacts a JOIN repositories r ON r.id = a.repository_id
+  WHERE r.key IN ('${NA}','${NB}') AND a.path LIKE '%${NTGZ}' AND NOT a.is_deleted ORDER BY r.key")"
+NKA="$(printf '%s\n' "$NROWS" | awk -v id="$NA_ID" '$1 == id {print $2}')"
+NKB="$(printf '%s\n' "$NROWS" | awk -v id="$NB_ID" '$1 == id {print $2}')"
+NOBJ="$(mcx "mc find local/${BUCKET}/npm --name '${NTGZ}'" 2>/dev/null | sed "s#^local/${BUCKET}/##")"
+if [[ "$NKA" == "npm/${NA_ID}/"* ]] && [[ "$NKB" == "npm/${NB_ID}/"* ]] && [ "$NKA" != "$NKB" ] \
+   && printf '%s\n' "$NOBJ" | grep -qxF "$NKA" && printf '%s\n' "$NOBJ" | grep -qxF "$NKB"; then pass; else
+  fail "tarball rows: A='${NKA}' B='${NKB}' (want npm/${NA_ID}/... and npm/${NB_ID}/...); MinIO objects named ${NTGZ}: $(printf '%s' "$NOBJ" | tr '\n' ' ')"
 fi
 
 # =============================================================================
