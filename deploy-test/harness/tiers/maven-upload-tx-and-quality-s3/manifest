@@ -1,0 +1,46 @@
+# DTF tier manifest: maven-upload-tx-and-quality-s3  (artifact-keeper#3587, #3814, #3736; fixed in 1.11.0)
+# Profile-set: storage.s3 (MinIO; STORAGE_BACKEND=s3 for every repository).
+#
+# THE BUGS
+#   #3587/#3814 the Maven hosted upload wrote the artifact row (an ON CONFLICT
+#               upsert) and its artifact_metadata row as two autocommit
+#               statements, so a metadata write that failed after the row
+#               landed left a live artifact with no Maven metadata, and a
+#               concurrent republish could observe the row before its
+#               metadata existed. Fixed: both commit in one transaction.
+#   #3736       quality checks (the automatic check and
+#               POST /api/v1/quality/checks/trigger) read the artifact from the
+#               default filesystem backend, so a check of anything in object
+#               storage failed with "Storage key not found" and recorded no
+#               result. Fixed: checks read from the repository's backend.
+#
+# THE PRIMITIVES
+#   #3814: the oracle installs a BEFORE INSERT OR UPDATE trigger on
+#   artifact_metadata (through the postgres container) that raises for one
+#   artifactId only, PUTs that artifact, inspects the artifacts table, then
+#   drops the trigger and retries. The rest of the database is untouched.
+#   #3736: a Maven jar in the S3-backed repository, the trigger API, and the
+#   quality_check_results table plus GET /api/v1/quality/checks.
+#
+# THE GATES
+#   (FIX)     #3587/#3814: with the metadata write failing, the upload is not
+#             reported as a success and no live artifacts row remains for
+#             the path; with the fault removed the retry leaves exactly one
+#             row with its metadata. KNOWN-RED, recorded but not gated:
+#             artifact-keeper#4837, the failed upload's bytes stay on the
+#             repo-scoped S3 key and GET still serves them (200).
+#             #3736: within 30 s of the trigger a new quality_check_results
+#             row exists for the S3-stored artifact and GET /quality/checks
+#             lists metadata_completeness=completed and nothing failed.
+#             RED on 1.10.0.
+#   (CONTROL) both images: a release jar uploads to S3, reads back byte-for-
+#             byte, is listed in maven-metadata.xml and has its metadata row;
+#             8 concurrent republishes of one SNAPSHOT path all answer 2xx and
+#             leave exactly one live row, with metadata, serving one racer's
+#             bytes (the #3587 500 is a 1.10.0 fix; the #3814 interleaving is
+#             not reproducible from outside, so this is a control).
+#
+# RATE_LIMIT_ENABLED=false: ~30 authenticated calls, 8 of them concurrent.
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
