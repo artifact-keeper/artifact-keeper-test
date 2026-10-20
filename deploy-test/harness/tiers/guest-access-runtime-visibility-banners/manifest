@@ -1,0 +1,49 @@
+# DTF tier manifest: guest-access-runtime-visibility-banners
+#   (artifact-keeper#867, #3813 / #3812 with #3855, #2155; all shipped in 1.11.0)
+# Profile-set: filesystem / single. Pure management API, anonymous access and
+# DB reads.
+#
+# THE FEATURES
+#   #867   Guest (anonymous) access is toggled at runtime through
+#          GET/PATCH /api/v1/admin/settings/system {guest_access_enabled},
+#          stored in system_settings (security.guest_access_enabled), enforced
+#          on the next request with no restart, reflected by
+#          /api/v1/system/config and audited SETTING_CHANGED with old/new. A
+#          row that is not a JSON boolean fails CLOSED (source `invalid`).
+#          AK_GUEST_ACCESS_ENABLED, when set explicitly, pins the value:
+#          source `environment`, editable false, a PATCH is stored
+#          (guest_access_stored) but changes nothing.
+#   #3813  Repository `visibility` public | internal | private. `internal` is
+#   #3812  read for any authenticated principal, invisible to anonymous, no
+#          write; `is_public` mirrors visibility == public; contradictory
+#          {visibility, is_public} is a 400; with guest access off `public`
+#          is a 400 (#3855) while `internal` is accepted. The artifact blast
+#          radius reports access_scope `internal`.
+#   #2155  Banners: admin CRUD at /api/v1/admin/banners; the public
+#          GET /api/v1/banners?target= lists the banners active now, most
+#          severe first, and stays reachable with guest access off.
+#
+# TWO BOOTS, ONE COMPOSE PROJECT (the xff-authz-trust pattern): phase 1 runs
+# the profile as is (AK_GUEST_ACCESS_ENABLED unset); phase 2 recreates ONLY
+# the backend with AK_GUEST_ACCESS_ENABLED=true through a tier-local override
+# (same database), so `down -v` still reclaims everything.
+#
+# ORACLE (discriminating, RELEASE_GATE=1)
+#   (CONTROL) every image: anonymous read of a public repository and
+#     /system/config guest_access_enabled=true at boot; anonymous and
+#     grant-less reads of a private repository refused; an authenticated
+#     user keeps reading the public repository while guests are off; with
+#     the env pin, anonymous reads of the public repository work.
+#   (FIX) RED on 1.10.0, GREEN on 1.11.0 and later: the settings endpoint
+#     shape; the runtime flip (anon 401 within 5 s, /system/config false,
+#     audit row) and back; non-boolean row fails closed; banners; public
+#     refused / internal accepted with guests off; internal read by a
+#     grant-less user and not by anonymous, no write; contradictory booleans
+#     400; blast radius `internal`; env pin reports environment / not
+#     editable and a PATCH is stored without effect.
+#
+# RATE_LIMIT_ENABLED=false: ~60 calls back to back (exported by run.sh, so the
+# phase-2 recreate keeps it).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
