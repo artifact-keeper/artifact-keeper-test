@@ -1,0 +1,42 @@
+# DTF tier manifest: conda-virtual-merge-policy
+#   (artifact-keeper#4555 virtual-merge facets, #4192, #4601, #4145; all
+#   shipped in 1.11.0)
+# Profile-set: filesystem / single + upstreams=mock-conda + the
+# limits.conda-virtual-merge overlay (CONDA_VIRTUAL_MEMBER_MAX_BYTES=1 MiB,
+# AK_PROXY_METADATA_BUDGET_BYTES=256 MiB). The mock publishes its root channel
+# (dtfup-alpha 1.0/2.0, dtfup-blocked 1.0) and three prefixed ones: /m2/ (noarch
+# repodata only as .bz2, no channeldata, no other subdir), /fail/ (500 to
+# everything) and /big/ (a ~2 MiB repodata.json). See
+# harness/tiers/conda-channel-types/fixtures/mock_conda.py.
+#
+# THE BUGS
+# #4555  A virtual conda channel fetched each remote member's plain
+#        repodata.json only; `unknown/repodata.json` (pixi search without -p)
+#        answered 400; a member over any size was buffered whole. Fixed:
+#        members are fetched .zst -> .bz2 -> .json, moving on only on a 404,
+#        under a per-member ceiling (CONDA_VIRTUAL_MEMBER_MAX_BYTES); a member
+#        that 404s every encoding of a subdir contributes nothing; `unknown`
+#        is an empty index.
+# #4192 (conda half, shipped with #4555)  A member that could not be fetched
+#        or parsed was logged at warn and the rest merged with 200, so a
+#        client concluded those packages did not exist. Fixed: 502 naming the
+#        member and the cause; opt-in `virtual_metadata_partial` serves the
+#        healthy members with X-AK-Partial-Members, Cache-Control: no-store
+#        and Warning: 199; ak_virtual_member_metadata_failures_total{reason}.
+# #4601  channeldata.json treated a member's 404 as a failure (502).
+#        Fixed: contributes nothing. (Introduced and fixed within 1.11.0
+#        development: 1.10.0 also answers 200, so this case is a control.)
+# #4145  The #4051 patch-generation fetch took a second budget reservation
+#        while the repodata one was held, so concurrent remote repodata.json
+#        requests could deadlock the shared metadata budget. (Also introduced
+#        and fixed within 1.11.0: a control on 1.10.0, which has no #4051.)
+#
+# RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~40 calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the remotes' upstream is the mock on a
+# private address (the profile also scopes AK_SSRF_ALLOW_PRIVATE_CIDRS).
+PROFILES="storage.filesystem upstreams.mock-conda limits.conda-virtual-merge"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
