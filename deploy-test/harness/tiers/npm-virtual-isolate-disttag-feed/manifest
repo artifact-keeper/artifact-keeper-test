@@ -1,0 +1,40 @@
+# DTF tier manifest: npm-virtual-isolate-disttag-feed
+#   (artifact-keeper#3767, #968 dist-tag + caller-relative target, #3069,
+#   #4240; all in 1.11.0)
+# Profile-set: filesystem / single + upstreams=mock-multi (the stdlib-python
+# upstream at 172.16.<slot>.91; /ok/npm/<name> answers a packument for ANY
+# name at version 1.0.1 and serves its tarball, so an npm Remote over it is
+# an "upstream" that offers a newer version of every hosted name).
+#
+# THE FEATURES / FIXES
+# #3767  npm virtual isolate mode: `npm_virtual_isolate_hosted_names: true`
+#        serves a name any hosted member owns from the members only; the
+#        upstream version is dropped from the merged packument and refused on
+#        the tarball route. Names no hosted member owns still federate.
+# #968   npm publishes and dist-tag writes addressed at a virtual land in the
+#        first hosted member, in resolution order, that the CALLER may write
+#        (was 400 "Cannot publish to a virtual repository"). The publish leg
+#        is covered by tests/pullthrough/test-virtual-nested-members.sh; this
+#        tier adds the dist-tag write and the caller-relative member choice.
+# #3069  GET /api/v1/admin/npm/upstream-feed/status (admin only): enabled,
+#        feed_url with userinfo and query removed, replica_id
+#        `<host>:<pid>:<boot-uuid>`.
+# #4240  An npm virtual with a private member is served from the computed-
+#        packument cache, keyed by the caller's authorized member list (was:
+#        recomputed, every member re-fetched, on every request).
+#
+# NPM_UPSTREAM_FEED_URL carries a password and an access token so the status
+# endpoint's redaction is asserted; the feed itself stays disabled (the
+# default), so nothing ever fetches it. The password is minted per run (no
+# credential literal in the repository); the oracle greps the response for
+# its `dtffeedpw` prefix, the user and the token parameter.
+#
+# RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
+#
+# RATE_LIMIT_ENABLED=false: two logins and ~40 API calls back to back.
+PROFILES="storage.filesystem upstreams.mock-multi"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+export DTF_FEED_PW="dtffeedpw$(date +%s)"
+export NPM_UPSTREAM_FEED_URL="https://feeduser:${DTF_FEED_PW}@feed.dtf.invalid/registry/_changes?access_token=tok${DTF_FEED_PW}"
