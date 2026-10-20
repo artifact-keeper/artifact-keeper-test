@@ -1,0 +1,40 @@
+# DTF tier manifest: k8s-sa-pull-token  (artifact-keeper#1246, 1.11.0)
+# Profile-set: filesystem + sso.mock-ci-oidc. The mock CI OIDC issuer of the
+# ci-oidc-exchange tier is reused for two things only: its control port signs
+# assertions with a fixed RSA key (any claims, any kid), and it serves a normal
+# discovery issuer for the `generic` control provider. The `kubernetes`
+# provider under test names an issuer the backend cannot resolve
+# (https://kubernetes.default.svc.cluster.local) and carries the mock's PUBLIC
+# key as a static JWKS, so a successful exchange proves verification happened
+# offline against the hand-entered trust anchor.
+#
+# THE FEATURE (#1246, shipped in 1.11.0)
+#   A CI OIDC provider can carry `key_source: static` + `static_jwks` and then
+#   verifies only against it; a `claim_filters` key starting with `/` is an
+#   RFC 6901 JSON Pointer into nested claims; and `provider_type: kubernetes`
+#   mints a pull-only credential (scopes read:artifacts, read:repositories)
+#   with NO refresh token. Static JWKS: private members refused 400, a token
+#   whose kid is not in the set refused 401 naming the kid. `provider_type` is
+#   matched case-insensitively and an unknown value (`k8s`) is a 400 on
+#   create. A malformed pointer key (`/a~2b`) is a 400 when the mapping is
+#   saved.
+#
+# ORACLE (discriminating, RELEASE_GATE=1)
+#   (CONTROL) every image: a `generic` provider on the mock's discovery issuer
+#     exchanges, its token reads AND writes a repository its account is
+#     granted, and the exchange stored a refresh-token JTI row; a mismatched
+#     audience is 401.
+#   (FIX) RED on 1.10.0 (free-text provider_type, no static JWKS, flat claim
+#     filters), GREEN on 1.11.0 and later: the static kubernetes provider is
+#     stored as such; the SA-shaped assertion exchanges offline; the token's
+#     scopes are exactly read:artifacts/read:repositories and no refresh JTI
+#     exists; REST PUT and OCI blob upload are refused while REST GET and the
+#     OCI manifest pull succeed; the namespace pointer excludes another
+#     namespace; unknown kid 401 naming it; private JWK member 400; `k8s` 400;
+#     `Kubernetes` stored lowercase; `/a~2b` 400; the security log line names
+#     the namespace and ServiceAccount.
+#
+# RATE_LIMIT_ENABLED=false: ~50 calls back to back through one admin.
+PROFILES="storage.filesystem sso.mock-ci-oidc"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
