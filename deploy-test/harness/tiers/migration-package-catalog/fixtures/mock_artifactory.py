@@ -23,20 +23,35 @@
 #   GET  /api/storage/{repo}/{path}[?properties] properties / download fallback
 #   GET  /__readyz                              container healthcheck
 #
+# Source-fidelity additions (artifact-keeper#3926, #4740/#4797):
+#   * a file whose name starts with `slow-` is streamed over MOCK_SLOW_SECS
+#     seconds (a slow source link), so a client with a whole-request timeout
+#     shorter than that fails mid-body;
+#   * `GET /api/storage/{repo}/{path}?properties` answers the item's
+#     Artifactory properties from MOCK_CATALOG_DIR/__props/{repo}/{path}.json
+#     when that file exists (404 otherwise, as before).
+#
 # Stdlib only, single file, stock python image.
 #   MOCK_PORT          listen port (default 80)
 #   MOCK_REPOS         `key:packageType[,key:packageType...]`
 #   MOCK_CATALOG_DIR   root holding one directory per repository key
+#   MOCK_SLOW_SECS     how long a `slow-*` file takes to stream (default 36)
+#   MOCK_REQUEST_LOG   every request line is appended here (default
+#                      /tmp/mock-requests.log)
 # =============================================================================
 import hashlib
 import json
 import os
 import re
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("MOCK_PORT", "80"))
 SPEC = os.environ.get("MOCK_REPOS", "dtfcat-mvn:maven,dtfcat-deb:debian")
 ROOT = os.path.realpath(os.environ.get("MOCK_CATALOG_DIR", "/srv/catalog"))
+SLOW_SECS = float(os.environ.get("MOCK_SLOW_SECS", "36"))
+PROPS = os.path.join(ROOT, "__props")
+REQUEST_LOG = os.environ.get("MOCK_REQUEST_LOG", "/tmp/mock-requests.log")
 
 # repo key -> Artifactory packageType
 REPOS = {}
@@ -98,7 +113,15 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):  # keep the container log readable
-        print("[mock-artifactory] " + (fmt % args), flush=True)
+        line = "[mock-artifactory] " + (fmt % args)
+        print(line, flush=True)
+        # Also kept in a file: the container log is size-capped and rotates,
+        # and the oracle counts source GETs (REQUEST_LOG) after the jobs run.
+        try:
+            with open(REQUEST_LOG, "a") as fh:
+                fh.write(line + "\n")
+        except OSError:
+            pass
 
     def _send(self, code, body, ctype="application/json"):
         if isinstance(body, (dict, list)):
@@ -110,6 +133,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_slowly(self, body):
+        """Stream `body` in 12 pieces spread over SLOW_SECS (#3926): the
+        headers arrive at once and the link never goes idle for more than
+        SLOW_SECS/12 seconds, but the whole body takes SLOW_SECS."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        pieces = 12
+        step = max(1, -(-len(body) // pieces))
+        for i in range(0, len(body), step):
+            self.wfile.write(body[i : i + step])
+            self.wfile.flush()
+            time.sleep(SLOW_SECS / pieces)
 
     # -- GET ----------------------------------------------------------------
     def do_GET(self):
@@ -144,8 +182,24 @@ class Handler(BaseHTTPRequestHandler):
                 ],
             )
         if path.startswith("/api/storage/"):
-            # Properties lookups and the download fallback. The fixture files
-            # carry no Artifactory properties; answer that honestly.
+            # Properties lookups and the download fallback. Only an item with
+            # a fixture properties document has properties (#4740); every
+            # other lookup answers 404, as a property-less item does.
+            rest = path[len("/api/storage/"):]
+            repo, _, rel = rest.partition("/")
+            if "properties" in self.path.split("?", 1)[-1] and repo in REPOS:
+                base = os.path.realpath(os.path.join(PROPS, repo))
+                doc = os.path.realpath(os.path.join(base, rel + ".json"))
+                if doc.startswith(base + os.sep) and os.path.isfile(doc):
+                    with open(doc, "rb") as fh:
+                        props = json.load(fh)
+                    return self._send(
+                        200,
+                        {
+                            "properties": props,
+                            "uri": f"http://mock-artifactory/api/storage/{repo}/{rel}",
+                        },
+                    )
             return self._send(404, {"errors": [{"status": 404}]})
 
         # Direct artifact download: /{repo}/{path}
@@ -154,7 +208,10 @@ class Handler(BaseHTTPRequestHandler):
             full = repo_file(parts[0], parts[1])
             if full:
                 with open(full, "rb") as fh:
-                    return self._send(200, fh.read(), "application/octet-stream")
+                    body = fh.read()
+                if os.path.basename(full).startswith("slow-"):
+                    return self._send_slowly(body)
+                return self._send(200, body, "application/octet-stream")
         return self._send(404, {"errors": [{"status": 404, "message": path}]})
 
     # -- POST ---------------------------------------------------------------

@@ -37,7 +37,10 @@ services:
       - label=disable
     environment:
       MOCK_PORT: "80"
-      MOCK_REPOS: "dtfcat-mvn:maven,dtfcat-deb:debian"
+      # dtfcat-rpm, -debc, -cran, -slow: the source-fidelity cases (#3925,
+      # #4740, #2525, #3926) the migration-package-catalog oracle adds.
+      MOCK_REPOS: "dtfcat-mvn:maven,dtfcat-deb:debian,dtfcat-rpm:rpm,dtfcat-debc:debian,dtfcat-cran:cran,dtfcat-slow:generic"
+      MOCK_SLOW_SECS: "36"
       MOCK_CATALOG_DIR: "/srv/catalog"
     volumes:
       - "${DTF_DIR}/harness/tiers/migration-package-catalog/fixtures/mock_artifactory.py:/app/mock_artifactory.py:ro"
