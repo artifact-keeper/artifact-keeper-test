@@ -1,0 +1,26 @@
+# DTF tier manifest: nuget-v2-continuation-pages (artifact-keeper#4856)
+# Profile-set: filesystem / single + upstreams=mock-multi (the stdlib-python
+# upstream at 172.16.<slot>.91; its /nuget/v2paged feed pages
+# FindPackagesById() over three pages linked by <link rel="next"> and
+# $skiptoken, and /nuget/v2pagedforeign links page 2 on another origin, the
+# same container's port 8081, which logs every request it receives).
+#
+# THE BUG
+# #4856  Every NuGet surface AK translates from a V2 upstream (a Remote's V3
+#        registration index and flat-container version list, a virtual's
+#        registration, flat-container and V2 FindPackagesById() from a V2
+#        member) read only the FIRST page of the upstream's OData feed: the
+#        feed-level <link rel="next"> was never followed, so every version
+#        on a later page was missing and restores failed. Fixed: the
+#        continuation is followed (bounded, deduplicated) as long as it stays
+#        on the configured upstream origin; a continuation to another origin
+#        is not requested, and the pages already read are served.
+#
+# RED image: ak-backend:1.11.0 to 1.11.3 (the translation shipped in 1.11.0).
+# GREEN: an image carrying the #4856 fix.
+#
+# RATE_LIMIT_ENABLED=false: one admin login and ~15 API calls back to back.
+PROFILES="storage.filesystem upstreams.mock-multi"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
