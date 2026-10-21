@@ -1,0 +1,34 @@
+# DTF tier manifest: azure-copy-long-running
+#   artifact-keeper#4858: on Azure, every OCI blob finalize (and every staged
+#   generic upload) ends in a server-side copy, Put Blob From URL, which Azure
+#   answers only once the copy is done. The backend sent it on the data-plane
+#   client with a 30 s read-inactivity timeout, so any copy Azure took longer
+#   than 30 s to perform was aborted while Azure was still copying: the push
+#   failed 500 BLOB_UPLOAD_UNKNOWN "Azure Put Blob From URL failed: error
+#   sending request". Fixed by PR #4859 (a copy client without read timeout,
+#   per-request deadline 60 s + size at 8 MiB/s, AZURE_COPY_TIMEOUT_SECS
+#   floor).
+#   Profile-set: storage.azure-stub (new). Azurite cannot reproduce this: it
+#   copies instantly and refuses Put Blob From URL on a SAS destination. The
+#   stub keeps blobs in memory and holds each `x-ms-copy-source` PUT for a
+#   delay the oracle sets at run time.
+#
+# Gates:
+#   (CONTROL, both images) with a 0 s copy: a 1 MiB OCI blob push (POST
+#   session + PUT ?digest=) is 201 and GET returns the same sha256; a 3 MiB
+#   generic upload is 201, downloads byte-exact, and went through the stub's
+#   server-side copy.
+#   (FIX) with a 45 s copy: the same OCI push is 201 after >= 45 s and the
+#   blob reads back byte-exact; the same generic upload is 201 and
+#   byte-exact. On 1.11.3 both fail at ~30 s.
+#   (FIX) with the stub told to drop the next copy connection
+#   (PUT /__ctl/fail/1): the OCI finalize fails naming Put Blob From URL, and
+#   neither its response body nor the backend log lines written meanwhile
+#   contain the request URL's query string (no `sig=`, no `sp=`). On 1.11.3
+#   the body quotes the full signed destination URL.
+#
+# Red: ak-backend:1.11.3. Green: ak-backend:fix-storage (#4858 cases),
+# ak-backend:fix-azure-sas (all cases).
+PROFILES="storage.azure-stub"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

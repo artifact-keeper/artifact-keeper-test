@@ -14,7 +14,10 @@
 # <status>` on stdout) tells the oracle which member fetched what.
 #
 # Used by the virtual-member-failure-policy, virtual-member-metadata-timeout,
-# npm-virtual-isolate-disttag-feed and nuget-protocol-translation tiers.
+# npm-virtual-isolate-disttag-feed, nuget-protocol-translation and
+# nuget-v2-continuation-pages tiers. The last also uses the mock's second
+# listener on port 8081 (FOREIGN_PORT), "another origin" for a V2 continuation
+# link (#4856); it logs `MOCKMULTI-FOREIGN <METHOD> <path>`.
 #
 # The overlay:
 #   * ADDS  `mock-multi` at 172.16.<slot>.91 on a per-slot 172.16.<slot>.0/24

@@ -330,6 +330,13 @@ case "$CMD" in
     # cache (#4630/#4646), auth under a DB outage (#4750), audit coverage
     # (#4710/#4718). audit-event-coverage is last: its retention leg waits for
     # the scheduler's first pass (~4.5 min).
+    # Then the 1.11.4 companion tiers (artifact-keeper-test#574-#584), each
+    # red on 1.11.3 and green on main with the fix: plugin fetch through the
+    # SSRF-guarded client (#4827), logout ending the session (#4831), the
+    # env-seeded LDAP provider lifecycle (#4857), repository delete and GC
+    # reclaiming filesystem copies (#4833), concurrent generic PUTs (#4832),
+    # NuGet V2 continuation pages (#4856), and the slow Azure server-side
+    # copy (#4858, plus SAS-free error bodies; ~2 min, last).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -340,7 +347,10 @@ case "$CMD" in
              maven-rollup-anchor-escape migration-progress-monotonic \
              repo-project-permissions metrics-and-backlog format-catalog-fixes npm-unpublish-and-push-sync \
              conda-channel-types migration-package-catalog oidc-exchange-and-login proxy-cache-empty-object \
-             auth-db-outage audit-event-coverage; do
+             auth-db-outage audit-event-coverage \
+             plugin-fetch-pinned-address auth-logout-revokes-session ldap-env-bootstrap-lifecycle \
+             repo-delete-reclaims-storage generic-concurrent-put-contract nuget-v2-continuation-pages \
+             azure-copy-long-running; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

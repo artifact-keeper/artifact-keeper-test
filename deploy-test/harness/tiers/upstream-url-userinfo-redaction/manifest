@@ -1,5 +1,5 @@
 # DTF tier manifest: upstream-url-userinfo-redaction
-#   (artifact-keeper #4452, #4463, #4467, #4503; all released in 1.11.0)
+#   (artifact-keeper #4452, #4463, #4467, #4503, released in 1.11.0; #4851)
 # Profile-set: filesystem / single + upstreams.mock-userinfo (two recording
 # stdlib upstreams, mock-up-a and mock-up-b, on a per-slot 172.16/12 subnet).
 # The oracle first recreates only the backend with S3_BUCKET and an
@@ -26,6 +26,12 @@
 #   #4503  A rejected S3_PUBLIC_ENDPOINT carrying `user:password@` printed the
 #          value verbatim in the `Additional S3 storage backend skipped` WARN.
 #          Fixed: shown as `http://***@host:port`.
+#   #4851  The listing (`GET /api/v1/repositories`) and the PATCH response
+#          reported `upstream_auth_type: null, upstream_auth_configured:
+#          false` for a Remote with upstream-auth fields, while GET
+#          /repositories/{key} reported `basic, true`. RED on 1.11.0-1.11.3
+#          (every 1.x), GREEN on an image with the #4851 fix; on 1.10.0 it is
+#          red with the other FIX cases.
 #
 # DISCRIMINATION: red on ak-backend:1.10.0 (11 FIX cases), green on 1.11.0 and
 # on today's main. On 1.10.0 `upstream_url_has_credentials`,

@@ -1,0 +1,7 @@
+# Tier-local compose override for ldap-env-bootstrap-lifecycle (artifact-keeper#4857).
+# The boots WITHOUT any LDAP_* variable: only pins the json-file log driver so
+# the oracle can read the bootstrap's WARN line.
+services:
+  backend:
+    logging:
+      driver: json-file

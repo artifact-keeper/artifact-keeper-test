@@ -1,0 +1,75 @@
+# =============================================================================
+# profiles/storage.azure-stub.yml -- storage dimension = azure (in-memory stub)
+# =============================================================================
+# Azure Blob as the backend's DEFAULT storage, served by a stdlib-python fake
+# (harness/tiers/azure-copy-long-running/fixtures/fake_azure_blob.py) instead
+# of Azurite. Use storage.azurite.yml for emulator fidelity; use this one when
+# the test needs to control how long Azure takes to answer a server-side copy
+# (Put Blob From URL), which Azurite neither delays nor, on a SAS destination,
+# accepts (#4858). The two profiles are alternatives; never compose both.
+#
+#   * ADDS  `fake-azure` on a dedicated 172.25.<slot>.0/24 subnet. Its
+#     PUT /__ctl/delay/<secs> sets the copy delay at run time, PUT
+#     /__ctl/fail/<n> drops the next n copy connections; GET
+#     /__ctl/stats reports copies seen. Port 10000 is published on
+#     127.0.0.1:${S3_PORT} (this profile runs no MinIO) for the oracle.
+#   * PATCHES backend: STORAGE_BACKEND=azure over plain http
+#     (ALLOW_HTTP_INTEGRATIONS=true), the stub's private address allowlisted
+#     for the SSRF guard (AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12).
+#   * The access key is the low-entropy test value storage.azurite.yml uses
+#     (base64 of 32 'A' bytes); the stub verifies no signature.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, S3_PORT.
+# =============================================================================
+services:
+  fake-azure:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-fake-azure
+    command: ["python3", "/app/fake_azure_blob.py"]
+    environment:
+      STUB_PORT: "10000"
+      COPY_DELAY: "0"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/azure-copy-long-running/fixtures/fake_azure_blob.py:/app/fake_azure_blob.py:ro"
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${S3_PORT:?set S3_PORT}:10000"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:10000/__ctl/readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      azstub:
+        ipv4_address: 172.25.${DTF_SLOT}.71
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fake-azure:
+        condition: service_healthy
+    environment:
+      STORAGE_BACKEND: azure
+      AZURE_STORAGE_ACCOUNT: dtfaccount
+      AZURE_STORAGE_CONTAINER: ak-artifacts
+      # base64 of 32 'A' bytes, deliberately low-entropy (storage.azurite.yml).
+      AZURE_STORAGE_ACCESS_KEY: QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=
+      AZURE_STORAGE_ENDPOINT: http://fake-azure:10000/dtfaccount
+      ALLOW_HTTP_INTEGRATIONS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      azstub: {}
+
+networks:
+  azstub:
+    name: ak-dtf${DTF_SLOT}-azstub
+    ipam:
+      config:
+        - subnet: 172.25.${DTF_SLOT}.0/24

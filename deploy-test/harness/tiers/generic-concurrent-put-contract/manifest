@@ -1,0 +1,26 @@
+# DTF tier manifest: generic-concurrent-put-contract (artifact-keeper#4832)
+# Profile-set: filesystem / single.
+#
+# THE CONTRACT
+# A live artifact at a path (and version) is immutable: a second
+# `PUT /api/v1/repositories/{key}/artifacts/{path}` is answered 409
+# `{"code":"CONFLICT","message":"Artifact version already exists and is
+# immutable"}`, unless the repository has versioning enabled (Generic and
+# Mlmodel), which appends a revision instead.
+#
+# THE BUG
+# #4832  The check ran before the bytes were stored and outside the
+#        transaction that writes the artifact row. Concurrent PUTs to one
+#        free path all passed it: each was answered 201 and the last commit
+#        silently replaced the content the others had been acknowledged for
+#        (16 of 16 answered 201 on 1.11.3 here; with more DB latency some
+#        racers got 409, which is how it was reported). Fixed: the rule is
+#        part of the row write, so exactly one racer is answered 201 and keeps
+#        its bytes, every other one gets the documented 409.
+#
+# RED image: ak-backend:1.11.0 to 1.11.3. GREEN: an image with the #4832 fix.
+#
+# RATE_LIMIT_ENABLED=false: 16 concurrent uploads plus ~25 calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

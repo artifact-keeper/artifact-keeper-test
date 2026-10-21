@@ -1,0 +1,33 @@
+# DTF tier manifest: repo-delete-reclaims-storage
+#   artifact-keeper#4833: deleting a repository on filesystem storage leaves
+#   its copy of any content another repository also holds on disk, and storage
+#   GC never reclaims it.
+#   Profile-set: storage.filesystem (each repository roots its own tree at
+#   /data/storage/<key>, inspected with `docker exec find`).
+#
+# THE BUG
+#   Generic artifacts are stored under a content-addressed key
+#   (`ab/cd/<sha256>`), so two repositories holding the same bytes name the
+#   same key. The repository-delete purge spared any key another repository's
+#   `artifacts` row also named, without checking that the other repository
+#   resolves the key to the same object. On filesystem it does not: each
+#   repository has its own file. Repo A's file was spared, the cascade dropped
+#   the only row naming it, and GC (which starts from `artifacts` rows) could
+#   never find it. Same family on the GC side: the orphan predicate's live-row
+#   arm looked across every repository, so a trashed filesystem copy was kept
+#   while another repository served its own copy of the key.
+#
+# Gates:
+#   (FIX) after DELETE of repo A, no file is left under A's storage path, and
+#   a storage-GC pass does not need to find any. A trashed artifact in repo C
+#   whose bytes repo D also holds is reclaimed from C's tree by storage GC.
+#   (CONTROL, both images) A's unique file is purged; B still downloads the
+#   shared payload byte-exact and its file is on disk; D still downloads its
+#   copy; deleting B empties B's tree too (last holder).
+#
+# RATE_LIMIT_ENABLED=false: back-to-back admin API calls.
+#
+# Red: ak-backend:1.11.3. Green: ak-backend:fix-storage.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
