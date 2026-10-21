@@ -34,9 +34,10 @@
 # subnet.
 # UPGRADE_OLD_IMAGE: the origin. The oracle asserts its ledger signature
 # (max migration version 221, no artifacts.origin column) before phase 2, so
-# pointing it elsewhere fails loudly.
+# pointing it elsewhere fails loudly. The default is the published, immutable
+# 1.10.0 ghcr tag (as upgrade-v158-origin does) so the release gate can pull it.
 PROFILES="storage.filesystem upstreams.mock-artifactory-catalog upstreams.mock-artifactory-docker"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
-UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ak-backend:1.10.0}"
+UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ghcr.io/artifact-keeper/artifact-keeper-backend:1.10.0}"
