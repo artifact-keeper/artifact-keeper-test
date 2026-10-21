@@ -3175,13 +3175,17 @@ jobs:
           # CI OIDC identity; authz = REST mutation authorization, existence
           # hiding, virtual member gates, setup and plugin gates; boundary =
           # request-plane limits, upstream credential hygiene, XFF trust and
-          # plugin SSRF. Every upstream is a local mock, so all required.
+          # plugin SSRF (the URL check, plugin-reload-ssrf, and the fetch
+          # itself through the SSRF-guarded client, plugin-fetch-pinned-
+          # address, #574 for #4827, ~30 s with a local mock resolver).
+          # upstream-url-userinfo-redaction gained the #4851 listing/PATCH
+          # case (#583). Every upstream is a local mock, so all required.
           - group: security-1.11.x-tokens
             tiers: token-repo-restriction restricted-token-refresh download-route-token-basic ci-oidc-exchange
           - group: security-1.11.x-authz
             tiers: rest-mutation-authz-1-11 repo-read-hiding virtual-member-gates generic-route-scan-gate admin-setup-gate plugins-disabled
           - group: security-1.11.x-boundary
-            tiers: image-build-spec-validation index-metadata-cred-scoping upstream-url-userinfo-redaction plugin-reload-ssrf xff-authz-trust http-edge-limits upload-slot-exhaustion
+            tiers: image-build-spec-validation index-metadata-cred-scoping upstream-url-userinfo-redaction plugin-reload-ssrf plugin-fetch-pinned-address xff-authz-trust http-edge-limits upload-slot-exhaustion
           # Older tiers the 1.11.x coverage audit relies on, wired now that
           # they are green on main. storage-integrity covers the reindex /
           # ghost-object classes (#3910, #3919, #1570) on filesystem and MinIO;
@@ -3264,6 +3268,21 @@ jobs:
           #     toggles, the stock Caddyfile's routes.
           - group: api-contracts-1.11.0
             tiers: lifecycle-signing-webhook-config api-contracts-1110 catalog-backfill-liveness webhook-artifact-uploaded-formats stock-compose-caddy startup-config-and-format-indexes
+          # 1.11.4 fix coverage (artifact-keeper-test#575-#584): green on main
+          # with the fix, red on 1.11.3, each also carried by release/1.11.x
+          # for the backport. Logout ends the presenting session (#4831), the
+          # env-seeded LDAP provider is disabled once LDAP_* is removed
+          # (#4857, three backend recreates, ~40 s), repository delete and
+          # storage GC reclaim filesystem copies of shared content (#4833),
+          # concurrent PUTs to one generic path have one winner (#4832),
+          # translated NuGet V2 feeds follow continuation pages (#4856,
+          # upstreams.mock-multi), and a slow Azure server-side copy no longer
+          # times out at 30 s and its error carries no SAS (#4858, #4866;
+          # storage.azure-stub, a local fake Azure endpoint, ~2 min, the
+          # slowest leg). About 5 min in all; local containers only, so
+          # required.
+          - group: fixes-1.11.4
+            tiers: auth-logout-revokes-session ldap-env-bootstrap-lifecycle repo-delete-reclaims-storage generic-concurrent-put-contract nuget-v2-continuation-pages azure-copy-long-running
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
