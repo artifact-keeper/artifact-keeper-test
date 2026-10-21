@@ -90,6 +90,17 @@ For a `<tier>` it: resolves the tier → a **profile-set + oracle** (from
 oracle, collects JUnit into `results/<tier>/`, tears down `down -v` (unless `--keep`), and
 **returns the oracle's exit code** (the gate signal — not JUnit parsing).
 
+Exit codes are defined once, in `harness/lib/exit_codes.sh`: `0` PASS, `1` an oracle
+assertion about the candidate (the only product verdict), `2`-`7` and `10` driver/harness
+failures, `11` oracle INFRA/SETUP (candidate unjudged). All are RED except `12`, NOT ON
+THIS LINE: when the release gate runs a maintenance candidate, `scripts/switch-tests-ref.sh`
+moves the tree to `release/X.Y.x` and writes `deploy-test/.tests-ref`, and a tier main's
+matrix names but the line's branch has no manifest for is recorded as a `::warning` plus a
+JUnit `<skipped/>` and does not fail its group. Without the marker a missing manifest stays
+exit `4`. Lines must cherry-pick the companion tiers of every backported fix
+(artifact-keeper-test#424), so the only tiers skipped this way are ones for features the
+line never received.
+
 ### Composable profiles (the topology dimensions)
 A deployment shape = one choice per dimension, layered as additive `-f` overlays:
 

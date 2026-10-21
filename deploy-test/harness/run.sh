@@ -23,6 +23,10 @@
 #      oracle-asserted regression (exit 1) from an INFRA/SETUP failure the
 #      harness could not evaluate around (DTF_EXIT_INFRA — see
 #      harness/lib/exit_codes.sh); both are RED, only one is a product verdict
+#   On a release/X.Y.x suite (deploy-test/.tests-ref, written by
+#   scripts/switch-tests-ref.sh) a tier with no manifest is NOT ON THIS LINE:
+#   a ::warning, a JUnit <skipped/>, exit 12 (DTF_EXIT_NOT_ON_LINE), which
+#   run-tiers.sh does not count as RED. Without the marker it stays exit 4.
 #
 # Consolidated scope (bricks 0/1/2/3/4/5/6/7): the `smoke` (filesystem),
 # `isolation` (s3), `migration` (nexus), `proxy-egress` (squid), `sso`
@@ -154,11 +158,42 @@ dtf_down() {
   echo ">> DTF slot ${DTF_SLOT} down (volumes removed)"
 }
 
+# --- NOT ON THIS LINE ----------------------------------------------------------
+# Args: tier, release line. Emits the GitHub annotation and a one-case JUnit
+# file with <skipped/> into results/<tier>/, so the skip shows up in the gate's
+# junit-dtf-<group> artifact next to the tiers that did run.
+not_on_line() {
+  local tier="$1" line="$2" results="${DTF_DIR}/results/${1}"
+  local msg="${tier} has no manifest on ${line}; the matrix names it for main"
+  echo "::warning title=Tier not on this line::${msg}"
+  echo "=== TIER ${tier}: NOT ON THIS LINE (${line} has no harness/tiers/${tier}/manifest) ==="
+  rm -rf "$results"; mkdir -p "$results"
+  cat > "${results}/not-on-line.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dtf-${tier}" tests="1" failures="0" skipped="1" time="0">
+  <testcase name="${tier}" classname="dtf-${tier}" time="0">
+    <skipped message="NOT ON THIS LINE: ${msg}" type="not-on-line"/>
+  </testcase>
+</testsuite>
+EOF
+}
+
 # --- Tier runner --------------------------------------------------------------
 run_tier() {
   local tier="$1"
   local manifest="${DTF_DIR}/harness/tiers/${tier}/manifest"
   if [ ! -f "$manifest" ]; then
+    # On a release/X.Y.x suite (deploy-test/.tests-ref) a tier main's gate
+    # matrix names may simply not exist: it covers a feature the line never
+    # received. Record it as NOT ON THIS LINE, loudly, instead of failing the
+    # group; see DTF_EXIT_NOT_ON_LINE in lib/exit_codes.sh. On main a missing
+    # manifest stays a wiring bug (exit 4).
+    local line
+    line="$(dtf_tests_ref "$DTF_DIR")"
+    if [ -n "$line" ] && [[ "$tier" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+      not_on_line "$tier" "$line"
+      exit "$DTF_EXIT_NOT_ON_LINE"
+    fi
     echo "!! no manifest for tier '${tier}' (${manifest})" >&2
     exit 4
   fi
@@ -248,7 +283,7 @@ run_tier() {
 # --- Dispatch -----------------------------------------------------------------
 case "$CMD" in
   "" | -h | --help)
-    sed -n '2,38p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    sed -n '2,42p' "${BASH_SOURCE[0]}"; exit 0 ;;
 
   up)
     profiles_str="$(dims_to_profiles)"

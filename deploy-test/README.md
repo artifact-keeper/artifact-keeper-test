@@ -69,6 +69,17 @@ this up"; `end_suite` picks the exit code. Same rule inside a standalone gate
 script (e.g. `tiers/isolation/prove.sh`): exit `11` from setup, and the tier's
 oracle maps it through.
 
+One more outcome exists only on a maintenance line. When the release gate runs
+a maintenance candidate, `scripts/switch-tests-ref.sh` moves the working tree
+to this repository's `release/X.Y.x` and writes `deploy-test/.tests-ref`; the
+gate's matrices are still main's and name tiers the line does not have.
+`run.sh` exits `12` for such a tier (`NOT ON THIS LINE`: a `::warning`, a JUnit
+`<skipped/>` in `results/<tier>/not-on-line.xml`) and `run-tiers.sh` lists it
+as `SKIP` without failing the group. On main (no marker) a missing manifest is
+exit `4`, a FAIL. Backporting a fix to a line means cherry-picking its
+companion tiers to the line's branch (artifact-keeper-test#424); otherwise the
+gate skips them by name.
+
 ## Probes are provisioned, not built at gate time
 
 Required tiers depend only on the candidate image plus local containers — **no
