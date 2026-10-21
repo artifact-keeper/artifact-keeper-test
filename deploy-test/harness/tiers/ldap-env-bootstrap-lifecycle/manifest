@@ -1,0 +1,38 @@
+# DTF tier manifest: ldap-env-bootstrap-lifecycle  (artifact-keeper#4857; 1.12.0)
+# Profile-set: filesystem / single. No LDAP server: the LDAP_* bootstrap only
+# writes the ldap_configs row (ldap://ldap.dtf.invalid:389), nothing binds.
+# The oracle recreates the backend per boot with a tier-local override
+# (fixtures/ldap.env.yml with LDAP_*, fixtures/ldap.none.yml without).
+#
+# THE BEHAVIOUR
+# LDAP_URL + LDAP_BASE_DN seed an enabled LDAP provider (`LDAP_NAME`), which
+# makes the backend report auth.local_login_enabled=false and the web login
+# page show only the LDAP form. Before the fix a boot WITHOUT LDAP_* returned
+# early and left that provider enabled forever, so removing the variables
+# never brought local login back. The fix disables (never deletes) the
+# provider the env bootstrap manages (a non-empty ldap_configs.env_owned_fields
+# record), the #2819 OIDC pattern, logs a WARN naming it, and an admin who
+# re-enables it through the admin API takes ownership of it.
+#
+# THE BOOTS AND GATES
+#   boot 1, LDAP_* set
+#     (CONTROL) dtf-env-ldap is listed by /auth/sso/providers, enabled in the
+#               DB with an env_owned_fields record; local_login_enabled=false;
+#               admin password login still answers 200 with a token.
+#   boot 2, LDAP_* removed
+#     (FIX)     dtf-env-ldap is not listed, is_enabled=false in the DB (the row
+#               is kept), local_login_enabled=true, and the backend log names
+#               the disabled provider. RED on 1.11.3: still listed, enabled,
+#               local_login_enabled=false.
+#   admin API: PATCH /admin/sso/ldap/{id}/toggle {enabled:true} on dtf-env-ldap;
+#              POST /admin/sso/ldap creates dtf-admin-ldap.
+#   boot 3, LDAP_* still removed
+#     (FIX)     the re-enabled dtf-env-ldap stays enabled and its ownership
+#               record is cleared (NULL). RED on 1.11.3: the record is kept.
+#     (CONTROL) the admin-created dtf-admin-ldap is still enabled and listed.
+#   final: the stock environment boots and admin logs in (CONTROL).
+#
+# RATE_LIMIT_ENABLED=false: admin logins after every boot.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
