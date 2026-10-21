@@ -1,0 +1,36 @@
+# DTF tier manifest: plugin-fetch-pinned-address  (artifact-keeper#4827)
+# Profile-set: filesystem + upstreams.mock-git (two stdlib-python git
+# smart-HTTP servers: an admitted host at 172.16.<slot>.80 that
+# AK_SSRF_ALLOW_PRIVATE_CIDRS admits as a /32, an internal host at .81 that
+# nothing admits) + upstreams.mock-git-rebind (a stdlib-python DNS server at
+# .82, the backend's resolver, whose answer for plugin-rebind.dtf.test can
+# change between lookups).
+#
+# THE BEHAVIOUR (fixed for 1.12.0 and backported to 1.11.4)
+# Plugin install and reload fetch git sources through the SSRF-guarded HTTP
+# client, so the address is checked at connect time and on every redirect.
+# Before, the URL check resolved the host and approved it, then libgit2's own
+# HTTP transport resolved the host a second time and connected wherever it
+# pointed by then, and followed a redirect from the reference advertisement
+# to any address. The #4757 URL check (plugin-reload-ssrf) runs before the
+# fetch and cannot see either.
+#
+# THE ORACLE
+#   * CONTROLS (both images): install and reload through the test resolver
+#     with a stable answer (the admitted host), and an install whose
+#     advertisement redirects to another path on the admitted host;
+#   * FIX: install and reload from a name whose first lookup answers the
+#     admitted host and whose later lookups answer the internal one. FIXED =
+#     400 naming AK_SSRF_ALLOW_PRIVATE_CIDRS, the internal mock sees no
+#     request, no plugin row / version unchanged. BASELINE = the clone comes
+#     from the internal host;
+#   * FIX: install (to the internal host and to the backend's own loopback
+#     port) and reload (to the internal host) whose advertisement redirects
+#     off the admitted host. FIXED = refused, the target never sees a
+#     request, nothing stored. BASELINE = the redirect is followed.
+#
+# RATE_LIMIT_ENABLED=false: the oracle drives a dozen admin API calls back to
+# back; the base default (ON) is not what this tier is about.
+PROFILES="storage.filesystem upstreams.mock-git upstreams.mock-git-rebind"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
