@@ -36,6 +36,19 @@ NuGet feeds (no mode prefix):
   Every id has versions 1.0.0 and 2.0.0; the .nupkg is a real zip whose
   nuspec description is `dtf-upstream-<feed>`.
 
+  /nuget/v2paged/api/v2/... a V2 feed whose FindPackagesById() is PAGED like
+                            nuget.org's V2 API (#4856): page 1 holds 1.0.0
+                            and a feed-level <link rel="next"> to
+                            `$skiptoken=page-2` (absolute); page 2 holds
+                            1.0.0 again, 2.0.0 and 2.1.0 and a RELATIVE next
+                            link to page 3; page 3 holds 3.0.0. Other verbs
+                            answer as /nuget/v2 does.
+  /nuget/v2pagedforeign/api/v2/...
+                            the same page 1, but its next link points at
+                            this container's FOREIGN_PORT (another origin),
+                            which serves the v2paged pages and logs every
+                            request as `MOCKMULTI-FOREIGN <METHOD> <path>`.
+
 Every request is printed as `MOCKMULTI <METHOD> <path> <status>` so an oracle
 can count, from `docker logs`, which member fetched what. GET /__readyz -> ok.
 """
@@ -47,6 +60,7 @@ import os
 import re
 import sys
 import tarfile
+import threading
 import time
 import urllib.parse
 import zipfile
@@ -54,8 +68,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("MOCK_PORT", "80"))
 HANG_SECS = int(os.environ.get("HANG_SECS", "180"))
+FOREIGN_PORT = int(os.environ.get("FOREIGN_PORT", "8081"))
 HEALTHY = ("ok", "ok2")
 NUGET_VERSIONS = ("1.0.0", "2.0.0")
+# #4856: FindPackagesById() pages of the v2paged feeds, keyed by $skiptoken.
+PAGED_VERSIONS = {
+    None: ("1.0.0",),
+    "page-2": ("1.0.0", "2.0.0", "2.1.0"),
+    "page-3": ("3.0.0",),
+}
 
 
 # --- Ruby Marshal 4.8 (mirrors backend formats/rubygems.rs MarshalWriter) ---
@@ -193,14 +214,39 @@ def v2_entry(base, pid, version, feed):
     )
 
 
-def v2_feed(base, entries):
+def v2_feed(base, entries, next_href=None):
+    link = ""
+    if next_href:
+        link = '<link rel="next" href="' + next_href.replace("&", "&amp;") + '"/>'
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
         '<feed xml:base="' + base + '" xmlns="http://www.w3.org/2005/Atom" '
         'xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices" '
         'xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata">'
-        '<title type="text">Packages</title>' + "".join(entries) + "</feed>"
+        '<title type="text">Packages</title>' + "".join(entries) + link + "</feed>"
     )
+
+
+def paged_find_by_id(base, query, feed, foreign_base=None):
+    """One page of a paged FindPackagesById() (#4856), chosen by $skiptoken.
+
+    Page 1 links page 2 absolutely (on `foreign_base` when given, i.e. another
+    origin), page 2 links page 3 relatively, page 3 is the last.
+    """
+    args = urllib.parse.parse_qs(query)
+    token = args.get("$skiptoken", [None])[0]
+    pid = odata_arg(query, "id") or ""
+    if token not in PAGED_VERSIONS or not pid:
+        return v2_feed(base, [])
+    entries = [v2_entry(base, pid, v, feed) for v in PAGED_VERSIONS[token]]
+    verb = f"FindPackagesById()?id='{pid}'"
+    if token is None:
+        nxt = f"{foreign_base or base}/{verb}&$skiptoken=page-2"
+    elif token == "page-2":
+        nxt = f"{verb}&$skiptoken=page-3"
+    else:
+        nxt = None
+    return v2_feed(base, entries, nxt)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -290,6 +336,17 @@ class Handler(BaseHTTPRequestHandler):
         if not parts:
             return self._send(404, "text/plain", "not found")
         feed, rest = parts[0], parts[1:]
+        if feed in ("v2paged", "v2pagedforeign") and rest[:2] == ["api", "v2"]:
+            verb = urllib.parse.unquote("/".join(rest[2:]))
+            if verb.lower().startswith("findpackagesbyid()"):
+                base = f"{origin}/nuget/{feed}/api/v2"
+                foreign = None
+                if feed == "v2pagedforeign":
+                    host = urllib.parse.urlsplit(origin).hostname
+                    foreign = f"http://{host}:{FOREIGN_PORT}/nuget/v2paged/api/v2"
+                body = paged_find_by_id(base, query, "v2paged", foreign)
+                return self._send(200, "application/atom+xml", body)
+            feed = "v2"
         if feed in ("v2", "v2err"):
             if rest[:2] != ["api", "v2"]:
                 return self._send(404, "text/plain", "not found")
@@ -378,7 +435,18 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "text/plain", "not found")
 
 
+class ForeignHandler(Handler):
+    """The other origin a v2pagedforeign continuation points at (#4856)."""
+
+    def _log(self, code):
+        sys.stdout.write(f"MOCKMULTI-FOREIGN {self.command} {self.path} {code}\n")
+        sys.stdout.flush()
+
+
 def main():
+    foreign = ThreadingHTTPServer(("0.0.0.0", FOREIGN_PORT), ForeignHandler)
+    foreign.daemon_threads = True
+    threading.Thread(target=foreign.serve_forever, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     srv.daemon_threads = True
     srv.serve_forever()
