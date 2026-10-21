@@ -38,6 +38,13 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 20 | **Poisoned proxy-cache entry heals; short OCI part is a storage failure; short upstream body is a 502** — #4630/#4646/#4758/#4759 | filesystem + `upstreams.mock-static` | an entry rewritten to empty `__content__` + intact sidecar is re-fetched once (full bytes, sha matches, upstream count +1) and rewritten, both with the MD5-of-empty `storage_etag` pinned (#4630) and with none pinned, the filesystem default (#4758); a stored OCI upload part truncated by 4 KiB fails commit with `BLOB_UPLOAD_UNKNOWN` naming the part and publishes no blob; an upstream that promises N bytes and sends none answers `502 UPSTREAM_SHORT_BODY` naming the repository and N/0, one that stops at half closes short and logs a warn with `expected_bytes`/`received_bytes` (#4759); neither is ever cached and both recover (control) | **proxy-cache-empty-object** | **COVERED** (#459, tightened in this PR) — green on main `087d395f` (11/11), red on main `6a4e29f1` (8 pass / 3 fail: #4758 bodyless 200, #4759 no 502, no warn) and on 1.11.1 (6 pass / 5 fail) |
 | 21 | **A DB outage answers a retryable 503, not 401 or 500** — #4750/#4756/#4765 | filesystem (stops its own slot's postgres for ~60 s) | Bearer JWT, Basic (password / JWT / wrong password) on a private maven route, `/v2/` Bearer and Basic, `/v2/token` Basic all answer `503` + `Retry-After: 1` (OCI `UNAVAILABLE`) while the DB is down; login (correct and wrong password) and a Bearer API token on `/api/v1/auth/me` answer `503 DATABASE_UNAVAILABLE` + `Retry-After: 1` (#4756); a Git LFS batch answers 503 + `Retry-After: 1` in the LFS `{message, request_id}` envelope and an npm metadata GET answers `503 DATABASE_UNAVAILABLE` (#4765); `/readyz` reports the DB unhealthy; after restart the pool reconnects and the pre-outage JWT and API token still work | **auth-db-outage** | **COVERED** (#456, tightened in this PR) — green on main `087d395f` (32/32), red on main `6a4e29f1` (27 pass / 5 fail: 500 DATABASE_ERROR) and on 1.11.1 (20 pass / 12 fail: 401 / 500) |
 | 22 | **Privileged admin actions write audit rows; scheduled audit retention** — #4710/#4718/#4762 | filesystem + `secrets.webhook-key` | 23 actions (permission rules, webhooks incl. rotate-secret, OIDC provider, signing keys, quarantine release/reject, promotion, approvals, sync policies) each write exactly one `audit_log` row with action/resource/actor/client IP/details, none carrying secret material; the REPOSITORY_CREATED/USER_CREATED rows record the client IP (#4762); with retention saved as 1 day the scheduler's first pass (~4.5 min after start) deletes rows backdated 2/30/100 days and keeps the 23-hour-old and fresh ones | **audit-event-coverage** | **COVERED** (#461, tightened in this PR) — REPOSITORY_CREATED/USER_CREATED rows now must carry the TCP peer IP (#4762). Green on main `087d395f` (37/37), red on main `6a4e29f1` (35 pass / 2 fail: ip_address NULL) and on 1.11.1 (8 pass / 29 fail: 2xx but 0 rows; settings report 90; no scheduled pass; no IP) |
+| 145 | **Plugin install and reload fetch git sources through the SSRF-guarded client** - #4827 (fixed by #4841, backported to 1.11.4) | filesystem + `upstreams.mock-git` + `upstreams.mock-git-rebind` (a local DNS server whose answer changes between lookups) | an address that changes after the URL check is refused with 400 naming `AK_SSRF_ALLOW_PRIVATE_CIDRS` on install and reload, the internal host sees no request and nothing is stored; redirects off the admitted host (internal host, the backend's loopback) are refused; a same-host redirect and the static resolver still install and reload | **plugin-fetch-pinned-address** | **COVERED** (#574, `security-1.11.x-boundary`): green on main `adfa0206` (8/8, exit 0), red on 1.11.3 (3 pass / 5 fail: every FIX case, controls green). A refused redirect answers 500, not 400, on the fixed build (error-mapping gap only; the tier asserts the refusal) |
+| 146 | **Logout without the refresh token ends the session** - #4831 (fixed by #4862) | filesystem | a bearer logout with an empty body and a cookie-jar logout both make the session's refresh token 401 and revoke every `refresh_token_jti` row of its family; refresh-token-in-body and refresh-cookie logouts, rotated-token replay and per-session scoping hold on every image | **auth-logout-revokes-session** | **COVERED** (#575, `fixes-1.11.4`): green on `fix-auth` (main `adfa0206` + #4862 + #4863; 6/6, exit 0), red on 1.11.3 (4 pass / 2 fail: shapes A and D refresh 200, rows unrevoked) |
+| 147 | **Removing LDAP_* disables the env-seeded LDAP provider** - #4857 (fixed by #4863) | filesystem + tier-local backend overrides with and without `LDAP_*` | a boot without `LDAP_*` keeps the row but disables it, local login comes back and the log names the provider; an admin re-enable takes ownership and survives the next boot; an admin-created provider is untouched | **ldap-env-bootstrap-lifecycle** | **COVERED** (#576, `fixes-1.11.4`): green on `fix-auth` (5/5, exit 0), red on 1.11.3 (3 pass / 2 fail: still enabled and listed, ownership record kept) |
+| 148 | **Repository delete and storage GC reclaim filesystem copies of shared content** - #4833 (fixed by #4864) | filesystem | deleting repo A leaves nothing under A's tree even when repo B holds the same content key, and a GC pass finds nothing left; a trashed copy in C is reclaimed while D holds the key; B and D still serve byte-exact | **repo-delete-reclaims-storage** | **COVERED** (#577, `fixes-1.11.4`): green on `fix-storage` (main + #4864 + #4859; 7/7, exit 0), red on 1.11.3 (4 pass / 3 fail: A's shared file leaked, kept by GC, C's trashed copy kept) |
+| 149 | **A slow Azure server-side copy completes; its error carries no SAS** - #4858 (fixed by #4859), #4866 | `storage.azure-stub` (a local fake Azure Blob endpoint that holds each Put Blob From URL for a set delay or drops it) | a 45 s copy under an OCI blob finalize and a staged generic upload both end 201 and read back byte-exact; a dropped copy fails naming Put Blob From URL with no `sig=`/`sp=` in the body or the backend log; 0 s copies pass on every image | **azure-copy-long-running** | **COVERED** (#578, extended by #579, `fixes-1.11.4`): green on `fix-azure-sas` (main with #4859 and #4866; 6/6, exit 0, ~2 min), red on 1.11.3 (3 pass / 3 fail: both copies 500 after ~30 s, the error body and log quote the signed URL). `fix-storage` (#4859 only) passes the two #4858 cases (5/5 before #579) |
+| 150 | **Translated NuGet V2 feeds list versions from every upstream page** - #4856 (fixed by #4855) | filesystem + `upstreams.mock-multi` (three-page V2 feed, and one whose next link leaves the origin) | Remote V3 registration and flat container, and a virtual's registration, flat container and V2 `FindPackagesById()` list all four versions across three pages; a cross-origin continuation is not requested and page 1 is served | **nuget-v2-continuation-pages** | **COVERED** (#582, `fixes-1.11.4`): green on `fix-formats` (main + #4855 + #4867 + #4868; 8/8, exit 0), red on 1.11.3 (3 pass / 5 fail: every FIX case lists only `1.0.0`) |
+| 151 | **Concurrent PUTs to one generic path have one winner** - #4832 (fixed by #4868) | filesystem | 16 concurrent distinct PUTs to one free path give one 201 and fifteen 409 `CONFLICT`, and the stored bytes and the single live row are the winner's; sequential re-PUT is 409, distinct paths all 201, a versioning repository appends revisions | **generic-concurrent-put-contract** | **COVERED** (#584, `fixes-1.11.4`): green on `fix-formats` (5/5, exit 0), red on 1.11.3 (4 pass / 1 fail: 16 x 201, the stored bytes are not the reported winner's) |
 
 ## Consolidated status (this checkpoint)
 
@@ -94,6 +101,38 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 - **Gate wiring:** the release gate's `dtf-gate` matrix carries them in three
   groups (`fixes-1.11.2-api`, `fixes-1.11.2-formats`, `fixes-1.11.2-ops`);
   `run.sh all` lists them after the existing tiers, `audit-event-coverage` last.
+
+## 1.11.4 fix-coverage status (rows 145-151, artifact-keeper-test#574-#584)
+
+- **Seven tiers and one extension** cover the 1.11.4 backports: rows 145-151
+  plus the #4851 case in row 47 (`upstream-url-userinfo-redaction`). Each
+  was proven in its own PR: red on 1.11.3 on exactly its FIX cases with every
+  control holding, green on a main build carrying the fix (`main-adfa0206`
+  for #4827, `fix-auth`, `fix-storage`, `fix-azure-sas` and `fix-formats` for
+  the others). All of those fixes are merged on backend main.
+- **Gate wiring:** `plugin-fetch-pinned-address` joins
+  `security-1.11.x-boundary` next to `plugin-reload-ssrf`; the other six form
+  the new required group `fixes-1.11.4` (about 5 min, the Azure copy tier is
+  ~2 min of it). Like the other fix groups these are red on every image older
+  than the fix on main, so a 1.11.4 candidate runs them from
+  `release/1.11.x`, which carries the same tiers.
+- **New profiles:** `upstreams.mock-git-rebind` (a stdlib-python DNS server
+  at `172.16.<slot>.82`, used as the backend's resolver) and
+  `storage.azure-stub` (an in-memory fake Azure Blob endpoint; Azurite copies
+  instantly and refuses Put Blob From URL on a SAS destination, so it cannot
+  reproduce #4858). `upstreams.mock-multi` gained the paged V2 feeds and a
+  second listener on port 8081; `mock_git.py` gained `name=` and `redirect=`.
+- **Finding, not gated:** on the fixed build a refused plugin-fetch redirect
+  answers 500 instead of 400 (`clone_repository` maps only "blocked by SSRF
+  policy"); the target is never contacted.
+- **On this line:** `matrix.md` carries rows 1-22 and 145-151; rows 23-144
+  and row 47 (`upstream-url-userinfo-redaction`, whose #4851 case and
+  `/readyz` wait came with #583) are in main's `matrix.md`, which is also
+  where the gate matrix is read from. The tiers of rows 47 and 145-151 are
+  all on this line.
+- **#581** derives the `sso.ldap-env-bootstrap` bind password at run time in
+  `ldaps`, so the profile no longer carries a literal. This line has had the
+  same change since #580.
 
 ## Brick-2 status (migration / Nexus — #2457)
 
