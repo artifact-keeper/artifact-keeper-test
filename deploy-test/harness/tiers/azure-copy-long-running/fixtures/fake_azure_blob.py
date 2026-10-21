@@ -17,6 +17,8 @@ large source: the connection stays silent until the copy is done.
     DELETE <blob>                       Delete Blob              -> 202/404
     GET  /__ctl/readyz                  "ok"
     PUT  /__ctl/delay/<secs>            set COPY_DELAY at run time
+    PUT  /__ctl/fail/<n>                close the next n Put Blob From URL
+                                        connections without answering
     GET  /__ctl/stats                   JSON: copies seen, last copy timing
 
 No signature checks (the backend signs with Shared Key; nothing secret is
@@ -25,6 +27,7 @@ verified here). Environment: STUB_PORT (10000), COPY_DELAY (0).
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -36,7 +39,7 @@ BLOBS = {}
 BLOCKS = {}
 LOCK = threading.Lock()
 STATE = {"delay": float(os.environ.get("COPY_DELAY", "0")), "copies": 0, "copies_done": 0,
-         "last_copy": None}
+         "last_copy": None, "fail": 0, "copies_dropped": 0}
 
 
 def etag(data):
@@ -119,8 +122,23 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 STATE["delay"] = float(m.group(1))
             return self._send(200, b"ok")
+        m = re.match(r"^/__ctl/fail/([0-9]+)$", path)
+        if m:
+            with LOCK:
+                STATE["fail"] = int(m.group(1))
+            return self._send(200, b"ok")
         src = self.headers.get("x-ms-copy-source")
         if src:
+            with LOCK:
+                drop = STATE["fail"] > 0
+                if drop:
+                    STATE["fail"] -= 1
+                    STATE["copies_dropped"] += 1
+            if drop:
+                # A transport failure: the request is read, nothing is sent.
+                self.close_connection = True
+                self.connection.shutdown(socket.SHUT_RDWR)
+                return
             src_path = urllib.parse.unquote(urllib.parse.urlsplit(src).path)
             with LOCK:
                 data = BLOBS.get(src_path)

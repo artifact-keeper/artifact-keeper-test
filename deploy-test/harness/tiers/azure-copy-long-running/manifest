@@ -21,8 +21,14 @@
 #   (FIX) with a 45 s copy: the same OCI push is 201 after >= 45 s and the
 #   blob reads back byte-exact; the same generic upload is 201 and
 #   byte-exact. On 1.11.3 both fail at ~30 s.
+#   (FIX) with the stub told to drop the next copy connection
+#   (PUT /__ctl/fail/1): the OCI finalize fails naming Put Blob From URL, and
+#   neither its response body nor the backend log lines written meanwhile
+#   contain the request URL's query string (no `sig=`, no `sp=`). On 1.11.3
+#   the body quotes the full signed destination URL.
 #
-# Red: ak-backend:1.11.3. Green: ak-backend:fix-storage.
+# Red: ak-backend:1.11.3. Green: ak-backend:fix-storage (#4858 cases),
+# ak-backend:fix-azure-sas (all cases).
 PROFILES="storage.azure-stub"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

@@ -139,6 +139,32 @@ else
   fail "generic upload did not wait for the ${SLOW}s Put Blob From URL (#4858)" "code=$code after ${secs}s"
 fi
 
+# ---------------------------------------------------------------------------
+begin_test "FIX: when the server-side copy connection drops, the error body and the backend log carry no storage URL query string"
+stub /__ctl/fail/1 PUT >/dev/null
+head -c 1048576 /dev/urandom > "$WORK/drop.bin"
+T0=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+read -r code secs < <(push_blob "$WORK/drop.bin" "$WORK/drop")
+stub /__ctl/fail/0 PUT >/dev/null
+dropped=$(stub /__ctl/stats GET | jqr '.copies_dropped')
+docker logs --since "$T0" "$BC" > "$WORK/drop.log" 2>&1; logs_rc=$?
+log_lines=$(wc -l < "$WORK/drop.log")
+body_leak=$(grep -cE 'sig=|[?&]sp=' "$WORK/drop.body")
+log_leak=$(grep -cE 'sig=|[?&]sp=' "$WORK/drop.log")
+names_copy=$(grep -c 'Put Blob From URL' "$WORK/drop.body")
+echo "-- finalize -> $code in ${secs}s; copies dropped by the stub: $dropped"
+echo "-- body: $(redact "$WORK/drop.body")"
+echo "-- body lines with sig=/sp=: $body_leak; backend log since $T0 (rc=$logs_rc, $log_lines lines) lines with sig=/sp=: $log_leak"
+grep -E 'sig=|[?&]sp=' "$WORK/drop.log" | tail -3 | cut -c1-400 \
+  | sed -E 's/sig=[^&")[:space:]]*/sig=<redacted>/g'
+if [ "${dropped:-0}" -ge 1 ] && [ "$code" != "201" ] && [ "$names_copy" -ge 1 ] \
+   && [ "$body_leak" = "0" ] && [ "$logs_rc" = "0" ] && [ "$log_lines" -ge 1 ] && [ "$log_leak" = "0" ]; then
+  pass
+else
+  fail "a failed Put Blob From URL reported its request URL query string" \
+       "code=$code dropped=$dropped names_copy=$names_copy body_leak=$body_leak logs_rc=$logs_rc log_lines=$log_lines log_leak=$log_leak"
+fi
+
 echo "-- backend log lines naming Put Blob From URL:"
 docker logs "$BC" 2>&1 | grep -i 'put blob from url' | tail -3 | cut -c1-300 \
   | sed -E 's/sig=[^&")[:space:]]*/sig=<redacted>/g'
