@@ -18,7 +18,13 @@ is the tier's PLUGINS_TRUSTED_PUBKEY).
 
 Control, from the oracle via `docker exec`: GET /__ctl?version=X&sig=MODE
 sets the manifest version and the signature mode (good | bad | none) for the
-next clone. GET /__readyz answers "ok".
+next clone; name=N sets the plugin name and format key (default PLUGIN_NAME
+and PLUGIN_FORMAT_KEY). GET /__ctl?redirect=URL makes the reference advertisement
+answer 302 to URL + "/info/refs?service=git-upload-pack" (the smart-HTTP
+redirect a git client follows to a moved repository; added for the
+plugin-fetch-pinned-address tier). A request for URL's own path is served,
+so a redirect to this mock does not loop; an empty redirect= turns it off. GET
+/__readyz answers "ok".
 
 Every request line is printed to stdout as
   MOCKGIT <MOCK_NAME> <METHOD> <PATH>
@@ -49,7 +55,7 @@ BAD_SIG = (
     "97zPxqtnD+ew74GuJRuMAA==\n"
 )
 
-STATE = {"version": "1.0.0", "sig": "good"}
+STATE = {"version": "1.0.0", "sig": "good", "redirect": "", "name": ""}
 
 
 def obj(kind, body):
@@ -58,13 +64,15 @@ def obj(kind, body):
 
 
 def build_repo():
+    name = STATE["name"] or PLUGIN_NAME
+    key = STATE["name"] or FORMAT_KEY
     toml = (
         "[plugin]\n"
-        f'name = "{PLUGIN_NAME}"\n'
+        f'name = "{name}"\n'
         f'version = "{STATE["version"]}"\n'
         'description = "DTF plugin-reload-ssrf probe plugin"\n'
         "\n[format]\n"
-        f'key = "{FORMAT_KEY}"\n'
+        f'key = "{key}"\n'
         'display_name = "DTF reload probe"\n'
         'extensions = [".dtfprobe"]\n'
     ).encode()
@@ -130,15 +138,29 @@ class Handler(BaseHTTPRequestHandler):
         if parts.path == "/__readyz":
             return self._send(200, "text/plain", b"ok")
         if parts.path == "/__ctl":
-            q = parse_qs(parts.query)
+            q = parse_qs(parts.query, keep_blank_values=True)
+            if "redirect" in q:
+                STATE["redirect"] = q["redirect"][0]
+            if "name" in q:
+                STATE["name"] = q["name"][0]
             if "version" in q:
                 STATE["version"] = q["version"][0]
             if "sig" in q:
                 STATE["sig"] = q["sig"][0]
             return self._send(200, "text/plain",
-                              f"version={STATE['version']} sig={STATE['sig']}".encode())
+                              (f"version={STATE['version']} sig={STATE['sig']} "
+                               f"redirect={STATE['redirect']}").encode())
         print(f"MOCKGIT {NAME} GET {self.path}", flush=True)
         if parts.path.endswith("/info/refs") and "service=git-upload-pack" in parts.query:
+            moved = urlsplit(STATE["redirect"]).path
+            if STATE["redirect"] and not parts.path.startswith(moved + "/"):
+                target = STATE["redirect"] + "/info/refs?" + parts.query
+                print(f"MOCKGIT {NAME} 302 -> {target}", flush=True)
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return None
             head, _pack = build_repo()
             body = (
                 pkt("# service=git-upload-pack\n") + b"0000"
