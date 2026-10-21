@@ -9,7 +9,8 @@
 # accepts (#4858). The two profiles are alternatives; never compose both.
 #
 #   * ADDS  `fake-azure` on a dedicated 172.25.<slot>.0/24 subnet. Its
-#     PUT /__ctl/delay/<secs> sets the copy delay at run time; GET
+#     PUT /__ctl/delay/<secs> sets the copy delay at run time, PUT
+#     /__ctl/fail/<n> drops the next n copy connections; GET
 #     /__ctl/stats reports copies seen. Port 10000 is published on
 #     127.0.0.1:${S3_PORT} (this profile runs no MinIO) for the oracle.
 #   * PATCHES backend: STORAGE_BACKEND=azure over plain http
