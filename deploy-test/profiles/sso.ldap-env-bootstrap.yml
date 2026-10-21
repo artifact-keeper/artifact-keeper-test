@@ -15,4 +15,6 @@ services:
       LDAP_URL: ldap://ldap.dtf.local:389
       LDAP_BASE_DN: ou=people,dc=dtf,dc=local
       LDAP_BIND_DN: cn=admin,dc=dtf,dc=local
-      LDAP_BIND_PASSWORD: adminpass
+      # The bind password is the sso.ldap admin password; the ldaps manifest
+      # derives it at run time so no credential literal sits next to its DN.
+      LDAP_BIND_PASSWORD: ${DTF_LDAP_ENV_BIND_PW:-}
