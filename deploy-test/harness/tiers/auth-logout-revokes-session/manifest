@@ -1,0 +1,32 @@
+# DTF tier manifest: auth-logout-revokes-session  (artifact-keeper#4831; 1.12.0)
+# Profile-set: filesystem / single. No extra services.
+#
+# THE BEHAVIOUR
+# POST /api/v1/auth/logout must end the presenting session server-side: the
+# session's refresh token (and its rotation lineage, the refresh-token family)
+# stops minting access tokens. Before the fix the handler revoked the family
+# only when the refresh token itself was in the request (JSON body
+# `refresh_token`, or the `ak_refresh_token` cookie). Two real logout shapes
+# carry neither:
+#   A  API/CLI: `Authorization: Bearer <access>` + body `{}`
+#   D  browser: the cookie jar the login set (the refresh cookie is scoped to
+#      /api/v1/auth/refresh, so only `ak_access_token` reaches /logout), no body
+# Both answered 200 while the refresh token kept working. The fix stamps the
+# session's family id on the access token and logout revokes that family.
+#
+# THE GATES
+#   (FIX)      shapes A and D: after a 200 logout, POST /auth/refresh with the
+#              session's refresh token is 401 with no access_token in the body,
+#              and every refresh_token_jti row of that family is revoked
+#              (psql). RED on every release up to 1.11.3 (refresh 200, rows
+#              unrevoked).
+#   (CONTROL)  both images: shape B (bearer + refresh token in the body) and
+#              shape C (bearer + `Cookie: ak_refresh_token`) revoke; replaying
+#              a rotated refresh token is 401; logging out one session leaves
+#              a second session of the same user refreshing (per-session
+#              scoping, #1807).
+#
+# RATE_LIMIT_ENABLED=false: seven logins and a dozen refreshes back-to-back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
