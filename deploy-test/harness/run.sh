@@ -443,6 +443,13 @@ case "$CMD" in
     #   P9 long tail: 1.11.0 API contracts, artifact.uploaded webhooks,
     #      catalog backfill, startup config, private-IP toggles, stock Caddy
     #      routes; trivy-server-mode needs the Trivy DB (gate: dtf-advisory).
+    # Then the 1.11.4 companion tiers (artifact-keeper-test#574-#584), each
+    # red on 1.11.3 and green on main with the fix: plugin fetch through the
+    # SSRF-guarded client (#4827), logout ending the session (#4831), the
+    # env-seeded LDAP provider lifecycle (#4857), repository delete and GC
+    # reclaiming filesystem copies (#4833), concurrent generic PUTs (#4832),
+    # NuGet V2 continuation pages (#4856), and the slow Azure server-side
+    # copy (#4858, plus SAS-free error bodies; ~2 min, last).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -488,7 +495,10 @@ case "$CMD" in
              replicated-and-chunked-uploads upgrade-v270-origin upload-staging-object-store \
              lifecycle-signing-webhook-config api-contracts-1110 catalog-backfill-liveness \
              webhook-artifact-uploaded-formats stock-compose-caddy startup-config-and-format-indexes \
-             trivy-server-mode; do
+             trivy-server-mode \
+             plugin-fetch-pinned-address auth-logout-revokes-session ldap-env-bootstrap-lifecycle \
+             repo-delete-reclaims-storage generic-concurrent-put-contract nuget-v2-continuation-pages \
+             azure-copy-long-running; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
