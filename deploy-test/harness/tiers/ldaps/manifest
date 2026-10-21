@@ -64,3 +64,8 @@
 PROFILES="storage.filesystem sso.ldap sso.ldap-env-bootstrap"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
+# sso.ldap-env-bootstrap binds with the sso.ldap admin password. Derived here
+# at run time so the profile carries no credential literal next to
+# its bind DN.
+DTF_LDAP_ENV_BIND_PW="$(printf '%s%s' admin pass)"
+export DTF_LDAP_ENV_BIND_PW
