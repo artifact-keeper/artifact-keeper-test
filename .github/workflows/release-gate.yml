@@ -2944,6 +2944,18 @@ jobs:
   # image with no published equivalent. The #2688 origin tiers cover the
   # upgrade class with published origins.
   #
+  # Maintenance lines: for a release/X.Y.x candidate, switch-tests-ref.sh
+  # moves the working tree (harness included) to this repo's release/X.Y.x
+  # and writes deploy-test/.tests-ref. The matrices below (and dtf-advisory's)
+  # stay main's and name tiers the line does not have; run.sh records each as
+  # NOT ON THIS LINE (exit 12: a ::warning, a JUnit <skipped/> in the group's
+  # junit-dtf-* artifact) and run-tiers.sh does not fail the group for it.
+  # An absent tier is therefore skipped loudly, not failed, which is exactly
+  # why a line must carry the companion tiers of every fix backported to it:
+  # cherry-pick them onto release/X.Y.x in the same cycle as the backend
+  # backport (artifact-keeper-test#424), or the line's gate skips the line's
+  # own fixes by name. On main (no marker) a missing manifest is exit 4, RED.
+  #
   # Runs on the dind pool (ak-docker-runners): the DTF harness is
   # docker-compose based and the ak-e2e-runners k8s pods have no docker
   # daemon. Needs only version-set-integrity (image-existence check),

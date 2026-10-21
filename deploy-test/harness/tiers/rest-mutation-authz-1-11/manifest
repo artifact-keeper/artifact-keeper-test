@@ -1,0 +1,44 @@
+# DTF tier manifest: rest-mutation-authz-1-11
+#   (GHSA-mvmh-g8wm-r3cp / artifact-keeper#4588, artifact-keeper#4193 / #4200)
+# Profile-set: filesystem + imagebuild.non-admin. Every gate under test sits in
+# a REST handler ahead of storage, so the storage dimension is irrelevant.
+# imagebuild.non-admin turns AK_IMAGE_BUILD_ADMIN_ONLY off, the non-default
+# posture the advisory's image-build finding needs. No BuildKit is configured.
+#
+# THE BUGS (both fixed in 1.11.0; RED on 1.10.0)
+#   #4193   PUT/POST/DELETE /api/v1/artifacts/{id}/labels[/{key}] checked the
+#           write:artifacts token scope (a session always passes) and read
+#           visibility. Any signed-in user rewrote labels on a public repo's
+#           artifacts; a read-only member did so on a private one.
+#   GHSA-mvmh  eight REST mutation routes stopped at a gate that does not
+#           authorize a session (token scope, the tenant gate, or bare authn):
+#             PUT  /promotion/repositories/{key}/release-target   -> admin
+#             POST /promotion/repositories/{key}/artifacts/{id}/reject -> promote
+#             PUT/POST/DELETE /repositories/{key}/labels[/{k}]    -> write
+#             GET/POST/DELETE /repositories/{key}/email-subscriptions -> admin
+#             POST /repositories/{key}/image-builds[/render]      -> write
+#             PUT /builds/{id}, POST /builds/{id}/artifacts       -> creator/admin
+#             POST /peers/{id}/connections/probe                  -> admin
+#             POST /repositories/{key}/security/proxy-scans/rescan -> write
+#
+# Oracle (discriminating, RELEASE_GATE=1). Exploit callers: N (no grant),
+# R (`reader` on private Q), a non-creator on a build. Each exploit case is
+# refused 403/404 AND a DB read shows nothing changed; on 1.10.0 each answers
+# 2xx (or the handler's own 404 past the missing gate) and the DB shows the
+# write. Controls hold on both images: a `developer` member writes artifact
+# and repository labels, renders an image build and passes the rescan gate; a
+# fine-grained repository admin creates and lists email subscriptions and
+# links the release target; admin rejects and probes; the build's creator
+# updates it; a reader still lists labels.
+#
+# FIX artifact-keeper#4818 (first pinned KNOWN-RED, asserted since the fix
+# merged): a `repository-owner` ROLE member may use email-subscriptions and
+# release-target PUT, as the 1.11.0 CHANGELOG says. RED on every 1.11.x
+# release and on main 2f08663f (403: require_repo_admin read fine-grained
+# grants only), GREEN from main adfa0206.
+#
+# RATE_LIMIT_ENABLED=false: five logins and ~50 back-to-back authenticated
+# calls; the base default (ON) would throttle them into 429s.
+PROFILES="storage.filesystem imagebuild.non-admin"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

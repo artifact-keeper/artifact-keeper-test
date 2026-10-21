@@ -36,6 +36,17 @@
 # so a red gate can be triaged from the summary line alone. See
 # harness/lib/exit_codes.sh for the full contract.
 #
+# NOT ON THIS LINE (the one non-zero outcome that is not RED): when
+# scripts/switch-tests-ref.sh moved the working tree to a release/X.Y.x suite
+# it writes deploy-test/.tests-ref, and a tier main's gate matrix names but
+# the line's branch has no manifest for makes run.sh exit 12 after emitting a
+# ::warning and a JUnit <skipped/>. This driver lists those tiers in the
+# summary and does not fail the group for them: a main matrix necessarily
+# names tiers for features a maintenance line never received. Without the
+# marker (a main suite) a missing manifest is still FAIL(harness), rc 4. The
+# skip is loud, not a waiver: a line must carry the companion tiers of every
+# fix backported to it (artifact-keeper-test#424).
+#
 # Environment passthrough: everything run.sh honors (AK_TEST_ROOT,
 # SCANNER_ADAPTER_IMAGE, TRIVY_DB_REPOSITORY, UPGRADE_OLD_IMAGE, ...).
 # =============================================================================
@@ -44,6 +55,7 @@ set -uo pipefail
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/exit_codes.sh
 source "${HARNESS_DIR}/lib/exit_codes.sh"
+TESTS_REF="$(dtf_tests_ref "${HARNESS_DIR}/..")"
 
 BACKEND_IMAGE_ARG=""
 TIERS=()
@@ -51,7 +63,7 @@ TIERS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --backend-image) BACKEND_IMAGE_ARG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,33p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,52p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) echo "!! unknown argument: $1" >&2; exit 2 ;;
     *) TIERS+=("$1"); shift ;;
   esac
@@ -110,7 +122,10 @@ case "$BACKEND_IMAGE_ARG" in
 esac
 
 # --- Run the tiers sequentially ----------------------------------------------
-declare -a PASSED=() FAILED=() INFRA=()
+if [ -n "$TESTS_REF" ]; then
+  echo ">> tests ref: ${TESTS_REF} (deploy-test/.tests-ref); a tier with no manifest here is NOT ON THIS LINE"
+fi
+declare -a PASSED=() FAILED=() INFRA=() NOT_ON_LINE=()
 for tier in "${TIERS[@]}"; do
   echo ""
   echo "############################################################"
@@ -127,6 +142,14 @@ for tier in "${TIERS[@]}"; do
         # the summary never attributes a harness/setup failure to the
         # candidate. Still counted as RED below (fail-closed).
         INFRA+=("${tier} (INFRA/SETUP: harness could not evaluate the tier — NOT a product verdict, rc=${rc})") ;;
+      "$DTF_EXIT_NOT_ON_LINE")
+        # Only honoured on a release-line suite; anywhere else rc 12 is a
+        # harness wiring bug like any other unexpected driver code.
+        if [ -n "$TESTS_REF" ]; then
+          NOT_ON_LINE+=("$tier")
+        else
+          FAILED+=("${tier} (harness: NOT ON THIS LINE without a release-line marker, rc=${rc})")
+        fi ;;
       7) FAILED+=("${tier} (stack-up: candidate/sidecar never healthy, rc=7)") ;;
       2|3|4|5|6) FAILED+=("${tier} (harness: bad tier/overlay/corpus/slot, rc=${rc})") ;;
       *) FAILED+=("${tier} (tier: oracle asserted a regression, rc=${rc})") ;;
@@ -146,6 +169,14 @@ done
 for tier in "${INFRA[@]:-}"; do
   [ -n "$tier" ] && echo "  INFRA ${tier}"
 done
+for tier in "${NOT_ON_LINE[@]:-}"; do
+  [ -n "$tier" ] && echo "  SKIP  ${tier} (NOT ON THIS LINE: no manifest on ${TESTS_REF})"
+done
+
+if [ ${#NOT_ON_LINE[@]} -gt 0 ]; then
+  echo ""
+  echo ">> ${#NOT_ON_LINE[@]} of ${#TIERS[@]} tier(s) NOT ON THIS LINE (${TESTS_REF}), skipped, not failed: ${NOT_ON_LINE[*]}"
+fi
 
 if [ ${#INFRA[@]} -gt 0 ]; then
   echo ""
@@ -161,5 +192,9 @@ if [ ${#FAILED[@]} -gt 0 ] || [ ${#INFRA[@]} -gt 0 ]; then
   echo "!! $(( ${#FAILED[@]} + ${#INFRA[@]} )) of ${#TIERS[@]} tier(s) did not pass — gate is RED" >&2
   exit 1
 fi
-echo ">> all ${#TIERS[@]} tier(s) passed — gate is GREEN"
+if [ ${#NOT_ON_LINE[@]} -gt 0 ]; then
+  echo ">> ${#PASSED[@]} tier(s) passed, ${#NOT_ON_LINE[@]} not on ${TESTS_REF}: gate is GREEN"
+else
+  echo ">> all ${#TIERS[@]} tier(s) passed — gate is GREEN"
+fi
 exit 0

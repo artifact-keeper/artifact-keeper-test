@@ -4,3 +4,7 @@
 # which must NEVER be tracked.
 results/
 results/**/nexus-state-*/
+
+# Release-line marker written by scripts/switch-tests-ref.sh when the gate
+# moves the working tree to release/X.Y.x (harness/lib/exit_codes.sh, exit 12).
+.tests-ref
