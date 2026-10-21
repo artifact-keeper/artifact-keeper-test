@@ -77,7 +77,11 @@ EVIL_SHA="$(sha256sum "$WD/srv/Packages/evil.rpm" | awk '{print $1}')"
 chmod -R a+rX "$WD"
 docker rm -f "$MOCK" >/dev/null 2>&1 || true
 MOCK_UP=0
+# label=disable: on an SELinux-enforcing host the bind mount is otherwise
+# unreadable, nginx answers 403 for every package and the FROZEN-IDENTITY case
+# "fails closed" for the wrong reason.
 if [ -n "$DTF_NET" ] && docker run -d --name "$MOCK" --network "$DTF_NET" \
+     --security-opt label=disable \
      -v "$WD/srv:/usr/share/nginx/html:ro" "$MOCK_IMAGE" >/dev/null 2>&1; then
   MOCK_UP=1
 fi
@@ -219,7 +223,7 @@ else
   SERVED_STATUS="$FETCH_STATUS"
   SERVED_SHA="$(sha256sum "$WD/served.rpm" 2>/dev/null | awk '{print $1}')"
   ADV_SHA="$(grep -i '^X-Checksum-SHA256:' "$WD/served.hdr" 2>/dev/null \
-             | tr -d '\r' | awk '{print tolower($2)}' | head -1)"
+             | tr -d '\r' | awk '{print tolower($2)}' | head -1 || true)"
   if [ "$SERVED_STATUS" = "200" ] && [ "$SERVED_SHA" = "$EVIL_SHA" ]; then
     fail "POISONED: published @${VN} served the EVIL bytes after a live re-sync rewrote the curation row (served sha=${SERVED_SHA})" \
          "advertised=${ADV_SHA} evil=${EVIL_SHA} good=${GOOD_SHA}"
@@ -248,9 +252,9 @@ else
   S2_STATUS="$FETCH_STATUS"
   S2_SHA="$(sha256sum "$WD/served2.rpm" 2>/dev/null | awk '{print $1}')"
   S2_ADV="$(grep -i '^X-Checksum-SHA256:' "$WD/served2.hdr" 2>/dev/null \
-            | tr -d '\r' | awk '{print tolower($2)}' | head -1)"
+            | tr -d '\r' | awk '{print tolower($2)}' | head -1 || true)"
   S2_CT="$(grep -i '^Content-Type:' "$WD/served2.hdr" 2>/dev/null \
-           | tr -d '\r' | awk '{print tolower($2)}' | head -1)"
+           | tr -d '\r' | awk '{print tolower($2)}' | head -1 || true)"
   if [ "$S2_STATUS" != "200" ]; then
     pass   # still failing closed is fine
   elif [ "$S2_SHA" = "$GOOD_SHA" ] && [ "$S2_ADV" = "$GOOD_SHA" ] \

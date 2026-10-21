@@ -1,0 +1,23 @@
+# =============================================================================
+# profiles/storage.s3-presigned.yml: presigned redirect downloads on S3
+# =============================================================================
+# Layered on top of storage.s3.yml (MinIO). Patches the backend so downloads
+# are offloaded to the object store with a presigned URL:
+#   * PRESIGNED_DOWNLOADS_ENABLED=true: the API-level switch (artifact
+#     downloads 302, and since #2894 OCI blob GETs 307).
+#   * S3_REDIRECT_DOWNLOADS=true: the S3 backend signs URLs.
+#   * S3_PUBLIC_ENDPOINT=http://127.0.0.1:${S3_PORT} (#4417): the origin the
+#     presigned URLs are signed for and point at. The backend itself keeps
+#     talking to http://minio:9000 (S3_ENDPOINT); the oracle on the host can
+#     only reach MinIO at the published 127.0.0.1:${S3_PORT}, so it can follow
+#     a redirect only when the public endpoint is honoured.
+# A backend that predates a setting ignores it and still boots.
+#
+# Required vars (run.sh exports them): S3_PORT.
+# =============================================================================
+services:
+  backend:
+    environment:
+      PRESIGNED_DOWNLOADS_ENABLED: "true"
+      S3_REDIRECT_DOWNLOADS: "true"
+      S3_PUBLIC_ENDPOINT: "http://127.0.0.1:${S3_PORT:?set S3_PORT}"

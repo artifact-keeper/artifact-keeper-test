@@ -1,0 +1,60 @@
+# DTF tier manifest: ops-endpoints-1110  (artifact-keeper#4417, #4610, #4591; 1.11.0)
+# Profile-set: storage.s3 (MinIO) + storage.s3-public-endpoint (presigned
+# redirects, S3_PUBLIC_ENDPOINT=http://127.0.0.1:${S3_PORT}, the MinIO port
+# published on the host) + search.mock-opensearch (OPENSEARCH_URL to a
+# steerable stand-in, READYZ_REQUIRE_SEARCH=true) + mail.mock-smtp (the mock
+# SMTP server shared with upload-receive-and-ops-errors: :25 plaintext,
+# :465 implicit TLS, :587 STARTTLS). The oracle makes a throwaway CA and a
+# mock-smtp certificate with openssl at run time (no key material in the
+# repository), docker-cps the pair into the mock and the CA onto the
+# backend's data volume.
+# The SMTP and endpoint variants are backend recreates with
+# fixtures/backend.variant.yml layered on the same profiles.
+#
+# THE FEATURES AND THEIR GATES (all RED on ak-backend:1.10.0)
+# #4417  S3_PUBLIC_ENDPOINT: presigned URLs are signed for and point at the
+#   public origin; the backend's own calls keep S3_ENDPOINT.
+#   (CONTROL) an upload through S3_ENDPOINT=http://minio:9000 is stored and
+#             listed, on both.
+#   (FIX)     GET .../download/<path> -> 302 whose Location origin is
+#             http://127.0.0.1:${S3_PORT} with X-Amz-Signature, and following
+#             it from the host returns the bytes. RED: Location is
+#             http://minio:9000/..., unusable from outside.
+#   (FIX)     S3_PUBLIC_ENDPOINT=ftp://dtf-bad-endpoint -> the backend exits
+#             1 with "S3_PUBLIC_ENDPOINT=... is invalid: the scheme must be
+#             http or https". RED: the variable is ignored and the backend
+#             comes up. Run last: it leaves the backend down.
+# #4610  /readyz always carries dependencies{opensearch,storage,scanner,ldap}
+#   with {status, required}, and READYZ_REQUIRE_SEARCH=true makes OpenSearch
+#   gate readiness with a `failing` list.
+#   (CONTROL) /readyz 200 with database and migrations healthy, on both.
+#   (FIX)     dependencies present; opensearch healthy and required=true,
+#             storage healthy required=false, scanner not_configured. RED:
+#             no dependencies object.
+#   (FIX)     mock OpenSearch answering 503 -> /readyz 503 with
+#             failing == ["opensearch"] while the database is healthy, and
+#             200 again once it recovers. RED: /readyz stays 200.
+# #4591  SMTP_TLS_MODE=starttls-opportunistic and SMTP_TLS_CA_CERT /
+#   CUSTOM_CA_CERT_PATH (POST /api/v1/admin/smtp/test, delivery read back
+#   from the mock's record of each message, port and TLS state).
+#   (CONTROL) starttls against :25 (no STARTTLS) is refused and nothing is
+#             delivered, on both.
+#   (FIX)     starttls-opportunistic on :25 -> 200, delivered in plaintext.
+#             RED: the unknown mode falls back to starttls and is refused.
+#   (FIX)     starttls-opportunistic on :587 + SMTP_TLS_CA_CERT=<inline PEM>
+#             -> 200, delivered after STARTTLS. RED: unknown mode, CA ignored.
+#   (FIX)     tls on :465 + SMTP_TLS_CA_CERT=/data/dtf-smtp-ca.crt -> 200,
+#             delivered over TLS. RED: the CA is ignored, certificate verify
+#             failed.
+#   (FIX)     tls on :465 without the CA -> nothing delivered, 502 naming the
+#             certificate and pointing at SMTP_TLS_CA_CERT. RED: 500.
+#
+# NOT GATED HERE: AZURE_STORAGE_PUBLIC_ENDPOINT (no Azure emulator profile),
+# SMTP_TLS_SKIP_VERIFY, CUSTOM_CA_CERT_PATH as the CA source, an unreadable CA
+# file (startup warning), and the OCI blob 307 (it presigns through the same
+# S3 backend as the generic download asserted here).
+#
+# RATE_LIMIT_ENABLED=false: six logins across the backend recreates.
+PROFILES="storage.s3 storage.s3-public-endpoint search.mock-opensearch mail.mock-smtp"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

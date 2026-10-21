@@ -1,0 +1,11 @@
+# Tier-local compose override for admin-setup-gate (artifact-keeper#4634).
+# Layered on compose.base.yml when the oracle restarts the backend (a
+# force-recreate on the same data volume and database: what a pod restart on
+# an ephemeral-but-retained volume looks like). The only change is the
+# json-file log driver, so the oracle can read provision_admin_user's
+# startup lines with docker logs (rootless podman's journald driver drops
+# lines). ADMIN_PASSWORD stays as compose.base.yml sets it.
+services:
+  backend:
+    logging:
+      driver: json-file

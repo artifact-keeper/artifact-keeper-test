@@ -1,0 +1,71 @@
+# =============================================================================
+# profiles/upstreams.mock-conda-scan.yml - a file-serving upstream conda
+#   channel the oracle fills at run time, for the conda scan-on-proxy tiers
+# =============================================================================
+# Adds `mock-conda-scan`, the stock python image running the stdlib
+# `http.server` over /srv. It starts EMPTY: the oracle builds its conda
+# packages on the host (a vulnerable vendored wheel, a clean one, a data-only
+# package, a compiled-style package that vendors another component, ...) and
+# copies them in with `docker cp` (/srv/noarch/<file>). Nothing is committed
+# but the builder script, and no package is fetched from the internet.
+#
+# The verdicts come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (GRYPE_DB_AUTO_UPDATE=false in the image), so the profile
+# is local-only: no scanner sidecar, no OSV, no internet.
+#
+# http.server logs one line per request to stderr ("GET /noarch/<file>
+# HTTP/1.1" 200 -). json-file logging keeps `docker logs` readable, so an
+# oracle can count upstream fetches: a pull served from a stored verdict must
+# not fetch the package again.
+#
+# The overlay:
+#   * ADDS  `mock-conda-scan` at 172.16.<slot>.74 on its own per-slot
+#     172.16.<slot>.0/24 network (below Docker's default pool, so it never
+#     collides with an auto-allocated network). Do not stack it with another
+#     profile that claims 172.16.<slot>.0/24 (upstreams.mock-conda,
+#     upstreams.mock-static, ...).
+#   * PATCHES backend onto that network with the private-IP escape hatch
+#     scoped to 172.16.0.0/12, and json-file logging.
+#
+# Required vars (run.sh exports them): DTF_SLOT.
+# =============================================================================
+services:
+  mock-conda-scan:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-conda-scan
+    command: ["python3", "-u", "-m", "http.server", "80", "--directory", "/srv"]
+    logging:
+      driver: json-file
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1/',timeout=2)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks:
+      mockcondascan:
+        ipv4_address: 172.16.${DTF_SLOT}.74
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-conda-scan:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockcondascan: {}
+
+networks:
+  mockcondascan:
+    name: ak-dtf${DTF_SLOT}-mockcondascan
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

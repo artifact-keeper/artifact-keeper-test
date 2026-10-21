@@ -1,0 +1,72 @@
+# =============================================================================
+# profiles/upstreams.mock-recorder.yml - a two-origin, header-recording upstream
+# =============================================================================
+# Adds `mock-recorder`, a stdlib-only Python HTTP server listening on :80 and
+# :81 of one container with one shared run-time file table (see
+# harness/tiers/github-release-mirror/fixtures/mock_recorder.py). The oracle
+# fills it over a control API, can make a path answer with a redirect to the
+# other port (a second origin), and reads back per path how many requests
+# arrived and whether each carried an Authorization header. Used by:
+#   * github-release-mirror (artifact-keeper#3656/#3657/#3658): a GitHub
+#     release host that 302s an asset to an objects host on :81;
+#   * vscode-gallery-protocol (#3956/#3962/#4099): a mock Open VSX gallery
+#     (canned POST extensionquery answers and VSIX bytes).
+#
+# The overlay:
+#   * ADDS  `mock-recorder` on a per-slot 172.16.<slot>.0/24 subnet at .77 (the
+#     same subnet scheme as upstreams.mock-static / mock-files, so AK's SSRF
+#     guard admits it through AK_SSRF_ALLOW_PRIVATE_CIDRS; the tier manifest
+#     also sets UPSTREAM_ALLOW_PRIVATE_IPS=true for the fetch itself).
+#   * PUBLISHES the control port (:80) on 127.0.0.1:${TRIVY_PORT} (8250+N, the
+#     spare per-slot port).
+#   * PATCHES backend onto that network and sets AK_SSRF_ALLOW_PRIVATE_CIDRS to
+#     the mock's /32 only.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-recorder:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-recorder
+    command: ["python3", "/app/mock_recorder.py"]
+    environment:
+      MOCK_PORTS: "80,81"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/github-release-mirror/fixtures/mock_recorder.py:/app/mock_recorder.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if all(urllib.request.urlopen('http://127.0.0.1:%d/__readyz' % p,timeout=2).read()==b'ok' for p in (80,81)) else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockrecorder:
+        ipv4_address: 172.16.${DTF_SLOT}.77
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-recorder:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.77/32
+    networks:
+      dtf: {}
+      mockrecorder: {}
+
+networks:
+  mockrecorder:
+    name: ak-dtf${DTF_SLOT}-mockrecorder
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

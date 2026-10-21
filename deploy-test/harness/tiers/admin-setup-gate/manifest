@@ -1,0 +1,60 @@
+# DTF tier manifest: admin-setup-gate  (artifact-keeper#4634, fixed by #4635; 1.11.2)
+# Profile-set: filesystem / single. The oracle restarts the backend twice
+# (force-recreate on the same volume + database, with fixtures/setup.logs.yml
+# for json-file logs) and edits the users table directly only to stage state
+# an operator reaches through restarts and time.
+#
+# THE BUG
+# The first-run setup gate (every route except /api/v1/auth/*, the setup
+# status and the password-change route answers 403 SETUP_REQUIRED) is meant to
+# be about the built-in `admin`. Before #4635 three places looked at ANY local
+# admin instead:
+#   * boot: provision_admin_user read `SELECT must_change_password, is_active
+#     FROM users WHERE is_admin AND external_id IS NULL LIMIT 1` (no username,
+#     no ORDER BY). With other admins created with a temporary password, the
+#     row returned could be one of them: the gate armed, and with
+#     <STORAGE_PATH>/admin.password missing the boot generated a random
+#     password and wrote it to `admin`, replacing the operator's ADMIN_PASSWORD.
+#   * runtime: AppState::setup_still_required re-checked "any active admin
+#     pending", and update_user re-armed the latch when ANY pending local admin
+#     was reactivated.
+#   * runtime: change_password_inner dropped the latch when ANY user with a
+#     pending flag rotated, even while `admin` was still pending.
+# #4635 pins all of them to username = 'admin'.
+#
+# THE PHASES
+#   setup     the seeded instance (admin from ADMIN_PASSWORD, nothing pending);
+#             two admins P1, P2 created via POST /api/v1/users with a
+#             generated password (must_change_password = true).
+#   runtime   PATCH P1 is_active false, then true.
+#   boot      re-touch the `admin` row until the pre-fix unordered lookup
+#             returns a pending admin (each UPDATE writes a new heap tuple:
+#             the field condition, staged deterministically), confirm no
+#             admin.password exists, restart.
+#   pre-setup flag `admin` must_change_password = true and restart: the gate
+#             is armed by the built-in admin on both images; P2 logs in and
+#             rotates its own password; then admin completes setup with the
+#             password from admin.password.
+#
+# THE GATES
+#   (FIX)      runtime: admin's GET /api/v1/users stays 200, an anonymous
+#              repository list stays 200, setup_required stays false.
+#              RED on 1.11.1: 403 SETUP_REQUIRED (latch re-armed, DB re-check
+#              finds P1).
+#   (FIX)      boot: setup_required false, admin logs in with ADMIN_PASSWORD,
+#              the anonymous list is 200, no admin.password written, no
+#              "Regenerating password" / "API is locked" log line.
+#              RED on 1.11.1: setup_required true, admin login 401 (password
+#              regenerated), 403 SETUP_REQUIRED, admin.password written.
+#   (FIX)      pre-setup: after P2's rotation setup_required is still true and
+#              the anonymous list is still 403 SETUP_REQUIRED.
+#              RED on 1.11.1: the gate drops (setup_required false, 200).
+#   (CONTROL)  both images: the seeded instance is past setup and a pending
+#              admin gets 428 on its own requests; with `admin` pending a
+#              restart arms the gate (true, 403 SETUP_REQUIRED, password file
+#              readable); admin's own rotation lifts it and P1 still gets 428.
+#
+# RATE_LIMIT_ENABLED=false: about a dozen logins.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

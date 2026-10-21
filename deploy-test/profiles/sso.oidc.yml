@@ -57,6 +57,12 @@ services:
       MOCK_OIDC_GROUPS: ""
     volumes:
       - "${DTF_DIR}/harness/tiers/oidc-group-sync/fixtures/mock_oidc.py:/app/mock_oidc.py:ro"
+    # An SELinux-enforcing host (Fedora, RHEL) refuses the container read of
+    # the bind-mounted script without this (python exits 2: can't open file);
+    # label=disable is used instead of relabelling the checkout with :z. A
+    # no-op where SELinux is off.
+    security_opt:
+      - label=disable
     ports:
       - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
     healthcheck:

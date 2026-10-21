@@ -1,0 +1,63 @@
+# =============================================================================
+# profiles/scanners.mock-hang.yml - a security-scanner stand-in that can hang
+# =============================================================================
+# Adds `mock-scanner`, a stdlib-only Python HTTP server standing in for Trivy,
+# and points the backend's TRIVY_URL at it. /health and /readyz probe
+# GET <TRIVY_URL>/healthz through the per-dependency TTL cache. The oracle can
+# flip the mock into "hang" mode (accept, read the request, never answer) and
+# read back every probe it received, with how long the backend waited before
+# giving up. It exists for the readyz-hung-dependency tier
+# (artifact-keeper#4781); see
+# harness/tiers/readyz-hung-dependency/fixtures/mock_scanner.py.
+#
+# The overlay:
+#   * ADDS `mock-scanner` on the slot's own dtf network. TRIVY_URL reaches it
+#     at a private address, which the internal-service probe client allows.
+#   * PUBLISHES the mock's control endpoints on 127.0.0.1:${TRIVY_PORT}
+#     (8250+N, the spare per-slot port).
+#   * PATCHES backend: TRIVY_URL, EXPOSE_DETAILED_HEALTH=true (so /readyz
+#     carries the per-dependency message, e.g. "Scanner probe timed out (2s)"),
+#     and the container healthcheck moved from /health to /livez. /health
+#     probes the scanner too, holds the same cache lock for up to its 5 s client
+#     timeout, and stores its own result; a 5 s healthcheck poll of /health
+#     would therefore race the oracle's /readyz timings while the mock hangs.
+#     /livez is the dependency-free liveness route.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-scanner:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-scanner
+    command: ["python3", "/app/mock_scanner.py"]
+    environment:
+      MOCK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/readyz-hung-dependency/fixtures/mock_scanner.py:/app/mock_scanner.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-scanner:
+        condition: service_healthy
+    environment:
+      TRIVY_URL: http://mock-scanner:80
+      EXPOSE_DETAILED_HEALTH: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/livez"]

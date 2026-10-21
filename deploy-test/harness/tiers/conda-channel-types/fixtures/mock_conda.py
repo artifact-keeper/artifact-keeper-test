@@ -25,14 +25,32 @@
 # what makes AK's virtual merge fall through its candidate list to the plain
 # JSON (virtual_merge::fetch_remote_members moves on only on a 404).
 #
+# Three further channels live under path prefixes, for the
+# conda-virtual-merge-policy tier (artifact-keeper#4555 / #4192 / #4601); a
+# remote whose upstream URL ends in the prefix sees only that channel:
+#
+#   /m2/    publishes noarch/repodata.json ONLY as repodata.json.bz2 (one
+#           record, dtfm2-only 1.0), and no channeldata.json and no other
+#           subdir: a virtual must try the compressed encodings and treat a
+#           404 for channeldata / a subdir as "contributes nothing".
+#   /fail/  answers 500 to everything: a member that cannot be fetched.
+#   /big/   publishes a ~2 MiB noarch/repodata.json (padding records): over a
+#           lowered CONDA_VIRTUAL_MEMBER_MAX_BYTES.
+#   /huge/  publishes a ~140 MiB noarch/repodata.json, past the backend's
+#           128 MiB LARGE_METADATA_MAX_BYTES buffered ceiling (conda-channel-
+#           types, artifact-keeper#4149). Built on first request, not at
+#           startup, so tiers that never ask for it pay nothing.
+#
 # Env: MOCK_PORT (default 80), MOCK_MARKER (default dtfmockconda).
 # `/__readyz` answers `ok` for the compose healthcheck.
 # =============================================================================
+import bz2
 import hashlib
 import io
 import json
 import os
 import tarfile
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("MOCK_PORT", "80"))
@@ -135,6 +153,56 @@ def js(doc):
     return json.dumps(doc, indent=2, sort_keys=True).encode()
 
 
+M2_FN = "dtfm2-only-1.0-0.tar.bz2"
+M2_REPODATA = {
+    "info": {"subdir": "noarch"},
+    "packages": {M2_FN: record("dtfm2-only", "1.0")},
+    "packages.conda": {},
+    "removed": [],
+    "repodata_version": 1,
+}
+BIG_REPODATA = {
+    "info": {"subdir": "noarch"},
+    "packages": {
+        f"dtfbig-pad{i:05d}-1.0-0.tar.bz2": dict(record(f"dtfbig-pad{i:05d}", "1.0"), summary="x" * 512)
+        for i in range(2600)
+    },
+    "packages.conda": {},
+    "removed": [],
+    "repodata_version": 1,
+}
+
+HUGE_PATH = "/huge/noarch/repodata.json"
+HUGE_RECORDS = 1400
+HUGE_PAD = 100 * 1024
+_huge = []
+_huge_lock = threading.Lock()
+
+
+def huge_repodata():
+    """~140 MiB repodata.json: HUGE_RECORDS records with 100 KiB summaries."""
+    with _huge_lock:
+        if not _huge:
+            pad = "p" * HUGE_PAD
+            doc = {
+                "info": {"subdir": "noarch"},
+                "packages": {
+                    f"dtfhuge-{i:05d}-1.0-0.tar.bz2": dict(record(f"dtfhuge-{i:05d}", "1.0"), summary=pad)
+                    for i in range(HUGE_RECORDS)
+                },
+                "packages.conda": {},
+                "removed": [],
+                "repodata_version": 1,
+            }
+            _huge.append(json.dumps(doc, separators=(",", ":")).encode())
+        return _huge[0]
+
+
+PREFIXED = {
+    "/m2/noarch/repodata.json.bz2": ("application/x-bzip2", bz2.compress(js(M2_REPODATA))),
+    "/big/noarch/repodata.json": ("application/json", js(BIG_REPODATA)),
+}
+
 FILES = {
     "/noarch/repodata.json": ("application/json", js(REPODATA)),
     "/noarch/current_repodata.json": ("application/json", js(CURRENT)),
@@ -165,7 +233,16 @@ class Handler(BaseHTTPRequestHandler):
         # Tolerate a doubled slash from an upstream URL that ends in "/".
         while "//" in path:
             path = path.replace("//", "/")
-        hit = FILES.get(path)
+        if path.startswith("/fail/"):
+            self._send(500, "text/plain", b"mock-conda: forced failure", head)
+            return
+        if path == HUGE_PATH:
+            self._send(200, "application/json", huge_repodata(), head)
+            return
+        if path.startswith(("/m2/", "/big/", "/huge/")):
+            hit = PREFIXED.get(path)
+        else:
+            hit = FILES.get(path)
         if hit is None:
             self._send(404, "text/plain", b"not found", head)
             return

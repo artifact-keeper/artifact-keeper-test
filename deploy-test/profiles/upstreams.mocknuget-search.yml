@@ -40,6 +40,10 @@ services:
       # discovered bases to the configured upstream origin (#2925,
       # guard_upstream_base) — a mismatch here would be refused, correctly.
       SELF_HOST: mock-nuget-search
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (the process exits on open).
+    security_opt:
+      - label=disable
     volumes:
       - "${DTF_DIR}/harness/tiers/nuget-remote-search/fixtures/mock_nuget_search.py:/app/mock_nuget_search.py:ro"
     healthcheck:

@@ -1,0 +1,34 @@
+# DTF tier manifest: index-metadata-cred-scoping
+#   (GHSA-24rf-2gv2-j47c, fixed in 1.11.0 by artifact-keeper #4588)
+# Profile-set: filesystem / single + upstreams.mock-index-foreign (two stdlib
+# hosts on a per-slot 172.16/12 subnet: `mock-idx`, the configured upstream,
+# whose PyPI simple page and Helm index.yaml name files by absolute URL on
+# itself or on `mock-foreign`; both record every Authorization header).
+#
+# THE BUG
+# The shared upstream fetchers attached a Remote's configured Basic or Bearer
+# credentials to whatever URL they were given, including download URLs taken
+# from index metadata (PyPI href, Helm urls, Cargo dl, Composer dist.url,
+# Terraform download_url). A hostile or compromised index could name a host it
+# controls and receive the credentials, triggered by any client, anonymous
+# ones included on a public Remote. The fix attaches credentials only when the
+# request URL has the scheme, host and port of `upstream_url` (or
+# `index_upstream_url`); any other URL is still fetched, without credentials,
+# and a sampled `security` WARN is logged.
+#
+# DISCRIMINATION: red on ak-backend:1.10.0 (4 FIX cases: PyPI href Basic, Helm
+# urls Basic, anonymous public PyPI Bearer, the WARN), green on 1.11.0 and on
+# today's main. CONTROLS (green on both): the index documents and same-origin
+# files keep the credentials; a cross-origin 302 is followed with
+# Authorization stripped by the HTTP client (the advisory notes redirects were
+# already safe); no secret in the backend log.
+#
+# The public Remote is created with allow_public_with_upstream_credentials
+# (#4662, 1.11.1) so it is accepted on new images; older ones ignore it.
+#
+# RATE_LIMIT_ENABLED=false: ~15 calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock hosts are on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-index-foreign"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

@@ -1,0 +1,34 @@
+# DTF tier manifest: oci-presigned-redirect
+#   artifact-keeper#2894 (OCI blob pulls served by a presigned 307) and #4417
+#   (S3_PUBLIC_ENDPOINT: the origin presigned redirects are signed for; a
+#   malformed value stops startup). Both 1.11.0.
+#   Profile-set: s3 (MinIO) + storage.s3-presigned.
+#
+# THE FEATURE, THEN THE GAP
+# * #2894: with PRESIGNED_DOWNLOADS_ENABLED=true and a signing backend,
+#   `GET /v2/<name>/blobs/<digest>` answers 307 to the object store instead of
+#   streaming the layer through the backend (a layer used to cross the network
+#   twice). Covers hosted repositories and a virtual repository's local
+#   members; Range requests are redirected too. HEAD is never redirected
+#   (a presigned URL is bound to GET), and every authorization check runs
+#   before the redirect.
+# * #4417: presigned URLs named the backend's own S3_ENDPOINT, so with an
+#   in-cluster endpoint (`http://minio:9000` here) every redirected download
+#   from outside failed. S3_PUBLIC_ENDPOINT is the origin the URL is signed
+#   for (SigV4 covers the host). A malformed value (no http/https scheme,
+#   userinfo, query or a path) stops the backend at startup.
+#
+# Gates: (CONTROL) HEAD is 200 with the real headers, an anonymous GET is a
+# 401 challenge and an ungranted user is refused, never redirected, and a
+# generic artifact download already answers 302 to a presigned URL (1.10.0
+# has that); (FIX) the 302's host is the public endpoint and the bytes come
+# back through it, the OCI blob GET (plain, Range, through a virtual) is a
+# 307 whose URL serves the exact bytes, and a malformed public endpoint makes
+# a second backend (oracle-started, same network and env) exit non-zero.
+#
+# RATE_LIMIT_ENABLED=false: RATE_LIMIT_PRESIGN_PER_MIN (30) is not under test.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and main.
+PROFILES="storage.s3 storage.s3-presigned"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -1,0 +1,19 @@
+# =============================================================================
+# profiles/storage.s3-public-endpoint.yml: presigned redirects to a public origin
+# =============================================================================
+# Layer on storage.s3.yml. PATCHES backend so downloads redirect to presigned
+# S3 URLs (S3_REDIRECT_DOWNLOADS=true + PRESIGNED_DOWNLOADS_ENABLED=true) and
+# sets S3_PUBLIC_ENDPOINT (#4417) to the MinIO port that storage.s3.yml
+# publishes on the host, http://127.0.0.1:${S3_PORT}. The backend itself keeps
+# talking to S3_ENDPOINT=http://minio:9000 on the compose network, while a
+# client on the host (the oracle) can only follow a redirect that points at
+# the public origin, so "the Location is usable from outside" is literal.
+#
+# Required vars (run.sh exports them): S3_PORT.
+# =============================================================================
+services:
+  backend:
+    environment:
+      S3_REDIRECT_DOWNLOADS: "true"
+      PRESIGNED_DOWNLOADS_ENABLED: "true"
+      S3_PUBLIC_ENDPOINT: "http://127.0.0.1:${S3_PORT:?set S3_PORT}"

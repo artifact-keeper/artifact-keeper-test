@@ -1,0 +1,14 @@
+# Tier-local compose override for conda-attestation-trust (artifact-keeper#4556).
+# Layered on compose.base.yml + profiles/storage.filesystem.yml when the oracle
+# recreates the backend. The oracle generates a P-256 key pair at run time and
+# exports its public PEM inline in DTF_CAT_KEYS (`dtf-ci=<PEM>`, plus one entry
+# that cannot load, to prove a bad entry is dropped rather than trusted).
+# DTF_CAT_REQUIRE_VERIFIED toggles the CONDA_ATTESTATION_REQUIRE_VERIFIED
+# opt-out for the last leg. json-file logging keeps the backend log readable.
+services:
+  backend:
+    environment:
+      CONDA_ATTESTATION_PUBLIC_KEYS: "${DTF_CAT_KEYS:?set DTF_CAT_KEYS}"
+      CONDA_ATTESTATION_REQUIRE_VERIFIED: "${DTF_CAT_REQUIRE_VERIFIED:-true}"
+    logging:
+      driver: json-file

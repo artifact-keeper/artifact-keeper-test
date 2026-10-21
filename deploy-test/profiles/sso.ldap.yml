@@ -40,6 +40,10 @@ services:
       LDAP_TLS_CRT_FILENAME: "ldap.crt"
       LDAP_TLS_KEY_FILENAME: "ldap.key"
       LDAP_TLS_CA_CRT_FILENAME: "ca.crt"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (the process exits on open).
+    security_opt:
+      - label=disable
     volumes:
       - "${DTF_DIR}/harness/tiers/ldaps/fixtures/ldap.crt:/container/service/slapd/assets/certs/ldap.crt:ro"
       - "${DTF_DIR}/harness/tiers/ldaps/fixtures/ldap.key:/container/service/slapd/assets/certs/ldap.key:ro"

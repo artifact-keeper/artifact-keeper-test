@@ -1,0 +1,59 @@
+# =============================================================================
+# profiles/upstreams.mock-git-rebind.yml: a resolver whose answer changes between lookups
+# =============================================================================
+# Stacks on upstreams.mock-git.yml (it needs that profile's `mockgit` network
+# and its two git mocks) for the plugin-fetch-pinned-address tier
+# (artifact-keeper#4827):
+#
+#   * mock-dns  172.16.<slot>.82 on mockgit (and on dtf, so it can relay the
+#               names that live there). A stdlib-Python DNS server
+#               (harness/tiers/plugin-fetch-pinned-address/fixtures/mock_dns.py)
+#               that answers `plugin-rebind.dtf.test` with the admitted git
+#               host (.80) for the first lookups after a reset and with the
+#               internal one (.81) after that, and relays every other name to
+#               the compose network resolvers.
+#
+# The overlay PATCHES backend to use mock-dns as its resolver (`dns:`). On
+# Docker the embedded resolver keeps answering service names and forwards
+# the rest to mock-dns; on Podman mock-dns sees every query and relays the
+# ones it does not own. Either way `postgres` and the other services resolve
+# as before.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-dns:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-dns
+    command: ["python3", "/app/mock_dns.py"]
+    volumes:
+      - "${DTF_DIR}/harness/tiers/plugin-fetch-pinned-address/fixtures/mock_dns.py:/app/mock_dns.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    environment:
+      REBIND_NAME: plugin-rebind.dtf.test
+      ADMITTED_IP: 172.16.${DTF_SLOT}.80
+      INTERNAL_IP: 172.16.${DTF_SLOT}.81
+    logging:
+      driver: json-file
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8053/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      dtf: {}
+      mockgit:
+        ipv4_address: 172.16.${DTF_SLOT}.82
+
+  backend:
+    depends_on:
+      mock-dns:
+        condition: service_healthy
+    dns:
+      - 172.16.${DTF_SLOT}.82

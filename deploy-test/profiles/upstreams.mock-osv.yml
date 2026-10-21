@@ -1,0 +1,106 @@
+# =============================================================================
+# profiles/upstreams.mock-osv.yml -- advisory feed = a mock OSV.dev
+# =============================================================================
+# The dependency scanner's OSV endpoints are compiled in
+# (https://api.osv.dev/v1/querybatch and, since 1.11.0, /v1/vulns/{id}); there
+# is no setting that points them elsewhere. This overlay makes the backend's
+# api.osv.dev BE the stdlib-python mock of the osv-positional-findings tier
+# (harness/tiers/osv-positional-findings/fixtures/mock_osv.py):
+#
+#   * extra_hosts pins api.osv.dev to the mock's fixed address, so the real
+#     feed is never reached (no internet needed, no answers that drift).
+#   * The mock generates a throwaway CA and a server certificate for
+#     DNS:api.osv.dev at boot into the per-slot volume mock_osv_tls (CA key
+#     deleted once it has signed). The backend mounts that volume read-only
+#     and trusts the CA through CUSTOM_CA_CERT_PATH, the operator setting for
+#     a private CA that services/http_client.rs::base_client_builder (the
+#     advisory client's builder) has honoured since 1.1.0. Nothing secret is
+#     committed.
+#   * The oracle chooses every advisory: PUT /__advisories registers
+#     (ecosystem, name, version) -> ids rules and full records, PUT /__mode
+#     flips the feed to an outage ("down": querybatch 503) or a records outage
+#     ("records-down"), GET /__requests returns every query the backend sent.
+#     The mode and advisories are also control files under /state in the
+#     container. Control port :80 is published on 127.0.0.1:${TRIVY_PORT}
+#     (8250+N, the spare per-slot port), so this profile cannot be combined
+#     with another that publishes TRIVY_PORT (scanners.trivy, sso.mock-ci-oidc,
+#     upstreams.mock-scan-formats).
+#
+# GitHub Advisory: no GITHUB_TOKEN is set, so that feed is never asked (by
+# design it then neither degrades nor contributes; #4080).
+#
+# SSRF: the advisory fetch passes the SSRF DNS guard in Upstream mode on
+# current images, which refuses the mock's private address;
+# AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 admits the mock subnets only.
+#
+# SUBNET: 172.16.<slot>.0/24 (the base `dtf` network is auto-allocated from
+# 172.17-172.31, so 172.16 never collides); the mock sits at .73.
+#
+# Required vars (exported by run.sh): DTF_SLOT, TRIVY_PORT, DTF_DIR.
+# =============================================================================
+services:
+  mock-osv:
+    image: python:3.12.13-slim-bookworm
+    container_name: ak-dtf${DTF_SLOT}-mock-osv
+    command: ["python3", "-I", "/app/mock_osv.py"]
+    environment:
+      MOCK_HTTP_PORT: "80"
+      MOCK_HTTPS_PORT: "443"
+      MOCK_TLS_DIR: /tls
+      MOCK_TLS_HOSTS: api.osv.dev
+      MOCK_STATE_DIR: /state
+    volumes:
+      - "${DTF_DIR}/harness/tiers/osv-positional-findings/fixtures/mock_osv.py:/app/mock_osv.py:ro"
+      - mock_osv_tls:/tls
+    # SELinux-enforcing hosts (rootless podman on Fedora) cannot read a
+    # bind-mounted file under $HOME; disable label separation for this
+    # container only. A no-op where SELinux is off.
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks:
+      mockosv:
+        ipv4_address: 172.16.${DTF_SLOT}.73
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-osv:
+        condition: service_healthy
+    environment:
+      CUSTOM_CA_CERT_PATH: /etc/dtf-mock-osv/ca.crt
+      # The advisory client's DNS guard (mode=Upstream) refuses a private
+      # address; admit only the per-slot mock subnets.
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    extra_hosts:
+      - "api.osv.dev:172.16.${DTF_SLOT}.73"
+    volumes:
+      - mock_osv_tls:/etc/dtf-mock-osv:ro
+    # The oracles read `docker logs` (the scanner's feed warnings); pin
+    # json-file so a host journald cannot drop lines.
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockosv: {}
+
+networks:
+  mockosv:
+    name: ak-dtf${DTF_SLOT}-mockosv
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
+
+volumes:
+  mock_osv_tls:
+    name: ak-dtf${DTF_SLOT}_mock_osv_tls

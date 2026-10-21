@@ -1,0 +1,20 @@
+# =============================================================================
+# profiles/sso.ldap-env-bootstrap.yml - an env-managed LDAP provider
+# =============================================================================
+# Stacks on profiles/sso.ldap.yml (the osixia LDAPS server at ldap.dtf.local).
+# PATCHES backend.environment only: LDAP_URL / LDAP_BASE_DN / LDAP_BIND_DN /
+# LDAP_BIND_PASSWORD / LDAP_NAME make the backend bootstrap an LDAP provider
+# named `dtf-env-ldap` on first boot and reconcile it on every boot (#3904).
+# Plain ldap:// on 389, so the bootstrap needs no CA. The provider is only
+# inspected and edited by the ldaps oracle; nothing logs in through it.
+# =============================================================================
+services:
+  backend:
+    environment:
+      LDAP_NAME: dtf-env-ldap
+      LDAP_URL: ldap://ldap.dtf.local:389
+      LDAP_BASE_DN: ou=people,dc=dtf,dc=local
+      LDAP_BIND_DN: cn=admin,dc=dtf,dc=local
+      # The bind password is the sso.ldap admin password; the ldaps manifest
+      # derives it at run time so no credential literal sits next to its DN.
+      LDAP_BIND_PASSWORD: ${DTF_LDAP_ENV_BIND_PW:-}

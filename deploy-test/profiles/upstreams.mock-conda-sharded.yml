@@ -1,0 +1,83 @@
+# =============================================================================
+# profiles/upstreams.mock-conda-sharded.yml: upstream conda channels that
+# publish CEP-16 sharded repodata
+# =============================================================================
+# Adds `mock-conda-sharded`, a stdlib-only Python 3.14 HTTP server
+# (harness/tiers/conda-sharded-remote-virtual/fixtures/mock_conda_sharded.py)
+# serving several upstream conda channels under path prefixes, each with a
+# CEP-16 shard index (`noarch/repodata_shards.msgpack.zst`) and its
+# content-addressed shards: an ordinary channel with a tampered and a
+# name-smuggling shard, the "shards beside the index" layout, a channel with a
+# removed-only shard, a 9.5 MiB and a 70 MiB shard index, and a channel that
+# answers every request late. Used by conda-sharded-remote-virtual (#4577) and
+# conda-virtual-shards (#4607, #4612, #4608).
+#
+# Python 3.14 because the zstd frames come from the standard library's
+# `compression.zstd` (no pip install at start). The same container runs
+# fixtures/cep16.py for the oracles (`docker exec ... python3 /app/cep16.py`),
+# so the host's Python never needs zstd or msgpack.
+#
+# The overlay:
+#   * ADDS `mock-conda-sharded` at 172.16.<slot>.71 on a per-slot
+#     172.16.<slot>.0/24 subnet (see the SUBNET CHOICE note in
+#     upstreams.mock-artifactory.yml). It is not stacked with
+#     upstreams.mock-conda.yml, which uses the same subnet; give one of them
+#     another third octet first if that is ever needed.
+#   * PATCHES backend onto that network and sets the private-IP escape hatch
+#     (UPSTREAM_ALLOW_PRIVATE_IPS + AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16/12) so a
+#     remote repository pointed at http://172.16.<slot>.71/<channel> is
+#     accepted and the proxy can reach it.
+#
+# Building the two large indexes takes a few seconds at start; `/__readyz`
+# answers 503 until every document is built, and the healthcheck waits for it.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-conda-sharded:
+    image: docker.io/library/python:3.14-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-conda-sharded
+    command: ["python3", "/app/mock_conda_sharded.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_MARKER: "dtfmockcondash${DTF_SLOT}"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/conda-sharded-remote-virtual/fixtures:/app:ro"
+    # SELinux-enforcing hosts (rootless podman on Fedora): the bind-mounted
+    # fixtures keep their user_home_t label; disable label separation for this
+    # container only rather than relabelling the checkout.
+    security_opt:
+      - label=disable
+    logging:
+      driver: json-file
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+    networks:
+      mockcondash:
+        ipv4_address: 172.16.${DTF_SLOT}.71
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-conda-sharded:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockcondash: {}
+
+networks:
+  mockcondash:
+    name: ak-dtf${DTF_SLOT}-mockcondash
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

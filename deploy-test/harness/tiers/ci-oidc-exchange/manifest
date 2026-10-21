@@ -1,0 +1,66 @@
+# DTF tier manifest: ci-oidc-exchange
+#   (artifact-keeper#4031, #4511, #4314 shipped in 1.11.0; #4117 in 1.11.0;
+#    #4663 and #4133 shipped in 1.11.1)
+# Profile-set: filesystem + sso.mock-ci-oidc (a stdlib-python CI OIDC issuer
+# serving discovery and JWKS over TLS at https://mock-ci-oidc/<iss>, trusted by
+# the backend through CUSTOM_CA_CERT_PATH, and minting RS256 assertions with
+# claims the oracle chooses on its http control port).
+#
+# POST /api/v1/auth/ci/token had never been called anywhere in this repo. The
+# tier drives it end to end: AK fetches the mock's discovery and JWKS, verifies
+# the signature, iss, aud, exp and nbf, matches the identity mapping's claim
+# filters, provisions the mapping's service account and mints a session.
+#
+# THE BUGS
+#   #4031  The account was named from the mapping but looked up by the token's
+#          sub. GitLab/GitHub subs embed the ref, so the second ref of a
+#          mapping hit 409 "Username already exists"; the same sub through two
+#          issuers merged into one account; an exchange set is_active = true
+#          again, undoing an administrator's deactivation; the account only
+#          existed after a first exchange; deleting a mapping left it active.
+#          Fixed (#4032): keyed on the mapping (external_id ci:<provider>:
+#          <mapping>), created with the mapping, named in the create response
+#          (service_account_id / service_account_username, ci-<12 hex>),
+#          deactivation sticks (401), a mapping delete deactivates.
+#   #4511  nbf was not checked: a not-yet-valid assertion exchanged. Fixed
+#          (#4522) with the same 60 s skew leeway as exp.
+#   #4314  A CI-exchanged credential could mint a permanent API token for its
+#          service account on /profile/access-tokens and /auth/tokens. Fixed:
+#          403 for any auth_provider = ci caller.
+#   #4663  The verifier accepts an assertion up to 60 s past exp, and the
+#          exchange capped the session at that passed exp: 200 with
+#          expires_in: 0, a token session validation then accepted for its own
+#          60 s leeway. Fixed (#4683): refused with 401 when less than 1 s of
+#          validity remains, and AK's own tokens are validated with no leeway.
+#   #4133  A provider could be given the Kubernetes API server's audience
+#          (https://kubernetes.default.svc[.cluster.local]), accepting every
+#          pod's default ServiceAccount token. Fixed (#4683): 400 naming it on
+#          create and update, for every provider type, nothing written.
+#   #4117  A mapping could not grant access (allowed_repo_ids is a ceiling).
+#          Fixed (#4235): group_binding_ids makes the account a member of the
+#          named groups on every mapping write and exchange, audited as
+#          CI_OIDC_GROUP_BINDING_RECONCILED; [] strips; an unknown group is 400.
+#
+# THE GATES
+#   (CONTROL) every image: a matching assertion exchanges (Bearer, ci- account,
+#     expires_in capped at the assertion's exp, /auth/me works); a wrong
+#     audience, wrong subject, wrong repository claim, a signature by a key the
+#     JWKS does not publish, an assertion expired 300 s ago and a missing
+#     header are 401, an unknown issuer is 404 naming it; an nbf 20 s ahead
+#     (inside the skew) exchanges; the token reads the repository in the
+#     mapping's allowed_repo_ids and is refused one the account is granted but
+#     the ceiling excludes.
+#   (FIX) #4031 x5, #4511, #4314, #4117 x2: RED on 1.10.0.
+#         #4663 x2, #4133: RED on 1.10.0 and 1.11.0.
+#   GREEN on 1.11.1 and later.
+#
+# NOT GATED: the #4133 startup `security` warning for a provider that already
+# carries such an audience (it needs a provider written before an upgrade, or
+# by SQL, and a backend restart), and the #4117 503 when a reconcile fails
+# during an exchange (needs a DB fault mid-request).
+#
+# RATE_LIMIT_ENABLED=false: ~60 calls back to back. The oracle sleeps 13 s once
+# (the #4663 own-token expiry).
+PROFILES="storage.filesystem sso.mock-ci-oidc"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

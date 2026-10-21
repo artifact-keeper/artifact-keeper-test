@@ -1,0 +1,27 @@
+# DTF tier manifest: upload-slot-exhaustion  (GHSA-9f9r-c4w8-rjv9 and artifact-keeper#4162; both 1.11.0)
+# Profile-set: filesystem + profiles/limits.upload-slots.yml (GLOBAL_MAX_CONCURRENCY=32,
+# UPLOAD_MAX_IN_FLIGHT_PER_PRINCIPAL=8, UPLOAD_PROGRESS_WINDOW_SECS=5,
+# AK_PROXY_METADATA_BUDGET_BYTES=256 MiB) + profiles/upstreams.mock-composer-v1.yml
+# (a stdlib-python Composer v1 provider upstream on 172.16.<slot>.72).
+#
+# THE FIXES (1.11.0, artifact-keeper#4588 and #4170; red on 1.10.0)
+#   GHSA-9f9r: upload routes are exempt from the wall-clock request timeout,
+#     and nothing else bounded how long a client could take to send a body. A
+#     writer could open uploads, send headers and a byte, and hold every
+#     GLOBAL_MAX_CONCURRENCY slot; every other request, /health and /ready
+#     included, was then shed 503. The fix adds a progress floor (408), a
+#     per-principal in-flight cap (429 + Retry-After) and a probe bypass of
+#     the global pool, and streams Git LFS uploads to scratch disk.
+#   #4162: the Composer v1 provider fallback held a 128 MiB reservation of
+#     the shared buffered-metadata budget while it reserved again for each
+#     provider-includes file and the package document. N concurrent callers
+#     with a budget of N reservations deadlocked until the 120 s request
+#     timeout, stalling every format's buffered metadata. The profile lowers
+#     the budget to two reservations so eight callers deadlock for sure.
+#
+# Every socket the oracle holds is driven by fixtures/slot_hold.py (stdlib
+# python, bounded waits), so a red backend fails a case instead of hanging.
+PROFILES="storage.filesystem limits.upload-slots upstreams.mock-composer-v1"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="true"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

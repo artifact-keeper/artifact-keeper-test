@@ -1,0 +1,30 @@
+# DTF tier manifest: conda-hosted-cep16-and-upload  (artifact-keeper#4555 /
+#   #4173 encoding half, #4565)
+# Profile-set: filesystem / single + logging.json-file (the backend's log
+# driver pinned so `docker logs` returns every request line).
+#
+# THE BUGS (both fixed in 1.11.0)
+# #4555/#4173  a hosted channel's CEP-16 shard index carried each shard's
+#              SHA-256 as a 64-character hex STRING and each shard's records
+#              their sha256/md5 as hex strings (the documents were built as
+#              serde_json values, which have no byte type), and both were
+#              served with `Content-Encoding: zstd` although the zstd frame is
+#              part of the `.msgpack.zst` document. rattler's ShardedRepodata /
+#              Shard readers expect msgpack `bin` digests and the frame intact.
+# #4565        the `http_request` span's `uri` kept the path as sent, so the
+#              bearer token in `/conda/t/<token>/<repo>/...` and rattler's
+#              `/t/<token>/conda/<repo>/...` was logged in clear.
+#
+# THE PRIMITIVES
+#   GET /conda/{hosted}/noarch/repodata_shards.msgpack.zst, shards/{sha}.msgpack.zst
+#       decoded by conda-sharded-remote-virtual/fixtures/cep16.py in a
+#       throwaway python:3.14-slim container
+#   GET /conda/t/{token}/{hosted}/..., /t/{token}/conda/{hosted}/...
+#   docker logs ak-dtf<slot>-backend
+#
+# Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~15 calls back to back.
+PROFILES="storage.filesystem logging.json-file"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

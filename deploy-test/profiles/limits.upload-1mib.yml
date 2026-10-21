@@ -1,0 +1,11 @@
+# =============================================================================
+# profiles/limits.upload-1mib.yml: MAX_UPLOAD_SIZE = 1 MiB
+# =============================================================================
+# PATCHES backend: MAX_UPLOAD_SIZE=1048576, so a tier can drive the upload
+# size limit (413 paths: Git LFS, multipart JetBrains/Swift publishes) with
+# 2 MiB bodies instead of the 10 GiB default.
+# =============================================================================
+services:
+  backend:
+    environment:
+      MAX_UPLOAD_SIZE: "1048576"

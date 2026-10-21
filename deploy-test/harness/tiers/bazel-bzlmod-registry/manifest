@@ -1,0 +1,56 @@
+# DTF tier manifest: bazel-bzlmod-registry  (artifact-keeper#2858, #4429; both
+# shipped in 1.11.0)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files,
+# from the proxy-download-ledger tier) playing the Bazel Central Registry:
+# bazel_registry.json and modules/<name>/{metadata.json,<version>/...} under
+# /bcr, with per-path request counters. Proxy-cache sidecars are aged through
+# a throwaway postgres:16-alpine container with --volumes-from the backend.
+#
+# THE BEHAVIOUR
+# #2858  /bazel/{repo} serves the Bzlmod registry layout. Hosted: PUT
+#        modules/{name}/{version}/{file}; metadata.json is generated from the
+#        versions that have a MODULE.bazel (component-wise sorted, empty
+#        yanked_versions); a published file is never overwritten (409);
+#        metadata.json cannot be PUT (400); source.json must be JSON (400);
+#        bazel_registry.json is {"mirrors":[]}. Remote: proxies the upstream
+#        registry; files under modules/{name}/{version}/ are immutable,
+#        bazel_registry.json and metadata.json take the 300 s mutable TTL.
+#        Virtual: merges metadata.json across members, resolves files by
+#        member priority.
+# #4429  (documented in docs/bazel.md) a module name a hosted member publishes
+#        shadows that name on every remote member: only the hosted versions
+#        are listed, a remote-only version of it is 404, and the remote is
+#        never asked for it.
+#
+# THE PRIMITIVE FOR "15 MINUTES LATER": cached_at and expires_at in the
+# entry's __cache_meta__.json are both moved back 900 s, as in the
+# github-release-mirror tier.
+#
+# THE GATES
+#   (FIX)      RED on 1.10.0 (no /bazel route: every request 404), GREEN on
+#              1.11.0 and main:
+#              #2858 hosted PUTs 201; metadata.json ["1.0","1.2","1.10"] with
+#                    {} yanked; MODULE.bazel / source.json byte-exact;
+#                    bazel_registry.json {"mirrors":[]}.
+#              #2858 overwrite 409 (bytes unchanged); PUT metadata.json 400;
+#                    non-JSON source.json 400.
+#              #2858 remote MODULE.bazel / metadata.json / bazel_registry.json
+#                    are the upstream's; aged 15 minutes, the versioned file
+#                    is served with no upstream request and metadata.json
+#                    revalidates.
+#              #2858/#4429 virtual (hosted p1, remote p2): rmod lists the
+#                    remote's ["1.0","2.0"], hmod the hosted versions; with a
+#                    hosted `common` 1.0 the virtual lists only ["1.0"],
+#                    answers 404 for the remote's common/9.0, serves the hosted
+#                    common/1.0 and the remote rmod/1.0, and the remote is never
+#                    asked for common's metadata.json or files.
+#   (CONTROL)  must hold on BOTH images: a generic Remote over the same mock
+#              BCR serves MODULE.bazel and metadata.json byte-exact and the
+#              warm read does not go upstream.
+#
+# RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

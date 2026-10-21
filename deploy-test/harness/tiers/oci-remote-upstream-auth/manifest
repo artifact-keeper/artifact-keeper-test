@@ -1,0 +1,38 @@
+# DTF tier manifest: oci-remote-upstream-auth
+#   artifact-keeper#4453, #4518, #4527 (an OCI Remote reports a refusal of
+#   the credentials it SENT as 502 DENIED, and an anonymous refusal as 404
+#   MANIFEST_UNKNOWN) and #3591 (oci_trusted_bearer_realms). All 1.11.0.
+#   Profile-set: filesystem + upstreams.mock-registry.
+#
+# THE BUGS (1.10.0 baseline)
+# * #4453: a 401/403 from the upstream's bearer token service was logged as a
+#   storage error and the client got 404 MANIFEST_UNKNOWN: wrong upstream
+#   credentials looked like a missing image.
+# * #4518: a 401/403 from the registry on the manifest request itself (after a
+#   successful token exchange, or from a plain-Basic registry rejecting the
+#   credentials) was still 404 MANIFEST_UNKNOWN. Both now answer 502 with OCI
+#   code DENIED on GET and HEAD, plus a `security` warning naming the redacted
+#   upstream, sampled at most once a minute per Remote.
+# * #4527: the 502 DENIED and the warning apply only when credentials were
+#   actually sent. A Remote without credentials, or one whose credentials were
+#   withheld from an untrusted cross-origin realm (GHSA-78h6), keeps 404
+#   MANIFEST_UNKNOWN. That regression existed only on 1.11.0 dev builds, so
+#   these are CONTROLS against 1.10.0 (they must hold on both images).
+# * #3591: a credentialed Remote could never authenticate against a registry
+#   whose token service is on another origin (Docker Hub, GitLab). The new
+#   per-Remote `oci_trusted_bearer_realms` lists exact https origins that may
+#   receive the credentials; entries are validated (https, origin only, no
+#   wildcard, Remote only) and echoed on the repository API.
+#
+# PRIMITIVES: the mock registry (fixtures/mock_registry.py) serves one mode per
+# image-name prefix and records every token request with whether credentials
+# were presented (read back from /__log on 127.0.0.1:${TRIVY_PORT}); the
+# backend's `security` lines are counted from `docker logs`. The mock's TLS
+# token service uses a CA it generates at start, which the backend trusts via
+# CUSTOM_CA_CERT_PATH (profiles/upstreams.mock-registry.yml).
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and main.
+PROFILES="storage.filesystem upstreams.mock-registry"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

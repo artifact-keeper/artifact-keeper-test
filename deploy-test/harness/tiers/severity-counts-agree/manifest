@@ -1,0 +1,45 @@
+# DTF tier manifest: severity-counts-agree
+#   (artifact-keeper#4338; shipped in 1.11.0)
+# Profile-set: filesystem + upstreams.mock-osv (the oracle chooses the
+# dependency scanner's advisory answers; Grype, bundled in the image with its
+# pre-seeded DB, supplies the rest).
+#
+# The fixture is one generic `requirements.txt` naming a run-unique package
+# and jinja2==2.10. Grype reports six jinja2 CVEs (CVE-2019-10906 high, five
+# medium). The mock OSV answers the run-unique package with an advisory whose
+# id IS CVE-2019-10906, so the dependency scanner reports the same CVE on a
+# second component. The artifact then holds 7 finding rows for 6 advisories.
+#
+# THE BUG (RED on 1.10.0)
+#   #4338  The security dashboard tiles and the per-repository scores counted
+#          finding ROWS (one CVE from two scanners or two packages counted
+#          twice), the scores were recomputed only after a scan (acknowledging
+#          did not move them), and the Overview CVE summary used yet another
+#          definition. Fixed: one definition (services/open_findings.rs): per
+#          artifact the latest completed scan of each type, one vulnerability
+#          per (artifact, CVE-or-title) at its highest reported severity, open
+#          ones in the severity counts, acknowledged counted separately; an
+#          acknowledge recomputes the repository score.
+#
+# The oracle derives the expected numbers itself from scan_findings with that
+# documented definition, and compares GET /api/v1/security/dashboard,
+# GET /api/v1/repositories/{key}/security (score) and GET /api/v1/sbom/cve/trends
+# to them and to each other.
+#
+# THE GATES
+#   (CONTROL) every image: the fixture holds the cross-scanner duplicate; the
+#     Overview summary's open count is one per (artifact, CVE); acknowledging a
+#     Grype-only medium finding is accepted and moves it to acknowledged in
+#     the Overview summary.
+#   (FIX) dashboard and repository score count each advisory once at its
+#     highest severity; all three surfaces agree; the repository score is
+#     recomputed on acknowledge. RED on 1.10.0 (7 vs 6; the score stays at 7
+#     after the acknowledge), GREEN on 1.11.0 and later.
+#
+# NOT GATED: "a CVE a later rescan no longer reports is fixed" (needs a rescan
+# whose Grype answer changes); the artifact view's per-artifact counts.
+#
+# RATE_LIMIT_ENABLED=false.
+PROFILES="storage.filesystem upstreams.mock-osv"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

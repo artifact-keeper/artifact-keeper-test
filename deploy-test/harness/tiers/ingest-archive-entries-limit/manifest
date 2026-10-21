@@ -1,0 +1,35 @@
+# DTF tier manifest: ingest-archive-entries-limit  (artifact-keeper#4093, #4802, 1.11.3)
+# Profile-set: filesystem + ingest.archive-entries (passes
+# MAX_INGEST_ARCHIVE_ENTRIES to the backend). The cap lives in the upload
+# metadata extractors, ahead of storage, so the storage dimension is irrelevant.
+#
+# THE CHANGE (#4093, fixed by #4802)
+# util/bounded_archive.rs MAX_INGEST_ARCHIVE_ENTRIES was a const 10000. Every
+# upload path that reads package metadata out of an archive refuses an archive
+# with more entries as a suspected entry-count bomb, and there was no way to
+# raise it for a legitimate package (the reporter's Composer packages vendor
+# their `vendor/` tree). #4802 reads the cap from the MAX_INGEST_ARCHIVE_ENTRIES
+# env var (blank / zero / non-numeric fall back to 10000).
+#
+# Path under test: Composer upload, PUT /composer/<repo>/api/packages, which
+# reads composer.json through bounded_archive::read_metadata_from_zip. An
+# archive over the cap is refused with
+#     400 "Failed to parse composer.json from archive: Validation error: ZIP
+#          archive contains too many entries (> N); refusing suspected
+#          decompression bomb"
+# and no artifact row is written.
+#
+# Oracle (oracle.sh, RELEASE_GATE=1):
+#   (FIX)     RED on 1.11.2: with the cap set to 50, an 81-entry package is
+#             refused 400 naming the cap, and no artifacts row exists.
+#   (CONTROL) true on BOTH images: a 21-entry package under the cap is
+#             accepted and stored; a second backend started by the oracle from
+#             the same image on the same database WITHOUT the variable accepts
+#             the same 81-entry package (the default is still 10000).
+#
+# The value is exported here because run.sh passes only a fixed set of tier
+# env vars to compose; the overlay reads it from the environment.
+PROFILES="storage.filesystem ingest.archive-entries"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+export MAX_INGEST_ARCHIVE_ENTRIES="50"

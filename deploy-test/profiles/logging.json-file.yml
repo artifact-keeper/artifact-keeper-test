@@ -1,0 +1,15 @@
+# =============================================================================
+# profiles/logging.json-file.yml: keep the backend's whole log readable with
+# `docker logs`
+# =============================================================================
+# On a rootless podman host the default log driver is journald, and
+# `docker logs` of a container logging there returns only a short tail (lines
+# can also be dropped). A tier whose oracle greps the backend's own log lines
+# (a warn the fix emits, a redacted request URI) stacks this overlay to pin
+# the json-file driver (podman maps it to k8s-file) for the backend only.
+# Nothing else changes: same image, environment and log format.
+# =============================================================================
+services:
+  backend:
+    logging:
+      driver: json-file

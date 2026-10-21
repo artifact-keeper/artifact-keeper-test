@@ -1,0 +1,66 @@
+# DTF tier manifest: vscode-gallery-protocol  (artifact-keeper#3961, #3956,
+# #3962, #4099; all shipped in 1.11.0)
+# Profile-set: filesystem + a mock Open VSX gallery (upstreams.mock-recorder,
+# from the github-release-mirror tier: a run-time file table that answers the
+# POST /vscode/gallery/extensionquery with a canned page and serves VSIX bytes
+# for the legacy download path). VSIX fixtures are built at run time by
+# fixtures/make_vsix.py (stdlib zipfile: extension.vsixmanifest +
+# extension/package.json, as `vsce package` writes them).
+#
+# THE BEHAVIOUR
+# #3961  POST /vscode/{repo}/api/extensions reads the archive instead of
+#        trusting x-publisher / x-extension-name / x-extension-version: a
+#        header that disagrees with the archive is a 400 naming it, a
+#        package.json without engines.vscode is a 400, a headerless publish
+#        works, and description / engines.vscode / targetPlatform are stored in
+#        artifact_metadata.
+# #3956  A hosted repository answers the gallery protocol (was 501 for every
+#        type but Remote): extensionquery with VSIXPackage file entries and the
+#        engine property, vspackage 307 to the legacy download, paging with
+#        TotalCount, quarantined versions left out.
+# #3962  A virtual repository aggregates its members' galleries in priority
+#        order; a hosted member shadows a remote extension of the same id; a
+#        failing member is skipped; vspackage on a virtual stays 501.
+# #4099  /api/v1/formats carries scan_on_proxy (vscode = enforced), and the
+#        legacy /extensions/{p}/{n}/{v}/download route on a Remote with
+#        scan-on-proxy is scanned like the gallery package route.
+#
+# WHAT CORPUS ALREADY COVERS: tests/formats/test-vscode-remote.sh (#376) probes
+# a Remote gallery against the real open-vsx.org; test-vscode.sh publishes with
+# matching headers. This tier covers the hosted and virtual gallery, the
+# archive-parsing publish and the legacy-route scan gate, with no internet.
+#
+# THE GATES
+#   (FIX)      RED on 1.10.0, GREEN on 1.11.0 and main:
+#              #3961 mismatching x-extension-version -> 400 naming it, no row;
+#                    no engines.vscode -> 400; headerless publish 201 with
+#                    description, engine and target_platform in
+#                    artifact_metadata (1.10.0: 201 under the header version,
+#                    201, 400, no metadata).
+#              #3956 hosted extensionquery lists 2.0.0,1.0.0 with the
+#                    VSIXPackage source on /vscode/{repo}/extensions/... and
+#                    Microsoft.VisualStudio.Code.Engine; vspackage -> 307 to
+#                    that download (published bytes); search paged 1 per page
+#                    with TotalCount 2; a quarantined 2.0.0 is not listed
+#                    (1.10.0: 501 everywhere).
+#              #3962 virtual (hosted p1, remote p2) lists hostedonly,
+#                    remoteonly and shared once, shared described and routed
+#                    by the hosted member, remoteonly routed through the remote
+#                    member; with the mock answering 500 the hosted page is
+#                    still served; virtual vspackage 501 (1.10.0: 501).
+#              #4099 formats vscode scan_on_proxy=enforced; the legacy download
+#                    on a scan-on-proxy Remote carries X-AK-Scan and leaves a
+#                    proxy_scan_results row for the VSIX digest (1.10.0: no
+#                    field, no header, no row).
+#   (CONTROL)  must hold on BOTH images: a publish with matching headers is
+#              stored and downloads byte-exact; a Remote gallery passes the
+#              upstream page through with every files[].source rewritten onto
+#              AK; the legacy download on an unscanned Remote proxies the
+#              bytes with no X-AK-Scan.
+#
+# RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-recorder"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

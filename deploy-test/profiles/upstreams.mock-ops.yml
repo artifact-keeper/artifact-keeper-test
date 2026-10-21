@@ -1,0 +1,78 @@
+# =============================================================================
+# profiles/upstreams.mock-ops.yml - a slow file upstream plus a refusing OCI
+#                                   registry, for the ops-log-noise tier
+# =============================================================================
+# Adds `mock-ops`, a stdlib-only Python HTTP server (see
+# harness/tiers/ops-log-noise/fixtures/mock_ops_upstream.py):
+#   * /slow/<path>  deterministic bytes streamed over a few seconds, so a proxy
+#     cache fill lasts long enough for another replica to wait on the cluster
+#     lock (artifact-keeper#4552);
+#   * /v2/...       an OCI registry whose manifests answer 200 / 401 / 403 /
+#     400 by image name, for an anonymous OCI Remote (artifact-keeper#4526).
+#
+# The overlay:
+#   * ADDS `mock-ops` on a per-slot 172.16.<slot>.0/24 subnet, so AK's
+#     create-time SSRF check on the upstream URL allowlists it via
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 (the escape hatch
+#     upstreams.mock-static.yml uses; 172.16/16 sits below Docker's default
+#     address pool). The tier manifest sets UPSTREAM_ALLOW_PRIVATE_IPS=true for
+#     the fetch itself.
+#   * PUBLISHES the mock's control endpoints on 127.0.0.1:${TRIVY_PORT}
+#     (8250+N, the spare per-slot port).
+#   * PATCHES backend onto that network, sets AK_SSRF_ALLOW_PRIVATE_CIDRS and
+#     pins the json-file log driver: the tier asserts on `docker logs`.
+#
+# A second replica from topology.two-replica.yml shares backend's network
+# namespace, so it reaches the mock through this same attachment.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-ops:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-ops
+    command: ["python3", "/app/mock_ops_upstream.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_SLOW_BYTES: "2097152"
+      MOCK_SLOW_SECS: "4"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/ops-log-noise/fixtures/mock_ops_upstream.py:/app/mock_ops_upstream.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockops:
+        ipv4_address: 172.16.${DTF_SLOT}.71
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-ops:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockops: {}
+
+networks:
+  mockops:
+    name: ak-dtf${DTF_SLOT}-mockops
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

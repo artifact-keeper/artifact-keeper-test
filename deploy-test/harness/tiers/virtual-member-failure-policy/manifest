@@ -1,0 +1,41 @@
+# DTF tier manifest: virtual-member-failure-policy
+#   (artifact-keeper#4192 (+#4629), #4280/#4272, #4327, #4379; all fixed in
+#   1.11.0)
+# Profile-set: filesystem / single + upstreams=mock-multi (a stdlib-python
+# Helm / CRAN / RubyGems / NuGet upstream at 172.16.<slot>.91 whose first path
+# segment picks healthy (/ok, /ok2) or failing (/fail -> 500)).
+#
+# A virtual repository's merged metadata must not silently lack a member that
+# failed: a client reading a 200 index concludes the member's packages do not
+# exist. And a member the merge CAN read must actually contribute.
+#
+# THE BUGS
+# #4192  Helm `index.yaml`, CRAN `PACKAGES`, Hex and Bazel virtual merges
+#        (`collect_virtual_metadata`) logged a member whose fetch or parse
+#        failed and merged the rest: 200 without that member. Fixed: 502
+#        naming the member and the cause; with `virtual_metadata_partial`
+#        the healthy merge with `X-AK-Partial-Members`, `Cache-Control:
+#        no-store`, `Warning: 199`; `ak_virtual_member_metadata_failures_total`
+#        in both modes.
+# #4280/#4272  RubyGems `specs.4.8.gz` is gzipped Ruby Marshal. A Remote
+#        rebuilt it from cached gems only (an empty ~24-byte index) and a
+#        Virtual JSON-parsed each member, failed and dropped it. Fixed: the
+#        Remote passes the upstream bytes through, the Virtual decodes and
+#        merges the Marshal, and a member it cannot read is a 502 naming it.
+# #4327  A V2 NuGet upstream answering `index.json` with 403 (not 404) was
+#        dropped as a virtual's member: missing from the virtual V2 feed and
+#        404 on a V2 download through the virtual.
+# #4379  The Galaxy metadata routes of a Virtual Ansible repository built
+#        their documents from the virtual's own (absent) artifacts:
+#        `versions/` was empty and the detail routes 404, so
+#        `ansible-galaxy collection install` failed.
+#
+# RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
+#
+# RATE_LIMIT_ENABLED=false: one admin login and ~60 API calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: every Remote's upstream is the mock on a
+# private address (the profile also sets it).
+PROFILES="storage.filesystem upstreams.mock-multi"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

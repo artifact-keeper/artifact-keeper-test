@@ -1,0 +1,42 @@
+# DTF tier manifest: scan-ingest-and-workspace
+#   (artifact-keeper#4669, #4667, #4668; all shipped in 1.11.1)
+# Profile-set: filesystem + upstreams.mock-osv (api.osv.dev resolves to the
+# stdlib-python OSV mock of the osv-positional-findings tier; the oracle
+# registers the advisories). Grype, bundled in the backend image, is the
+# filesystem scanner for #4668; no scanner sidecar.
+#
+# THE BUGS (all RED on 1.11.0)
+#   #4669  The dependency scanner only asked OSV about an artifact's DECLARED
+#          dependencies. A leaf package with none (an npm tarball whose
+#          package.json has no `dependencies`) sent the feed nothing and graded
+#          `complete`, 0 findings, with `live:osv` provenance. Fixed: the
+#          artifact's own pinned identity joins the batch once, and is kept
+#          out of its own dependency inventory (scan_packages).
+#   #4667  POST /api/v1/security/findings/external with a NUL byte in a string
+#          field answered 500 DATABASE_ERROR, after the scan_results row had
+#          already been committed `completed`: a clean-looking verdict with no
+#          findings under it. Fixed: 400 VALIDATION_ERROR from the field
+#          deserializer, and the scan row and findings in one transaction.
+#   #4668  Trivy/Grype filesystem scans extracted into a directory named only
+#          by the artifact id, so concurrent scans of one artifact deleted each
+#          other's tree. On 1.11.0 the visible symptom is silent: the losing
+#          scans complete with an EMPTY inventory (0 scan_packages rows) rather
+#          than failing. Fixed: one workspace per job (<artifact_id>-<job>).
+#
+# THE GATES
+#   (CONTROL) every image: a declared PyPI dependency is queried and reported
+#     through the mock; a clean external submission is ingested as one
+#     completed scan with its finding; a lone grype scan of the npm tarball
+#     catalogs the package.
+#   (FIX) #4669, #4667, #4668: RED on 1.11.0, GREEN on 1.11.1 and later.
+#     #4668 fires 3 rounds of 3 simultaneous bypass_dedup scans; on 1.11.0
+#     every round has exactly one survivor (6 of 9 scans empty, measured).
+#
+# NOT GATED: the Trivy filesystem and OpenSCAP workspaces (same fix, no sidecar
+# here); #4669's "queried once even when the manifest also names it" (needs a
+# package that depends on itself).
+#
+# RATE_LIMIT_ENABLED=false: ~30 API calls plus scan polling.
+PROFILES="storage.filesystem upstreams.mock-osv"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

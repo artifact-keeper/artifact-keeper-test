@@ -1,0 +1,19 @@
+# DTF tier manifest: image-build-spec-validation  (GHSA-59mx-6fq9-pp9p; 1.11.0, artifact-keeper#4588)
+# Profile-set: filesystem + profiles/imagebuild.no-buildkit.yml, which turns
+# the image builder on (AK_BUILDKIT_ADDR, AK_IMAGE_BUILD_PUSH_REGISTRY) with
+# BuildKit pointed at a closed port, so builds are validated and recorded but
+# nothing is ever built. AK_IMAGE_BUILD_ALLOW_RUN stays at its default, false.
+#
+# THE FIX (red on 1.10.0)
+#   The pip requirement pattern allowed `\s` inside the extras bracket and
+#   around version comparators, and `\s` also matches \n and \r. Each
+#   requirement is written into the generated Containerfile's
+#   `RUN pip install` line, where an unescaped newline ends the instruction,
+#   so `foo[a\nRUN ...]` added its own instruction and bypassed
+#   AK_IMAGE_BUILD_ALLOW_RUN=false. Blanks are now spaces and tabs only, and
+#   every package spec with a control character other than a tab is a 400.
+#
+# /render needs no BuildKit at all; the create path needs only the profile.
+PROFILES="storage.filesystem imagebuild.no-buildkit"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="true"

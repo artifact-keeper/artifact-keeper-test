@@ -1,0 +1,23 @@
+# =============================================================================
+# profiles/client.pacman.yml - the real pacman client (Arch Linux container)
+# =============================================================================
+# Adds `client-pacman`, the official archlinux image idling on the DTF network,
+# so an oracle can `docker exec` pacman, pacman-key, gpg and bsdtar against
+# http://backend:8080/pacman/<repo>/$arch. Nothing is installed: pacman,
+# gnupg, libarchive (bsdtar) and curl are all in the base image, and the
+# oracle points pacman at a config that names ONLY the AK repository, so no
+# Arch mirror is ever contacted. Used by the pacman-hosted tier
+# (artifact-keeper#3343, #4424).
+#
+# Required vars (run.sh exports them): DTF_SLOT.
+# =============================================================================
+services:
+  client-pacman:
+    # Pinned: the official image built 2026-10-18 (pacman 7.1.0, gnupg 2.4.9).
+    image: archlinux:base-20261018.0.612668
+    container_name: ak-dtf${DTF_SLOT}-client-pacman
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]

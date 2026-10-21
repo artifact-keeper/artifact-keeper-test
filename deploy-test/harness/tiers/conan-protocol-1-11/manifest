@@ -1,0 +1,40 @@
+# DTF tier manifest: conan-protocol-1-11  (artifact-keeper#4329, #4333, #4334, #4335; fixed in 1.11.0)
+# Profile-set: filesystem + client.conan (python:3.12-slim; the oracle installs
+# Conan 2 with pip and drives the real client against http://backend:8080).
+#
+# THE BUGS
+#   #4329 the Conan client uploads a revision's files one at a time, archives
+#         first and conanmanifest.txt last, and carries on after a failure, so
+#         an interrupted upload left a listed revision without its archive
+#         ("corrupted in the server") that a re-run then skipped. Fixed: files
+#         of an unpublished revision are stored pending and listed nowhere;
+#         conanmanifest.txt publishes the revision and is refused 409 (nothing
+#         stored) while a required companion (conanfile.py, conan_package.t*)
+#         is missing; a body shorter than its Content-Length is 408 with
+#         nothing stored; file routes are exempt from the global timeout.
+#   #4333 the Conan router had no DELETE routes, so `conan remove ... -r`
+#         answered 404 ("Recipe not found") and the package stayed.
+#   #4334 hosted package search answered every package id with {}, so a
+#         settings filter (`conan list -p "os=Linux"`) matched no binary.
+#   #4335 recipe and package /latest built `time` from the request clock: a
+#         new value on every read, never equal to /revisions.
+#
+# THE GATES
+#   (FIX)     /latest.time stable over reads 2 s apart and equal to
+#             /revisions[0].time (recipe and package); package search carries
+#             `content` with os=Linux and a real `conan list -p os=Linux`
+#             matches 1 binary while os=Windows matches 0; early manifest 409
+#             naming conanfile.py with no artifact row; conanfile.py alone is
+#             unlisted (/latest 404, absent from /revisions and /files) until
+#             the manifest publishes it; a 4-byte body declared as 1 MiB is
+#             408 with no artifact row; a real `conan remove ref:*` drops the
+#             binaries and keeps the recipe, `conan remove ref` drops the
+#             recipe (/latest 404, no live rows). RED on 1.10.0.
+#   (CONTROL) both images: a real `conan upload` + empty-cache
+#             `conan install --build=never` round trip delivers the binary
+#             (manifest-last, the order the real client always used).
+#
+# RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back.
+PROFILES="storage.filesystem client.conan"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

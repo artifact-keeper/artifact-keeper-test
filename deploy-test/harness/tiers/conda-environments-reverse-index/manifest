@@ -1,0 +1,29 @@
+# DTF tier manifest: conda-environments-reverse-index  (artifact-keeper
+# 1.11.0: #4053 environment SBOM graphs, #4054 stored environments and the
+# component -> environment reverse index, #4055 advisory-delta re-evaluation;
+# 1.11.1: #4670 environment SBOM platform filter and graph-listing 400)
+# Profile-set: filesystem + upstreams.mock-osv (api.osv.dev resolved to a
+# stdlib TLS mock whose answers the oracle sets; see the profile). LOCAL-ONLY.
+#
+# WHAT IT GUARDS
+# #4053  POST /api/v1/sbom/environment renders one document per platform with
+#        dependency edges (pillow -> libwebp) and no cross-platform nodes.
+# #4054  POST /api/v1/repositories/{key}/environments stores a lockfile (201,
+#        200 + replaced on the same name); list/detail; GET
+#        /api/v1/environments/lookup?purl= names the environment per platform
+#        with inclusion paths, matches a build-qualified purl on its base, and
+#        never lists an environment in a repository the caller cannot see.
+# #4055  a pending advisory delta is re-evaluated against the stored component
+#        set by the scheduler tick: new-affected transition + current
+#        affectedness; a degraded feed records nothing; the advisory leaving
+#        the feed records no-longer-affected.
+# #4670  ?platform= renders one graph; a filter matching nothing is 400 and
+#        names the graphs.
+#
+# Red: ak-backend:1.10.0 (no environment routes, no advisory_deltas table) for
+# every 1.11.0 case; ak-backend:1.11.0 for the #4670 cases only.
+#
+# RATE_LIMIT_ENABLED=false: one admin login, a user login, ~30 calls.
+PROFILES="storage.filesystem upstreams.mock-osv"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

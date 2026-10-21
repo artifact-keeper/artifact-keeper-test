@@ -54,11 +54,9 @@
 # metadata rejected, verification-OFF control install) proving a future red is
 # signature-specific and not plumbing.
 #
-# ONE pin remains: C4 (real `apk add` end-to-end verify) is still KNOWN-RED —
-# the served .SIGN.RSA signature itself is not apk-verifiable on current main
-# (see the LEG C header for the root cause). It keeps the original pin
-# semantics: documented failure shape -> PASS + loud banner; correct behavior
-# -> FAIL "remove the pin".
+# No pins remain. C4 (real `apk add` end-to-end verify) was the last KNOWN-RED
+# pin; it fired on ak-backend:main-2f08663f (the index signature now verifies)
+# and is a plain green assertion since.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${COMMON_SH:?}"; : "${DTF_SLOT:?}"
@@ -117,8 +115,8 @@ hcode() { curl -s -o /dev/null -w '%{http_code}' --max-time 40 "$@"; }
 #   correct (verified) behavior is observed. A non-zero return means the named
 #   backend fix has REGRESSED — the step fails hard and quotes the log.
 #   (Historical note: these steps were `kr_step` KNOWN-RED pins while the
-#   backend bugs were open; the fixes merged, so the pins are gone — except
-#   the single remaining C4 pin, inlined at its call site in LEG C.)
+#   backend bugs were open; the fixes merged, so the pins are gone. C4 was
+#   the last one.)
 # ---------------------------------------------------------------------------
 green_step() {
   local label="$1" ref="$2" fn="$3"
@@ -600,7 +598,7 @@ green_step "B5: attaching key_type=rsa to an RPM repo is REJECTED at config time
            _b5_rsa_keytype_rejected
 
 # ===========================================================================
-# LEG C — apk. GREEN gate for #2634 + #2677; ONE remaining KNOWN-RED pin (C4).
+# LEG C — apk. GREEN gate for #2634 + #2677 and the end-to-end verify (C4).
 # ===========================================================================
 # HISTORY: before #2634, AK's generate_apkindex_text emitted
 # `C:{checksum_sha256}` — a bare hex SHA256 — where apk-tools requires its
@@ -610,15 +608,15 @@ green_step "B5: attaching key_type=rsa to an RPM repo is REJECTED at config time
 # CLOSED when signing fails (no silently-unsigned index). C1-C3 gate those as
 # plain green assertions.
 #
-# STILL OPEN (the C4 pin): with the parse fixed, real apk now reaches the
-# TRUST decision and rejects AK's index signature itself: "BAD signature".
-# Root cause (read at source, current main): alpine.rs signs via
+# FORMERLY OPEN (the C4 pin, now green on main-2f08663f): with the parse
+# fixed, real apk reached the TRUST decision and rejected AK's index signature
+# itself: "BAD signature". Root cause at the time: alpine.rs signed via
 # SigningService::sign_data = RSA-PKCS#1v1.5-**SHA256** over the UNCOMPRESSED
 # APKINDEX text, and packs `.SIGN.RSA.artifact-keeper.rsa.pub` + APKINDEX into
 # a SINGLE gzip stream. apk-tools' contract for `.SIGN.RSA` is **SHA1** over
 # the COMPRESSED data segment, with the signature segment as its own leading
 # gzip stream (`.SIGN.RSA256` for SHA256). Three independent mismatches, so no
-# key material can make the served index verify. The pin's discrimination:
+# key material could make the served index verify. C4's discrimination:
 # C5 proves the byte-identical .apk installs from an abuild index, and C6
 # proves removing the key flips BAD->UNTRUSTED (the trust mapping works —
 # the defect is the signature bytes).
@@ -748,29 +746,13 @@ test -f /usr/share/dtf-signed/marker.txt
 '
   timeout 180 docker exec "$CAPK" sh -c "$script"
 }
-# C4 — the ONE remaining KNOWN-RED pin (see the LEG C header for the root
-# cause). Pin semantics: the exact documented failure shape (apk "BAD
-# signature" at the trust decision) -> PASS + loud banner; any OTHER failure
-# shape -> FAIL (the failure mode moved); correct behavior -> FAIL ("remove
-# the pin") so the fix cannot land silently un-gated.
-begin_test "C4 [KNOWN-RED pin]: REAL \`apk add\` WITHOUT --allow-untrusted — index signature is not apk-verifiable yet (.SIGN.RSA digest/framing)"
-c4log="${WORK_DIR}/c4-apk-verify.log"
-if _c4_apk_trusted_add >"$c4log" 2>&1; then
-  fail "KNOWN-RED pin now PASSES — the backend's APKINDEX signature looks apk-verifiable. Remove this pin and make C4 a plain green assertion (green_step)." \
-       "$(tail -n 15 "$c4log" 2>/dev/null)"
-elif grep -qi "BAD signature" "$c4log"; then
-  echo "    !! ================= KNOWN-RED ================="
-  echo "    !! C4: apk rejects AK's index signature: BAD signature"
-  echo "    !! .SIGN.RSA is RSA-SHA256 over the uncompressed index text in a"
-  echo "    !! single gzip stream; apk expects SHA1 over the compressed data"
-  echo "    !! segment with a separate signature stream (see LEG C header)."
-  grep -i "BAD signature" "$c4log" | head -1 | sed 's/^/    !!   /'
-  echo "    !! ============================================="
-  pass
-else
-  fail "C4 failed with an UNPINNED shape (expected apk 'BAD signature' at the trust decision) — the failure mode moved; re-triage" \
-       "$(tail -n 15 "$c4log" 2>/dev/null)"
-fi
+# C4 — formerly the one remaining KNOWN-RED pin. The pin fired ("now PASSES")
+# on ak-backend:main-2f08663f: real apk verifies AK's index signature against
+# the advertised key and installs, so C4 is now a plain green assertion like
+# every other leg. A red here means the .SIGN.RSA framing has regressed.
+green_step "C4: REAL \`apk add\` WITHOUT --allow-untrusted verifies AK's index signature and installs" \
+           "the APKINDEX .SIGN.RSA digest/framing fix" \
+           _c4_apk_trusted_add
 
 begin_test "C5: control — the SAME .apk installs from a correctly-formed local index (plumbing sanity; keeps a future C4 red attributable to AK's INDEX)"
 if [ "$C_OK" = "1" ]; then
@@ -800,7 +782,7 @@ else
   fail "skipped: prior step failed"
 fi
 
-begin_test "C6: client discrimination — WITHOUT the advertised key the AK index flips BAD->UNTRUSTED (the trust mapping works; C4's red is the signature bytes)"
+begin_test "C6: client discrimination — WITHOUT the advertised key apk refuses the AK index as UNTRUSTED (C4's green is bound to the advertised key)"
 if [ "$C_OK" = "1" ]; then
   neg='
 set -e
@@ -986,8 +968,7 @@ echo " signing tier summary — standing GREEN regression gate"
 echo "   LEG A apt   : verification ON, no [trusted=yes]; unsigned refused, tamper BAD"
 echo "   LEG B rpm   : repo_gpgcheck=1 verifies       (gates #2645 + #2679)"
 echo "   LEG C apk   : index parse/signing/fail-closed (gates #2634 + #2677)"
-echo "                 C4 end-to-end verify = the ONE remaining KNOWN-RED pin"
-echo "                 (.SIGN.RSA digest/framing not apk-verifiable yet)"
+echo "                 C4 real apk add verifies the index signature end to end"
 echo "   LEG D helm  : pull --verify verifies         (gates #2640 + #2680)"
 echo "   any other red means a merged backend fix has regressed."
 echo "============================================================"

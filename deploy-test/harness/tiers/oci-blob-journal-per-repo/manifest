@@ -1,0 +1,53 @@
+# DTF tier manifest: oci-blob-journal-per-repo
+#   artifact-keeper#3851 (PR #4301, 1.11.0): the OCI upload cleanup journal is
+#   scoped per (repository, storage key), and a repository delete on a
+#   shared-namespace backend no longer purges journaled `oci-blobs/<digest>`
+#   objects another repository may hold.
+#   Profile-set: s3 (MinIO).
+#
+# THE BUG
+# `oci_upload_cleanup_keys.storage_key` was UNIQUE across the database and
+# blob keys are content-addressed, so two pushes of one digest to different
+# repositories shared ONE journal row.
+#  (a) Repository B registers the row for `oci-blobs/<digest>` at completion;
+#      repository A pushes the same digest and its commit deletes the shared
+#      row; A is then deleted (its oci_blobs row goes). B's commit-time claim
+#      finds its row gone and no peer oci_blobs row to prove a peer cleared
+#      it, and refuses a valid push: 503 BLOB_UPLOAD_INVALID "blob storage
+#      was being reclaimed concurrently".
+#  (b) On S3/GCS/Azure all repositories share one `oci-blobs/` namespace.
+#      Deleting a repository purged every key in its journal, so a lingering
+#      row of an interrupted A completion made the delete remove the object
+#      repository B had committed: B's blob answers 404.
+# The fix: rows unique per (repository_id, storage_key), per-key advisory
+# lock, and on cloud backends a repository delete records the journaled blob
+# keys in oci_gc_candidates (deleted after a 24 h grace once unreferenced)
+# instead of deleting them.
+#
+# HOW THE WINDOWS ARE OPENED (deterministically, from outside)
+#  (a) B's chunked session is completed with an empty final PUT while MinIO is
+#      `docker pause`d: the handler registers B's journal row for the blob key
+#      and then blocks in the S3 CopyObject. Meanwhile A, a repository pinned
+#      to `storage_backend: filesystem` (so it does not need MinIO, and its
+#      journal key `oci-blobs/<digest>` is the same string), pushes the digest
+#      and is deleted. MinIO is unpaused and B's completion runs its claim.
+#  (b) A's completion is interrupted the same way and the backend is
+#      restarted while it is blocked, which leaves A's registered blob-key
+#      row behind (an abandoned upload). B had already committed the digest.
+#      Then A is deleted.
+#
+# Gates: (CONTROL) a monolithic push to an S3 repository is pullable
+# byte-exact; the filesystem repository accepts the same digest; the
+# interrupted completion leaves A's journal row behind and the object in
+# MinIO (both images: the precondition of (b) is reached). (FIX) B's
+# completion is 201 and the blob is pullable byte-exact; B's journal row
+# survives A's commit; after A's delete the `oci-blobs/<digest>` object is
+# still in MinIO, B pulls it byte-exact, and oci_gc_candidates records the
+# key.
+#
+# RATE_LIMIT_ENABLED=false: not under test.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and main.
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

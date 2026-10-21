@@ -1,0 +1,58 @@
+# DTF tier manifest: push-sync-native-formats  (artifact-keeper#4725, fixed by #4779, 1.11.3)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}). Instance A is `backend`; B is the
+# push peer A's sync worker delivers to over the slot's compose network.
+#
+# THE BUG (#4725)
+# Push and mirror peers only receive a hosted upload that queues a push
+# sync_tasks row. #4643/#4644 (1.11.2) wired Maven, npm, Go and the generic
+# REST upload; twenty-six other native-format handlers write their artifact
+# rows themselves (raw INSERT, proxy_helpers::insert_artifact or a local
+# upsert) and never queued a row, so a client publish in those formats only
+# reached a peer after a manual run-now sync. #4779 calls
+# queue_push_sync_tasks_for_upload in every one of them; the helper skips the
+# fan-out when the request carries X-Artifact-Keeper-Replication: true, so a
+# replicated write is never pushed back out.
+#
+# THE PEER
+# The oracle mints a `*`-scoped API key on B, registers B on A
+# (POST /api/v1/peers, endpoint http://peer-backend:8080), sets it online in
+# A's DB (instead of waiting up to 60 s for the first heartbeat probe, which
+# B then answers), and subscribes four hosted repos in push mode. The same
+# repo keys exist on B. Nothing about the transfer is simulated: A's sync
+# worker (10 s tick) claims the rows and PUTs the bytes to B's
+# /api/v1/repositories/{key}/artifacts/{path}.
+#
+# Native protocols used (their upload paths are not the generic REST path):
+#   bazel        PUT  /bazel/{repo}/modules/dtfsync/1.0.0/MODULE.bazel
+#   Git LFS      PUT  /lfs/{repo}/objects/{oid}
+#   Hugging Face POST /huggingface/{repo}/api/models/{model}/upload/main
+# (Maven, npm and Go already queued on 1.11.2, so they cannot discriminate.)
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: all uploads succeed and their rows carry
+#             the uploaded sha256; the generic REST upload queues one push
+#             row and the worker delivers it to B (row on B, same sha256, B
+#             serves the bytes, A's row completed); a bazel upload carrying
+#             X-Artifact-Keeper-Replication stores, queues nothing and never
+#             reaches B.
+#   (FIX)     RED on 1.11.2: each native upload queues exactly one push row
+#             on A (DB); each reaches B within the generic control's delivery
+#             plus a 25 s grace (row on B with the same sha256, B serves the
+#             bytes at the native path); A's GET /api/v1/peers/{id}/sync/tasks
+#             is empty, the peer is online with last_sync_at set, and all four
+#             push rows are completed.
+#
+# Teardown note: `harness/run.sh down --slot N` only knows the --<dimension>
+# profiles, not this one. A tier run without --keep tears B down itself; after
+# --keep, use `docker compose -p ak-dtf<N> -f compose.base.yml
+# -f profiles/peer.second-instance.yml down -v`.
+#
+# RATE_LIMIT_ENABLED=false: ~30 authenticated calls back to back on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the peer endpoint goes through
+# validate_outbound_url and B sits on a private compose address.
+PROFILES="storage.filesystem peer.second-instance"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

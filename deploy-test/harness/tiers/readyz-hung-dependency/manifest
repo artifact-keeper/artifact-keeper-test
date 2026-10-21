@@ -1,0 +1,49 @@
+# DTF tier manifest: readyz-hung-dependency  (artifact-keeper#4781 / #4796, 1.11.3)
+# Profile-set: filesystem + scanners.mock-hang (a Trivy stand-in on the slot's
+# dtf network whose /healthz the oracle can make HANG, and which records every
+# probe it receives with how long the backend waited before giving up).
+#
+# THE BUG (#4781)
+# /readyz probes each optional dependency (OpenSearch, storage, scanner, LDAP)
+# through the same short-TTL (5 s), single-flight cache /health uses, so a
+# hung dependency should cost the 2 s READYZ_DEPENDENCY_TIMEOUT once per TTL
+# and every other /readyz in the window should read the cached timeout.
+# readyz_cached wrapped cached_check in an OUTER 2 s timeout started before
+# the cache lock wait, and the probe in an INNER 2 s timeout started after it.
+# Whenever a caller waited for the lock, its outer timer fired first and
+# dropped cached_check before the `*guard = Some(...)` store: nothing was
+# cached, and the next /readyz probed the hung dependency again and paid the
+# full 2 s. The fix (#4796) takes one Instant before the lock wait, runs the
+# probe under timeout_at(deadline) and the lock wait under
+# timeout_at(deadline + 100 ms), so the inner timeout always fires first and
+# its result is stored.
+#
+# THE PRIMITIVE: A DETERMINISTIC LOCK WAIT
+# Without contention the two timers start microseconds apart and the race is
+# lost only when they straddle a timer tick (the CI flake in #4781). The
+# oracle makes the lock wait certain: a first /readyz (curl --max-time 0.5)
+# takes the scanner cache lock and starts probing the hung mock; the client
+# goes away at 0.5 s, hyper drops the handler, and the lock is released with
+# nothing stored. A second /readyz that arrived at 0.15 s has been waiting
+# for the lock and now probes with 0.35 s of its outer deadline already
+# spent. This is the shape a kubelet readiness probe with a short
+# timeoutSeconds produces against a hung dependency.
+#   1.11.2: the second call's outer timer fires first, nothing is cached, and
+#           the third call probes the hung mock again and takes ~2 s.
+#   1.11.3: the second call's inner timeout fires and is stored; the third
+#           call and a burst after it answer from the cache in milliseconds
+#           and the mock sees no further probe until the TTL expires.
+#
+# There is no backend log line per probe or per timeout (with_readyz_deadline
+# does not log, and the scanner is not `required`, so /readyz does not warn),
+# so "probed once per TTL" is read from the mock's own probe record instead
+# of `docker logs`. The mock's "held" time separates /readyz probes (given up
+# at the 2 s deadline) from the backend's 60 s health monitor, which hits the
+# same URL with a 5 s client timeout.
+#
+# The dependency is the SCANNER, not Postgres: the /readyz database and
+# migrations checks are direct uncached queries, not readyz_cached, so a hung
+# database does not exercise this code path.
+PROFILES="storage.filesystem scanners.mock-hang"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -208,7 +208,16 @@ fi
 
 begin_test "#2976 STALE-VERSION(DB): digest row upserted to 'vulnerable' at the LIVE version"
 STATE="$(row_state "$DIGEST_CVE")"
+# Newer backends append the vulnerability-DB build to the provenance
+# (`grype-X.Y.Z+db-YYYY-MM-DD`), so a DB bump alone also invalidates a verdict.
+# Accept either form; the version the backend actually recorded becomes LIVE_VER
+# for the same-version control below, which must seed exactly what the backend
+# compares against.
 if [ "$STATE" = "vulnerable|${LIVE_VER}" ]; then
+  pass
+elif [[ "$STATE" == "vulnerable|${LIVE_VER}+db-"* ]]; then
+  LIVE_VER="${STATE#vulnerable|}"
+  echo "-- live provenance carries the DB build: ${LIVE_VER}"
   pass
 else
   fail "expected the re-scan to record vulnerable|${LIVE_VER}, got '${STATE}' (a stale row left as clean|${STALE_SENTINEL} means NO re-scan happened)" \

@@ -1,0 +1,25 @@
+# DTF tier manifest: scan-on-proxy-maven-nuget  (artifact-keeper 1.11.0:
+# #4100 Maven/Gradle/sbt, #4102 NuGet, #3603 nuspec identity, #4099 formats)
+# Profile-set: filesystem + the mock-scan-formats upstream. LOCAL-ONLY: the
+# verdicts come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (no scanner sidecar, no OSV, no internet), graded over
+# fixtures whose own manifests name long-published advisories.
+#
+# WHAT IT GUARDS: before 1.11.0 a Maven or NuGet Remote with
+# scan_on_proxy=true streamed every proxied package unscanned (200, no
+# X-AK-Scan), whatever proxy_scan_action said. 1.11.0 routes .jar/.war/.ear
+# (Maven) and .nupkg (NuGet V3 flat container and V2 package route) through
+# the shared inline scan gate: vulnerable -> 403 scan_blocked, clean -> 200
+# X-AK-Scan: clean, identity that the package's own manifest does not back ->
+# 423 under fail_closed, .sha1 sidecar mismatch -> 502 and evicted, ambiguous
+# paths -> 400 before any upstream fetch; and /api/v1/formats reports which
+# formats enforce the gate.
+#
+# Red: ak-backend:1.10.0. Green: ak-backend:1.11.0 and newer.
+#
+# RATE_LIMIT_ENABLED=false: admin setup plus ~30 back-to-back pulls.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock sits on a private per-slot subnet.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

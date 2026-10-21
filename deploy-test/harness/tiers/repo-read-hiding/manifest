@@ -1,0 +1,40 @@
+# DTF tier manifest: repo-read-hiding
+#   (artifact-keeper#4418, #4473, #4498; all in 1.11.0, RED on 1.10.0)
+# Profile-set: filesystem / single. The read gates live in REST handlers ahead
+# of storage; the oracle is pure HTTP plus direct DB reads for setup checks.
+#
+# THE BUGS
+#   #4418  GET /api/v1/promotion/repositories/{key}/promotion-history needed
+#          only a signed-in caller, so any user read the promotion history of
+#          a private repository. Fixed: the existence-hiding read gate (404 as
+#          for a missing repository), and the key of a counterpart repository
+#          the caller cannot read is returned as "".
+#   #4473  GET .../{key}/release-target needed only a signed-in caller: any
+#          user read a private staging repository's link, and the 400 "only
+#          available for staging repositories" told it the repository's type.
+#          Fixed: the same gate, before the type check; a linked release
+#          repository the caller cannot read is reported linked:true with key
+#          and id null.
+#   #4498  An unreadable repository answered `Repository '<key>' not found`
+#          and a missing one `Repository not found`: same status, different
+#          body, an existence oracle. Fixed: both return
+#          {"code":"NOT_FOUND","message":"Repository not found"}.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (FIX)     signed-in non-reader AND anonymous: GET /repositories/{private}
+#             and its /artifacts and /storage are byte-identical to the same
+#             path on a missing key and equal the shipped body; non-reader
+#             promotion-history and release-target on a private staging repo
+#             are 404 with the missing-repository body; release-target on a
+#             private NON-staging repo is that 404, not the 400; the public
+#             staging repo's history blanks its private counterpart's key and
+#             its release-target hides the private link's key and id.
+#   (CONTROL) on both images: missing key 404; reader and admin read the
+#             repository, its history (with the counterpart key) and its link;
+#             admin still gets the 400 on a non-staging repo; the listing
+#             omits private repositories.
+#
+# RATE_LIMIT_ENABLED=false: ~40 back-to-back calls from three principals.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

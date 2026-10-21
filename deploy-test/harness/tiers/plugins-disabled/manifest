@@ -1,0 +1,46 @@
+# DTF tier manifest: plugins-disabled  (artifact-keeper#4650, fixed by #4651; 1.11.2)
+# Profile-set: filesystem / single. The oracle recreates only the backend with
+# a tier-local override layered on compose.base.yml: fixtures/plugins.default.yml
+# (PLUGINS_ENABLED unset) or fixtures/plugins.off.yml (PLUGINS_ENABLED=false).
+# Both pin the json-file log driver so the startup lines can be read with
+# docker logs.
+#
+# THE FEATURE
+# PLUGINS_ENABLED=false (config.rs parse_opt_out_flag; unset = on) makes
+# initialize_wasm_plugins_if_enabled() return None before the registry, the
+# Wasmtime engine, the core format-handler sync and the startup plugin load,
+# logging `WASM plugin runtime disabled by operator`
+# (event=plugins_disabled_by_operator), and routes.rs skips the /api/v1/plugins
+# (user + admin), /api/v1/formats (user + admin) and /ext nests. Before #4651
+# the variable did not exist: the runtime always started and the routes were
+# always registered.
+#
+# THE GATES
+#   (CONTROL)  both images, PLUGINS_ENABLED unset: the startup log has
+#              "Initializing WASM plugin system" and "WASM plugin system
+#              initialized"; GET /api/v1/plugins is 200 {items: [...]};
+#              GET /api/v1/formats/maven is 200; POST
+#              /api/v1/plugins/install/local {} is a 422 validation refusal
+#              (the route exists); GET /ext/pdnope/<repo>/x is 404 "No protocol
+#              handler for format 'pdnope'" (the WASM proxy answered).
+#   (FIX)      PLUGINS_ENABLED=false: the same five routes plus
+#              POST /api/v1/formats/maven/disable answer the router's 404 with
+#              no plugin/handler body; the log has the
+#              plugins_disabled_by_operator line and none of the runtime's
+#              initialization / format sync / plugin load lines.
+#              RED on 1.11.1: the flag is ignored, every route answers as in
+#              the control and the runtime initializes.
+#   (CONTROL)  both images, PLUGINS_ENABLED=false: a generic upload round-trips
+#              byte-exact and is listed; unsetting
+#              the flag again restores the routes.
+#
+# NOT GATED HERE: /api/v1/system/config has no plugin-runtime field (its
+# plugin_signing block reports signature policy only, on 1.11.2 and on main),
+# so there is nothing there to assert. No plugin is installed, so "stored
+# plugins are not loaded at startup" is asserted through the absent load and
+# init lines only.
+#
+# RATE_LIMIT_ENABLED=false: a few logins across three boots.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
