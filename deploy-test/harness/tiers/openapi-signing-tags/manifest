@@ -1,5 +1,5 @@
 # DTF tier manifest: openapi-signing-tags  (#2721 / PR #2836)
-# Profile-set: filesystem / single. The served OpenAPI document is generated in
+# Profile-set: filesystem + api.swagger. The served OpenAPI document is generated in
 # the backend process from the utoipa path macros; it is storage-agnostic, so
 # this runs on the default filesystem overlay. No seed data is needed — the
 # oracle only fetches the running instance's OpenAPI JSON.
@@ -16,13 +16,14 @@
 # non-empty. Pre-#2721 the array is empty -> the oracle fails; on the fixed
 # image it carries "signing" -> the oracle passes.
 #
-# The OpenAPI JSON is served at /api/v1/openapi.json whenever swagger is
-# enabled; the base compose leaves ENVIRONMENT unset, which the backend treats
-# as "development", so the spec route is mounted by default.
+# The OpenAPI JSON is served at /api/v1/openapi.json only when swagger is
+# enabled. Since #3489 that is an explicit opt-in (ENABLE_SWAGGER=true), so the
+# tier adds the api.swagger profile, the same one openapi-curation-optional
+# uses; without it the spec route is not mounted and the oracle cannot run.
 #
 # RATE_LIMIT_ENABLED=false: a single admin login + a couple of unauthenticated
 # GETs; the base default (ON) would be fine here, but keep parity with the other
 # backfill tiers so a re-run under load never throttles the probe.
-PROFILES="storage.filesystem"
+PROFILES="storage.filesystem api.swagger"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
