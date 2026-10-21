@@ -105,16 +105,28 @@ YML
     -f "${DTF_DIR}/profiles/storage.filesystem.yml" \
     -f "${DTF_DIR}/profiles/upstreams.mock-userinfo.yml" \
     -f "$override" \
-    up -d --wait backend >/dev/null 2>&1
+    up -d backend >/dev/null 2>&1
   rc=$?
   rm -f "$override"
-  return "$rc"
+  [ "$rc" -eq 0 ] || return "$rc"
+  # Not `up --wait`: since artifact-keeper#4530 a skipped secondary backend
+  # makes /health (the image HEALTHCHECK) answer 503 by design, so the
+  # container never turns healthy. Wait for /readyz, which ignores it.
+  wait_backend_ready
+}
+wait_backend_ready() {
+  local _
+  for _ in $(seq 1 90); do
+    curl -sf --max-time 5 "${BASE_URL}/readyz" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
 }
 
 begin_suite "upstream-url-userinfo-redaction"
 
 begin_test "setup: recreate the backend with S3_BUCKET and a credentialed S3_PUBLIC_ENDPOINT (random per run)"
-if boot_with_public_endpoint && curl -sf --max-time 10 "${BASE_URL}/health" >/dev/null 2>&1; then
+if boot_with_public_endpoint; then
   pass
 else
   infra_fail "could not recreate the backend with the S3_PUBLIC_ENDPOINT override"
@@ -297,6 +309,29 @@ if [ "$(code_of "$D")" = "200" ] && [ "$(body_of "$(J GET "/api/v1/repositories/
   pass
 else
   fail "PATCH description: HTTP $(code_of "$D")"
+fi
+
+# =============================================================================
+# #4851: the listing and the PATCH response report upstream auth like GET
+# =============================================================================
+begin_test "FIX #4851: the listing and the PATCH response report upstream_auth_type=basic, upstream_auth_configured=true, as GET does"
+auth_proj() { jqr '"\(.upstream_auth_type) \(.upstream_auth_configured)"'; }
+L="$(J GET "/api/v1/repositories?per_page=100")"
+G_AUTH="$(body_of "$(J GET "/api/v1/repositories/${R_AUTH}")" | auth_proj)"
+L_AUTH="$(body_of "$L" | jqr --arg k "$R_AUTH" '.items[]? | select(.key == $k) | "\(.upstream_auth_type) \(.upstream_auth_configured)"')"
+P_AUTH_ROW="$(body_of "$D" | auth_proj)"
+G_CRED="$(body_of "$(J GET "/api/v1/repositories/${R_CRED}")" | auth_proj)"
+L_CRED="$(body_of "$L" | jqr --arg k "$R_CRED" '.items[]? | select(.key == $k) | "\(.upstream_auth_type) \(.upstream_auth_configured)"')"
+echo "  ${R_AUTH}: get '${G_AUTH}', list '${L_AUTH:-<missing>}', patch '${P_AUTH_ROW}'"
+echo "  ${R_CRED} (URL userinfo only, no upstream-auth fields): get '${G_CRED}', list '${L_CRED:-<missing>}'"
+if [ "$G_AUTH" != "basic true" ] || [ "$G_CRED" != "null false" ]; then
+  fail "GET itself changed: expected 'basic true' for ${R_AUTH} and 'null false' for ${R_CRED}, got '${G_AUTH}' / '${G_CRED}'"
+elif [ "$L_AUTH" != "basic true" ] || [ "$P_AUTH_ROW" != "basic true" ]; then
+  fail "expected the list row and the PATCH response to report 'basic true' like GET, got list '${L_AUTH:-<missing>}', patch '${P_AUTH_ROW}' (1.11.3: 'null false')"
+elif [ "$L_CRED" != "null false" ]; then
+  fail "a Remote without upstream-auth fields must list 'null false', got '${L_CRED:-<missing>}'"
+else
+  pass
 fi
 
 # =============================================================================
