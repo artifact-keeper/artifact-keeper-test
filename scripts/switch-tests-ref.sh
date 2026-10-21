@@ -17,6 +17,17 @@
 # the checkout on main. Only the working tree moves; the workflow already
 # running is main's copy, which is what the certification record names.
 #
+# When it moves the tree it also writes deploy-test/.tests-ref (one line, the
+# branch name). main's gate matrices name every main tier, so a line's suite is
+# asked for tiers covering features the line never received; the DTF drivers
+# read the marker and record such a tier as NOT ON THIS LINE (a ::warning and a
+# JUnit <skipped/>) instead of failing the group on its missing manifest
+# (deploy-test/harness/lib/exit_codes.sh, exit 12). On main there is no marker
+# and a missing manifest is still a hard failure. The skip is loud, not a
+# waiver: backporting a fix to release/X.Y.x means cherry-picking its companion
+# tiers onto this repository's release/X.Y.x in the same cycle
+# (artifact-keeper-test#424), or the line's gate skips them by name.
+#
 # Inputs (environment):
 #   BACKEND_TAG   sha-<short>  (what release-candidate.yml passes), or X.Y.Z
 #   BACKEND_REPO  owner/name of the backend (default artifact-keeper/artifact-keeper)
@@ -28,6 +39,11 @@ BACKEND_REPO="${BACKEND_REPO:-artifact-keeper/artifact-keeper}"
 API="https://api.github.com/repos/${BACKEND_REPO}/contents/Cargo.toml"
 
 note() { echo "switch-tests-ref: $*"; }
+
+# Never inherit a marker from an earlier run in a reused workspace: only a
+# switch made by this run may mark the tree as a release line.
+MARKER="$(git rev-parse --show-toplevel)/deploy-test/.tests-ref"
+rm -f "$MARKER"
 
 version=""
 case "$BACKEND_TAG" in
@@ -61,6 +77,7 @@ if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
   git fetch --quiet --depth 1 origin "$branch"
   git checkout --quiet --detach FETCH_HEAD
   short=$(git rev-parse --short HEAD)
+  printf '%s\n' "$branch" > "$MARKER"
   note "candidate is ${version}: running the suite from ${branch} @ ${short}"
   echo "::notice title=Tests ref::candidate ${version} is gated by ${branch} @ ${short}, not main"
 else

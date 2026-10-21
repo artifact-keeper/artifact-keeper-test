@@ -24,6 +24,15 @@
 #   6   run.sh    — no free DTF slot.
 #   7   run.sh    — compose stack never became healthy (candidate or sidecar).
 #   10  run-tiers — the candidate image could not be pulled and is not local.
+#   12  run.sh    — NOT ON THIS LINE: the working tree is a release/X.Y.x
+#                   maintenance suite (deploy-test/.tests-ref, written by
+#                   scripts/switch-tests-ref.sh) and the named tier has no
+#                   manifest on it. main's release-gate matrix names every
+#                   main tier, and a tier for a feature the line never
+#                   received cannot exist on the line's branch. run-tiers.sh
+#                   records it as a JUnit <skipped/> plus a ::warning and does
+#                   NOT fail the group. Without the marker (a main suite) a
+#                   missing manifest is still exit 4, a wiring bug.
 #   11  ORACLE INFRA/SETUP — the oracle started but could NOT evaluate the tier:
 #                   probe binary missing/unbuildable, token mint returned
 #                   empty/4xx, a fixture precondition was not met, the backend
@@ -31,9 +40,12 @@
 #                   candidate. RED (a required tier that cannot run cannot
 #                   certify) but NEVER labeled a regression.
 #
-# Codes 2-7 and 10 are raised by the drivers themselves BEFORE/AROUND the
+# Codes 2-7, 10 and 12 are raised by the drivers themselves BEFORE/AROUND the
 # oracle; 11 is the code an ORACLE raises, which is why it must not reuse any
-# of them.
+# of them. 12 is the only non-zero code that is not RED, and only because the
+# skip is loud: a maintenance line must still carry the companion tiers of
+# every fix backported to it (artifact-keeper-test#424), or its gate skips
+# them by name instead of exercising them.
 # =============================================================================
 
 # Exit code an oracle uses for "I could not evaluate this tier".
@@ -41,3 +53,22 @@
 # is exported, and falls back to the same literal when used standalone).
 # shellcheck disable=SC2034  # consumed by the sourcing scripts, not this file
 DTF_EXIT_INFRA=11
+
+# Exit code run.sh uses for "this tier does not exist on this release line".
+# shellcheck disable=SC2034
+DTF_EXIT_NOT_ON_LINE=12
+
+# Print the release line the working tree was switched to, or nothing.
+# scripts/switch-tests-ref.sh writes deploy-test/.tests-ref (one line, the
+# branch name) after it moves the checkout to release/X.Y.x; on main the file
+# is absent. Anything that is not exactly release/<major>.<minor>.x is ignored,
+# so a stray or hand-edited file can never turn a missing manifest into a skip
+# on a main suite. Arg: the deploy-test directory.
+dtf_tests_ref() {
+  local marker="${1:?deploy-test dir}/.tests-ref" ref=""
+  [ -f "$marker" ] || return 0
+  IFS= read -r ref < "$marker" || true
+  if [[ "$ref" =~ ^release/[0-9]+\.[0-9]+\.x$ ]]; then
+    printf '%s\n' "$ref"
+  fi
+}
