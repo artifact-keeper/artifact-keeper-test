@@ -1,4 +1,4 @@
-# DTF tier manifest: plugin-fetch-pinned-address  (artifact-keeper#4827)
+# DTF tier manifest: plugin-fetch-pinned-address  (artifact-keeper#4827, #4869)
 # Profile-set: filesystem + upstreams.mock-git (two stdlib-python git
 # smart-HTTP servers: an admitted host at 172.16.<slot>.80 that
 # AK_SSRF_ALLOW_PRIVATE_CIDRS admits as a /32, an internal host at .81 that
@@ -28,6 +28,24 @@
 #     port) and reload (to the internal host) whose advertisement redirects
 #     off the admitted host. FIXED = refused, the target never sees a
 #     request, nothing stored. BASELINE = the redirect is followed.
+#
+# THE #4869 EXTENSION (fixed for 1.11.5 by #4872)
+# A redirect hop the per-hop SSRF redirect policy refuses (an IP literal
+# outside AK_SSRF_ALLOW_PRIVATE_CIDRS, or loopback) was aborted correctly, but
+# its refusal carried a different phrase ("redirect target rejected by SSRF
+# policy") than the connect-time DNS guard's, so the plugin path answered 500
+# and the proxy path a 502. Fixed: 400 with the plugin policy wording
+# (names the redirect target and AK_SSRF_ALLOW_PRIVATE_CIDRS) on install and
+# reload, 503 on a Remote download (the body is the route's sanitized
+# "Upstream temporarily unavailable"; the status is the signal). RED on
+# 1.11.4 (500), GREEN on a build with #4872:
+#   * the loopback install case above also wants that 400;
+#   * install and reload whose advertisement redirects to the internal
+#     host's IP literal (172.16.<slot>.81): 400, the internal mock never sees
+#     a request, nothing stored / version unchanged;
+#   * a generic Remote on the admitted host whose upstream answers a download
+#     with a redirect to that IP literal (mock_git.py's /__redir/ path): 503,
+#     the internal mock never sees a request (1.11.4 answers 502 there).
 #
 # RATE_LIMIT_ENABLED=false: the oracle drives a dozen admin API calls back to
 # back; the base default (ON) is not what this tier is about.
