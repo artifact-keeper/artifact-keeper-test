@@ -140,10 +140,15 @@ mkgrant "$R_XFF" "${CLIENT_IP%.*}.0/24" || SETUP_ERR="${SETUP_ERR} ${R_XFF}"
 mkgrant "$R_PEER" "172.16.${DTF_SLOT}.80/28" || SETUP_ERR="${SETUP_ERR} ${R_PEER}"
 rm -f "${TMPDIR:-/tmp}/xff-art-${DTF_SLOT}-$$"
 echo "  user id ${U_ID:-<none>}"
-if [ -z "$SETUP_ERR" ] && docker image inspect "$CURL_IMAGE" >/dev/null 2>&1; then
+# The in-network peer probes run from the curl image; pull it when the host
+# has never seen it (a fresh CI runner), as oidc-exchange-and-login does.
+if ! docker image inspect "$CURL_IMAGE" >/dev/null 2>&1 && ! docker pull -q "$CURL_IMAGE" >/dev/null 2>&1; then
+  SETUP_ERR="${SETUP_ERR} (curl image ${CURL_IMAGE} cannot be obtained)"
+fi
+if [ -z "$SETUP_ERR" ]; then
   pass
 else
-  infra_fail "setup failed:${SETUP_ERR:- (curl image ${CURL_IMAGE} missing)}"
+  infra_fail "setup failed:${SETUP_ERR}"
   end_suite
 fi
 
