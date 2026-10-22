@@ -38,9 +38,10 @@
 #   repodata.json carry the upstream records; P's repodata.json, shard index
 #   and shards are refused to anonymous and ungranted callers and served to
 #   the admin.
-# KNOWN-RED pin (artifact-keeper#4829): a shard that failed its address check
-#   is kept in the proxy cache as immutable, so it still answers 502 after the
-#   upstream serves the right bytes.
+# FIX (artifact-keeper#4829, fixed by #4886; was a KNOWN-RED pin): a shard
+#   that failed its address check is not kept in the proxy cache, so once the
+#   upstream serves the right bytes R serves the shard (red on 1.11.4: still
+#   502, the wrong bytes cached as immutable).
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${DTF_DIR:?}"
@@ -337,16 +338,16 @@ else
 fi
 
 # =============================================================================
-# KNOWN-RED pin artifact-keeper#4829: a refused shard is kept in the proxy cache
+# FIX artifact-keeper#4829: a refused shard is not kept in the proxy cache
 # =============================================================================
-# fetch_upstream_shard reads the shard through the proxy cache, which stores
-# the upstream's bytes under the shard's path BEFORE the handler checks them
-# against the address. The cache classifies `<sha256>.msgpack.zst` as
-# immutable, so the stored wrong bytes are never revalidated: once the
-# upstream serves the right shard, the remote still answers 502 (and never
-# asks the upstream again). Reported, not failed; when it passes, turn it into
-# an assertion.
-begin_test "KNOWN-RED pin #4829: after the upstream serves the right bytes, the once-tampered shard is served"
+# Before #4886, fetch_upstream_shard read the shard through the proxy cache,
+# which stored the upstream's bytes under the shard's path BEFORE the handler
+# checked them against the address. The cache classifies
+# `<sha256>.msgpack.zst` as immutable, so the stored wrong bytes were never
+# revalidated: once the upstream served the right shard, the remote still
+# answered 502 and never asked the upstream again. This was a KNOWN-RED pin
+# until the fix reached main; it is now an assertion.
+begin_test "FIX #4829: after the upstream serves the right bytes, the once-tampered shard is served"
 mock_get /__heal >/dev/null
 hits0="$(mock_hits "/main/noarch/shards/${A_TAMPERED}.msgpack.zst")"
 st="$(fetch r_tamp_healed "/conda/${R}/noarch/shards/${A_TAMPERED}.msgpack.zst")"
@@ -355,10 +356,10 @@ cached="$(docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -Atc
   "SELECT checksum_sha256 FROM proxy_cache_artifacts c JOIN repositories r ON r.id = c.repository_id
     WHERE r.key = '${R}' AND c.path = 'noarch/shards/${A_TAMPERED}.msgpack.zst'" 2>/dev/null || true)"
 if [ "$st" = "200" ] && [ "$(sha_of r_tamp_healed)" = "$A_TAMPERED" ]; then
-  echo "   KNOWN-RED (artifact-keeper#4829) NOW PASSES: the healed shard is served (upstream asked again ${hits}x). Turn this pin into an assertion."
+  pass
 else
-  echo "   KNOWN-RED (artifact-keeper#4829): after /__heal the shard still answers HTTP ${st} ($(body_text r_tamp_healed 80)); upstream asked again ${hits}x; proxy_cache_artifacts holds checksum ${cached:-<none>} under address ${A_TAMPERED:0:12}"
+  fail "the once-tampered shard is not served after the upstream heals (artifact-keeper#4829)" \
+    "after /__heal HTTP ${st} ($(body_text r_tamp_healed 80)); upstream asked again ${hits}x; proxy_cache_artifacts holds checksum ${cached:-<none>} under address ${A_TAMPERED:0:12}"
 fi
-pass
 
 end_suite

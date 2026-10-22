@@ -37,9 +37,10 @@
 #             log has "database pool: initial connect attempt 1/5 failed ...
 #             retrying". RED on 1.11.1: timers ~119 min, the container exits
 #             on the first PoolTimedOut, no retry line.
-#   (KNOWN-RED #4828) ak_db_pool_connection_failures_total{stage="startup"}
-#             is never exported: the retry counts before main.rs installs the
-#             Prometheus recorder. Reported as a note, not failed.
+#   (FIX #4828, a KNOWN-RED pin until #4888) ak_db_pool_connection_failures_total
+#             {stage="startup"} is >= 1 after the failed boot attempts. RED on
+#             1.11.4: never exported, the retry counted before main.rs
+#             installed the Prometheus recorder.
 #
 # RATE_LIMIT_ENABLED=false: the oracle logs in again after every restart.
 PROFILES="storage.filesystem db.keepalive-off-peer"
