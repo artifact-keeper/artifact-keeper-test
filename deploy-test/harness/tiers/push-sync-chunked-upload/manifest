@@ -1,0 +1,53 @@
+# DTF tier manifest: push-sync-chunked-upload  (artifact-keeper#4791, fixed by #4875, 1.11.5)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}). Instance A is `backend`, B is the
+# push peer. Neither profile claims the slot's 172.16.<slot>.0/24 mock subnet.
+#
+# THE BUG (#4791)
+# A generic artifact finished through the upload-session API
+# (POST /api/v1/uploads, PATCH /api/v1/uploads/{id} with Content-Range per
+# chunk, PUT /api/v1/uploads/{id}/complete) is committed by the chunked-upload
+# handler itself, not by ArtifactService::finalize_upload, so it never queued
+# a push sync_tasks row. A subscribed push peer never received it (only a
+# manual run-now sync moved it). #4875 queues the push rows once the row, its
+# metadata and the catalog entry are committed, and skips the fan-out for a
+# replication session (request header or the stored session flag) so a peer
+# write is not pushed back out.
+#
+# THE PEERS
+# Bidirectional, as in push-sync-echo-and-sidecars: B is registered on A as a
+# push peer of one generic repo and A on B for the same repo key, each with a
+# `*`-scoped API key minted on the other side and set online in the DB instead
+# of waiting for the first heartbeat. B reaches A by its container name
+# ak-dtf<N>-backend (the bare `backend` alias is on the peer endpoint host
+# blocklist). The sync workers (10 s tick) deliver for real.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: a plain REST PUT of a generic artifact on A
+#             queues one push row and reaches B (sha256 equal, B serves the
+#             bytes); B queues nothing back to A for it. This proves the peer
+#             wiring, so a red FIX case is the upload-session path alone.
+#   (CONTROL) a three-chunk and a one-chunk upload session on A complete
+#             (200) and A serves the bytes.
+#   (FIX)     RED on 1.11.4 (no push row, B never gets them):
+#             #4791-1 the three-chunk upload queues exactly one push row on A
+#                     for B, B holds the artifact with the same sha256 and
+#                     serves the bytes within 90 s, and A's row completes;
+#             #4791-2 the same for the one-chunk (single-shot) session.
+#   (GUARD)   a three-chunk upload session driven against B AS A PEER WRITE
+#             (X-Artifact-Keeper-Replication: true on create, chunks and
+#             complete) stores on B, queues no push row on B for A and never
+#             reaches A. Green on both images (1.11.4 queues nothing for any
+#             session); it pins that the fix did not open an echo.
+#
+# Teardown note: `harness/run.sh down --slot N` only knows the --<dimension>
+# profiles. A tier run without --keep tears B down itself.
+#
+# RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: peer endpoints go through
+# validate_outbound_url and both instances sit on private compose addresses.
+PROFILES="storage.filesystem peer.second-instance"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
