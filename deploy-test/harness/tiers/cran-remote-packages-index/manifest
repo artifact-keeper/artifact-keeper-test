@@ -1,0 +1,54 @@
+# DTF tier manifest: cran-remote-packages-index  (artifact-keeper#4877, fixed by #4880, 1.11.5)
+# Profile-set: filesystem + upstreams.mock-multi (the stdlib-python
+# multi-format upstream at 172.16.<slot>.91; its CRAN side grew two upstreams
+# for this tier, see fixtures/mock_multi.py under virtual-member-failure-policy)
+# + client.cran (rocker/r-ver, a real R client on the dtf network). client.cran
+# does not claim the 172.16.<slot>.0/24 mock subnet, so the two stack.
+#
+# THE BUG (#4877)
+# A CRAN repository of type remote answered GET /cran/{repo}/src/contrib/PACKAGES
+# and PACKAGES.gz from locally-catalogued rows alone. A remote only holds rows
+# for packages already fetched through it, so against a real upstream the index
+# was an empty 200 and R's install.packages() had nothing to resolve against,
+# although every tarball download was proxied correctly. #4880 fetches the
+# upstream src/contrib/PACKAGES (a 404 there falls back to PACKAGES.gz,
+# gunzipped in-process), passes every upstream record through verbatim (so
+# Depends / Imports / LinkingTo survive) and merges it over the local rows,
+# local winning a (Package, Version) slot. Both index routes share one builder.
+#
+# THE UPSTREAMS (mock-multi, healthy mode /ok)
+#   /ok/cranrich  PACKAGES and PACKAGES.gz: dtfcrana 1.2.0 (Depends R and
+#                 dtfcranb, Imports dtfcranc folded onto a continuation line,
+#                 LinkingTo dtfcranb), dtfcrana 1.1.0, dtfcranb 0.9.1 (Imports
+#                 dtfcranc), dtfcranc 0.1.0; every record has MD5sum.
+#   /ok/crangz    a gzip-only mirror: PACKAGES 404, PACKAGES.gz holds
+#                 dtfcrangz 2.0.0 and dtfcranc 0.1.0.
+#   Each record has a real installable source tarball at
+#   src/contrib/<pkg>_<ver>.tar.gz.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: a tarball fetched through the remote is the
+#             upstream's bytes (md5 equals the upstream index's MD5sum).
+#   (FIX)     RED on 1.11.4 (the index is an empty 200):
+#             #4877-1 the remote's PACKAGES lists exactly the upstream's four
+#                     (Package, Version) pairs;
+#             #4877-2 every record is byte-equal to the upstream's record
+#                     (Depends / Imports with its continuation line /
+#                     LinkingTo / MD5sum intact);
+#             #4877-3 PACKAGES.gz gunzips to the same document;
+#             #4877-4 a remote on the gzip-only upstream still yields an
+#                     index (PACKAGES lists dtfcrangz 2.0.0 verbatim);
+#             #4877-5 R install.packages("dtfcrana") through the remote
+#                     resolves the dependency graph from the index and
+#                     installs dtfcrana 1.2.0, dtfcranb 0.9.1 and dtfcranc
+#                     0.1.0;
+#             #4877-6 after those downloads the index still advertises each
+#                     pair exactly once and dtfcrana 1.2.0 keeps its Depends.
+#
+# RATE_LIMIT_ENABLED=false: ~20 calls back to back plus the R client's fetches.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the remote's upstream is the mock's private
+# compose address (the profile also admits only its /32).
+PROFILES="storage.filesystem upstreams.mock-multi client.cran"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
