@@ -252,7 +252,9 @@ KID="${V2%%:*}"; S64="${V2#*:}"
 X="$(jq -r --arg k "$KID" '.keys[]? | select(.kid == $k) | .x' "${W}/jwks.json" 2>/dev/null)"
 VERIFIED=0
 if [ -n "$V2" ] && [ -n "$X" ]; then
-  { printf '302a300506032b6570032100' | xxd -r -p; b64url "$X"; } > "${W}/pub.der"
+  # SubjectPublicKeyInfo prefix for an Ed25519 raw key (RFC 8410), written
+  # with printf escapes: the gate runners do not ship xxd.
+  { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; b64url "$X"; } > "${W}/pub.der"
   b64url "$S64" > "${W}/sig.bin"
   { printf '%s.%s.' "$TS" "$HWID"; jqr '.body_b64' <<<"$H" | base64 -d; } > "${W}/msg.bin"
   openssl pkeyutl -verify -pubin -inkey "${W}/pub.der" -keyform DER -rawin -in "${W}/msg.bin" -sigfile "${W}/sig.bin" >/dev/null 2>&1 && VERIFIED=1
