@@ -1391,7 +1391,31 @@ jobs:
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
           exit_code=0
+          # Maintenance lines: this matrix is main's and names every main
+          # script, while switch-tests-ref.sh may have moved the working tree
+          # to release/X.Y.x (marker deploy-test/.tests-ref), which does not
+          # have scripts added after the line forked. Such a script is NOT ON
+          # THIS LINE: a ::warning and a JUnit <skipped/>, not a failure, the
+          # same rule the DTF drivers apply to a tier with no manifest
+          # (deploy-test/harness/lib/exit_codes.sh, exit 12). On main there is
+          # no marker and a missing script is still a hard failure.
+          tests_ref=""
+          [ -f deploy-test/.tests-ref ] && tests_ref="$(head -n1 deploy-test/.tests-ref)"
           for script in ${{ matrix.batch.scripts }}; do
+            if [ -n "$tests_ref" ] && [ ! -f "tests/formats/${script}" ]; then
+              msg="tests/formats/${script} is named by main's format-tests matrix but does not exist on ${tests_ref}"
+              echo "::warning title=Format test not on this line::${msg}"
+              echo "=== Skipping ${script}: NOT ON THIS LINE ==="
+              cat > "${JUNIT_OUTPUT_DIR}/not-on-line-${script%.sh}.xml" <<XML
+          <?xml version="1.0" encoding="UTF-8"?>
+          <testsuite name="${script%.sh}" tests="1" failures="0" skipped="1" time="0">
+            <testcase name="${script}" classname="${script%.sh}" time="0">
+              <skipped message="NOT ON THIS LINE: ${msg}" type="not-on-line"/>
+            </testcase>
+          </testsuite>
+          XML
+              continue
+            fi
             echo "=== Running ${script} ==="
             if ! bash "tests/formats/${script}"; then
               echo "FAILED: ${script}"

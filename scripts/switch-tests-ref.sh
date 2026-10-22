@@ -22,8 +22,9 @@
 # asked for tiers covering features the line never received; the DTF drivers
 # read the marker and record such a tier as NOT ON THIS LINE (a ::warning and a
 # JUnit <skipped/>) instead of failing the group on its missing manifest
-# (deploy-test/harness/lib/exit_codes.sh, exit 12). On main there is no marker
-# and a missing manifest is still a hard failure. The skip is loud, not a
+# (deploy-test/harness/lib/exit_codes.sh, exit 12); the format-tests job does
+# the same for a matrix script with no file on the line. On main there is no
+# marker and a missing manifest or script is still a hard failure. The skip is loud, not a
 # waiver: backporting a fix to release/X.Y.x means cherry-picking its companion
 # tiers onto this repository's release/X.Y.x in the same cycle
 # (artifact-keeper-test#424), or the line's gate skips them by name.
