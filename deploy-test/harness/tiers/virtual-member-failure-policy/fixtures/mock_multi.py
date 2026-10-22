@@ -16,6 +16,20 @@ so one container serves healthy, failing and blackholed members at once:
 Under a healthy mode:
   helm/index.yaml                     one chart `dtfhelm-<mode>` 1.0.0
   cran/src/contrib/PACKAGES           one package `dtfcran<mode>` 1.0.0
+  cranrich/src/contrib/PACKAGES(.gz)  a CRAN-shaped index for the
+                                      cran-remote-packages-index tier
+                                      (#4877): four records (dtfcrana 1.2.0
+                                      and 1.1.0, dtfcranb 0.9.1, dtfcranc
+                                      0.1.0) carrying Depends / Imports /
+                                      LinkingTo / MD5sum, one Imports value
+                                      folded onto a continuation line
+  crangz/src/contrib/PACKAGES.gz      a gzip-only mirror: PACKAGES answers
+                                      404, PACKAGES.gz holds dtfcrangz 2.0.0
+                                      (and dtfcranc 0.1.0)
+  cranrich|crangz/src/contrib/<pkg>_<ver>.tar.gz
+                                      a real installable R source package for
+                                      every record above (DESCRIPTION,
+                                      NAMESPACE, R/), byte-stable
   gems/specs.4.8.gz (+ latest_, prerelease_)
                                       gzipped Ruby Marshal 4.8, as
                                       rubygems.org serves it:
@@ -54,6 +68,7 @@ can count, from `docker logs`, which member fetched what. GET /__readyz -> ok.
 """
 import datetime
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -142,6 +157,72 @@ def specs_gz(triples):
 
 # --- npm -----------------------------------------------------------------
 NPM_VER = "1.0.1"
+
+
+# --- CRAN (#4877): records an R client resolves dependencies from ----------
+# (package, version, extra DCF fields in upstream order). The fields after
+# Version are what a Remote must pass through verbatim.
+CRAN_RICH = (
+    ("dtfcrana", "1.2.0", (
+        ("Depends", "R (>= 3.5.0), dtfcranb"),
+        ("Imports", "dtfcranc (>= 0.1),\n        stats"),
+        ("LinkingTo", "dtfcranb"),
+        ("License", "MIT"),
+    )),
+    ("dtfcrana", "1.1.0", (
+        ("Depends", "R (>= 3.5.0)"),
+        ("License", "MIT"),
+    )),
+    ("dtfcranb", "0.9.1", (
+        ("Imports", "dtfcranc"),
+        ("License", "MIT"),
+    )),
+    ("dtfcranc", "0.1.0", (
+        ("License", "MIT"),
+    )),
+)
+CRAN_GZONLY = (
+    ("dtfcrangz", "2.0.0", (
+        ("Imports", "dtfcranc"),
+        ("License", "MIT"),
+    )),
+    CRAN_RICH[3],
+)
+CRAN_SETS = {"cranrich": CRAN_RICH, "crangz": CRAN_GZONLY}
+
+
+def cran_tarball(pkg, ver, fields):
+    """A minimal installable R source package, byte-stable across calls."""
+    desc = [f"Package: {pkg}", f"Version: {ver}", f"Title: DTF CRAN Fixture {pkg}",
+            f"Description: DTF fixture package {pkg} for the remote PACKAGES tier.",
+            "Author: DTF", "Maintainer: DTF <dtf@example.invalid>"]
+    desc += [f"{k}: {v}" for k, v in fields if k != "MD5sum"]
+    files = (
+        (f"{pkg}/DESCRIPTION", ("\n".join(desc) + "\n").encode()),
+        (f"{pkg}/NAMESPACE", f"export({pkg}_hello)\n".encode()),
+        (f"{pkg}/R/{pkg}.R", f'{pkg}_hello <- function() "{pkg}-{ver}"\n'.encode()),
+    )
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for fname, data in files:
+            info = tarfile.TarInfo(fname)
+            info.size = len(data)
+            info.mtime = 0
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(data))
+    return gzip.compress(raw.getvalue(), mtime=0)
+
+
+def cran_index(records):
+    out = []
+    for pkg, ver, fields in records:
+        md5 = hashlib.md5(cran_tarball(pkg, ver, fields)).hexdigest()
+        lines = [f"Package: {pkg}", f"Version: {ver}"]
+        lines += [f"{k}: {v}" for k, v in fields]
+        lines.append(f"MD5sum: {md5}")
+        lines.append("NeedsCompilation: no")
+        out.append("\n".join(lines) + "\n")
+    return "\n".join(out)
 
 
 def npm_tarball(name):
@@ -316,6 +397,19 @@ class Handler(BaseHTTPRequestHandler):
         if fmt == "cran" and sub == "src/contrib/PACKAGES":
             body = f"Package: dtfcran{mode}\nVersion: 1.0.0\nLicense: MIT\n\n"
             return self._send(200, "text/plain", body)
+        if fmt in CRAN_SETS and sub.startswith("src/contrib/"):
+            records = CRAN_SETS[fmt]
+            leaf = sub[len("src/contrib/"):]
+            if leaf == "PACKAGES" and fmt == "cranrich":
+                return self._send(200, "text/plain", cran_index(records))
+            if leaf == "PACKAGES.gz":
+                return self._send(200, "application/x-gzip",
+                                  gzip.compress(cran_index(records).encode(), mtime=0))
+            for pkg, ver, fields in records:
+                if leaf == f"{pkg}_{ver}.tar.gz":
+                    return self._send(200, "application/x-gzip",
+                                      cran_tarball(pkg, ver, fields))
+            return self._send(404, "text/plain", "not found")
         if fmt == "gems" and sub in ("specs.4.8.gz", "latest_specs.4.8.gz"):
             return self._send(200, "application/octet-stream",
                               specs_gz([(f"dtfgem-{mode}", "1.0.0", "ruby")]))
