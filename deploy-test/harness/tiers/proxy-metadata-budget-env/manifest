@@ -1,0 +1,31 @@
+# DTF tier manifest: proxy-metadata-budget-env  (artifact-keeper#4881)
+# Profile-set: filesystem + limits.proxy-metadata-budget (32 GiB budget,
+# json-file log driver).
+#
+# THE BUG (#4881)
+# ProxyMetadataBudget counted one tokio semaphore permit per byte and clamped
+# its total to u32::MAX, because a reservation goes through acquire_many(u32).
+# proxy_metadata_budget() applied the clamp with no log line, so an operator
+# who set AK_PROXY_METADATA_BUDGET_BYTES=34359738368 (32 GiB) got a
+# 4294967295-byte budget, and the conda virtual merge gate, which derives its
+# default max_merges from that total (budget / (128 MiB fetch + 1 GiB decoded
+# member ceilings), at least 2), stayed at 3. The fix counts permits in 4 KiB
+# units, so the budget can express any usize.
+#
+# THE PRIMITIVE
+# The merge gate is built lazily, on the first virtual conda merge, and logs
+# one line: "conda virtual merge gate configured" with max_merges and
+# budget_bytes. The oracle creates a hosted conda channel and a virtual over
+# it, GETs the virtual's noarch/repodata.json (that runs a merge through the
+# gate), then reads the line from `docker logs`.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) both images: the virtual's repodata.json answers 200 and the
+#             gate init line is in the log.
+#   (FIX)     budget_bytes is 34359738368 and max_merges is greater than 3
+#             (28 at the default member ceilings). RED on 1.11.4:
+#             budget_bytes=4294967295, max_merges=3.
+PROFILES="storage.filesystem limits.proxy-metadata-budget"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+export AK_PROXY_METADATA_BUDGET_BYTES="34359738368"

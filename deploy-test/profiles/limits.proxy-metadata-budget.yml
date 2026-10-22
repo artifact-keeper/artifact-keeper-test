@@ -1,0 +1,20 @@
+# =============================================================================
+# profiles/limits.proxy-metadata-budget.yml: pass the buffered proxy-metadata
+# budget (AK_PROXY_METADATA_BUDGET_BYTES, artifact-keeper#2665/#4881) through
+# to the backend, and keep its log readable with `docker logs`
+# =============================================================================
+# The budget bounds the bytes of proxied metadata (and conda virtual merges)
+# held in memory at once; the conda merge gate derives its default
+# CONDA_VIRTUAL_MAX_CONCURRENT_MERGES from it. A tier sets the value by
+# exporting it from its manifest. Unset, an empty string is passed, which the
+# backend treats as unset (the 1 GiB default).
+#
+# json-file: the oracle greps the backend's own log for the merge gate's init
+# line. On rootless podman the default journald driver can drop it.
+# =============================================================================
+services:
+  backend:
+    environment:
+      AK_PROXY_METADATA_BUDGET_BYTES: ${AK_PROXY_METADATA_BUDGET_BYTES:-}
+    logging:
+      driver: json-file
