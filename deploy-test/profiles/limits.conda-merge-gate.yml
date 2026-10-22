@@ -20,3 +20,6 @@ services:
       CONDA_VIRTUAL_MAX_CONCURRENT_MERGES: ${CONDA_VIRTUAL_MAX_CONCURRENT_MERGES:-}
       CONDA_VIRTUAL_MERGE_QUEUE_SECS: ${CONDA_VIRTUAL_MERGE_QUEUE_SECS:-}
       CONDA_VIRTUAL_MERGE_CACHE_TTL_SECS: ${CONDA_VIRTUAL_MERGE_CACHE_TTL_SECS:-}
+      # artifact-keeper#4879: how long a stale kept merge may still be served
+      # while it is rebuilt (unset: one cache TTL; 0: off).
+      CONDA_VIRTUAL_MERGE_MAX_STALE_SECS: ${CONDA_VIRTUAL_MERGE_MAX_STALE_SECS:-}

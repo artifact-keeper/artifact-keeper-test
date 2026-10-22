@@ -336,7 +336,13 @@ case "$CMD" in
     # env-seeded LDAP provider lifecycle (#4857), repository delete and GC
     # reclaiming filesystem copies (#4833), concurrent generic PUTs (#4832),
     # NuGet V2 continuation pages (#4856), and the slow Azure server-side
-    # copy (#4858, plus SAS-free error bodies; ~2 min, last).
+    # copy (#4858, plus SAS-free error bodies; ~2 min).
+    # Then the 1.11.5 companion tiers (artifact-keeper-test#597-#605), each
+    # red on 1.11.4 and green on main with the fix: push replication without
+    # echo and with late sidecars (#4792) and from upload sessions (#4791),
+    # failed startup DB connects on /metrics (#4828), a refused remote conda
+    # shard that recovers (#4829), the 32 GiB metadata budget (#4881), conda
+    # virtual stale serve (#4879) and CRAN remote PACKAGES (#4877).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -350,7 +356,10 @@ case "$CMD" in
              auth-db-outage audit-event-coverage \
              plugin-fetch-pinned-address auth-logout-revokes-session ldap-env-bootstrap-lifecycle \
              repo-delete-reclaims-storage generic-concurrent-put-contract nuget-v2-continuation-pages \
-             azure-copy-long-running; do
+             azure-copy-long-running \
+             push-sync-echo-and-sidecars push-sync-chunked-upload metrics-startup-db-retry \
+             conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve \
+             cran-remote-packages-index; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

@@ -3007,6 +3007,15 @@ jobs:
             tiers: format-catalog-fixes npm-unpublish-and-push-sync conda-channel-types migration-package-catalog
           - group: fixes-1.11.2-ops
             tiers: proxy-cache-empty-object audit-event-coverage
+          # 1.11.5 fix coverage (artifact-keeper-test#597-#605): the release
+          # gate runs main's copy of this workflow and only reads the tiers
+          # from this branch, so this list is a record that matches main's
+          # fixes-1.11.5-sync and fixes-1.11.5-proxy groups, not what the
+          # gate executes. Red on 1.11.4, green with the 1.11.5 backports.
+          - group: fixes-1.11.5-sync
+            tiers: push-sync-echo-and-sidecars push-sync-chunked-upload metrics-startup-db-retry
+          - group: fixes-1.11.5-proxy
+            tiers: conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve cran-remote-packages-index
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

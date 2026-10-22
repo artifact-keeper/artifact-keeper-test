@@ -23,8 +23,11 @@ and PLUGIN_FORMAT_KEY). GET /__ctl?redirect=URL makes the reference advertisemen
 answer 302 to URL + "/info/refs?service=git-upload-pack" (the smart-HTTP
 redirect a git client follows to a moved repository; added for the
 plugin-fetch-pinned-address tier). A request for URL's own path is served,
-so a redirect to this mock does not loop; an empty redirect= turns it off. GET
-/__readyz answers "ok".
+so a redirect to this mock does not loop; an empty redirect= turns it off.
+While redirect= is set, a plain GET whose path contains /__redir/ (an
+artifact fetch through a Remote repository, not git) answers 302 to URL + "/"
++ the rest of the path after /__redir/ (the proxy-path case of
+plugin-fetch-pinned-address, #4869). GET /__readyz answers "ok".
 
 Every request line is printed to stdout as
   MOCKGIT <MOCK_NAME> <METHOD> <PATH>
@@ -151,6 +154,14 @@ class Handler(BaseHTTPRequestHandler):
                               (f"version={STATE['version']} sig={STATE['sig']} "
                                f"redirect={STATE['redirect']}").encode())
         print(f"MOCKGIT {NAME} GET {self.path}", flush=True)
+        if STATE["redirect"] and "/__redir/" in parts.path:
+            target = STATE["redirect"] + "/" + parts.path.split("/__redir/", 1)[1]
+            print(f"MOCKGIT {NAME} 302 -> {target}", flush=True)
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
         if parts.path.endswith("/info/refs") and "service=git-upload-pack" in parts.query:
             moved = urlsplit(STATE["redirect"]).path
             if STATE["redirect"] and not parts.path.startswith(moved + "/"):

@@ -1,0 +1,20 @@
+# =============================================================================
+# profiles/metrics.port.yml: turn on the backend's separate, unauthenticated
+# Prometheus listener (METRICS_PORT) and keep its log readable
+# =============================================================================
+# METRICS_PORT=9091 starts a second listener that serves only GET /metrics,
+# rendering the same recorder handle as GET /api/v1/admin/metrics. It is not
+# published on the host: an oracle scrapes it from inside the backend
+# container (`docker exec <backend> curl http://127.0.0.1:9091/metrics`), so
+# no admin login is needed and it does not take a port from the slot block.
+#
+# json-file: oracles that pair a metric with the log line that explains it
+# grep `docker logs`; on rootless podman the default journald driver can drop
+# lines.
+# =============================================================================
+services:
+  backend:
+    environment:
+      METRICS_PORT: "9091"
+    logging:
+      driver: json-file
