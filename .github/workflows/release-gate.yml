@@ -3201,7 +3201,9 @@ jobs:
           # request-plane limits, upstream credential hygiene, XFF trust and
           # plugin SSRF (the URL check, plugin-reload-ssrf, and the fetch
           # itself through the SSRF-guarded client, plugin-fetch-pinned-
-          # address, #574 for #4827, ~30 s with a local mock resolver).
+          # address, #574 for #4827, ~30 s with a local mock resolver; #604
+          # adds the #4869 cases: a redirect hop the SSRF policy refuses is
+          # 400 on the plugin path and 503 on the proxy path).
           # upstream-url-userinfo-redaction gained the #4851 listing/PATCH
           # case (#583). Every upstream is a local mock, so all required.
           - group: security-1.11.x-tokens
@@ -3307,6 +3309,24 @@ jobs:
           # required.
           - group: fixes-1.11.4
             tiers: auth-logout-revokes-session ldap-env-bootstrap-lifecycle repo-delete-reclaims-storage generic-concurrent-put-contract nuget-v2-continuation-pages azure-copy-long-running
+          # 1.11.5 fix coverage (artifact-keeper-test#597-#605): green on main
+          # with the fix, red on 1.11.4. sync stands up a second AK instance
+          # (peer.second-instance) for push replication: peer writes are not
+          # echoed back and a late pacman .sig reaches the peer (#4792), an
+          # upload-session artifact is pushed (#4791); it also freezes the
+          # slot's Postgres to count failed startup connects on /metrics
+          # (#4828). proxy: a refused remote CEP-16 shard is not cached and
+          # recovers (#4829, upstreams.mock-conda-sharded), a 32 GiB metadata
+          # budget is honoured (#4881), one conda virtual merge per subdir
+          # with stale serve while it rebuilds (#4879, upstreams.mock-conda-
+          # stale), and a CRAN remote serves its upstream PACKAGES so R
+          # installs through it (#4877, upstreams.mock-multi + client.cran).
+          # The #4869 cases extend plugin-fetch-pinned-address in
+          # security-1.11.x-boundary. Local containers only, so required.
+          - group: fixes-1.11.5-sync
+            tiers: push-sync-echo-and-sidecars push-sync-chunked-upload metrics-startup-db-retry
+          - group: fixes-1.11.5-proxy
+            tiers: conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve cran-remote-packages-index
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

@@ -20,7 +20,7 @@
 #   GET /conda/{repo}/noarch/shards/{sha256}.msgpack.zst
 #   PUT /api/v1/repositories/{virtual}/allowlist
 #   mock: /__manifest (addresses), /__requests (upstream hits), /__heal
-#   proxy_cache_artifacts rows (the KNOWN-RED #4829 pin only)
+#   proxy_cache_artifacts rows (the #4829 case, a KNOWN-RED pin until the fix)
 #
 # Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
 #
