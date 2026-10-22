@@ -124,8 +124,17 @@ else
     "$(head -c 400 "${WORK}/rz")"
 fi
 
-# Per-cycle evidence for the two gates below.
+# Per-cycle evidence for the two gates below. PRIM_OK counts the cycles in
+# which the lock-wait primitive demonstrably happened (A's probe AND B's probe
+# reached the mock). A is a 0.5 s client that is dropped on purpose; when hyper
+# drops it before its probe has left the backend the mock sees only B's probe
+# (lock-window probes=1). That cycle shows no lock-wait and is inconclusive for
+# the primitive, not a regression (seen once in three cycles on the 1.11.4
+# gate), so the primitive gate wants PRIM_MIN of CYCLES cycles, and B's own
+# contract and the FIX gate stay strict in every cycle.
 SETUP_OK=1
+PRIM_OK=0
+PRIM_MIN=$(( CYCLES - 1 ))
 CYCLE_EV=""
 FIX_BAD=0
 for c in $(seq 1 "$CYCLES"); do
@@ -159,16 +168,24 @@ for c in $(seq 1 "$CYCLES"); do
   LOCKWAIT_PROBES=$(( LOCKWAIT_PROBES - NEW_PROBES ))
   MEDIAN="$(printf '%s\n' "${TIMES[@]}" | sort -g | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}')"
   CYCLE_EV+="cycle ${c}: B=${BC}/${BS}/${BT}s '${BM}', lock-window probes=${LOCKWAIT_PROBES}, after-B probes=${NEW_PROBES}, burst first=${TIMES[0]}s median=${MEDIAN}s ${BAD:+slow/wrong: ${BAD}}; "
-  # The primitive itself: A's probe and B's probe both reached the mock, and
-  # B timed the hung scanner out at its deadline.
-  if [ "$LOCKWAIT_PROBES" != "2" ] || [ "$BC" != "200" ] || [ "$BS" != "unhealthy" ] || [ "$BM" != "$TIMEOUT_MSG" ]; then
+  # B's contract holds in every cycle: it timed the hung scanner out at its
+  # deadline. The primitive itself (A's probe and B's probe both reached the
+  # mock) is counted per cycle; one probe means A was dropped before probing.
+  if [ "$BC" != "200" ] || [ "$BS" != "unhealthy" ] || [ "$BM" != "$TIMEOUT_MSG" ]; then
+    SETUP_OK=0
+  elif [ "$LOCKWAIT_PROBES" = "2" ]; then
+    PRIM_OK=$(( PRIM_OK + 1 ))
+  elif [ "$LOCKWAIT_PROBES" = "1" ]; then
+    CYCLE_EV+="(cycle ${c}: A was dropped before its probe left, inconclusive for the primitive) "
+  else
     SETUP_OK=0
   fi
   if [ -n "$BAD" ] || [ "$NEW_PROBES" != "0" ]; then FIX_BAD=$(( FIX_BAD + 1 )); fi
 done
+[ "$PRIM_OK" -ge "$PRIM_MIN" ] || SETUP_OK=0
 
-begin_test "CONTROL hung: the lock-wait primitive happens (a cancelled /readyz releases the lock unstored, the waiter re-probes and times out at its deadline)"
-if [ "$SETUP_OK" = "1" ]; then pass; else fail "the lock-wait primitive did not happen as designed" "$CYCLE_EV"; fi
+begin_test "CONTROL hung: the lock-wait primitive happens in at least ${PRIM_MIN} of ${CYCLES} cycles (a cancelled /readyz releases the lock unstored, the waiter re-probes and times out at its deadline)"
+if [ "$SETUP_OK" = "1" ]; then pass; else fail "the lock-wait primitive did not happen as designed (${PRIM_OK}/${CYCLES} cycles showed both probes)" "$CYCLE_EV"; fi
 
 begin_test "FIX #4781: after a lock-waiting /readyz times the hung scanner out, the next ${BURST}+1 calls are cache hits (each <= ${FAST_MAX}s) and the scanner is not probed again inside the TTL (${CYCLES} cycles)"
 echo "  ${CYCLE_EV}" >&2
