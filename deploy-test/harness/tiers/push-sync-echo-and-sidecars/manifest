@@ -1,0 +1,52 @@
+# DTF tier manifest: push-sync-echo-and-sidecars  (artifact-keeper#4792, 1.11.5)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}) + the archlinux client container
+# (client.pacman) used only to build the fixtures (a .nupkg zipped with
+# bsdtar, a pacman package in makepkg's layout and its detached signature
+# from a throwaway gpg key generated at run time). Neither profile claims the
+# slot's 172.16.<slot>.0/24 mock subnet, so they stack.
+#
+# THE BUGS (#4792, left over after #4779)
+# 1. Replication echo. The NuGet push handler and the nested-layout
+#    (repodata_depth > 0) branch of the RPM upload passed "queue" to the
+#    artifact service unconditionally, so a write that arrives from a peer
+#    (X-Artifact-Keeper-Replication: true) was queued again for every push
+#    peer of that repository, including the one it came from.
+# 2. Pacman signatures. A .sig uploaded after its package only updated the
+#    package row's metadata (pgpsig) and queued nothing. A peer that had
+#    already received the package never got the signature.
+#
+# THE PEERS
+# Bidirectional: B is registered on A as a push peer (nuget, nested rpm and
+# pacman repos) and A on B (nuget and rpm repos), each with a `*`-scoped admin
+# API key minted on the other side and set online in the DB instead of waiting
+# for the first heartbeat. The same repo keys exist on both; both rpm repos
+# have repodata_depth 1. Nothing is simulated: the sync workers (10 s tick)
+# deliver over the slot's compose network (B reaches A as ak-dtf<N>-backend; the bare
+# `backend` alias is on the peer endpoint host blocklist).
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) true on BOTH images: a NuGet push and a nested RPM PUT on A
+#             each queue exactly one push row on A, reach B (row on B with the
+#             same sha256, B serves the bytes) and leave the A row completed;
+#             B queues nothing back to A for them; a pacman package reaches B.
+#   (FIX)     RED on 1.11.4:
+#             #4792-1 a NuGet push and a nested RPM PUT delivered to B's
+#                     native routes as a peer write (replication header)
+#                     queue NO push row on B for A, and never reach A.
+#             #4792-2 a .sig uploaded to A after its package already reached
+#                     B is served by B (GET .../{arch}/{pkg}.sig, bytes equal
+#                     to the uploaded signature) within 60 s, through the
+#                     same single push row on A.
+#
+# Teardown note: `harness/run.sh down --slot N` only knows the --<dimension>
+# profiles. A tier run without --keep tears B and the client down itself.
+#
+# RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: peer endpoints go through
+# validate_outbound_url and both instances sit on private compose addresses.
+PROFILES="storage.filesystem peer.second-instance client.pacman"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
