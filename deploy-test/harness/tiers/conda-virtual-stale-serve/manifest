@@ -1,0 +1,34 @@
+# DTF tier manifest: conda-virtual-stale-serve  (artifact-keeper#4879)
+# Profile-set: filesystem / single + upstreams=mock-conda-stale (a conda
+# channel whose repodata names its current generation and can be made slow,
+# on 172.16.<slot>.72; see fixtures/mock_conda_stale.py).
+#
+# THE BUGS (fixed for 1.11.5)
+# #4879  A virtual conda channel ran one merge per ENCODING: repodata.json,
+#        .zst and .bz2 of one subdir were three fetch + merge + encode runs.
+#        And when a remote member's cached repodata expired, the kept merge
+#        was dropped and every request waited on the full rebuild (about 45 s
+#        for a conda-forge linux-64 .bz2), which ended in 503s and client
+#        timeouts. Fixed: one merge per subdir with every encoding derived
+#        from it, and a stale kept merge is served at once (Warning: 110)
+#        while ONE background merge rebuilds it; the next request after the
+#        rebuild gets the new document. Bounded by
+#        CONDA_VIRTUAL_MERGE_MAX_STALE_SECS (default one merge cache TTL).
+#
+# THE PRIMITIVES
+#   GET /conda/{virtual}/noarch/repodata.json, .json.zst, .json.bz2
+#   GET /api/v1/admin/metrics (ak_conda_virtual_merge_cache_misses_total,
+#       ak_conda_virtual_merge_cache_hits_total{via="stale"})
+#   PUT /api/v1/repositories/{remote}/cache-ttl (4 s), then the mock moves to
+#       a new generation answering 8 s late, and GET
+#       /conda/{virtual}/linux-64/repodata.json after the member expired
+#
+# RED image: ak-backend:1.11.4. GREEN: the #4879 fix.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~60 calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the remote's upstream is the mock on a
+# private address (the profile also scopes AK_SSRF_ALLOW_PRIVATE_CIDRS).
+PROFILES="storage.filesystem upstreams.mock-conda-stale"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
