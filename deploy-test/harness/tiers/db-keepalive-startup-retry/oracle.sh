@@ -180,24 +180,22 @@ else
   RECOVERY="up"
 fi
 
-# KNOWN-RED (artifact-keeper#4828): the startup retry counts each failed
-# attempt with metrics::counter!, but main.rs builds the pool (line 194)
-# before it installs the Prometheus recorder (line 404), so the increments go
-# to the no-op default recorder and the series never appears. Reported, not
-# failed, so the retry gates above stay usable; when the series shows up the
-# note says so and this pin should become an assertion (>= 1 after the boot).
-begin_test "KNOWN-RED pin #4828: ak_db_pool_connection_failures_total{stage=\"startup\"} after the failed boot attempts"
+# FIX (artifact-keeper#4828, fixed by #4888; was a KNOWN-RED pin): the
+# startup retry counts each failed attempt with metrics::counter!. Before the
+# fix main.rs built the pool before it installed the Prometheus recorder, so
+# the increments went to the no-op default recorder and the series never
+# appeared (red on 1.11.4). Now the series must read >= 1 after the boot.
+begin_test "FIX #4828: ak_db_pool_connection_failures_total{stage=\"startup\"} after the failed boot attempts"
 auth_admin >/dev/null 2>&1
 mcode="$(scrape "${WORK}/m.txt")"
 sv="$(grep -E '^ak_db_pool_connection_failures_total\{stage="startup"\} ' "${WORK}/m.txt" | awk '{print $2}')"
 if [ "$RECOVERY" != "up" ] || [ "$mcode" != "200" ]; then
   fail "backend did not recover for the scrape (recovery=${RECOVERY}, metrics HTTP ${mcode})"
 elif [ -n "$sv" ] && python3 -c "import sys; sys.exit(0 if float('${sv}') >= 1 else 1)"; then
-  echo "   KNOWN-RED (artifact-keeper#4828) NOW PASSES: stage=startup=${sv}. Turn this pin into an assertion."
   pass
 else
-  echo "   KNOWN-RED (artifact-keeper#4828): stage=startup series ${sv:-absent} although the boot logged failed attempts"
-  pass
+  fail "failed startup connects are not exported (artifact-keeper#4828)" \
+    "stage=startup series ${sv:-absent} although the boot logged failed attempts"
 fi
 
 begin_test "control: with Postgres up, a restarted backend comes up and serves an authenticated request"
