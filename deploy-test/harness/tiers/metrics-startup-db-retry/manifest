@@ -1,0 +1,28 @@
+# DTF tier manifest: metrics-startup-db-retry  (artifact-keeper#4828)
+# Profile-set: filesystem + metrics.port (METRICS_PORT=9091, json-file log).
+#
+# THE BUG (#4828)
+# The startup connect retry (#4549, 1.11.2) counts every failed initial
+# connect attempt in ak_db_pool_connection_failures_total{stage="startup"},
+# but main.rs built the database pool (db::create_pool) about 200 lines
+# before metrics_service::init_metrics() installed the Prometheus recorder.
+# Every startup increment went to the metrics crate's no-op default recorder,
+# so the series was never exported. The fix installs the recorder first.
+#
+# THE PRIMITIVE
+# The boot outage from db-keepalive-startup-retry: `docker stop` the backend,
+# `docker pause` this slot's Postgres (the TCP connect is accepted, the server
+# never answers, so each attempt ends in the 5 s acquire timeout), `docker
+# start` the backend, `docker unpause` 12 s later. The backend retries, comes
+# up, and the oracle scrapes GET /metrics on the METRICS_PORT listener from
+# inside the container. An EXIT trap unpauses Postgres if the oracle dies.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) both images: Postgres was frozen during the boot; the backend
+#             came up by itself; its log has "initial connect attempt 1/5
+#             failed"; /metrics answers 200 and renders ak_* series.
+#   (FIX)     /metrics has ak_db_pool_connection_failures_total{stage="startup"}
+#             >= 1. RED on 1.11.4: the series is absent.
+PROFILES="storage.filesystem metrics.port"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
