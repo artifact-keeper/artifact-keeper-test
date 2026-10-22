@@ -1,0 +1,29 @@
+# DTF tier manifest: conda-remote-shard-recovers  (artifact-keeper#4829)
+# Profile-set: filesystem / single + upstreams=mock-conda-sharded (the stdlib
+# Python 3.14 server of conda-sharded-remote-virtual, reused unchanged: its
+# /main/ channel lists dtfsh-tampered at one address and serves other bytes
+# there until `GET /__heal`).
+#
+# THE BUG (#4829, 1.11.0 to 1.11.4)
+# A remote conda channel refuses an upstream CEP-16 shard whose bytes do not
+# hash to its address (502, #4577), but the proxy cache has already stored
+# those bytes under the shard's path, and it classifies
+# `shards/<sha256>.msgpack.zst` as immutable. Once the upstream serves the
+# right shard the registry keeps answering 502 without asking it again, for
+# the remote and for every virtual over it, until the entry is evicted by
+# hand.
+#
+# THE PRIMITIVES
+#   GET /conda/{remote|virtual}/noarch/shards/{sha256}.msgpack.zst
+#   mock: /__manifest (addresses), /__requests (upstream hits), /__heal
+#   proxy_cache_artifacts rows and the filesystem proxy-cache body
+#
+# Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then a dozen calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the remote's upstream is the mock on a
+# private address (the profile also sets it, scoped to 172.16.0.0/12).
+PROFILES="storage.filesystem upstreams.mock-conda-sharded"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
