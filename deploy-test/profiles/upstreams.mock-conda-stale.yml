@@ -1,0 +1,64 @@
+# =============================================================================
+# profiles/upstreams.mock-conda-stale.yml: an upstream conda channel whose
+# repodata changes on demand and can answer slowly
+# =============================================================================
+# Adds `mock-conda-stale` (harness/tiers/conda-virtual-stale-serve/fixtures/
+# mock_conda_stale.py): `noarch` and `linux-64` repodata.json naming the
+# current upstream generation, `/__bump?delay=S` to move to the next
+# generation and hold every later repodata.json answer S seconds, and
+# `/__state` for the oracle. Used by the conda-virtual-stale-serve tier
+# (artifact-keeper#4879).
+#
+# SUBNET: 172.16.<slot>.0/24 like the other conda mocks (mock-conda .70,
+# mock-conda-sharded .71); this one is .72. Profiles on that subnet are not
+# stacked in one tier.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-conda-stale:
+    image: docker.io/library/python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-conda-stale
+    command: ["python3", "/app/mock_conda_stale.py"]
+    environment:
+      MOCK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/conda-virtual-stale-serve/fixtures/mock_conda_stale.py:/app/mock_conda_stale.py:ro"
+    # SELinux-enforcing hosts (rootless podman on Fedora): the bind-mounted
+    # fixture keeps its user_home_t label; disable label separation for this
+    # container only rather than relabelling the checkout.
+    security_opt:
+      - label=disable
+    logging:
+      driver: json-file
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks:
+      mockcondastale:
+        ipv4_address: 172.16.${DTF_SLOT}.72
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-conda-stale:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    networks:
+      dtf: {}
+      mockcondastale: {}
+
+networks:
+  mockcondastale:
+    name: ak-dtf${DTF_SLOT}-mockcondastale
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
