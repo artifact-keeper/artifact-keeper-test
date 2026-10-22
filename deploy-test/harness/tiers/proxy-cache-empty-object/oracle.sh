@@ -258,8 +258,9 @@ finish_case "#4758: an emptied __content__ under an unpinned sidecar is still se
 # the upstream is healthy. #4759 FIX: with no body at all the client gets a
 # 502 UPSTREAM_SHORT_BODY naming the repository and both counts (1.11.1 and
 # main 6a4e29f1: 200 + Content-Length N, then the connection drops); with half
-# the body the headers are already out, so the connection still closes short,
-# and the backend logs a warn carrying expected_bytes / received_bytes.
+# the body the headers are already out, so the connection still closes short
+# (curl rc 18, or rc 52 when the close beats the header flush), and the
+# backend logs a warn carrying expected_bytes / received_bytes.
 # =============================================================================
 # backend_log_since <rfc3339>: the backend's log since then, ANSI stripped
 # (images before the no-TTY fix colour their fields).
@@ -314,7 +315,13 @@ for MODE in empty short; do
     warn="$(printf '%s\n' "$LIE_LOG" | grep -F "$N_LIE" | grep -F 'expected_bytes' | grep -F 'received_bytes' | grep -F '4759' | head -1 || true)"
     note "first GET: HTTP ${LIE1_CODE}, curl rc ${LIE1_RC}, $(size_of "$W/lie.1.body") of ${FILE_BYTES} bytes"
     note "warn: ${warn:-<none>}"
-    [ "$LIE1_RC" = "18" ] || fail_g "curl rc ${LIE1_RC}, expected 18 (the connection closes short of Content-Length)"
+    # rc 18: the headers reached curl and the body stopped short of
+    # Content-Length. rc 52: the connection closed before hyper flushed the
+    # headers (the body stream errored first), so curl saw no response at all.
+    # Which one the client sees is scheduling (both seen on 1.11.3 and on the
+    # 1.11.4 candidate); both mean the client was cut off short. The warn is the
+    # discriminator.
+    case "$LIE1_RC" in 18|52) ;; *) fail_g "curl rc ${LIE1_RC}, expected 18 or 52 (the connection closes short of Content-Length)";; esac
     [ -n "$warn" ] || fail_g "no warn line naming ${N_LIE} with expected_bytes and received_bytes (#4759) in docker logs ($(printf '%s\n' "$LIE_LOG" | grep -c . || true) lines since ${LOG_T0})"
     exp_b="$(printf '%s' "$warn" | grep -oE 'expected_bytes[^0-9]{1,4}[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)"
     rcv_b="$(printf '%s' "$warn" | grep -oE 'received_bytes[^0-9]{1,4}[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)"
