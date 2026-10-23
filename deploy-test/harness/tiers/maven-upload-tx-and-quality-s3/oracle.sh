@@ -3,7 +3,8 @@
 # tiers/maven-upload-tx-and-quality-s3/oracle.sh
 #   #3587/#3814 a Maven hosted upload commits the artifact row and its
 #               artifact_metadata row in one transaction: a metadata write
-#               that fails leaves no live artifact behind
+#               that fails leaves no live artifact behind, and (#4837) no
+#               stored object the download path would still serve
 #   #3736       quality checks read the artifact from the repository's
 #               configured storage backend (here S3/MinIO)
 # See the manifest for THE BUGS, the primitives and the gates.
@@ -47,6 +48,16 @@ mput(){ # <path> <file> -> code
 mget(){ curl -s --max-time 60 -o "$2" -w '%{http_code}' -H "Authorization: ${BASIC}" "$BASE/maven/${REPO}/$1" || true; }
 live_rows(){ psql_q "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '${REPO}' AND a.path = '$1' AND a.is_deleted = false"; }
 rows_without_meta(){ psql_q "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '${REPO}' AND a.path = '$1' AND a.is_deleted = false AND NOT EXISTS (SELECT 1 FROM artifact_metadata m WHERE m.artifact_id = a.id)"; }
+# The object store is the ground truth for "were the failed upload's bytes
+# removed" (#4837). mc runs on the slot network against the profile's MinIO.
+mc_exists(){ # <key> -> yes | no | unknown(...)
+  local out
+  out="$(docker run --rm --network "ak-dtf${DTF_SLOT}-net" --entrypoint sh \
+    ghcr.io/artifact-keeper/ci-mirror/mc:RELEASE.2025-08-13T08-35-41Z -c \
+    "mc alias set l http://minio:9000 minioadmin minioadmin >/dev/null 2>&1; if mc stat 'l/ak-artifacts/$1' >/dev/null 2>&1; then echo yes; else echo no; fi" 2>/dev/null || true)"
+  case "$out" in *yes*) echo yes ;; *no*) echo no ;; *) echo "unknown(${out})" ;; esac
+}
+key_of(){ psql_q "SELECT a.storage_key FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '${REPO}' AND a.path = '$1' AND a.is_deleted = false LIMIT 1"; }
 artifact_id_of(){ psql_q "SELECT a.id FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '${REPO}' AND a.path = '$1' AND a.is_deleted = false LIMIT 1"; }
 
 # =============================================================================
@@ -106,7 +117,7 @@ note "served bytes match racer ${won}"
 [ "$won" != 0 ] || fail_g "the served SNAPSHOT bytes match none of the racers"
 finish_case "concurrent SNAPSHOT republish control failed"
 
-begin_test "FIX #3587/#3814: an artifact_metadata write that fails leaves no live artifact row behind"
+begin_test "FIX #3587/#3814/#4837: an artifact_metadata write that fails leaves no live artifact row and no downloadable bytes behind"
 reset_case
 # Fault injection: a trigger that refuses the artifact_metadata row of one
 # artifactId only. The upload's metadata INSERT fails after the artifact row
@@ -133,12 +144,23 @@ else
   note "PUT with the metadata write failing: ${c} $(head -c 120 "$W/mput.out"); live rows ${lr}; rows without metadata ${nm}"
   case "$c" in 2*) fail_g "the upload reported success (${c}) although its metadata was not written";; esac
   [ "$lr" = "0" ] || fail_g "${lr} live artifact row(s) left behind by an upload whose metadata write failed"
-  # KNOWN-RED artifact-keeper#4837: the object written to the repo-scoped
-  # S3 key before the transaction stays behind, and the hosted download's
-  # repo-scoped fallback serves it with no row. Recorded, not gated; flip to
-  # a gate (expect 404) once #4837 is fixed.
+  # artifact-keeper#4837: the object written to the repo-scoped S3 key
+  # before the transaction must not outlive the failed upload, and the hosted
+  # download's repo-scoped fallback must not serve it with no row (404).
   orphan="no"; [ "$g" = "200" ] && cmp -s "$W/tx.jar" "$W/tx.got" && orphan="yes"
-  note "KNOWN-RED artifact-keeper#4837 (not gated): GET ${g}; serves the failed upload's bytes: ${orphan}"
+  note "#4837: GET after the failed upload: ${g}; serves the failed upload's bytes: ${orphan}"
+  [ "$g" = "404" ] || fail_g "#4837: GET of the failed upload's path answered ${g} (serves its bytes: ${orphan}), expected 404"
+  # The stored object itself. The release jar's row names the scoped key
+  # layout (maven/<repo id>/<path>); its object is the positive control that
+  # keeps the absence check from passing vacuously.
+  RK="$(key_of "${GAV}/lib/1.0/lib-1.0.jar")"
+  if [ "$RK" = "maven/${REPO_ID}/${GAV}/lib/1.0/lib-1.0.jar" ] && [ "$(mc_exists "$RK")" = "yes" ]; then
+    ob="$(mc_exists "maven/${REPO_ID}/${TP}")"
+    note "#4837: object maven/${REPO_ID}/${TP} after the failed upload: ${ob}"
+    [ "$ob" = "no" ] || fail_g "#4837: the failed upload's object is still in the bucket (${ob})"
+  else
+    fail_g "#4837: cannot observe the scoped key in MinIO (release row key '${RK}', object $(mc_exists "$RK"))"
+  fi
   docker exec "$DBC" psql -U registry -d artifact_registry -qc \
     "DROP TRIGGER IF EXISTS dtf_fail_meta_${SUF} ON artifact_metadata; DROP FUNCTION IF EXISTS dtf_fail_meta_${SUF}();" >/dev/null 2>&1
   c="$(mput "$TP" "$W/tx.jar")"
@@ -147,7 +169,63 @@ else
   case "$c" in 2*) ;; *) fail_g "the retry after the fault answered ${c}";; esac
   [ "$lr" = "1" ] && [ "$nm" = "0" ] || fail_g "the retry did not leave exactly one row with its metadata"
 fi
-finish_case "#3587/#3814 metadata transaction failed"
+finish_case "#3587/#3814/#4837 failed upload left state behind"
+
+begin_test "CONTROL: a failed first publish that overlaps a successful one of the same coordinate does not take the winner's bytes"
+reset_case
+# The #4837 cleanup deletes the failed upload's object when no committed row
+# names its key. Two PUTs of one new release coordinate share that key: if the
+# first fails while the second has stored its bytes but not yet committed, the
+# cleanup must not delete the bytes the second one publishes. The fault
+# trigger serialises it deterministically: a sequence (non-transactional)
+# numbers the metadata writes for one artifactId; write 1 sleeps 3 s and
+# raises, write 2 sleeps 3 s and succeeds. PUT 2 starts 1 s after PUT 1, so it
+# stores its bytes while PUT 1 holds the row, then commits about 3 s after
+# PUT 1 has rolled back and run its cleanup.
+RC_AID="dtfrace${SUF}"
+inst="$(docker exec "$DBC" psql -U registry -d artifact_registry -v ON_ERROR_STOP=1 -qc "
+CREATE SEQUENCE dtf_race_seq_${SUF};
+CREATE OR REPLACE FUNCTION dtf_race_meta_${SUF}() RETURNS trigger LANGUAGE plpgsql AS \$\$
+DECLARE n bigint;
+BEGIN
+  IF NEW.metadata::text LIKE '%${RC_AID}%' THEN
+    n := nextval('dtf_race_seq_${SUF}');
+    IF n = 1 THEN
+      PERFORM pg_sleep(3);
+      RAISE EXCEPTION 'dtf injected artifact_metadata failure (first publisher)';
+    ELSIF n = 2 THEN
+      PERFORM pg_sleep(3);
+    END IF;
+  END IF;
+  RETURN NEW;
+END \$\$;
+CREATE TRIGGER dtf_race_meta_${SUF} BEFORE INSERT OR UPDATE ON artifact_metadata
+  FOR EACH ROW EXECUTE FUNCTION dtf_race_meta_${SUF}();" 2>&1)"; irc=$?
+if [ "$irc" -ne 0 ]; then
+  infra_fail "could not install the race fault trigger" "$inst"
+else
+  RP="${GAV}/${RC_AID}/1.0/${RC_AID}-1.0.jar"
+  head -c 1024 /dev/urandom > "$W/race1.jar"; head -c 1024 /dev/urandom > "$W/race2.jar"
+  ( curl -s --max-time 60 -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: ${BASIC}" \
+      --data-binary "@$W/race1.jar" "$BASE/maven/${REPO}/${RP}" > "$W/rc1.code" 2>/dev/null ) &
+  sleep 1
+  ( curl -s --max-time 60 -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: ${BASIC}" \
+      --data-binary "@$W/race2.jar" "$BASE/maven/${REPO}/${RP}" > "$W/rc2.code" 2>/dev/null ) &
+  wait
+  c1="$(cat "$W/rc1.code")"; c2="$(cat "$W/rc2.code")"
+  docker exec "$DBC" psql -U registry -d artifact_registry -qc \
+    "DROP TRIGGER IF EXISTS dtf_race_meta_${SUF} ON artifact_metadata; DROP FUNCTION IF EXISTS dtf_race_meta_${SUF}(); DROP SEQUENCE IF EXISTS dtf_race_seq_${SUF};" >/dev/null 2>&1
+  lr="$(live_rows "$RP")"
+  g="$(mget "$RP" "$W/race.got")"
+  same="no"; cmp -s "$W/race2.jar" "$W/race.got" && same="yes"
+  ob="$(mc_exists "maven/${REPO_ID}/${RP}")"
+  note "PUT 1 (fails): ${c1}; PUT 2 (wins): ${c2}; live rows ${lr}; GET ${g}, serves PUT 2's bytes: ${same}; object in the bucket: ${ob}"
+  case "$c1" in 2*) fail_g "the first publisher reported success (${c1}) although its metadata write failed";; esac
+  case "$c2" in 2*) ;; *) fail_g "the second publisher answered ${c2}, expected 2xx";; esac
+  [ "$lr" = "1" ] || fail_g "${lr} live rows for the coordinate, expected the winner's 1"
+  { [ "$g" = "200" ] && [ "$same" = "yes" ]; } || fail_g "the published coordinate does not serve the winner's bytes (GET ${g}, object ${ob}): the failed publisher's cleanup deleted them"
+fi
+finish_case "a failed overlapping publish destroyed the winner's bytes"
 
 begin_test "FIX #3736: quality checks triggered for an S3-stored artifact read it and record a result"
 reset_case

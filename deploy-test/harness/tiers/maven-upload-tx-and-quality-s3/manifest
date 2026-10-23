@@ -1,4 +1,4 @@
-# DTF tier manifest: maven-upload-tx-and-quality-s3  (artifact-keeper#3587, #3814, #3736; fixed in 1.11.0)
+# DTF tier manifest: maven-upload-tx-and-quality-s3  (artifact-keeper#3587, #3814, #3736; fixed in 1.11.0; #4837, fix PR #4874)
 # Profile-set: storage.s3 (MinIO; STORAGE_BACKEND=s3 for every repository).
 #
 # THE BUGS
@@ -26,9 +26,10 @@
 #   (FIX)     #3587/#3814: with the metadata write failing, the upload is not
 #             reported as a success and no live artifacts row remains for
 #             the path; with the fault removed the retry leaves exactly one
-#             row with its metadata. KNOWN-RED, recorded but not gated:
-#             artifact-keeper#4837, the failed upload's bytes stay on the
-#             repo-scoped S3 key and GET still serves them (200).
+#             row with its metadata.
+#             #4837: the failed upload's path answers 404 and its object is
+#             gone from the repo-scoped S3 key (was a KNOWN-RED pin: the bytes
+#             stayed and GET served them with 200). RED on 1.11.4.
 #             #3736: within 30 s of the trigger a new quality_check_results
 #             row exists for the S3-stored artifact and GET /quality/checks
 #             lists metadata_completeness=completed and nothing failed.
