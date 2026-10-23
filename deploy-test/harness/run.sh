@@ -347,6 +347,8 @@ case "$CMD" in
     # (#4865). maven-upload-tx-and-quality-s3 (gates #4837 since #606) is not
     # in this line's list; the release gate runs it from main's
     # storage-1.11.0 group against this branch's tier.
+    # 1.11.6: the PyPI upstream_publish_time age gate resolving a PEP
+    # 440-equal filename version to its release publish time (#4907).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -363,7 +365,8 @@ case "$CMD" in
              azure-copy-long-running \
              push-sync-echo-and-sidecars push-sync-chunked-upload metrics-startup-db-retry \
              conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve \
-             cran-remote-packages-index repo-delete-purges-revisions; do
+             cran-remote-packages-index repo-delete-purges-revisions \
+             pypi-age-gate-pep440-lookup; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

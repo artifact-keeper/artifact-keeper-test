@@ -53,6 +53,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 157 | **A conda virtual merges each subdir once and serves the kept merge while it rebuilds** - #4879 (fixed by #4890) | filesystem + `upstreams.mock-conda-stale` (a remote whose next repodata generation answers late) | `repodata.json`, `.json.zst` and `.json.bz2` cost one merge miss; past the member TTL the virtual answers within 3 s with the previous generation, `Warning: 110` and the `via="stale"` hit counter (2 of 3 cycles), and serves the new generation within 40 s | **conda-virtual-stale-serve** | **COVERED** (#600, `fixes-1.11.5-proxy`): green on `fix-4879-conda-stale-serve` (7/7), red on 1.11.4 (4 pass / 3 fail: 3 misses, 0/3 stale serves, ~8 s first GET). Gate-group proof on main `a5e0aeb3`: 7/7 |
 | 158 | **A CRAN remote serves its upstream `PACKAGES` so R installs through it** - #4877 (fixed by #4880) | filesystem + `upstreams.mock-multi` (`/ok/cranrich`, gzip-only `/ok/crangz`) + `client.cran` | the remote's `PACKAGES` and `PACKAGES.gz` list exactly the upstream's records byte-equal (continuation lines and MD5sum intact), a gzip-only upstream still yields an index, `install.packages("dtfcrana")` resolves and installs the dependency graph through the remote | **cran-remote-packages-index** | **COVERED** (#603, `fixes-1.11.5-proxy`): green on main `81f0b1c9` (8/8), red on 1.11.4 (2 pass / 6 fail: empty `PACKAGES`, R finds no package). Gate-group proof on main `a5e0aeb3`: 8/8 |
 | 159 | **Deleting a versioned repository purges its older revisions** - #4865 (fixed by #4873) | filesystem (stored objects read off the backend's `/data` volume through a throwaway `postgres:16-alpine` with `--volumes-from`) | a versioning-enabled generic repository A with two revisions of each of two paths, and B pointed at A's root holding one shared revision; after `DELETE` of A the older revision's object is gone within 30 s and the spared shared revision key is in `oci_gc_candidates` with `source_repository_id` = A; HEAD objects are purged, `artifact_versions` cascade, B still downloads the shared object (controls) | **repo-delete-purges-revisions** | **COVERED** (#602, `fixes-1.11.5-storage`): green on `pr-4873` (6/6), red on 1.11.4 (4 pass / 2 fail: older revision object still on the volume, no GC candidate row). Gate-group proof on main `e211aa3f`: 6/6 |
+| 160 | **The PyPI age gate resolves a PEP 440-equal filename version to its release publish time** - #4907 (fixed by #4908, backported to 1.11.x by #4912) | filesystem + `upstreams.mockpypi-agegate` (`172.28.<slot>.50`, a Warehouse JSON and PEP 691 simple index mock for `cuda-toolkit`) | with `upstream_publish_time` and `min_age_days=7` on a PyPI remote, `13.0.3.0` (filename spelling of the 2026-04-14 release `13.0.3`) is listed in the HTML and JSON simple index and downloads 200 with the mock's sha256; controls: `13.4.2` is served, `13.5.0` (one day old) and `13.0.3.1` (no equal release) are absent and 451, and the backend fetched `/pypi/cuda-toolkit/json` | **pypi-age-gate-pep440-lookup** | **COVERED** (#612, `fixes-1.11.6-pypi`): FIX gate, green on main `48b0424c` (`fix-4907`, 17/17) and on the 1.11.x line after #4912; red on 1.11.5 (14 pass / 3 fail: `13.0.3.0` missing from both indexes, download 451) |
 
 ## Consolidated status (this checkpoint)
 
@@ -185,6 +186,24 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   gate reads its matrix (including `fixes-1.11.5-sync`,
   `fixes-1.11.5-proxy` and `fixes-1.11.5-storage`) from main's
   `release-gate.yml` and runs these tiers from this branch.
+
+## 1.11.6 fix-coverage status (row 160, artifact-keeper-test#612)
+
+- **`pypi-age-gate-pep440-lookup`** (row 160) covers #4907: the PyPI
+  `upstream_publish_time` age gate looked a filename version up verbatim, so
+  `13.0.3.0` found no publish time under the Warehouse release key `13.0.3`
+  and was withheld. It is a FIX gate: red on 1.11.5 on exactly the three FIX
+  cases with every control holding, green on main `48b0424c` (#4908) and on
+  `release/1.11.x` after the backport #4912.
+- **Gate wiring:** the new required group `fixes-1.11.6-pypi` (under a
+  minute locally). `upstreams.mockpypi-agegate` is a new profile on the
+  shared `172.28.<slot>.0/24` mockpypi subnet; each gate group claims its own
+  slot and runs its tiers one after another, so it never overlaps
+  `pypi-contenttype` or `virtual-pypi-platform-wheel` on one subnet.
+  A 1.11.x candidate older than 1.11.6 is red on this group.
+- **On this line:** row 160 is added here; the gate reads its matrix
+  (including `fixes-1.11.6-pypi`) from main's `release-gate.yml` and runs
+  the tier from this branch.
 
 ## Brick-2 status (migration / Nexus — #2457)
 
