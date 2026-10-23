@@ -1,0 +1,41 @@
+# DTF tier manifest: repo-delete-purges-revisions (artifact-keeper#4865, fix PR #4873)
+# Profile-set: filesystem / single. Stored objects are inspected directly on
+# the backend's /data volume through a throwaway postgres:16-alpine container
+# with --volumes-from the backend (the backend image has no shell), as the
+# trash-purge and storage-integrity tiers do.
+#
+# THE BUG
+# #4865  A versioning-enabled Generic or Mlmodel repository (#2367) keeps
+#        every older revision of a path in `artifact_versions`; only the
+#        newest revision is named by the live `artifacts` row. Deleting the
+#        repository collected the storage keys to purge from `artifacts`
+#        alone, so the older revisions' objects stayed on storage after their
+#        `artifact_versions` rows cascaded away. Nothing names them after
+#        that, and the storage GC orphan scan starts from `artifacts`, so
+#        they leak for good. A revision key another repository still holds
+#        (same storage scope) was not handed to the GC candidate set either.
+#        Fixed: the delete unions live and revision keys in
+#        `collect_repo_artifact_object_keys`, and revision keys spared by the
+#        sharing guard are recorded in `oci_gc_candidates`.
+#
+# THE PRIMITIVES
+#   A  generic hosted, versioning_enabled=true. p/model.bin is uploaded twice
+#      with different bytes (revision 1 and 2), s/shared.bin twice too.
+#   B  generic hosted, its storage_path pointed at A's root through the
+#      database, holding a live artifact with s/shared.bin revision 1's bytes,
+#      so that key resolves to one object both repositories reference.
+#   DELETE /api/v1/repositories/A, then the files under A's root and the
+#   oci_gc_candidates table.
+#
+# THE GATES
+#   (FIX)     within 30 s of the delete the older revision's object of
+#             p/model.bin is gone from A's root; the older revision key of
+#             s/shared.bin, spared because B references it, is recorded in
+#             oci_gc_candidates with source_repository_id = A.
+#   (CONTROL) both images: the HEAD objects of both paths are purged; the
+#             `artifact_versions` rows cascade away; the shared object
+#             survives and B still downloads it byte-for-byte.
+#
+# RED image: ak-backend:1.11.4. GREEN: an image with the #4873 fix.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
