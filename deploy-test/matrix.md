@@ -139,7 +139,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 121 | **Leaf packages query OSV for themselves; NUL findings are a clean 400; concurrent scans keep their inventory** — #4669, #4667, #4668 | filesystem + `upstreams.mock-osv` (bundled Grype) | a leaf npm tarball is queried once and gets its own advisory; a `\u0000` title is 400 with no orphan row; 3x3 concurrent `bypass_dedup` scans all complete with an inventory | **scan-ingest-and-workspace** | **COVERED** (#542, `scanning-1.11.0-b`) — green on 1.11.1 and main (7/7); red on 1.11.0 (4 pass / 3 fail: every FIX case). Gate-group proof on main `2f08663f`: 7/7 |
 | 122 | **Native publishes scan on upload; `not_cataloged` completeness; one-hop scan reuse** — #4166, #4124, #4125, #4159, #4036, #4094, #4154, #4425 | filesystem + `upstreams.mock-scan-formats` (bundled Grype) | Maven, npm, OCI, Cargo and native conda publishes each produce a completed scan within 60 s; uncataloged conda/zip/wheel artifacts are graded `not_cataloged` and floored; identical bytes at a new path are not reused; a reused copy older than 30 days is rescanned | **scan-on-upload-native-and-completeness** | **COVERED** (#551, `scanning-1.11.0-a`) — green on 1.11.0 and main (15/15); red on 1.10.0 (5 pass / 10 fail: every FIX case). Gate-group proof on main `2f08663f`: 15/15 |
 | 123 | **Bazel bzlmod registry: hosted publish, generated `metadata.json`, immutable remote files, virtual shadowing** — #2858, #4429 | filesystem + `upstreams.mock-files` (mock BCR) | a hosted module publish generates `metadata.json`; remote module files are immutable; the virtual shadows the remote with the hosted module | **bazel-bzlmod-registry** | **COVERED** (#549, `formats-1.11.0`) — green on 1.11.0 and main (6/6); red on 1.10.0 (2 pass / 4 fail: `/bazel` is 404). Gate-group proof on main `2f08663f`: 6/6 |
-| 124 | **A failed Maven metadata write leaves no live row; quality checks read S3** — #3587, #3814, #3736 | `storage.s3` | a Maven upload whose metadata write fails leaves no live row; quality checks read the S3 object. KNOWN-RED pin #4837 (the failed upload's object is still served on S3) | **maven-upload-tx-and-quality-s3** | **COVERED** (#552, `storage-1.11.0`) — green on 1.11.0 and main (5/5); red on 1.10.0 (3 pass / 2 fail: both FIX cases). Gate-group proof on main `2f08663f`: 5/5 |
+| 124 | **A failed Maven metadata write leaves no live row; quality checks read S3** - #3587, #3814, #3736 | `storage.s3` | a Maven upload whose metadata write fails leaves no live row; quality checks read the S3 object; the failed upload's path is 404 and its object is gone from the bucket (#4837, a KNOWN-RED pin until #4874); a failed first publish overlapping a successful one of the same coordinate keeps the winner's bytes (control for the #4874 cleanup) | **maven-upload-tx-and-quality-s3** | **COVERED** (#552, `storage-1.11.0`) - green on 1.11.0 and main (5/5); red on 1.10.0 (3 pass / 2 fail: both FIX cases). Gate-group proof on main `2f08663f`: 5/5. #4837 pin flipped to a gate (#606, 1.11.5 batch 2 wiring PR): 6/6 with the fix, red on 1.11.4 on that case only (5 pass / 1 fail: GET 200 serves the rejected bytes, object still in MinIO) |
 | 125 | **GitHub release mirror: token stripped on the objects-host redirect, release and tag-lookup cache** — #3657, #3656, #3658 | filesystem + `upstreams.mock-recorder` | github/mise/aqua Remotes are accepted; a release asset follows the 302 to the objects host without `Authorization` and is byte-exact; assets and tag lookups are cached for 7 days, `latest` for 300 s | **github-release-mirror** | **COVERED** (#532, `formats-1.11.0`) — green on 1.11.0 and main (7/7); red on 1.10.0 (3 pass / 4 fail: every FIX case). Gate-group proof on main `2f08663f`: 7/7 |
 | 126 | **VS Code gallery: archive-parsed VSIX publish, hosted and virtual gallery protocol, scanned legacy download** — #3961, #3956, #3962, #4099 | filesystem + `upstreams.mock-recorder` | VSIX metadata is parsed from the archive; the hosted and virtual galleries answer the extension query protocol with asset URLs on AK; the legacy download route reaches the scan gate | **vscode-gallery-protocol** | **COVERED** (#539, `formats-1.11.0`) — green on 1.11.0 and main (14/14); red on 1.10.0 (4 pass / 10 fail: every FIX case). Gate-group proof on main `2f08663f`: 14/14 |
 | 127 | **Real pacman installs from hosted and gpg-signed repositories** — #3343, #4424 | filesystem + `client.pacman` (pinned archlinux image, nothing installed from a mirror) | a real pacman syncs and installs from a hosted repository and from a gpg-signed one; the `.files` database follows publish and delete | **pacman-hosted** | **COVERED** (#547, `formats-1.11.0`) — green on 1.11.0 and main (8/8); red on 1.10.0 (3 pass / 5 fail: every FIX case). Gate-group proof on main `2f08663f`: 8/8 |
@@ -174,6 +174,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 156 | **`AK_PROXY_METADATA_BUDGET_BYTES` above 4 GiB is honoured** - #4881 (fixed by #4885) | filesystem + `limits.proxy-metadata-budget` | with a 32 GiB budget the conda virtual merge gate logs `budget_bytes=34359738368` and its default `max_merges` grows past 3 | **proxy-metadata-budget-env** | **COVERED** (#599, `fixes-1.11.5-proxy`): green on `fix-4881-budget-clamp` (5/5), red on 1.11.4 (3 pass / 2 fail: clamped to 4294967295, `max_merges=3`). Gate-group proof on main `a5e0aeb3`: 5/5 |
 | 157 | **A conda virtual merges each subdir once and serves the kept merge while it rebuilds** - #4879 (fixed by #4890) | filesystem + `upstreams.mock-conda-stale` (a remote whose next repodata generation answers late) | `repodata.json`, `.json.zst` and `.json.bz2` cost one merge miss; past the member TTL the virtual answers within 3 s with the previous generation, `Warning: 110` and the `via="stale"` hit counter (2 of 3 cycles), and serves the new generation within 40 s | **conda-virtual-stale-serve** | **COVERED** (#600, `fixes-1.11.5-proxy`): green on `fix-4879-conda-stale-serve` (7/7), red on 1.11.4 (4 pass / 3 fail: 3 misses, 0/3 stale serves, ~8 s first GET). Gate-group proof on main `a5e0aeb3`: 7/7 |
 | 158 | **A CRAN remote serves its upstream `PACKAGES` so R installs through it** - #4877 (fixed by #4880) | filesystem + `upstreams.mock-multi` (`/ok/cranrich`, gzip-only `/ok/crangz`) + `client.cran` | the remote's `PACKAGES` and `PACKAGES.gz` list exactly the upstream's records byte-equal (continuation lines and MD5sum intact), a gzip-only upstream still yields an index, `install.packages("dtfcrana")` resolves and installs the dependency graph through the remote | **cran-remote-packages-index** | **COVERED** (#603, `fixes-1.11.5-proxy`): green on main `81f0b1c9` (8/8), red on 1.11.4 (2 pass / 6 fail: empty `PACKAGES`, R finds no package). Gate-group proof on main `a5e0aeb3`: 8/8 |
+| 159 | **Deleting a versioned repository purges its older revisions** - #4865 (fixed by #4873) | filesystem (stored objects read off the backend's `/data` volume through a throwaway `postgres:16-alpine` with `--volumes-from`) | a versioning-enabled generic repository A with two revisions of each of two paths, and B pointed at A's root holding one shared revision; after `DELETE` of A the older revision's object is gone within 30 s and the spared shared revision key is in `oci_gc_candidates` with `source_repository_id` = A; HEAD objects are purged, `artifact_versions` cascade, B still downloads the shared object (controls) | **repo-delete-purges-revisions** | **COVERED** (#602, `fixes-1.11.5-storage`): green on `pr-4873` (6/6), red on 1.11.4 (4 pass / 2 fail: older revision object still on the volume, no GC candidate row) |
 
 ## Consolidated status (this checkpoint)
 
@@ -344,7 +345,8 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   advisory `external-clients`) are therefore red on any image older than
   `adfa0206`, including every 1.11.x release: a 1.11.x maintenance candidate
   needs a `release/1.11.x` branch here (see `scripts/switch-tests-ref.sh`).
-  The pins still open are #4828, #4829 and #4837.
+  The pins still open are #4828, #4829 and #4837 (all three flipped in
+  the 1.11.5 wiring passes, see that section).
 - **GitGuardian incidents on these PRs (all test values):** 38736140 (a fake
   `user:pass@` feed URL, rewritten to a per-run password before merge),
   38736432 (a throwaway SMTP test key, rewritten out of history before merge;
@@ -402,7 +404,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 - **#581** derives the `sso.ldap-env-bootstrap` bind password at run time in
   `ldaps`, so the profile no longer carries a literal.
 
-## 1.11.5 fix-coverage status (rows 152-158, artifact-keeper-test#597-#605)
+## 1.11.5 fix-coverage status (rows 152-159, artifact-keeper-test#597-#606)
 
 - **Seven tiers and one extension** cover the 1.11.5 fixes: rows 152-158
   plus the #4869 cases in row 145 (`plugin-fetch-pinned-address`, #604).
@@ -421,7 +423,15 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 - **KNOWN-RED pins flipped:** #4829 in `conda-sharded-remote-virtual` (row
   107) and #4828 in `db-keepalive-startup-retry` (row 88) are assertions
   now; each is green on main `a5e0aeb3` and red on 1.11.4 on that case only.
-  #4837 (`maven-upload-tx-and-quality-s3`) stays a pin until its fix merges.
+- **Batch 2 (#602, #606, after backend #4873 and #4874 merged on main at
+  `e211aa3f`):** `repo-delete-purges-revisions` (row 159, #4865) runs as the
+  new required group `fixes-1.11.5-storage`. #606 turned the #4837 pin in
+  `maven-upload-tx-and-quality-s3` (row 124) into a gate and added a control
+  that a failed first publish overlapping a successful one of the same
+  coordinate keeps the winner's bytes (the race #4874 serialises). That
+  tier stays in `storage-1.11.0`, which is therefore red on any image
+  without the 1.11.5 fix, 1.11.4 included. No KNOWN-RED pin from the
+  1.11.x wave is left open.
 - **New profiles:** `upstreams.mock-conda-stale` (`172.16.<slot>.72`, a
   conda remote whose next repodata generation answers late),
   `limits.proxy-metadata-budget` and `metrics.port`.

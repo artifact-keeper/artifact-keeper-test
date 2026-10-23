@@ -3284,7 +3284,9 @@ jobs:
           #     client (pinned archlinux image, nothing installed), bazel
           #     registry. storage: S3 staging and 411 CopyObject, Azurite,
           #     two replicas on S3, native quota and RPM races, Maven upload
-          #     transactions on S3.
+          #     transactions on S3 (since #606 also the #4837 gate: a failed
+          #     hosted upload leaves no downloadable bytes, red before the
+          #     1.11.5 fix, so storage-1.11.0 needs a 1.11.5+ image).
           - group: formats-1.11.0
             tiers: bazel-bzlmod-registry github-release-mirror vscode-gallery-protocol pacman-hosted
           - group: storage-1.11.0
@@ -3327,6 +3329,12 @@ jobs:
             tiers: push-sync-echo-and-sidecars push-sync-chunked-upload metrics-startup-db-retry
           - group: fixes-1.11.5-proxy
             tiers: conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve cran-remote-packages-index
+          # storage (artifact-keeper-test#602): deleting a versioning-enabled
+          # repository purges its older revisions' objects and records a
+          # revision key another repository still holds as a GC candidate
+          # (#4865, storage.filesystem, under a minute). Required.
+          - group: fixes-1.11.5-storage
+            tiers: repo-delete-purges-revisions
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
