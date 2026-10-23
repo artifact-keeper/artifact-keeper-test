@@ -52,6 +52,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 156 | **`AK_PROXY_METADATA_BUDGET_BYTES` above 4 GiB is honoured** - #4881 (fixed by #4885) | filesystem + `limits.proxy-metadata-budget` | with a 32 GiB budget the conda virtual merge gate logs `budget_bytes=34359738368` and its default `max_merges` grows past 3 | **proxy-metadata-budget-env** | **COVERED** (#599, `fixes-1.11.5-proxy`): green on `fix-4881-budget-clamp` (5/5), red on 1.11.4 (3 pass / 2 fail: clamped to 4294967295, `max_merges=3`). Gate-group proof on main `a5e0aeb3`: 5/5 |
 | 157 | **A conda virtual merges each subdir once and serves the kept merge while it rebuilds** - #4879 (fixed by #4890) | filesystem + `upstreams.mock-conda-stale` (a remote whose next repodata generation answers late) | `repodata.json`, `.json.zst` and `.json.bz2` cost one merge miss; past the member TTL the virtual answers within 3 s with the previous generation, `Warning: 110` and the `via="stale"` hit counter (2 of 3 cycles), and serves the new generation within 40 s | **conda-virtual-stale-serve** | **COVERED** (#600, `fixes-1.11.5-proxy`): green on `fix-4879-conda-stale-serve` (7/7), red on 1.11.4 (4 pass / 3 fail: 3 misses, 0/3 stale serves, ~8 s first GET). Gate-group proof on main `a5e0aeb3`: 7/7 |
 | 158 | **A CRAN remote serves its upstream `PACKAGES` so R installs through it** - #4877 (fixed by #4880) | filesystem + `upstreams.mock-multi` (`/ok/cranrich`, gzip-only `/ok/crangz`) + `client.cran` | the remote's `PACKAGES` and `PACKAGES.gz` list exactly the upstream's records byte-equal (continuation lines and MD5sum intact), a gzip-only upstream still yields an index, `install.packages("dtfcrana")` resolves and installs the dependency graph through the remote | **cran-remote-packages-index** | **COVERED** (#603, `fixes-1.11.5-proxy`): green on main `81f0b1c9` (8/8), red on 1.11.4 (2 pass / 6 fail: empty `PACKAGES`, R finds no package). Gate-group proof on main `a5e0aeb3`: 8/8 |
+| 159 | **Deleting a versioned repository purges its older revisions** - #4865 (fixed by #4873) | filesystem (stored objects read off the backend's `/data` volume through a throwaway `postgres:16-alpine` with `--volumes-from`) | a versioning-enabled generic repository A with two revisions of each of two paths, and B pointed at A's root holding one shared revision; after `DELETE` of A the older revision's object is gone within 30 s and the spared shared revision key is in `oci_gc_candidates` with `source_repository_id` = A; HEAD objects are purged, `artifact_versions` cascade, B still downloads the shared object (controls) | **repo-delete-purges-revisions** | **COVERED** (#602, `fixes-1.11.5-storage`): green on `pr-4873` (6/6), red on 1.11.4 (4 pass / 2 fail: older revision object still on the volume, no GC candidate row). Gate-group proof on main `e211aa3f`: 6/6 |
 
 ## Consolidated status (this checkpoint)
 
@@ -142,7 +143,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   `ldaps`, so the profile no longer carries a literal. This line has had the
   same change since #580.
 
-## 1.11.5 fix-coverage status (rows 152-158, artifact-keeper-test#597-#605)
+## 1.11.5 fix-coverage status (rows 152-159, artifact-keeper-test#597-#606)
 
 - **Seven tiers and one extension** cover the 1.11.5 fixes: rows 152-158
   plus the #4869 cases in row 145 (`plugin-fetch-pinned-address`, #604).
@@ -163,7 +164,15 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   #4828 in `db-keepalive-startup-retry` are assertions now; each is green on
   main `a5e0aeb3` and red on 1.11.4 on that case only. Both tiers are on
   this line; their rows (107 and 88) are in main's `matrix.md`.
-  #4837 (`maven-upload-tx-and-quality-s3`) stays a pin until its fix merges.
+- **Batch 2 (#602, #606, backend #4873 and #4874, on the 1.11.x line since
+  backport batch 2, artifact-keeper#4894):** `repo-delete-purges-revisions`
+  (row 159, #4865) runs as the required group `fixes-1.11.5-storage`. #606
+  turned the #4837 pin in `maven-upload-tx-and-quality-s3` into a gate and
+  added a control that a failed first publish overlapping a successful one
+  of the same coordinate keeps the winner's bytes. That tier's row (124) is
+  in main's `matrix.md`; the gate runs it in main's `storage-1.11.0` group,
+  which is therefore red on 1.11.4. No KNOWN-RED pin from the 1.11.x wave
+  is left open.
 - **New profiles:** `upstreams.mock-conda-stale` (`172.16.<slot>.72`, a
   conda remote whose next repodata generation answers late),
   `limits.proxy-metadata-budget` and `metrics.port`.
@@ -172,10 +181,10 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   and `mock_git.py` a `/__redir/` redirect; every tier on those mocks
   (`proxy-virtual-1.11.0`, `nuget-v2-continuation-pages`,
   `plugin-reload-ssrf`) is green on main `a5e0aeb3`.
-- **On this line:** rows 152-158 and the row 145 update are added here; the
-  gate reads its matrix (including `fixes-1.11.5-sync` and
-  `fixes-1.11.5-proxy`) from main's `release-gate.yml` and runs these tiers
-  from this branch.
+- **On this line:** rows 152-159 and the row 145 update are added here; the
+  gate reads its matrix (including `fixes-1.11.5-sync`,
+  `fixes-1.11.5-proxy` and `fixes-1.11.5-storage`) from main's
+  `release-gate.yml` and runs these tiers from this branch.
 
 ## Brick-2 status (migration / Nexus — #2457)
 
