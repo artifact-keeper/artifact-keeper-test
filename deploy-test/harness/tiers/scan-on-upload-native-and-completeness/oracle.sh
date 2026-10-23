@@ -231,19 +231,31 @@ fi
 # ---------------------------------------------------------------------------
 CK=$(sha256sum "${FX}/log4j.jar" | cut -d' ' -f1)
 begin_test "control: identical jar B reuses jar A's Grype scan (is_reused, source = A's original)"
+# The backend decides reuse once, when B's grype step starts, and only from a
+# completed original row. The "jar A scan row" wait above is satisfied by A's
+# dependency-scanner row while A's grype may still be running, in which case B
+# gets a fresh original of its own. So wait for A's original grype row first.
+a_orig() {
+  psql_q "SELECT s.id FROM scan_results s JOIN artifacts a ON a.id = s.artifact_id
+          WHERE a.path = 'a/log4j-core-2.14.1.jar' AND a.repository_id = (SELECT id FROM repositories WHERE key='${R_REUSE}')
+            AND s.scan_type='grype' AND s.status='completed' AND s.source_scan_id IS NULL
+          ORDER BY s.completed_at DESC LIMIT 1"
+}
+a_grype_done() { [ -n "$(a_orig)" ]; }
+wait_until "jar A's original grype row" 90 a_grype_done || true
 s=$(put "${FX}/log4j.jar" "${BASE_URL}/api/v1/repositories/${R_REUSE}/artifacts/b/log4j-core-2.14.1.jar")
 B_ID=$(art_id "$R_REUSE" "b/log4j-core-2.14.1.jar")
 b_reused() { [ "$(psql_q "SELECT count(*) FROM scan_results WHERE artifact_id='${B_ID}' AND scan_type='grype' AND status='completed' AND is_reused")" -ge 1 ] 2>/dev/null; }
 wait_until "B's reused grype row" 60 b_reused || true
-A_ORIG=$(psql_q "SELECT s.id FROM scan_results s JOIN artifacts a ON a.id = s.artifact_id
-                 WHERE a.path = 'a/log4j-core-2.14.1.jar' AND a.repository_id = (SELECT id FROM repositories WHERE key='${R_REUSE}')
-                   AND s.scan_type='grype' AND s.status='completed' AND s.source_scan_id IS NULL
-                 ORDER BY s.completed_at DESC LIMIT 1")
+A_ORIG=$(a_orig)
 b_src=$(psql_q "SELECT source_scan_id FROM scan_results WHERE artifact_id='${B_ID}' AND scan_type='grype' AND status='completed' AND is_reused LIMIT 1")
 if [[ "$s" =~ ^20[01]$ ]] && [ -n "$A_ORIG" ] && [ "$b_src" = "$A_ORIG" ]; then
   pass
 else
-  fail "upload ${s}; A original '${A_ORIG}', B source '${b_src}'"
+  b_row=$(psql_q "SELECT is_reused || '|' || coalesce(source_scan_id::text,'') FROM scan_results
+                  WHERE artifact_id='${B_ID}' AND scan_type='grype' AND status='completed'
+                  ORDER BY completed_at DESC LIMIT 1")
+  fail "upload ${s}; A original '${A_ORIG}', B source '${b_src}'; B grype row (is_reused|source_scan_id) '${b_row}'"
 fi
 
 begin_test "FIX #4425: once A's original scan is past the 30-day reuse window, C is scanned afresh (a copy does not restart the window)"
