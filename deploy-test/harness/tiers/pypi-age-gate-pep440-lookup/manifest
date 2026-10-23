@@ -1,0 +1,33 @@
+# DTF tier manifest: pypi-age-gate-pep440-lookup  (artifact-keeper#4907, PR #4908)
+# Profile-set: filesystem / single + a canned PyPI upstream (mock-pypi, profile
+# upstreams.mockpypi-agegate) serving `cuda-toolkit` with Warehouse JSON
+# publish times and a simple index (HTML and PEP 691 JSON).
+#
+# THE BUG (#4907): the PyPI age gate looked up a distribution's publish time by
+# the exact version string from its filename, but Warehouse keys `releases` by
+# the release's own spelling. `cuda_toolkit-13.0.3.0-py2.py3-none-any.whl` sits
+# under release `13.0.3` (PEP 440-equal), so the lookup missed, `published_at`
+# was None, and a months-old release was withheld with 451 and dropped from the
+# simple index. That broke `pip install torch==2.14.1` behind a gated remote.
+# The same exact lookup sat in three places: the download gate
+# (`apply_pypi_download_age_gate`), the HTML listing filter
+# (`attach_pypi_publish_times`) and the PEP 691 JSON fallback
+# (`fill_missing_publish_times`). The fix (#4908) falls back to a PEP 440
+# comparison, youngest time wins.
+#
+# THE GATES (remote repo over the mock, gate on, min_age_days 7,
+# mode upstream_publish_time):
+#   (FIX)     cuda_toolkit-13.0.3.0 (release 13.0.3, 2026-04-14) is listed in the
+#             HTML index, listed in the PEP 691 JSON index (no upload-time in
+#             the document, so the Warehouse fallback decides) and downloads
+#             200 with the mock's bytes. RED on 1.11.5 (absent, absent, 451).
+#   (CONTROL) both images: 13.4.2 (exact release key, old) listed and 200; the
+#             young 13.5.0 (uploaded a day ago) absent and 451; 13.0.3.1 (no
+#             PEP 440-equal release key) absent and 451; the backend fetched
+#             /pypi/cuda-toolkit/json from the mock.
+#
+# RATE_LIMIT_ENABLED=false: admin login + repo/gate setup + a dozen index and
+# download GETs back to back.
+PROFILES="storage.filesystem upstreams.mockpypi-agegate"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
