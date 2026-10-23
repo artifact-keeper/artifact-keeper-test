@@ -3016,6 +3016,12 @@ jobs:
             tiers: push-sync-echo-and-sidecars push-sync-chunked-upload metrics-startup-db-retry
           - group: fixes-1.11.5-proxy
             tiers: conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve cran-remote-packages-index
+          # Batch 2 (artifact-keeper-test#602, #606), also a record of main's
+          # group: repository delete purges older revisions (#4865). The
+          # #4837 gate in maven-upload-tx-and-quality-s3 runs in main's
+          # storage-1.11.0 group.
+          - group: fixes-1.11.5-storage
+            tiers: repo-delete-purges-revisions
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
