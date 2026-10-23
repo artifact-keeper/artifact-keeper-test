@@ -3335,6 +3335,16 @@ jobs:
           # (#4865, storage.filesystem, under a minute). Required.
           - group: fixes-1.11.5-storage
             tiers: repo-delete-purges-revisions
+          # pypi (artifact-keeper-test#612): the upstream_publish_time age gate
+          # looks a PEP 440-equal filename version (13.0.3.0) up under its
+          # release key (13.0.3) instead of withholding it as having no publish
+          # time (#4907, fixed by #4908; storage.filesystem +
+          # upstreams.mockpypi-agegate, under a minute). The mock shares the
+          # 172.28.<slot>.0/24 subnet with the other mockpypi profiles, which
+          # is fine here: each group claims its own slot and runs its tiers
+          # one after another. Red on 1.11.5. Required.
+          - group: fixes-1.11.6-pypi
+            tiers: pypi-age-gate-pep440-lookup
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
