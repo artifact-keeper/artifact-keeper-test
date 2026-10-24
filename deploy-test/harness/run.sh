@@ -466,6 +466,13 @@ case "$CMD" in
     # #617. 1.12.0 features (red on every 1.11.x image): the paged group
     # members list (#4027) and OTLP log and metric export (#4337);
     # remote-instance-relay above gates the relayed PATCH (#4795) since #623.
+    # More 1.12.0 features: scan-on-proxy for Go, RubyGems, Composer, Pub,
+    # Conan, CocoaPods and Swift (#4103-#4110), the admin downloads
+    # downloader filter and lifecycle match.format (#4839, #2024), 304 on
+    # conditional conda package downloads (#4579), logout ending the access
+    # token (#4883), the per-Remote cache cap, digest-keyed pull history,
+    # statistics retention and Maven X-Checksum-SHA1 (#4660, #4542, #4541,
+    # #4573) and the proxy cache on Azure Blob storage (#4320).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -520,7 +527,10 @@ case "$CMD" in
              cran-remote-packages-index repo-delete-purges-revisions \
              pypi-age-gate-pep440-lookup \
              replication-labels-and-late-metadata group-members-list otlp-logs-metrics \
-             oci-blob-completion-retry; do
+             oci-blob-completion-retry \
+             scan-on-proxy-go-rubygems-composer scan-on-proxy-pub-conan scan-on-proxy-cocoapods-swift \
+             api-contracts-1120 conda-package-304 auth-logout-revokes-access-token \
+             proxy-cache-cap-and-history azure-proxy-cache; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
