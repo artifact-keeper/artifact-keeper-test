@@ -1,0 +1,46 @@
+# =============================================================================
+# profiles/proxy.timeout-504.yml - an Envoy-style response timeout in front of AK
+# =============================================================================
+# Adds `timeout-proxy`, a stdlib-python reverse proxy
+# (harness/tiers/oci-blob-completion-retry/fixtures/timeout_proxy.py) that
+# forwards every request to backend:8080 and, for the upload PUTs it is armed
+# for, behaves like Envoy's route timeout: N seconds after the request body
+# has been forwarded it closes the upstream connection (the backend's request
+# is dropped) and answers 504 "upstream request timeout". Arm it at run time
+# with PUT /__ctl/cut/<count>/<secs>; GET /__ctl/stats reports what it cut.
+# Requests it is not armed for pass through untouched (artifact-keeper#4902).
+#
+# Publishes the proxy on 127.0.0.1:${TRIVY_PORT} (8250+N, the spare per-slot
+# port); the backend stays reachable directly on ${HTTP_PORT}.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  timeout-proxy:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-timeout-proxy
+    command: ["python3", "-u", "/app/timeout_proxy.py"]
+    environment:
+      PROXY_PORT: "8080"
+      UPSTREAM: "backend:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - "${DTF_DIR}/harness/tiers/oci-blob-completion-retry/fixtures/timeout_proxy.py:/app/timeout_proxy.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this.
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:8080"
+    logging:
+      driver: json-file
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/__ctl/readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [dtf]
