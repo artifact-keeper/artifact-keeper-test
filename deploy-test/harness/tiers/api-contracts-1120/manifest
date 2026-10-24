@@ -1,0 +1,29 @@
+# DTF tier manifest: api-contracts-1120
+#   (artifact-keeper 1.12.0 API contracts: #4839, #2024 match.format)
+# Profile-set: filesystem only. Sibling of api-contracts-1110: pure API
+# contracts added in 1.12.0 that nothing else asserts.
+#
+# RED image: ak-backend:1.11.5. GREEN: an image carrying the 1.12.0 changes.
+#
+# CONTROLS (pass on every image)
+#   an anonymous and an authenticated download of one public generic artifact
+#     are both listed by GET /api/v1/admin/downloads?artifact_id=..., one with
+#     a null user_id and one with the admin's
+#   a lifecycle policy without match.format previews the repository's
+#     artifacts; one naming an unknown format, or a misspelt match key, is 400
+#
+# FIX CASES (RED on 1.11.5)
+#   #4839 downloader=anonymous lists only the null-user row,
+#     downloader=authenticated only the admin's row, on the listing and on
+#     /downloads/by-ip/{ip}; downloader=anonymous with user_id is 400; an
+#     unknown downloader value is 400. 1.11.5: the parameter is ignored (both
+#     rows, 200).
+#   #2024 a policy with match.format "generic" is created and previews the
+#     generic repository's artifacts; with match.format "npm" (or ["npm",
+#     "helm"]) it previews nothing in that repository. 1.11.5: create is 400
+#     ("unknown key 'match.format'").
+#
+# RATE_LIMIT_ENABLED=false: many quick API calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
