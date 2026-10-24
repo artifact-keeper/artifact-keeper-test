@@ -1,0 +1,23 @@
+# =============================================================================
+# profiles/scratch.readonly.yml - the backend's upload scratch volume read-only
+# =============================================================================
+# Points AK_UPLOAD_STAGING_DIR (where single-request uploads that spool write
+# their scratch file) at an empty volume mounted read-only, so any upload that
+# still spools its body to local disk fails, and one that streams to the
+# repository's object storage does not notice (artifact-keeper#3916).
+# STORAGE_PATH (/data) stays writable for everything else the backend keeps
+# there.
+# =============================================================================
+services:
+  backend:
+    environment:
+      AK_UPLOAD_STAGING_DIR: /scratch-ro
+    volumes:
+      - type: volume
+        source: dtf_scratch_ro
+        target: /scratch-ro
+        read_only: true
+
+volumes:
+  dtf_scratch_ro:
+    name: ak-dtf${DTF_SLOT}_scratch_ro

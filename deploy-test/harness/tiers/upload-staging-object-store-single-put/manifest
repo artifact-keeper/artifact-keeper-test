@@ -1,0 +1,31 @@
+# DTF tier manifest: upload-staging-object-store-single-put
+#   artifact-keeper#3916 (single-PUT remainder): a single PUT into an
+#   object-storage repository streams its body to the repository's backend
+#   with bounded memory instead of spooling it to local scratch, for the
+#   generic route and for Maven.
+#   Profile-set: storage.s3 (MinIO) + scratch.readonly (AK_UPLOAD_STAGING_DIR
+#   on an empty read-only volume, so any upload that spools fails).
+#   Sibling of upload-staging-object-store (raw PUT, multipart, chunked).
+#
+# THE GAP
+#   The generic PUT has staged on the repository's backend since 1.11.0
+#   (#4321), but the Maven PUT still spooled every jar, POM and checksum
+#   sidecar to a scratch file under AK_UPLOAD_STAGING_DIR before writing it
+#   to S3, so a Maven deploy needed local disk the size of its largest jar and
+#   failed outright (503 upload_spool_failed) when that disk was full or
+#   read-only.
+#
+# Gates:
+#   (CONTROL, both images) a 40 MiB generic PUT answers 201 and downloads
+#   byte-identical (it already streams).
+#   (FIX) a 40 MiB Maven jar, its POM and the jar's .sha1 sidecar PUT through
+#   the Maven route answer 201; the jar downloads byte-identical; the POM's
+#   metadata is recorded; no generic-upload-staging object or tracking row is
+#   left once the uploads finish.
+#
+# RATE_LIMIT_ENABLED=false: back-to-back uploads.
+#
+# Red: ak-backend:1.11.5. Green: ak-backend:lane-w3a.
+PROFILES="storage.s3 scratch.readonly"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
