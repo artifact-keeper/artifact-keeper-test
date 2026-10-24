@@ -1,0 +1,47 @@
+# =============================================================================
+# profiles/storage.s3-slow-delete.yml -- an S3 endpoint whose object deletes
+#   can be made slow on demand
+# =============================================================================
+# Layered on storage.s3.yml (MinIO). Adds `s3-slow-delete`, a stdlib-python
+# pass-through in front of MinIO
+# (harness/tiers/storage-gc-bounded-deletes/fixtures/s3_slow_delete_shim.py)
+# and points the backend's S3_ENDPOINT at it. Every request is forwarded with
+# its Host header intact, so SigV4 still verifies at MinIO. The shim starts
+# disarmed; an oracle arms it (`GET /__shim/arm?n=<count>&delay=<secs>`
+# through `docker exec`) to hold the next <count> object deletes (a
+# single-object DELETE or a multi-object `POST ?delete`) for <secs> each,
+# which is how a slow or distant object store looks to storage GC (#2524).
+#
+# The control port is not published on the host (the profile then composes
+# with any mock that takes the spare port); oracles read /__shim/stats with
+# `docker exec` into the shim container, as storage.s3-copy-411 does.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  s3-slow-delete:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-s3-slow-delete
+    command: ["python3", "/app/shim.py"]
+    environment:
+      SHIM_PORT: "9000"
+      SHIM_UPSTREAM: "minio:9000"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/storage-gc-bounded-deletes/fixtures/s3_slow_delete_shim.py:/app/shim.py:ro"
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9000/__shim/readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      s3-slow-delete:
+        condition: service_healthy
+    environment:
+      S3_ENDPOINT: http://s3-slow-delete:9000

@@ -1,0 +1,23 @@
+# =============================================================================
+# profiles/gc.storage-budget.yml: a per-pass storage-GC key budget, and no
+# scheduled GC tick during a tier
+# =============================================================================
+# The storage-gc-bounded-deletes tier drives every storage-GC pass itself
+# through POST /api/v1/admin/storage-gc and counts what each pass reclaims, so
+# a scheduled tick must never run in between:
+#
+#   STORAGE_GC_MAX_KEYS_PER_RUN=500  a pass claims at most 500 storage keys
+#                                    and reports budget_exhausted="keys"
+#                                    (#2524, 1.12.0). Default 0, unlimited;
+#                                    a release without #2524 ignores it.
+#   GC_SCHEDULE="0 0 0 1 1 *"        the scheduled storage-GC tick (6-field
+#                                    cron) once a year, on 1 January at
+#                                    00:00:00. Default hourly.
+#
+# Nothing else changes, so it composes onto any storage profile.
+# =============================================================================
+services:
+  backend:
+    environment:
+      STORAGE_GC_MAX_KEYS_PER_RUN: "500"
+      GC_SCHEDULE: "0 0 0 1 1 *"
