@@ -3177,6 +3177,10 @@ jobs:
           # containers only, so required.
           - group: fixes-1.11.3-api
             tiers: openapi-curation-optional migration-items-filters npm-anon-audit ingest-archive-entries-limit terraform-origin-registry
+          # Since #623 remote-instance-relay also gates the relayed PATCH
+          # (#4795, fixed by #4876), a 1.12.0 feature: main's copy of the
+          # tier is red on every 1.11.x image; the release/1.11.x copy does
+          # not carry the PATCH cases.
           - group: fixes-1.11.3-ops
             tiers: remote-instance-relay push-sync-native-formats ops-log-noise readyz-hung-dependency
           # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
@@ -3286,7 +3290,10 @@ jobs:
           #     two replicas on S3, native quota and RPM races, Maven upload
           #     transactions on S3 (since #606 also the #4837 gate: a failed
           #     hosted upload leaves no downloadable bytes, red before the
-          #     1.11.5 fix, so storage-1.11.0 needs a 1.11.5+ image).
+          #     1.11.5 fix, so storage-1.11.0 needs a 1.11.5+ image; since
+          #     #617 also the #4892 gate: a racing second first-upload
+          #     cannot replace the winner's bytes, red on 1.11.6, so on
+          #     main it needs a 1.11.7+ image).
           - group: formats-1.11.0
             tiers: bazel-bzlmod-registry github-release-mirror vscode-gallery-protocol pacman-hosted
           - group: storage-1.11.0
@@ -3345,6 +3352,33 @@ jobs:
           # one after another. Red on 1.11.5. Required.
           - group: fixes-1.11.6-pypi
             tiers: pypi-age-gate-pep440-lookup
+          # replication (artifact-keeper-test#618, #622): a protobuf label
+          # move on A pushes the whole _labels map to a push peer and is
+          # re-delivered when moved again, NuGet metadata written after the
+          # upload reaches the peer (#4889, fixed by #4899), and a protobuf
+          # commit uploaded after the peer subscribed is pushed and served
+          # by B (#4921, fixed by #4934; storage.filesystem +
+          # peer.second-instance, about 1.5 min). The second instance claims
+          # no 172.16.<slot>.0/24 mock subnet, only the slot's spare port;
+          # each group claims its own slot and runs its tiers one after
+          # another, so it never overlaps the other peer.second-instance
+          # tiers. Red on 1.11.6. Required.
+          - group: fixes-1.11.7-replication
+            tiers: replication-labels-and-late-metadata
+          # 1.12.0 feature coverage (artifact-keeper-test#624, #625, tracked
+          # in artifact-keeper#4932): the paged GET /groups/{id}/members of
+          # an LDAP-synced group (#4027, fixed by #4821; storage.filesystem,
+          # a never-binding ldap_configs row created through the admin API,
+          # no other SSO tier in this group) and OTLP log and metric export
+          # beside spans (#4337, fixed by #4820; telemetry.otlp-sink, which
+          # one leg stops; bind-ip-and-otel uses telemetry.otlp-spans in
+          # ops-1.11.x, another job and slot, about 2 min). FEATURE gates:
+          # red on every 1.11.x image, green on main from 162620e3. Never
+          # cherry-pick these tiers onto this repo's release/1.11.x and never
+          # move them into a group a 1.11.x gate is expected to pass; on a
+          # 1.11.x candidate they run as NOT ON THIS LINE. Required.
+          - group: features-1.12.0-api
+            tiers: group-members-list otlp-logs-metrics
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
