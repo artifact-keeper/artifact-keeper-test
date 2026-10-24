@@ -1,0 +1,50 @@
+# DTF tier manifest: otlp-upstream-client-spans  (artifact-keeper#3954, #4931; 1.12.0)
+# Profile-set: filesystem + telemetry.otlp-spans (OTLP http/protobuf export to
+# the stdlib sink of bind-ip-and-otel, which decodes every span to a JSON line
+# with typed attribute values) + upstreams.mock-recorder (a file-table upstream
+# at 172.16.<slot>.77 the oracle fills over its control port). The oracle
+# recreates the backend once with fixtures/backend.tracing.yml
+# (DB_QUERY_SPANS=all). A sibling of bind-ip-and-otel (request spans) and
+# otlp-logs-metrics (log records and metrics); this tier gates the CLIENT
+# spans of upstream requests and of SQL statements.
+#
+# Every request the oracle sends carries its own traceparent
+# 00-<tid>-<sid>-01, so the spans of that request are the exported spans with
+# trace_id <tid> (the default sampler honours the sampled flag, and the empty
+# RATE_LIMIT_TRUSTED_PROXY_CIDRS accepts the header from any client).
+#
+# THE GATES
+#   (CONTROL)  spans arrive; the http_request span of a request joins its
+#              traceparent. Both images.
+#   (FIX #3954, integer attributes) a generic Remote download fetched from the
+#              mock exports a CLIENT span (kind 3) in the request's trace whose
+#              url.full is the mock URL, http.response.status_code is the
+#              INTEGER 200 and server.port the INTEGER 80. RED on 1.11.5: the
+#              span exists (the proxy went through send_upstream in 1.11.0) but
+#              both values are exported as strings ("200", "80").
+#   (FIX #3954, test-upstream) POST /api/v1/repositories/<remote>/test-upstream
+#              exports a CLIENT HEAD span to the remote's upstream URL in the
+#              request's trace, with the integer status the mock answered.
+#              RED on 1.11.5: a bare send, no span.
+#   (FIX #3954, curation sync) POST /api/v1/curation/repos/<staging>/sync over
+#              RPM repodata the mock serves runs one curation sync cycle; it
+#              exports a CLIENT GET span for repodata/repomd.xml and one for
+#              the primary it names, each with the integer status 200, and the
+#              sync ingests the repodata's packages. RED on 1.11.5: no span.
+#   (FIX #3954, DB_QUERY_SPANS=all) with RUST_LOG=info (sqlx::query at info,
+#              which passes only slow statements) an authenticated request
+#              exports at least one database CLIENT span
+#              (db.system.name=postgresql) in its trace, and stdout still shows
+#              no statement text (no db.statement field). RED on 1.11.5: no
+#              DB span without sqlx::query=debug.
+#
+# NOT GATED HERE: the scheduled (5-minute) curation tick, which runs the same
+# cycle outside any request, and the pypistats / npm popularity lookups, which
+# go to fixed public hosts (both are covered by backend unit tests); the
+# parallel exporter shutdown of #4931, whose guard lives in otlp-logs-metrics.
+#
+# RATE_LIMIT_ENABLED=false: two logins and a few dozen calls.
+PROFILES="storage.filesystem telemetry.otlp-spans upstreams.mock-recorder"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
