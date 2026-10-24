@@ -1,0 +1,28 @@
+# DTF tier manifest: oci-blob-completion-retry
+#   artifact-keeper#4902: `docker push` of a large layer through a reverse
+#   proxy with a response timeout (Envoy and Envoy Gateway default 15 s)
+#   failed with 409 "upload session is already being modified". containerd
+#   2.x pushes a layer as one monolithic PUT ?digest= and, after the proxy's
+#   504, re-sends the identical PUT once. The proxy had reset the backend's
+#   request mid-completion, which cancelled the handler: the session stayed
+#   `committing` with no heartbeat for the 6 h stale window, so the retry got
+#   409 and the layer never landed.
+#   Profile-set: storage.filesystem + proxy.timeout-504 (new): a stdlib-python
+#   proxy that, when armed, cuts an upload PUT N seconds after its body was
+#   forwarded with 504 and closes the upstream connection, as Envoy does.
+#
+# Gates:
+#   (CONTROL, both images) a monolithic blob push straight to the backend is
+#   201 and HEAD is 200; the same push through the proxy, not armed, is 201.
+#   (FIX) a large monolithic PUT cut by the proxy with 504, then the identical
+#   PUT re-sent at once through the proxy: 201 (or 503 then 201 on one more
+#   retry), blob HEAD 200, and the session row is gone (no `committing` row)
+#   within 10 s. On 1.11.5 the retry is 409 and the row stays `committing`
+#   with `updated_at` frozen.
+#   (CONTROL, both images) a retry carrying a different digest while the cut
+#   completion is still running is 409.
+#
+# Red: ak-backend:1.11.5. Green: ak-backend:fix-4902.
+PROFILES="storage.filesystem proxy.timeout-504"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
