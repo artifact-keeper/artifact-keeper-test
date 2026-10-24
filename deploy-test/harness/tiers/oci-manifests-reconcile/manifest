@@ -1,0 +1,54 @@
+# DTF tier manifest: oci-manifests-reconcile
+#   artifact-keeper#1683 (1.12.0): the oci_manifests existence table is
+#   reconciled at startup and every OCI_MANIFESTS_RECONCILE_INTERVAL_SECS.
+#
+# Profile-set: filesystem + gc.oci-manifests-reconcile-fast (new:
+# OCI_MANIFESTS_RECONCILE_INTERVAL_SECS=15; the default is six hours).
+# Images are pushed over /v2 with curl (config, one layer, a curl-built OCI
+# manifest), as trash-blob-gc-remote-cache does.
+#
+# THE CHANGE
+# Migration 268 (1.11.x) added `oci_manifests`, one row per (repository,
+# manifest digest), written in the push transaction and removed by the
+# delete unwind when the last tag goes (#4512, 1.11.0). Rows still drift:
+# the lifecycle tag prune (lifecycle_service CASCADE_OCI_TAGS_SQL) deletes
+# oci_tags and soft-deletes the manifest artifact without touching
+# oci_manifests, a pre-268 replica's delete or push during a rolling
+# upgrade leaves a row behind or none at all, and the backfill that adds
+# missing rows runs once, at startup. Since #1683 a reconcile pass runs at
+# startup and on the interval: it removes a row whose manifest is no longer
+# addressable (no oci_tags row, no index edge from a tagged or live parent,
+# no live artifacts row at oci-manifests/<digest> or with its checksum)
+# once the row's last_referenced_at is older than 600 s, and it adds the
+# row of a tagged manifest that has none.
+#
+# THE PRIMITIVES
+#   One docker repository, five tagged images. The lifecycle case backdates
+#   the image's oci_tags.updated_at and its manifest artifact's created_at
+#   ten days with SQL (the max_age_days clock) and runs a max_age_days
+#   policy (days=5) explicitly assigned to the repository. The reconcile's
+#   600 s minimum row age is met by moving last_referenced_at an hour back
+#   with SQL, which stands in for time passing. The backend is never
+#   restarted, so 1.11.5's startup backfill cannot be what re-adds a row.
+#
+# THE GATES (RED ak-backend:1.11.5, GREEN on the #1683 image)
+#   (CONTROL)  both images: deleting an image's only tag over /v2 removes
+#              its row (#4512) and GET by digest is 404; the lifecycle policy
+#              prunes the expired image's tag, soft-deletes its manifest
+#              artifact, and GET by digest is 404, leaving the other images
+#              live; after the reconcile passes a tagged image and an
+#              untagged image whose artifacts row is live (its oci_tags row
+#              deleted with SQL) both keep their rows.
+#   (FIX)      the expired image's row is removed within 75 s (five
+#              intervals); RED on 1.11.5: the row stays, unaddressable.
+#              The row of a tagged image, deleted with SQL, is back within
+#              75 s with size_bytes = the manifest body length; RED on
+#              1.11.5: no row until the next restart.
+#   ak_oci_manifests_reconcile_rows_removed_total is reported, not gated.
+#
+# Wall clock: about 2.5 min (75 s wait on 1.11.5, then 35 s so the keep
+# controls are read after two more passes).
+# RATE_LIMIT_ENABLED=false: not under test.
+PROFILES="storage.filesystem gc.oci-manifests-reconcile-fast"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
