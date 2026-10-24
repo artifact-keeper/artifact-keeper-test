@@ -1,0 +1,62 @@
+# DTF tier manifest: storage-gc-bounded-deletes
+#   artifact-keeper#2524 (1.12.0): storage GC no longer holds a database
+#   transaction across an object-store delete, and a pass can be budgeted.
+#
+# Profile-set: s3 (MinIO) + storage.s3-slow-delete (new: a stdlib-python
+# pass-through in front of MinIO that, once armed, holds the next N object
+# deletes, single-object DELETE or multi-object POST ?delete, for a fixed
+# time) + gc.storage-budget (new: STORAGE_GC_MAX_KEYS_PER_RUN=500, and
+# GC_SCHEDULE once a year so no scheduled tick runs between the oracle's
+# passes).
+#
+# THE CHANGE
+# Before #2524 the orphan-key sweep re-checked each key under a per-key
+# `FOR UPDATE` transaction and deleted the object INSIDE it: while the object
+# store answered, the session sat `idle in transaction` holding row locks and
+# a pooled connection, and one pass reclaimed every eligible key however many
+# there were. Since #2524 a short transaction claims the key (re-check, hard
+# delete of the soft-deleted rows, a journal row in oci_gc_candidates) and
+# commits; the object delete runs afterwards with nothing held. New per-pass
+# budgets STORAGE_GC_MAX_KEYS_PER_RUN / _BYTES_ / _RUN_SECS stop a pass early
+# and report `budget_exhausted` ("keys", "bytes", "time") in the GC result,
+# a dry run applies the same budget, and ak_storage_gc_budget_stops_total
+# counts the stops.
+#
+# THE PRIMITIVES
+#   One hosted generic repository. Three artifacts uploaded through the API
+#   and deleted through the API (real objects in MinIO; content-addressed
+#   hex keys, so they sort first and fall in the first pass), one live
+#   artifact, and 2000 soft-deleted rows seeded with SQL (distinct keys
+#   `zz-dtf-gc-<run>/<n>`, size_bytes 1024, deleted_at two days ago, no
+#   object: a delete of a missing key succeeds on S3). Passes are driven
+#   with POST /api/v1/admin/storage-gc. During the first live pass the shim
+#   holds the first 8 deletes for 1.5 s each, and one psql session in the
+#   postgres container samples pg_stat_activity every ~50 ms for sessions
+#   `idle in transaction` for more than 100 ms.
+#
+# THE GATES (RED ak-backend:1.11.5, GREEN on the #2524 image)
+#   (CONTROL)  both images: the uploaded-then-deleted objects are gone from
+#              MinIO and their rows are gone after the pass that claimed
+#              them; the live artifact downloads byte-exact after every pass.
+#   (FIX)      inside the held-delete window no sample shows a session idle
+#              in transaction (1.11.5: about 9 of 10 samples do, the
+#              is_still_orphan FOR UPDATE query, for the whole 12 s window);
+#              pass 1 reports 1..500 keys, budget_exhausted="keys", and the
+#              soft-deleted row count drops by exactly what it reported
+#              (1.11.5: 2003 keys, field absent, 0 rows left), and bytes_freed
+#              is at least 1024 per key (1.11.5: 0, a NUMERIC sum read as
+#              an integer); pass 2
+#              reclaims the next 1..500 with budget_exhausted="keys"
+#              (1.11.5: 0); a dry run before pass 1 reports 1..500 and leaves
+#              the row count unchanged (1.11.5: 2003);
+#              ak_storage_gc_budget_stops_total{budget="keys"} >= 1.
+#   The idle-in-transaction gate needs the shim to have held all 8 deletes
+#   and at least 10 samples inside the window; otherwise it is INFRA (the
+#   pass did not go through the shim as set up), never a pass.
+#
+# Wall clock: about 2.5 min on 1.11.5 (one pass deletes all 2003 keys one
+# at a time through the shim), less on the fix image.
+# RATE_LIMIT_ENABLED=false: not under test.
+PROFILES="storage.s3 storage.s3-slow-delete gc.storage-budget"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
