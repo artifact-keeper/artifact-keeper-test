@@ -4,6 +4,7 @@
 #   #4889 a protobuf `_labels` move reaches a push peer (and a later move is
 #         re-delivered), and NuGet nuspec metadata written after the push was
 #         queued still reaches the peer; peer writes are still not echoed
+#   #4921 a protobuf commit uploaded after the peer subscribed reaches it
 # See the manifest for THE BUGS, THE PEERS, THE PRIMITIVE and the gates.
 #
 # run.sh exported BASE_URL (instance A), DB_CONTAINER (A's postgres),
@@ -259,10 +260,10 @@ fi
 # #4889-1: the protobuf `_labels` index reaches B, and a later move is re-delivered
 # =============================================================================
 # The two commits are uploaded BEFORE B subscribes to A's protobuf repo, so
-# only label writes are queued for B. Protobuf commits themselves do not
-# replicate on any image (see the KNOWN-RED pin at the end): each failed
-# commit push backs the whole peer off, which would starve the label
-# deliveries this tier is about and make their timing meaningless.
+# only label writes are queued for B and the label gates time only the label
+# deliveries. Before #4921 every commit push failed and backed the whole peer
+# off, which would have starved them. The commit push itself is covered by the
+# #4921 gates at the end, with a commit uploaded after B subscribed.
 begin_test "CONTROL: two buf Uploads on A (main -> commit 1, dev -> commit 2) before B subscribes; nothing is queued for B"
 c1="$(rpc "$A" "$R_PB" "$UPLOAD" "$(upload_body "$MOD" "syntax = \"proto3\"; // dtf c1 ${SUFN}")")"
 D1="$(jq -r '.commits[0].digest.value // empty' < "$W/last" 2>/dev/null)"
@@ -377,31 +378,45 @@ if [ -n "$all_n" ] && [ "$all_n" -ge 1 ] 2>/dev/null && [ "$done_n" = "$all_n" ]
 fi
 
 # =============================================================================
-# KNOWN-RED pin: protobuf commits do not replicate (not part of #4889)
+# #4921: a protobuf commit uploaded after B subscribed reaches B
 # =============================================================================
-# The commit row's checksum_sha256 is the commit digest (sha256 over each
-# file's path and content), not the sha256 of the stored bundle, so the
-# receiver's chunked-upload complete refuses every commit push with
-# "checksum mismatch". The pin passes while that holds and FAILS once a fix
-# lands: then turn it into an assertion that B serves the commit. It runs
-# last because each failed push backs the whole peer off.
-begin_test "KNOWN-RED(protobuf commit push): a commit uploaded to A after B subscribed fails on B with a checksum mismatch and never lands there"
-c="$(rpc "$A" "$R_PB" "$UPLOAD" "$(upload_body "$MOD" "syntax = \"proto3\"; // dtf c3 ${SUFN}" pin)")"
+# Before #4921 the commit row's checksum_sha256 was the commit digest (sha256
+# over each file's path and content), not the sha256 of the stored bundle, so
+# B's chunked-upload complete refused every commit push with "checksum
+# mismatch" and the commit never landed. These gates run last: on an image
+# without the fix the failed push also backs the whole peer off.
+C3_TEXT="syntax = \"proto3\"; // dtf c3 ${SUFN}"
+c="$(rpc "$A" "$R_PB" "$UPLOAD" "$(upload_body "$MOD" "$C3_TEXT" pin)")"
 D3="$(jq -r '.commits[0].digest.value // empty' < "$W/last" 2>/dev/null)"
 C3_PATH="modules/${OWNER}/${MOD}/commits/${D3}"
-deadline=$(( $(date +%s) + 45 )); err=""
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  err="$(psql_a "SELECT st.status || ' ' || coalesce(st.error_message,'') FROM sync_tasks st JOIN artifacts a ON a.id = st.artifact_id \
-                 WHERE st.peer_instance_id = '${PEER_B_ON_A}' AND a.path = '${C3_PATH}'")"
-  case "$err" in failed*|completed*) break ;; esac
-  sleep 2
-done
-b_c3="$(rows_of b "$R_PB" "$C3_PATH")"
-echo "   Upload 3 on A -> ${c}; A commit push row: ${err:-none}; rows on B ${b_c3}"
-if [ "$c" = "200" ] && [[ "$err" == failed*"checksum mismatch"* ]] && [ "$b_c3" = "0" ]; then
+begin_test "FIX(#4921): a commit uploaded to A after B subscribed is pushed: A's push row completes and B holds the commit with A's sha256, which is the sha256 of the bundle A serves"
+st_c3="$(wait_push_a "$R_PB" "$C3_PATH" "completed|1" 60)"
+a_c3="$(sha_of a "$R_PB" "$C3_PATH")"
+wait_sha_b "$R_PB" "$C3_PATH" "$a_c3" 20
+b_c3="$(sha_of b "$R_PB" "$C3_PATH")"; b_c3n="$(rows_of b "$R_PB" "$C3_PATH")"
+a_served="$(curl -s -o "$W/c3a" -w '%{http_code}' --max-time 60 -u "$AUTH" \
+  "${A}/api/v1/repositories/${R_PB}/download/${C3_PATH}" 2>/dev/null || echo 000):$(sha "$W/c3a")"
+err="$(psql_a "SELECT st.status || ' ' || coalesce(st.error_message,'') FROM sync_tasks st JOIN artifacts a ON a.id = st.artifact_id \
+               WHERE st.peer_instance_id = '${PEER_B_ON_A}' AND a.path = '${C3_PATH}'")"
+echo "   Upload 3 on A -> ${c} (${D3}); A push row ${st_c3} '${err}'; sha A ${a_c3} B ${b_c3:-none} (rows ${b_c3n}); A serves ${a_served}"
+if [ "$c" = "200" ] && [ -n "$D3" ] && [ "$st_c3" = "completed|1" ] && [ "$b_c3n" = "1" ] \
+   && [ -n "$a_c3" ] && [ "$b_c3" = "$a_c3" ] && [ "$a_served" = "200:${a_c3}" ]; then
   pass
 else
-  fail "the pin no longer holds (Upload ${c}; A push row '${err:-none}'; rows on B ${b_c3}): if B now has the commit, the commit push was fixed, flip this case to an assertion"
+  fail "Upload ${c}; A commit push row ${st_c3} '${err:-none}' (want completed|1); B rows ${b_c3n} sha '${b_c3:-none}' (want 1, A's '${a_c3}'); A serves ${a_served} (want 200:${a_c3})"
+fi
+
+begin_test "FIX(#4921): B serves that commit to buf: the pin label resolves to it and a Download on B by commit id returns the uploaded file"
+b_pin="$(wait_label_b pin "$D3" 30)"
+dl="$(rpc "$B" "$R_PB" "buf.registry.module.v1beta1.DownloadService/Download" \
+  "$(jq -nc --arg o "$OWNER" --arg m "$MOD" --arg d "$D3" '{values:[{resourceRef:{owner:$o,module:$m,id:$d}}]}')")"
+dl_text="$(jq -r '.contents[0].files[0].content // empty' < "$W/last" 2>/dev/null | base64 -d 2>/dev/null)"
+dl_id="$(jq -r '.contents[0].commit.digest.value // empty' < "$W/last" 2>/dev/null)"
+echo "   B pin -> '${b_pin}'; B Download -> ${dl}, commit '${dl_id}', file '${dl_text}'"
+if [ "$b_pin" = "$D3" ] && [ "$dl" = "200" ] && [ "$dl_id" = "$D3" ] && [ "$dl_text" = "$C3_TEXT" ]; then
+  pass
+else
+  fail "B pin -> '${b_pin}' (want ${D3}); B Download -> ${dl} commit '${dl_id}' file '${dl_text}' (want 200, ${D3}, '${C3_TEXT}'): $(head -c 200 "$W/last")"
 fi
 
 end_suite
