@@ -1,0 +1,31 @@
+# DTF tier manifest: conda-shard-o1  (artifact-keeper#4173, epic #4172,
+#   tier named in #4188)
+# Profile-set: filesystem / single.
+#
+# THE BUG (1.11.x)
+# #4173  a hosted channel's CEP-16 shard request listed EVERY artifact of the
+#        repository (with its metadata JSON), grouped them by name and built
+#        and zstd-compressed shard after shard until one hashed to the
+#        requested address. One shard cost O(rows) catalog reads and O(names)
+#        shard builds, so a 3,000-package solve cost O(names^2), and the cost
+#        of one shard grew with the size of the channel.
+#
+# THE FIX (1.12.0, artifact-keeper G5 PR1)
+#        shards are stored when the catalog changes (conda_shard_index); a
+#        shard GET is a lookup by address that reads no artifacts rows, and an
+#        upload rewrites exactly the uploaded name's shard row.
+#
+# THE PRIMITIVES
+#   SQL seed (slot Postgres): two hosted channels, 300 and 3,000 names x 10
+#     versions (3,000 and 30,000 rows) with conda metadata
+#   GET /conda/{repo}/noarch/repodata_shards.msgpack.zst, shards/{sha}.msgpack.zst
+#     decoded by conda-sharded-remote-virtual/fixtures/cep16.py
+#   pg_stat_user_tables (artifacts): rows read around a shard burst
+#   PUT /conda/{large}/noarch/{file}  one real upload (fixtures/conda/build.sh)
+#
+# Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
+#
+# RATE_LIMIT_ENABLED=false: a few hundred shard GETs back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
