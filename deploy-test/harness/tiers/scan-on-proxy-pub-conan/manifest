@@ -1,0 +1,22 @@
+# DTF tier manifest: scan-on-proxy-pub-conan  (artifact-keeper 1.12.0: #4107
+# Pub, #4108 Conan, epic #4097)
+# Profile-set: filesystem + the mock-scan-formats upstream (a Pub repository
+# and a Conan v2 server whose packages carry known identities). LOCAL-ONLY:
+# the verdicts come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: before 1.12.0 a Pub or Conan Remote (or a Virtual over one)
+# with scan_on_proxy=true streamed every proxied archive unscanned (200, no
+# X-AK-Scan) and /api/v1/formats reported both as `accepted`. 1.12.0 routes
+# Pub package archives and the Conan .tgz recipe/package archives through the
+# shared inline scan gate: vulnerable -> 403 scan_blocked, clean -> 200
+# X-AK-Scan: clean with the verdict reused, an archive that does not back the
+# request -> 423 under fail_closed with no verdict row, fail_open -> served
+# pending then blocked once the async verdict lands; Conan text files and the
+# Pub JSON API stay unscanned.
+#
+# Red: ak-backend:1.11.5. Green: an image carrying artifact-keeper#4107-#4108.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
