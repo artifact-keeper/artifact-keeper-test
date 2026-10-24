@@ -1,0 +1,49 @@
+# DTF tier manifest: group-members-list  (artifact-keeper#4027, fixed by #4821; 1.12.0)
+# Profile-set: filesystem / single. No LDAP server: like
+# ldap-env-bootstrap-lifecycle, the LDAP provider is a ldap_configs row whose
+# server (ldap://ldap.dtf.invalid:389) never resolves and never binds. The
+# oracle creates it through POST /api/v1/admin/sso/ldap.
+#
+# THE FEATURE
+# GET /api/v1/groups/{id}/members lists a group's members, paged with
+# member_limit (default 50, 1..200) and member_offset, as
+# {members:[{user_id,username,display_name,joined_at}], members_total}. Before
+# #4821 only POST/DELETE were routed on /members, so GET was 405. #4821 also
+# orders members by (joined_at, user_id): members a directory sync inserts in
+# one statement share joined_at, and ordering by joined_at alone let offset
+# pages repeat or skip members. Visibility is the group detail's: admins see
+# every group, a non-admin sees a group they belong to, anyone else gets 404.
+# Membership of an externally synced group (external_source = 'ldap') stays
+# read only through the API (409).
+#
+# THE FIXTURE
+# A group created through the API and attached to the LDAP provider the way a
+# directory sync records it (groups.external_source = 'ldap',
+# external_provider_id = the provider). Seven local users are added to it by
+# ONE INSERT, so every membership row carries the same joined_at (the oracle
+# checks this precondition in the database). A real LDAP login sync inserts
+# memberships per user, which does not produce a reliable tie, so the tie is
+# seeded. An eighth user is the outsider; one member is a non-admin reader.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) both images: the group detail GET /groups/{id} shows the synced
+#             group with members_total 7 to the admin; the outsider gets 404 on
+#             it; POST and DELETE /groups/{id}/members on the synced group are
+#             409 and the membership does not change.
+#   (FIX)     RED on 1.11.5 (GET /members is 405):
+#             list      admin GET /members?member_limit=200 returns the 7
+#                       members, members_total 7, ordered by user_id within the
+#                       shared joined_at.
+#             paging    member_limit=2 pages at offsets 0,2,4,6 and
+#                       member_limit=3 pages at 0,3,6 each concatenate to the
+#                       same sequence as the single page: no repeats, no gaps;
+#                       members_total 7 on every page; an offset past the end
+#                       is an empty page.
+#             member    the non-admin member gets 200 with the same 7 members.
+#             outsider  the outsider gets 404 on /members, the same status as a
+#                       random group id; anonymous is 401.
+#
+# RATE_LIMIT_ENABLED=false: eight user creations, logins and ~20 calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
