@@ -1,0 +1,35 @@
+# DTF tier manifest: scan-gate-blocked-body-and-audit  (artifact-keeper 1.12.0:
+# #4510 hold sources and the policy-blocks queue, 403 for scan-policy holds;
+# #4363 instance lock on the proxy scan policy; #4777 PROXY_SCAN_BLOCKED audit,
+# cross-repository proxy-blocked list, dashboard proxy_blocked; #4288 item 2
+# Maven checksums of a refused artifact)
+# Profile-set: filesystem + the mock-scan-formats upstream (Maven fixtures; the
+# log4j-core 2.14.1 jar carries Log4Shell). LOCAL-ONLY: verdicts come from the
+# backend image's bundled Grype and its pre-seeded DB, no internet.
+#
+# WHAT IT GUARDS:
+#   * #4777: a fail_closed Remote refuses log4j-core-2.14.1.jar with 403
+#     scan_blocked (control) and the refusal writes ONE PROXY_SCAN_BLOCKED
+#     audit row naming the principal (user_id), the client IP, the repository,
+#     the path and the digest, however many times it is retried inside a
+#     minute; GET /api/v1/security/proxy-blocked lists it with its CVE ids and
+#     the dashboard counts it in proxy_blocked.
+#   * #4510: GET /api/v1/admin/holds/policy-blocks lists the proxied digest
+#     and the hosted artifact a scan policy refuses; a hosted artifact the
+#     scanner held under a scan policy answers 403, not 409; an administrator
+#     hold still answers 409 (control).
+#   * #4363: after an instance admin writes a Remote's scan config, a
+#     repository admin cannot switch it to record_only (403, nothing written)
+#     but can still tighten it; the instance admin can.
+#   * #4288 item 2: the .sha1 / .md5 of a quarantined or scan-policy refused
+#     hosted Maven artifact is 404 (was 200 with the digest).
+#
+# Not covered here: plan item (1), no proxy_cache_artifacts row or cache object
+# for a refused digest. That is #4514 (commit-after-gate), which waits on a
+# maintainer decision.
+#
+# Red: ak-backend:1.11.5. Green: an image of main plus the 1.12.0 G3 PRs.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
