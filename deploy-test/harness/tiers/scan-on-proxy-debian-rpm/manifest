@@ -1,0 +1,26 @@
+# DTF tier manifest: scan-on-proxy-debian-rpm  (artifact-keeper 1.12.0:
+# #4111 Debian, #4112 RPM, epic #4097)
+# Profile-set: filesystem + the mock-scan-formats upstream (a Debian archive
+# with a bookworm Release and an RPM yum tree whose packages carry known
+# identities). LOCAL-ONLY: the verdicts come from the backend image's bundled
+# Grype and its pre-seeded vulnerability DB (no scanner sidecar, no OSV, no
+# internet).
+#
+# WHAT IT GUARDS: before 1.12.0 a Debian or RPM Remote (or a Virtual over one)
+# with scan_on_proxy=true streamed every proxied package unscanned (200, no
+# X-AK-Scan) and /api/v1/formats reported both `accepted`. A lone OS package
+# names no distribution release, so the scanner could not have graded it
+# anyway. 1.12.0 checks the package's own control / header against the
+# request, determines the release (the remote's cached Release for Debian, the
+# dist tag for RPM) and grades it through a synthetic installed system:
+# vulnerable -> 403 scan_blocked, clean -> 200 X-AK-Scan: clean, a package
+# whose metadata disagrees or whose release cannot be determined -> 423 under
+# fail_closed with no verdict row, fail_open -> pending then blocked,
+# record_only -> recorded; repository metadata stays unscanned; an ambiguous
+# client path is 400.
+#
+# Red: ak-backend:1.11.5. Green: an image carrying artifact-keeper#4111/#4112.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

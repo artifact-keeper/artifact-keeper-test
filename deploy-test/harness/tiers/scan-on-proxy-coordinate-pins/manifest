@@ -1,0 +1,21 @@
+# DTF tier manifest: scan-on-proxy-coordinate-pins  (artifact-keeper 1.12.0:
+# #4952, epic #4097)
+# Profile-set: filesystem + the mock-scan-formats upstream. LOCAL-ONLY: the
+# verdicts come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: the 1.12.0 Go, Composer and Conan gates (#4103, #4105,
+# #4108) first graded a proxied archive only on what it bundles, so the
+# requested coordinate's own advisories were never looked up: a module zip
+# of golang.org/x/text v0.3.0, a dist of guzzlehttp/guzzle 6.5.0 or a Conan
+# archive of openssl/1.1.1k with nothing vulnerable inside read `clean`.
+# #4952 pins the request coordinate in the scan workspace (a go.mod require,
+# a composer.lock, a conan.lock), so each is 403 scan_blocked, and a clean
+# archive is graded with the pin cataloged (components_cataloged >= 1).
+#
+# Red: ak-backend:1.11.5 (none of the three formats is gated). Green: an image
+# carrying artifact-keeper#4952.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
