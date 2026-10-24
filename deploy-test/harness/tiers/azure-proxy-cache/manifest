@@ -1,0 +1,33 @@
+# DTF tier manifest: azure-proxy-cache  (artifact-keeper#4320, 1.12.0 lane G7)
+# Profile-set: storage.azurite (Azure Blob through Azurite as the DEFAULT
+# backend) + storage.azurite-proxy-cache (AZURE_PROXY_CACHE_ENABLED=true, new)
+# + upstreams.mock-static (a counting static upstream). Azurite is listed from
+# the host with the azure-default-backend fixture azurite_blob.py.
+#
+# THE GAP
+# #4320  An Azure deployment had no proxy cache on Azure: since #3923 it kept
+#        the cache on the local filesystem under STORAGE_PATH, created remote
+#        repositories on `filesystem`, refused an explicit `azure` remote with
+#        400, and a multi-replica deployment needed STORAGE_PATH on shared
+#        storage. The storage facade had no Azure arm because the Azure
+#        backend could not list blobs.
+#
+# THE GATES
+#   (FIX)     RED on ak-backend:1.11.5, GREEN on the lane image:
+#             a remote created without storage_backend lands on `azure`; an
+#             explicit `azure` remote is created (201); a proxied GET commits
+#             its cache entry as Azure blobs (content and sidecar) and nothing
+#             under /data/storage/proxy-cache, and the second GET is a cache hit;
+#             POST cache/invalidate deletes the blobs and the next GET refetches.
+#   (CONTROL) both images: the remote serves the upstream bytes, twice.
+#
+# Note: on the lane image the azure-default-backend tier's #3923 assertions
+# (remote on `filesystem`, explicit `azure` refused) still hold, because the
+# Azure proxy cache is opt-in and that tier does not opt in.
+#
+# RATE_LIMIT_ENABLED=false; UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream
+# is on a private subnet.
+PROFILES="storage.azurite storage.azurite-proxy-cache upstreams.mock-static"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
