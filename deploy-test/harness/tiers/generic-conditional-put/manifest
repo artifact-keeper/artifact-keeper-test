@@ -1,0 +1,25 @@
+# DTF tier manifest: generic-conditional-put (artifact-keeper#4186)
+# Profile-set: filesystem / single.
+#
+# THE FEATURE (artifact-keeper#4186, backend PR #4983)
+# `PUT /api/v1/repositories/{key}/artifacts/{path}` honours If-Match /
+# If-None-Match against the artifact's ETag (its quoted SHA-256, now on the
+# 201 and the download). Racing conditional PUTs on one ETag (or
+# If-None-Match: * on a free path) have exactly one 201; the others get 412
+# PRECONDITION_FAILED. A stale If-Match is 412 and changes nothing. On a
+# versioning-enabled repository the racers append exactly one revision. A
+# malformed precondition is 400.
+#
+# Split out of generic-concurrent-put-contract (artifact-keeper-test#648),
+# which gates the #4832 fix on 1.11.x: these cases are a 1.12.0 FEATURE and
+# are red on every 1.11.x image, so they live in their own tier and a
+# features-1.12.0 gate group.
+#
+# RED image: ak-backend:1.11.5 (headers ignored: If-Match racers all 409,
+# If-None-Match racers 1x201 + 409s, versioned racers all 201, no ETag,
+# malformed header 409). GREEN: 1.12.0 with #4186 (main from 368561ea).
+#
+# RATE_LIMIT_ENABLED=false: 16 concurrent uploads (x3 waves) plus ~20 calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

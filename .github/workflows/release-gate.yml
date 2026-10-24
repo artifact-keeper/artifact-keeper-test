@@ -3315,7 +3315,10 @@ jobs:
           # times out at 30 s and its error carries no SAS (#4858, #4866;
           # storage.azure-stub, a local fake Azure endpoint, ~2 min, the
           # slowest leg). About 5 min in all; local containers only, so
-          # required.
+          # required. The #4186 conditional PUT cases that #648 added to
+          # generic-concurrent-put-contract are a 1.12.0 FEATURE, red on
+          # every 1.11.x image; they live in generic-conditional-put in
+          # features-1.12.0-storage so this group stays green on 1.11.x.
           - group: fixes-1.11.4
             tiers: auth-logout-revokes-session ldap-env-bootstrap-lifecycle repo-delete-reclaims-storage generic-concurrent-put-contract nuget-v2-continuation-pages azure-copy-long-running
           # 1.11.5 fix coverage (artifact-keeper-test#597-#605): green on main
@@ -3396,9 +3399,16 @@ jobs:
           # (#4579, fixed by #4939; conda-package-304, upstreams.mock-conda
           # on 172.16.<slot>.70) and logout ending the session's access
           # token (#4883, fixed by #4948; auth-logout-revokes-access-token,
-          # storage.filesystem). Required.
+          # storage.filesystem). Required. Batch 3 adds CLIENT spans for the
+          # upstream senders with integer status codes and DB_QUERY_SPANS
+          # (artifact-keeper-test#639; #3954, #4931, fixed by #4959, #4960;
+          # otlp-upstream-client-spans, telemetry.otlp-spans on the dtf
+          # network + upstreams.mock-recorder on 172.16.<slot>.77). It shares
+          # the otlp-spans sink profile with bind-ip-and-otel, which gates
+          # 1.11.x in ops-1.11.x, so it runs here instead, after
+          # otlp-logs-metrics on the same slot, one after another.
           - group: features-1.12.0-api
-            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token
+            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token otlp-upstream-client-spans
           # 1.12.0 scan-on-proxy (artifact-keeper-test#628-#630): Go,
           # RubyGems and Composer (#4103-#4105, fixed by #4942), Pub and
           # Conan (#4107, #4108, fixed by #4943) and CocoaPods and Swift
@@ -3406,13 +3416,21 @@ jobs:
           # inline scan gate, graded by the backend image's bundled Grype
           # (storage.filesystem + upstreams.mock-scan-formats on
           # 172.16.<slot>.72; the three tiers share the mock and run one
-          # after another on the group's slot). FEATURE gates: red on every
-          # 1.11.x image. Never cherry-pick these tiers onto this repo's
-          # release/1.11.x and never move them into a group a 1.11.x gate is
-          # expected to pass; on a 1.11.x candidate they run as NOT ON THIS
-          # LINE. Local containers only, so required.
+          # after another on the group's slot). Batch 3
+          # (artifact-keeper-test#644-#647) adds the request coordinate pins
+          # for Go, Composer and Conan (#4952, fixed by #4964), Debian and
+          # RPM (#4111, #4112, fixed by #4965), Alpine (#4113, fixed by
+          # #4966) and the refused-content audit row, proxy-blocked and
+          # policy-blocks listings, 403 for scan-policy holds, the locked
+          # scan config and gated checksums (#4777, #4510, #4363, #4288,
+          # fixed by #4967, #4968, #4969; scan-gate-blocked-body-and-audit),
+          # all on the same mock; seven tiers, about 4 min locally. FEATURE
+          # gates: red on every 1.11.x image. Never cherry-pick these tiers
+          # onto this repo's release/1.11.x and never move them into a group
+          # a 1.11.x gate is expected to pass; on a 1.11.x candidate they
+          # run as NOT ON THIS LINE. Local containers only, so required.
           - group: features-1.12.0-scan-on-proxy
-            tiers: scan-on-proxy-go-rubygems-composer scan-on-proxy-pub-conan scan-on-proxy-cocoapods-swift
+            tiers: scan-on-proxy-go-rubygems-composer scan-on-proxy-pub-conan scan-on-proxy-cocoapods-swift scan-on-proxy-coordinate-pins scan-on-proxy-debian-rpm scan-on-proxy-alpine scan-gate-blocked-body-and-audit
           # 1.12.0 proxy cache (artifact-keeper-test#635, #636): a per-Remote
           # byte cap with LRU eviction (#4660, fixed by #4949), digest-keyed
           # pull history and statistics retention (#4542, #4541, fixed by
@@ -3431,6 +3449,40 @@ jobs:
           # containers only, so required.
           - group: features-1.12.0-proxy-cache
             tiers: proxy-cache-cap-and-history azure-proxy-cache
+          # 1.12.0 storage (artifact-keeper-test#637, #638, #648, #649):
+          # storage GC deletes outside the claim transaction under a per-run
+          # budget (#2524, fixed by #4953; storage-gc-bounded-deletes,
+          # storage.s3 + storage.s3-slow-delete, a delete-holding shim in
+          # front of MinIO, + gc.storage-budget), the oci_manifests table
+          # reconciled at startup and on a schedule (#4955, fixed by #4954;
+          # oci-manifests-reconcile, gc.oci-manifests-reconcile-fast),
+          # corrupted stored objects failing closed with 502 on format and
+          # virtual routes (#4323, fixed by #4983;
+          # storage-integrity-serve-routes) and conditional generic PUTs with
+          # If-Match / If-None-Match (#4186, fixed by #4983;
+          # generic-conditional-put, the cases #648 first added to
+          # generic-concurrent-put-contract, split out so fixes-1.11.4 stays
+          # green on 1.11.x). About 3 min locally. FEATURE gates: red on
+          # every 1.11.x image. Never cherry-pick these tiers onto this
+          # repo's release/1.11.x and never move them into a group a 1.11.x
+          # gate is expected to pass; on a 1.11.x candidate they run as NOT
+          # ON THIS LINE. Local containers only, so required.
+          - group: features-1.12.0-storage
+            tiers: storage-gc-bounded-deletes oci-manifests-reconcile storage-integrity-serve-routes generic-conditional-put
+          # 1.12.0 conda (artifact-keeper-test#641, #642): CEP-16 shards
+          # stored at write time and served by address in one lookup, p95
+          # flat in channel size (#4173, fixed by #4961; conda-shard-o1),
+          # and hosted repodata served from revisions, one render for
+          # concurrent cold requests and a warm revision cache (#4174,
+          # #4176, #4882, fixed by #4961, #4962; conda-repodata-revision).
+          # storage.filesystem only, about 2 min locally; its own job keeps
+          # the latency assertions off the api group's load. FEATURE gates:
+          # red on every 1.11.x image. Never cherry-pick these tiers onto
+          # this repo's release/1.11.x and never move them into a group a
+          # 1.11.x gate is expected to pass; on a 1.11.x candidate they run
+          # as NOT ON THIS LINE. Local containers only, so required.
+          - group: features-1.12.0-conda
+            tiers: conda-shard-o1 conda-repodata-revision
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

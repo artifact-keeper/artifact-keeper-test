@@ -18,17 +18,9 @@
 #        part of the row write, so exactly one racer is answered 201 and keeps
 #        its bytes, every other one gets the documented 409.
 #
-# THE FEATURE (artifact-keeper#4186)
-# The same PUT honours If-Match / If-None-Match against the artifact's ETag
-# (its quoted SHA-256, now on the 201 and the download). Racing conditional
-# PUTs on one ETag (or If-None-Match: * on a free path) have exactly one 201;
-# the others get 412 PRECONDITION_FAILED. A malformed precondition is 400.
+# RED image: ak-backend:1.11.0 to 1.11.3. GREEN: an image with the #4832 fix.
 #
-# RED image: ak-backend:1.11.0 to 1.11.3 for #4832; ak-backend:1.11.5 for the
-# #4186 cases (headers ignored: If-Match racers all 409, If-None-Match racers
-# 1x201 + 409s, versioned racers all 201, no ETag). GREEN: 1.12.0 with #4186.
-#
-# RATE_LIMIT_ENABLED=false: 16 concurrent uploads (x4 waves) plus ~40 calls back to back.
+# RATE_LIMIT_ENABLED=false: 16 concurrent uploads plus ~25 calls back to back.
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

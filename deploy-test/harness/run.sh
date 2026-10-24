@@ -472,7 +472,15 @@ case "$CMD" in
     # conditional conda package downloads (#4579), logout ending the access
     # token (#4883), the per-Remote cache cap, digest-keyed pull history,
     # statistics retention and Maven X-Checksum-SHA1 (#4660, #4542, #4541,
-    # #4573) and the proxy cache on Azure Blob storage (#4320).
+    # #4573) and the proxy cache on Azure Blob storage (#4320). Batch 3:
+    # scan-on-proxy coordinate pins for Go, Composer and Conan (#4952),
+    # Debian, RPM and Alpine (#4111-#4113), the scan gate's refused-content
+    # audit, listing and 403 (#4777, #4510, #4363, #4288), bounded storage GC
+    # deletes (#2524), the oci_manifests reconcile (#4955), corrupted objects
+    # failing closed on format and virtual routes (#4323), conditional
+    # generic PUTs (#4186, split out of generic-concurrent-put-contract),
+    # CEP-16 shards stored at write time (#4173), conda repodata revisions
+    # (#4174, #4176, #4882) and CLIENT spans for upstream senders (#3954).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -530,7 +538,12 @@ case "$CMD" in
              oci-blob-completion-retry \
              scan-on-proxy-go-rubygems-composer scan-on-proxy-pub-conan scan-on-proxy-cocoapods-swift \
              api-contracts-1120 conda-package-304 auth-logout-revokes-access-token \
-             proxy-cache-cap-and-history azure-proxy-cache; do
+             proxy-cache-cap-and-history azure-proxy-cache \
+             scan-on-proxy-coordinate-pins scan-on-proxy-debian-rpm scan-on-proxy-alpine \
+             scan-gate-blocked-body-and-audit \
+             storage-gc-bounded-deletes oci-manifests-reconcile storage-integrity-serve-routes \
+             generic-conditional-put \
+             conda-shard-o1 conda-repodata-revision otlp-upstream-client-spans; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
