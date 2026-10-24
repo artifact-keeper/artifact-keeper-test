@@ -84,6 +84,11 @@
 #       dtf.vulnpkg 1.0.0  ships a Gemfile.lock pinning rack 2.0.7
 #       dtf.cleanpkg 1.0.0
 #       dtf.liarpkg 1.0.0  no Package.swift
+#   Coordinate pins (#4952): the vulnerable coordinate as its own archive,
+#   with nothing vulnerable inside, so only a pin on the request grades it
+#     goproxy/golang.org/x/text/@v/v0.3.0.zip   (GHSA-69ch-w2m2-3vjp, high)
+#     composer guzzlehttp/guzzle 6.5.0          (GHSA-f2wf-25xc-69c9, high)
+#     conan openssl/1.1.1k conan_sources.tgz    (CVE-2021-3711, critical)
 #
 # Control endpoints (never counted):
 #   GET /__readyz                 healthcheck
@@ -309,6 +314,9 @@ def add_go(module, version, requires=(), prefix_version=None):
 add_go("example.com/dtfscan/vulnmod", "v1.0.0", requires=[("golang.org/x/text", "v0.3.0")])
 add_go("example.com/dtfscan/cleanmod", "v1.0.0")
 add_go("example.com/dtfscan/liarmod", "v2.0.0", prefix_version="v1.0.0")
+# #4952: a module whose own coordinate has an advisory and whose zip requires
+# nothing; graded vulnerable only when the scan pins the requested module.
+add_go("golang.org/x/text", "v0.3.0")
 
 
 # ----------------------------------------------------------------- RubyGems
@@ -386,6 +394,8 @@ def add_composer(name, version, declared=None, lock_packages=()):
 add_composer("dtf/vulnpkg", "1.0.0", lock_packages=[("guzzlehttp/guzzle", "6.5.0")])
 add_composer("dtf/cleanpkg", "1.0.0")
 add_composer("dtf/liarpkg", "1.0.0", declared="other/pkg")
+# #4952: the vulnerable package itself, with no lockfile inside.
+add_composer("guzzlehttp/guzzle", "6.5.0")
 FILES["composer/packages.json"] = json.dumps({"metadata-url": "/composer/p2/%package%.json", "packages": []}).encode()
 
 
@@ -420,7 +430,7 @@ add_pub("dtf_scanliar", "2.0.0", declared="1.0.0")
 CONAN_RREV = "0123456789abcdef0123456789abcdef"
 
 
-def add_conan(name, version, requires=(), broken=False):
+def add_conan(name, version, requires=(), broken=False, note=None):
     base = f"conan/v2/conans/{name}/{version}/_/_/revisions/{CONAN_RREV}/files"
     conanfile = f"from conan import ConanFile\nclass Dtf(ConanFile):\n    name = '{name}'\n    version = '{version}'\n"
     FILES[f"{base}/conanfile.py"] = conanfile.encode()
@@ -429,6 +439,9 @@ def add_conan(name, version, requires=(), broken=False):
         FILES[f"{base}/conan_sources.tgz"] = b"this is not a gzipped tar"
         return
     txt = "[requires]\n" + "".join(f"{r}\n" for r in requires)
+    if note:
+        # Distinct bytes per reference: verdicts are stored per digest.
+        txt = f"# {note}\n" + txt
     FILES[f"{base}/conan_sources.tgz"] = tar_gz(
         [("conanfile.txt", txt), ("src/dtf.c", "int dtf(void) { return 0; }\n")]
     )
@@ -437,6 +450,8 @@ def add_conan(name, version, requires=(), broken=False):
 add_conan("dtfvuln", "1.0.0", requires=["openssl/1.1.1k"])
 add_conan("dtfclean", "1.0.0")
 add_conan("dtfliar", "1.0.0", broken=True)
+# #4952: the vulnerable reference itself, requiring nothing.
+add_conan("openssl", "1.1.1k", note="openssl/1.1.1k")
 
 
 # ----------------------------------------------------------------- CocoaPods / Swift
