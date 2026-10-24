@@ -1,0 +1,40 @@
+# DTF tier manifest: maven-age-gate  (artifact-keeper#4702)
+# Profile-set: filesystem / single + a canned Maven upstream (mock-maven,
+# profile upstreams.mock-maven-agegate) serving com.example.agegate:widget in
+# an old version (1.0.0, deployed 2024-01-02) and a young one (2.0.0, deployed
+# a day ago), Last-Modified on every file, and a GA-level maven-metadata.xml
+# listing both (latest/release 2.0.0).
+#
+# THE FEATURE (#4702): the publish-age gate, until now npm, PyPI, Go, Cargo
+# and VS Code only, covers Maven (and Gradle) Remotes and the Virtuals over
+# them. A version's publish time is the upstream Last-Modified of its POM.
+# Every file of a younger-than-the-gate version, and its checksum, answers
+# the shared 451 age_gate_blocked refusal and records a pending review; the
+# GA-level maven-metadata.xml drops the version (latest/release re-pointed)
+# so resolvers never pick it. An approved review serves it.
+#
+# THE GATES (Remote over the mock, gate on, min_age_days 7, mode
+# upstream_publish_time; a Virtual with the Remote as its only member):
+#   (FIX)     maven-metadata.xml lists only 1.0.0 with latest/release 1.0.0,
+#             and its .sha1 matches the served body; the young jar, POM and
+#             jar.sha1 answer 451 age_gate_blocked naming the package and
+#             version; the young jar is never fetched upstream; one pending
+#             review for 2.0.0; through the Virtual the young jar is 451 and
+#             the merged metadata lists only 1.0.0; once the review is
+#             approved the young jar downloads with the mock's bytes.
+#             RED on 1.11.5: the age-gate config is refused for Maven (the
+#             oracle then switches the gate on in the database, so the red run
+#             shows what a gated Maven Remote did): metadata lists both,
+#             every young file 200, no review.
+#   (CONTROL) both images: the old 1.0.0 jar downloads 200 with the mock's
+#             bytes from the Remote and the Virtual; the metadata .sha1
+#             matches the metadata body.
+#
+# The age gate has no record-only mode (that is the scan policy's
+# `record_only`); the sanctioned way to let a young version through is an
+# approved review, which this tier exercises instead.
+#
+# RATE_LIMIT_ENABLED=false: admin login + setup + a few dozen GETs back to back.
+PROFILES="storage.filesystem upstreams.mock-maven-agegate"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

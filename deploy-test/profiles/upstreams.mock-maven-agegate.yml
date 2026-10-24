@@ -1,0 +1,63 @@
+# =============================================================================
+# profiles/upstreams.mock-maven-agegate.yml: a canned Maven upstream for the
+# Maven age gate (artifact-keeper#4702)
+# =============================================================================
+# Adds `mock-maven` (harness/tiers/maven-age-gate/fixtures/mock_maven_agegate.py):
+# one artifact, com.example.agegate:widget, with an old (2024) and a young
+# (one day old) version, Last-Modified on every file, and a GA-level
+# maven-metadata.xml listing both.
+#
+# The overlay:
+#   * ADDS  `mock-maven` at 172.16.<slot>.78 on a per-slot 172.16.<slot>.0/24
+#     subnet (the SUBNET CHOICE note in upstreams.mock-static.yml applies; do
+#     not combine this profile with another 172.16.<slot>.0/24 mock).
+#   * PATCHES backend onto that network, admits ONLY the mock's /32 through
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS and sets UPSTREAM_ALLOW_PRIVATE_IPS so the
+#     Remote create and the proxy fetch reach it.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-maven:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-maven
+    command: ["python3", "/app/mock_maven_agegate.py"]
+    environment:
+      MOCK_PORT: "80"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    volumes:
+      - "${DTF_DIR}/harness/tiers/maven-age-gate/fixtures/mock_maven_agegate.py:/app/mock_maven_agegate.py:ro"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockmaven:
+        ipv4_address: 172.16.${DTF_SLOT}.78
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-maven:
+        condition: service_healthy
+    environment:
+      UPSTREAM_ALLOW_PRIVATE_IPS: "true"
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.78/32
+    networks:
+      dtf: {}
+      mockmaven: {}
+
+networks:
+  mockmaven:
+    name: ak-dtf${DTF_SLOT}-mockmaven
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
