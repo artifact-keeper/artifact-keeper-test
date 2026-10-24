@@ -1,0 +1,7 @@
+# Tier-local override for otlp-logs-metrics: opt in to the two signals #4820
+# added. Traces need no setting (on whenever an endpoint is set).
+services:
+  backend:
+    environment:
+      OTEL_LOGS_EXPORTER: "otlp"
+      OTEL_METRICS_EXPORTER: "otlp"

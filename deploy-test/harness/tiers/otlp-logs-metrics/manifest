@@ -1,0 +1,55 @@
+# DTF tier manifest: otlp-logs-metrics  (artifact-keeper#4337, fixed by #4820; 1.12.0)
+# Profile-set: filesystem + telemetry.otlp-sink (OTLP/HTTP export, http/protobuf,
+# to the stdlib sink harness/tiers/deps-1.12.0-controls/fixtures/otlp_sink.py,
+# which counts POSTs per path and keeps their raw bodies for a grep, optionally
+# restricted to one path). The profile points OTEL_EXPORTER_OTLP_ENDPOINT at
+# http://172.16.<slot>.71/v1/traces, the form the docs and every profile use.
+# A sibling of bind-ip-and-otel, which gates spans; this tier gates logs and
+# metrics. Each leg recreates only the backend with fixtures/backend.common.yml
+# (2 s metric interval, 500 ms log batch delay, sqlx::query=debug) and, where
+# the signals are wanted, fixtures/backend.signals.yml.
+#
+# THE FEATURE
+# #4820 exports tracing events as OTLP log records and the metrics recorder's
+# series as OTLP metrics, beside the existing span export. Both signals are
+# opt in (OTEL_LOGS_EXPORTER=otlp, OTEL_METRICS_EXPORTER=otlp) and, over http,
+# go to the endpoint with /v1/traces swapped for /v1/logs and /v1/metrics.
+# sqlx's per-statement events never become log records (SQL text stays out of
+# the collector). Exporters fail soft: a collector that is down must not slow
+# startup, requests or shutdown.
+#
+# THE LEGS AND GATES
+# Leg U, exporters unset.
+#   (CONTROL) spans arrive on /v1/traces (the request's marker is in them);
+#             nothing arrives on /v1/logs or /v1/metrics over 3 metric
+#             intervals. Both images.
+# Leg O, OTEL_LOGS_EXPORTER=otlp and OTEL_METRICS_EXPORTER=otlp.
+#   (CONTROL) spans still arrive on /v1/traces with the marker. Both images.
+#   (FIX)     RED on 1.11.5 (it ignores both variables; nothing but traces):
+#             logs      POSTs on /v1/logs; the bodies carry "Request
+#                       completed" with the X-Correlation-ID of at least 8 of
+#                       the 10 requests, and "Starting Artifact Keeper". (The
+#                       request's method and uri are fields of the enclosing
+#                       http_request span, not of the event, and the OTel log
+#                       layer exports event fields only; a record joins its
+#                       span through trace_id/span_id.)
+#             metrics   POSTs on /v1/metrics whose bodies carry
+#                       ak_http_requests_total and
+#                       ak_http_request_duration_seconds.
+#             no SQL    stdout shows SQL statement text (sqlx::query=debug),
+#                       yet no /v1/logs body contains SELECT, INSERT INTO,
+#                       UPDATE ... SET or DELETE FROM. Requires log bodies, so
+#                       it is red on 1.11.5 too.
+#   (startup) the "OpenTelemetry tracing enabled" line still prints.
+# Leg D, signals on, the sink container stopped (its address unreachable).
+#   (GUARD)   /readyz answers within the slower of legs U and O + 15 s;
+#             at least 8 of 10 requests take under 1 s and the median is
+#             within leg O's median + 300 ms; `docker stop` completes within
+#             25 s with a clean exit (not SIGKILL) and no panic is logged.
+#             Both images (1.11.5 exports spans only, which already fail
+#             soft); they guard the new exporters against a regression.
+#
+# RATE_LIMIT_ENABLED=false: three logins across the recreates.
+PROFILES="storage.filesystem telemetry.otlp-sink"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
