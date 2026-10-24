@@ -1,4 +1,5 @@
-# DTF tier manifest: remote-instance-relay  (artifact-keeper#4776, fixed by #4789, 1.11.3)
+# DTF tier manifest: remote-instance-relay  (artifact-keeper#4776, fixed by #4789, 1.11.3;
+#   PATCH: artifact-keeper#4795, fixed by #4876, 1.12.0)
 # Profile-set: filesystem + a real second Artifact Keeper instance
 # (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
 # published on 127.0.0.1:${TRIVY_PORT}). Instance A is `backend`; B is the
@@ -58,6 +59,26 @@
 #                       remote_instances table does not grow.
 #                       1.11.2: 200 [] / 200 with the chained repo / 200 and a
 #                       new row on B.
+#
+# PATCH (#4795, fixed by #4876, 1.12.0)
+# The relay route registered GET/POST/PUT/DELETE only, so PATCH through it was
+# 405 and a client could not apply a partial update (PATCH
+# /api/v1/repositories/{key}, admin settings, ...) on the remote. #4876 adds
+# .patch(proxy_patch), which runs the same send_proxy_request as POST/PUT.
+#   (CONTROL) both images: a second, non-admin user on A gets 404 relaying a
+#             GET through the admin's instance.
+#   (FIX)     RED on 1.11.5 (every PATCH is 405):
+#             patch     relayed PATCH api/v1/repositories/{R3} {description}
+#                       -> 200 with B's updated repository; B's row changes and
+#                       B's log shows the PATCH.
+#             status    relayed PATCH of a key B lacks returns B's 404 and the
+#                       same {code,message} body as the direct call.
+#             guards    PATCH to admin/settings is 400 'must start with api/';
+#                       PATCH to api/v1/instances/{id} is 400 VALIDATION_ERROR;
+#                       the second user's PATCH through the admin's instance
+#                       is 404. Each carries a unique ?probe= marker that must
+#                       never appear in B's access log (B is the hit recorder),
+#                       and B's row is unchanged.
 #
 # Teardown note: `harness/run.sh down --slot N` only knows the --<dimension>
 # profiles, not this one. A tier run without --keep tears B down itself; after
