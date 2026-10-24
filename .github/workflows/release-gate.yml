@@ -3365,6 +3365,17 @@ jobs:
           # tiers. Red on 1.11.6. Required.
           - group: fixes-1.11.7-replication
             tiers: replication-labels-and-late-metadata
+          # oci (artifact-keeper-test#619): a monolithic blob completion PUT
+          # cut by a reverse proxy's 504 and re-sent at once is 201, not 409
+          # "upload session is already being modified", and leaves no
+          # `committing` session row (#4902, fixed by #4919;
+          # storage.filesystem + proxy.timeout-504, a stdlib-python proxy
+          # from the tier's own fixtures on the dtf network and the slot's
+          # spare port, no 172.16.<slot>.0/24 subnet; under a minute). Its
+          # own group keeps it off the replication tier's runtime. Red on
+          # 1.11.6. Required.
+          - group: fixes-1.11.7-oci
+            tiers: oci-blob-completion-retry
           # 1.12.0 feature coverage (artifact-keeper-test#624, #625, tracked
           # in artifact-keeper#4932): the paged GET /groups/{id}/members of
           # an LDAP-synced group (#4027, fixed by #4821; storage.filesystem,

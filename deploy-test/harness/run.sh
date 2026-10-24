@@ -461,7 +461,8 @@ case "$CMD" in
     # 1.11.6: the PyPI upstream_publish_time age gate resolving a PEP
     # 440-equal filename version to its release publish time (#4907).
     # 1.11.7: protobuf label moves, late NuGet metadata and protobuf commits
-    # reaching a push peer (#4889, #4921); maven-upload-tx-and-quality-s3 above gates #4892 since
+    # reaching a push peer (#4889, #4921), and a 504-cut OCI blob completion
+    # that succeeds when re-sent (#4902); maven-upload-tx-and-quality-s3 above gates #4892 since
     # #617. 1.12.0 features (red on every 1.11.x image): the paged group
     # members list (#4027) and OTLP log and metric export (#4337);
     # remote-instance-relay above gates the relayed PATCH (#4795) since #623.
@@ -518,7 +519,8 @@ case "$CMD" in
              conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve \
              cran-remote-packages-index repo-delete-purges-revisions \
              pypi-age-gate-pep440-lookup \
-             replication-labels-and-late-metadata group-members-list otlp-logs-metrics; do
+             replication-labels-and-late-metadata group-members-list otlp-logs-metrics \
+             oci-blob-completion-retry; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
