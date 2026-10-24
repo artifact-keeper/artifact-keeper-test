@@ -1,0 +1,23 @@
+# DTF tier manifest: scan-on-proxy-go-rubygems-composer  (artifact-keeper
+# 1.12.0: #4103 Go, #4104 RubyGems, #4105 Composer, epic #4097)
+# Profile-set: filesystem + the mock-scan-formats upstream (a Go module proxy,
+# a RubyGems source and a Composer repository whose packages carry known
+# identities). LOCAL-ONLY: the verdicts come from the backend image's bundled
+# Grype and its pre-seeded vulnerability DB (no scanner sidecar, no OSV, no
+# internet).
+#
+# WHAT IT GUARDS: before 1.12.0 a Go, RubyGems or Composer Remote (or a
+# Virtual over one) with scan_on_proxy=true streamed every proxied package
+# unscanned (200, no X-AK-Scan) and /api/v1/formats reported the three as
+# `accepted`. 1.12.0 routes module zips, .gem files and dist archives through
+# the shared inline scan gate: vulnerable -> 403 scan_blocked, clean -> 200
+# X-AK-Scan: clean with the verdict reused, a package whose own metadata does
+# not back the requested coordinate -> 423 under fail_closed with no verdict
+# row, fail_open -> served pending then blocked once the async verdict lands,
+# record_only -> served X-AK-Scan: recorded; metadata stays unscanned.
+#
+# Red: ak-backend:1.11.5. Green: an image carrying artifact-keeper#4103-#4105.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
