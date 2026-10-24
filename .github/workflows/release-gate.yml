@@ -3387,9 +3387,50 @@ jobs:
           # red on every 1.11.x image, green on main from 162620e3. Never
           # cherry-pick these tiers onto this repo's release/1.11.x and never
           # move them into a group a 1.11.x gate is expected to pass; on a
-          # 1.11.x candidate they run as NOT ON THIS LINE. Required.
+          # 1.11.x candidate they run as NOT ON THIS LINE. The group also
+          # carries three FEATURE gates of the same kind
+          # (artifact-keeper-test#631, #632, #634): the downloader filter on
+          # the admin downloads routes and lifecycle match.format (#4839,
+          # #2024, fixed by #4935, #4937; api-contracts-1120,
+          # storage.filesystem), 304 on conditional conda package downloads
+          # (#4579, fixed by #4939; conda-package-304, upstreams.mock-conda
+          # on 172.16.<slot>.70) and logout ending the session's access
+          # token (#4883, fixed by #4948; auth-logout-revokes-access-token,
+          # storage.filesystem). Required.
           - group: features-1.12.0-api
-            tiers: group-members-list otlp-logs-metrics
+            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token
+          # 1.12.0 scan-on-proxy (artifact-keeper-test#628-#630): Go,
+          # RubyGems and Composer (#4103-#4105, fixed by #4942), Pub and
+          # Conan (#4107, #4108, fixed by #4943) and CocoaPods and Swift
+          # (#4109, #4110, fixed by #4944) proxied archives go through the
+          # inline scan gate, graded by the backend image's bundled Grype
+          # (storage.filesystem + upstreams.mock-scan-formats on
+          # 172.16.<slot>.72; the three tiers share the mock and run one
+          # after another on the group's slot). FEATURE gates: red on every
+          # 1.11.x image. Never cherry-pick these tiers onto this repo's
+          # release/1.11.x and never move them into a group a 1.11.x gate is
+          # expected to pass; on a 1.11.x candidate they run as NOT ON THIS
+          # LINE. Local containers only, so required.
+          - group: features-1.12.0-scan-on-proxy
+            tiers: scan-on-proxy-go-rubygems-composer scan-on-proxy-pub-conan scan-on-proxy-cocoapods-swift
+          # 1.12.0 proxy cache (artifact-keeper-test#635, #636): a per-Remote
+          # byte cap with LRU eviction (#4660, fixed by #4949), digest-keyed
+          # pull history and statistics retention (#4542, #4541, fixed by
+          # #4946) and X-Checksum-SHA1 on proxied Maven serves (#4573, fixed
+          # by #4936) in proxy-cache-cap-and-history (storage.filesystem +
+          # upstreams.mock-files + stats.retention-fast), and the proxy
+          # cache on Azure Blob storage when AZURE_PROXY_CACHE_ENABLED is set
+          # (#4320, fixed by #4956) in azure-proxy-cache (storage.azurite +
+          # storage.azurite-proxy-cache + upstreams.mock-static). The Azurite
+          # profile is also used by azure-default-backend, but that tier
+          # gates 1.11.x in storage-1.11.0, so this tier gets its own
+          # feature group instead. FEATURE gates: red on every 1.11.x image.
+          # Never cherry-pick these tiers onto this repo's release/1.11.x and
+          # never move them into a group a 1.11.x gate is expected to pass;
+          # on a 1.11.x candidate they run as NOT ON THIS LINE. Local
+          # containers only, so required.
+          - group: features-1.12.0-proxy-cache
+            tiers: proxy-cache-cap-and-history azure-proxy-cache
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
