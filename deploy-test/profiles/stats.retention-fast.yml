@@ -1,0 +1,24 @@
+# =============================================================================
+# profiles/stats.retention-fast.yml: download statistics retention on, with a
+# short scheduler interval
+# =============================================================================
+# The proxy-cache-cap-and-history tier needs the 1.12.0 download statistics
+# retention (#4541) on, and its pass to run inside the oracle's wait:
+#
+#   DOWNLOAD_STATS_RETENTION_DAYS=30         rows older than 30 days are
+#                                            deleted from download_statistics
+#                                            and proxy_download_statistics.
+#                                            Default unset (off).
+#   DOWNLOAD_STATS_RETENTION_INTERVAL_SECS=10
+#                                            the pass runs every 10 s (after a
+#                                            10 to 40 s startup delay). Default
+#                                            one hour.
+#
+# A release without #4541 ignores both. Nothing else changes, so it composes
+# onto any storage / upstream profile.
+# =============================================================================
+services:
+  backend:
+    environment:
+      DOWNLOAD_STATS_RETENTION_DAYS: "30"
+      DOWNLOAD_STATS_RETENTION_INTERVAL_SECS: "10"
