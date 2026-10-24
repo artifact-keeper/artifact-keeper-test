@@ -84,6 +84,30 @@
 #       dtf.vulnpkg 1.0.0  ships a Gemfile.lock pinning rack 2.0.7
 #       dtf.cleanpkg 1.0.0
 #       dtf.liarpkg 1.0.0  no Package.swift
+#   Coordinate pins (#4952): the vulnerable coordinate as its own archive,
+#   with nothing vulnerable inside, so only a pin on the request grades it
+#     goproxy/golang.org/x/text/@v/v0.3.0.zip   (GHSA-69ch-w2m2-3vjp, high)
+#     composer guzzlehttp/guzzle 6.5.0          (GHSA-f2wf-25xc-69c9, high)
+#     conan openssl/1.1.1k conan_sources.tgz    (CVE-2021-3711, critical)
+#   Debian (upstream base http://<self>/debian)                 #4111
+#     dists/bookworm/Release                    Origin Debian, Version 12.7
+#     pool/main/o/openssl/openssl_3.0.11-1~deb12u2_amd64.deb
+#                                               (CVE-2024-5535 and others)
+#     pool/main/d/dtf-scanclean/dtf-scanclean_1.0-1_amd64.deb
+#     pool/main/d/dtf-scanliar/dtf-scanliar_2.0-1_amd64.deb  control says 1.0-1
+#   debian-norel (no Release): pool/main/d/dtf-norelease/..._1.0-1_amd64.deb
+#   RPM (upstream base http://<self>/rpm), under 9/BaseOS/x86_64/os/
+#     Packages/o/openssl-libs-3.0.7-17.el9_2.x86_64.rpm  epoch 1, RHEL 9
+#                                               (CVE-2023-0464 and others)
+#     Packages/d/dtf-scanclean-1.0-1.el9.noarch.rpm
+#     Packages/d/dtf-scanliar-2.0-1.el9.noarch.rpm   header says 1.0
+#     Packages/d/dtf-notag-1.0-1.noarch.rpm          no dist tag
+#     repodata/repomd.xml
+#   Alpine (upstream base http://<self>/alpine)                 #4113
+#     v3.19/main/x86_64/busybox-1.36.1-r15.apk       (CVE-2023-42363 and others)
+#     v3.19/main/x86_64/dtf-scanclean-1.0-r0.apk
+#     v3.19/main/x86_64/dtf-scanliar-2.0-r0.apk      .PKGINFO says 1.0-r0
+#     latest-stable/main/x86_64/dtf-scanclean-1.0-r0.apk  (no fixed release)
 #
 # Control endpoints (never counted):
 #   GET /__readyz                 healthcheck
@@ -309,6 +333,9 @@ def add_go(module, version, requires=(), prefix_version=None):
 add_go("example.com/dtfscan/vulnmod", "v1.0.0", requires=[("golang.org/x/text", "v0.3.0")])
 add_go("example.com/dtfscan/cleanmod", "v1.0.0")
 add_go("example.com/dtfscan/liarmod", "v2.0.0", prefix_version="v1.0.0")
+# #4952: a module whose own coordinate has an advisory and whose zip requires
+# nothing; graded vulnerable only when the scan pins the requested module.
+add_go("golang.org/x/text", "v0.3.0")
 
 
 # ----------------------------------------------------------------- RubyGems
@@ -386,6 +413,8 @@ def add_composer(name, version, declared=None, lock_packages=()):
 add_composer("dtf/vulnpkg", "1.0.0", lock_packages=[("guzzlehttp/guzzle", "6.5.0")])
 add_composer("dtf/cleanpkg", "1.0.0")
 add_composer("dtf/liarpkg", "1.0.0", declared="other/pkg")
+# #4952: the vulnerable package itself, with no lockfile inside.
+add_composer("guzzlehttp/guzzle", "6.5.0")
 FILES["composer/packages.json"] = json.dumps({"metadata-url": "/composer/p2/%package%.json", "packages": []}).encode()
 
 
@@ -420,7 +449,7 @@ add_pub("dtf_scanliar", "2.0.0", declared="1.0.0")
 CONAN_RREV = "0123456789abcdef0123456789abcdef"
 
 
-def add_conan(name, version, requires=(), broken=False):
+def add_conan(name, version, requires=(), broken=False, note=None):
     base = f"conan/v2/conans/{name}/{version}/_/_/revisions/{CONAN_RREV}/files"
     conanfile = f"from conan import ConanFile\nclass Dtf(ConanFile):\n    name = '{name}'\n    version = '{version}'\n"
     FILES[f"{base}/conanfile.py"] = conanfile.encode()
@@ -429,6 +458,9 @@ def add_conan(name, version, requires=(), broken=False):
         FILES[f"{base}/conan_sources.tgz"] = b"this is not a gzipped tar"
         return
     txt = "[requires]\n" + "".join(f"{r}\n" for r in requires)
+    if note:
+        # Distinct bytes per reference: verdicts are stored per digest.
+        txt = f"# {note}\n" + txt
     FILES[f"{base}/conan_sources.tgz"] = tar_gz(
         [("conanfile.txt", txt), ("src/dtf.c", "int dtf(void) { return 0; }\n")]
     )
@@ -437,6 +469,8 @@ def add_conan(name, version, requires=(), broken=False):
 add_conan("dtfvuln", "1.0.0", requires=["openssl/1.1.1k"])
 add_conan("dtfclean", "1.0.0")
 add_conan("dtfliar", "1.0.0", broken=True)
+# #4952: the vulnerable reference itself, requiring nothing.
+add_conan("openssl", "1.1.1k", note="openssl/1.1.1k")
 
 
 # ----------------------------------------------------------------- CocoaPods / Swift
@@ -473,6 +507,159 @@ def add_swift(scope, name, version, vendored_lock=False, manifest=True):
 add_swift("dtf", "vulnpkg", "1.0.0", vendored_lock=True)
 add_swift("dtf", "cleanpkg", "1.0.0")
 add_swift("dtf", "liarpkg", "1.0.0", manifest=False)
+
+
+# ----------------------------------------------------------------- OS packages
+# Debian, RPM and Alpine packages (#4111, #4112, #4113). A lone OS package
+# names no distribution release, so the backend grades it through a synthetic
+# installed system on the release the remote names (Debian: the cached
+# Release; RPM: the dist tag; Alpine: the branch). The packages are minimal
+# but real: an ar .deb with control.tar.gz and data.tar.gz, an RPM v3 lead +
+# signature header + main header + cpio.gz payload, and an .apk of three
+# gzip members (signature, control with .PKGINFO, data).
+def tar_raw(entries, eof=True):
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for name, data in entries:
+            data = data.encode() if isinstance(data, str) else data
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            ti.mtime = 1577836800
+            ti.mode = 0o644
+            t.addfile(ti, io.BytesIO(data))
+    out = raw.getvalue()
+    if not eof:
+        # apk segments are tar streams cut before the end-of-archive blocks.
+        out = out.rstrip(b"\0")
+        out += b"\0" * ((-len(out)) % 512)
+    return out
+
+
+def ar_member(name, data):
+    head = f"{name:<16}{0:<12}{0:<6}{0:<6}{'100644':<8}{len(data):<10}`\n".encode()
+    return head + data + (b"\n" if len(data) % 2 else b"")
+
+
+def deb_bytes(package, version, arch="amd64", source=None, declared=None):
+    control = f"Package: {package}\n"
+    if source:
+        control += f"Source: {source}\n"
+    control += (
+        f"Version: {declared or version}\nArchitecture: {arch}\n"
+        "Maintainer: DTF <dtf@example.invalid>\nDescription: dtf scan fixture\n"
+    )
+    ctl = gzip.compress(tar_raw([("./control", control)]), mtime=0)
+    data = gzip.compress(tar_raw([("./usr/share/doc/" + package + "/README", "dtf\n")]), mtime=0)
+    return b"!<arch>\n" + ar_member("debian-binary", b"2.0\n") + ar_member(
+        "control.tar.gz", ctl
+    ) + ar_member("data.tar.gz", data)
+
+
+def add_deb(base, component, package, version, arch="amd64", source=None, declared=None):
+    src = source or package
+    path = f"pool/{component}/{src[0]}/{src}/{package}_{version}_{arch}.deb"
+    FILES[f"{base}/{path}"] = deb_bytes(package, version, arch, source, declared)
+    return path
+
+
+def rpm_header(entries):
+    # entries: [(tag, type, bytes, count)]; type 6 STRING, 4 INT32, 8 STRING_ARRAY
+    index, store = b"", b""
+    for tag, typ, data, count in entries:
+        if typ == 4:
+            store += b"\0" * ((-len(store)) % 4)
+        index += tag.to_bytes(4, "big") + typ.to_bytes(4, "big")
+        index += len(store).to_bytes(4, "big") + count.to_bytes(4, "big")
+        store += data
+    return (
+        b"\x8e\xad\xe8\x01\0\0\0\0"
+        + len(entries).to_bytes(4, "big")
+        + len(store).to_bytes(4, "big")
+        + index
+        + store
+    )
+
+
+def rpm_bytes(name, version, release, arch, epoch=None, declared=None, sourcerpm=None):
+    s = lambda v: v.encode() + b"\0"
+    lead = b"\xed\xab\xee\xdb\x03\x00\x00\x00\x00\x01"
+    lead += name.encode()[:65].ljust(66, b"\0")
+    lead += b"\x00\x01\x00\x05" + b"\0" * 16
+    assert len(lead) == 96
+    sig = rpm_header([(1000, 4, (0).to_bytes(4, "big"), 1)])  # RPMSIGTAG_SIZE
+    sig += b"\0" * ((-len(sig)) % 8)
+    entries = [
+        (1000, 6, s(name), 1),
+        (1001, 6, s(declared or version), 1),
+        (1002, 6, s(release), 1),
+        (1004, 6, s("dtf scan fixture"), 1),  # SUMMARY
+        (1014, 6, s("MIT"), 1),  # LICENSE
+        (1022, 6, s(arch), 1),
+        (1044, 6, s(sourcerpm or f"{name}-{version}-{release}.src.rpm"), 1),
+        (1124, 6, s("cpio"), 1),  # PAYLOADFORMAT
+        (1125, 6, s("gzip"), 1),  # PAYLOADCOMPRESSOR
+    ]
+    if epoch is not None:
+        entries.append((1003, 4, int(epoch).to_bytes(4, "big"), 1))
+    entries.sort(key=lambda e: e[0])
+    trailer = b"070701" + b"0" * 8 * 13 + b"0000000B" + b"00000000" + b"TRAILER!!!\0"
+    trailer += b"\0" * ((-len(trailer)) % 4)
+    return lead + sig + rpm_header(entries) + gzip.compress(trailer, mtime=0)
+
+
+def add_rpm(base, name, version, release, arch, epoch=None, declared=None, sourcerpm=None):
+    path = f"9/BaseOS/x86_64/os/Packages/{name[0]}/{name}-{version}-{release}.{arch}.rpm"
+    FILES[f"{base}/{path}"] = rpm_bytes(name, version, release, arch, epoch, declared, sourcerpm)
+    return path
+
+
+def apk_bytes(pkgname, pkgver, arch="x86_64", origin=None, declared=None, desc="dtf scan fixture"):
+    info = (
+        f"# Generated by dtf\npkgname = {pkgname}\npkgver = {declared or pkgver}\n"
+        f"pkgdesc = {desc}\narch = {arch}\nlicense = MIT\n"
+    )
+    if origin:
+        info += f"origin = {origin}\n"
+    sig = gzip.compress(tar_raw([(".SIGN.RSA.dtf.rsa.pub", b"not a signature")], eof=False), mtime=0)
+    ctl = gzip.compress(tar_raw([(".PKGINFO", info)], eof=False), mtime=0)
+    data = gzip.compress(tar_raw([("usr/share/doc/" + pkgname + "/README", "dtf\n")]), mtime=0)
+    return sig + ctl + data
+
+
+def add_apk(base, branch, pkgname, pkgver, arch="x86_64", origin=None, declared=None):
+    path = f"{branch}/main/{arch}/{pkgname}-{pkgver}.apk"
+    # The branch is in the description so each branch's bytes (and so its
+    # digest-keyed verdict) are its own.
+    FILES[f"{base}/{path}"] = apk_bytes(pkgname, pkgver, arch, origin, declared, f"dtf scan fixture ({branch})")
+    return path
+
+
+# Debian (upstream base http://<self>/debian): a bookworm Release, so the
+# packages are graded on Debian 12. debian-norel has no Release at all.
+FILES["debian/dists/bookworm/Release"] = (
+    "Origin: Debian\nLabel: Debian\nSuite: stable\nVersion: 12.7\nCodename: bookworm\n"
+    "Date: Wed, 01 Jan 2020 00:00:00 UTC\nArchitectures: amd64\nComponents: main\n"
+    "Description: dtf scan fixture\n"
+).encode()
+add_deb("debian", "main", "openssl", "3.0.11-1~deb12u2")
+add_deb("debian", "main", "dtf-scanclean", "1.0-1")
+add_deb("debian", "main", "dtf-scanliar", "2.0-1", declared="1.0-1")
+add_deb("debian-norel", "main", "dtf-norelease", "1.0-1")
+# RPM (upstream base http://<self>/rpm): the yum layout dnf fetches.
+add_rpm("rpm", "openssl-libs", "3.0.7", "17.el9_2", "x86_64", epoch=1,
+        sourcerpm="openssl-3.0.7-17.el9_2.src.rpm")
+add_rpm("rpm", "dtf-scanclean", "1.0", "1.el9", "noarch")
+add_rpm("rpm", "dtf-scanliar", "2.0", "1.el9", "noarch", declared="1.0")
+add_rpm("rpm", "dtf-notag", "1.0", "1", "noarch")
+FILES["rpm/9/BaseOS/x86_64/os/repodata/repomd.xml"] = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<repomd xmlns="http://linux.duke.edu/metadata/repo">'
+    b"<revision>1577836800</revision></repomd>\n"
+)
+# Alpine (upstream base http://<self>/alpine).
+add_apk("alpine", "v3.19", "busybox", "1.36.1-r15", origin="busybox")
+add_apk("alpine", "v3.19", "dtf-scanclean", "1.0-r0")
+add_apk("alpine", "v3.19", "dtf-scanliar", "2.0-r0", declared="1.0-r0")
+add_apk("alpine", "latest-stable", "dtf-scanclean", "1.0-r0")
 
 
 def ctype(path):
