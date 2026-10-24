@@ -1,0 +1,28 @@
+# DTF tier manifest: conda-jlap-incremental  (artifact-keeper#4175, epic #4172)
+# Profile-set: filesystem / single.
+#
+# THE BUG (1.11.x)
+# #4175  a hosted subdir's JLAP was served only as repodata.json.jlap (conda
+#        requests repodata.jlap and got 404), and it named only the current
+#        index hash with no patches, so a JLAP client (conda
+#        --experimental=jlap) downloaded the whole repodata.json.zst after
+#        every channel change.
+#
+# THE FIX (1.12.0, artifact-keeper G5 PR3)
+#        each revision of a subdir is recorded with its BLAKE2b-256 and an
+#        RFC 6902 patch from the previous document is appended to a stored
+#        JLAP; range requests from the client's saved position return the new
+#        lines only.
+#
+# THE PRIMITIVES
+#   PUT    /conda/{hosted}/noarch/{file}         uploads (fixtures/conda/build.sh)
+#   DELETE /conda/{hosted}/noarch/{file}         withdraw
+#   a REAL conda 25.11 client (condaforge/miniforge3:25.11.0-1, the last line
+#   that still implements JLAP) with --experimental=jlap and
+#   local_repodata_ttl=0, talking to the backend through a logging reverse
+#   proxy (fixtures/logproxy.py) in the backend's network namespace.
+#
+# Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
