@@ -1,0 +1,47 @@
+# DTF tier manifest: proxy-cache-cap-and-history  (artifact-keeper#4660,
+# #4542, #4541, #4573; 1.12.0 lane G7)
+# Profile-set: filesystem + upstreams.mock-files (a stdlib-python upstream on
+# 172.16.<slot>.76 whose files the oracle writes over a control API) +
+# stats.retention-fast (download statistics retention on, 30 days, a 10 s
+# pass). The oracle reads proxy_cache_artifacts, proxy_download_statistics and
+# download_statistics directly and seeds proxy_scan_findings and backdated
+# statistics rows with psql.
+#
+# THE GAPS
+# #4660  A Remote had no byte cap on its proxy cache: quota_bytes only skips a
+#        single oversized object and lifecycle size_quota_bytes is refused on
+#        a Remote, so the cache grew until an age window expired.
+# #4542  proxy_download_statistics carried no digest. The admin blast-radius
+#        report attributed proxy pulls through the live cache entry, so
+#        purging the compromised object erased who had pulled it.
+# #4541  Neither statistics table had a retention: rows only left on
+#        repository delete.
+# #4573  A Maven jar served through a Remote carried no X-Checksum-SHA1, so
+#        Maven Resolver requested every .sha1 separately.
+#
+# THE GATES
+#   (FIX)      RED on ak-backend:1.11.5, GREEN on the lane image:
+#              #4660 PUT /repositories/{key}/proxy-cache-cap {cap_bytes: 5 MiB}
+#                    answers 200; after pulling ten 1 MiB objects the Remote's
+#                    catalogued bytes are at most 5 MiB, the first object pulled
+#                    is evicted and the last one kept, GET reports the cap and
+#                    usage, and a 6 MiB object is served but not cached
+#                    (1.11.5: no endpoint, 10 MiB cached);
+#              #4542 both pulls of an object carry its sha256 on their
+#                    statistics rows, and after the entry is purged the
+#                    blast-radius report for a CVE seeded on that digest still
+#                    counts both pulls (1.11.5: no column, count 0);
+#              #4541 backdated (40 days) rows in both statistics tables are
+#                    deleted by the retention pass while 1-day-old rows stay
+#                    (1.11.5: nothing deleted);
+#              #4573 a warm Remote jar GET carries X-Checksum-SHA1 equal to the
+#                    upstream .sha1 (1.11.5: absent).
+#   (CONTROL)  must hold on BOTH images: every proxied GET returns the
+#              upstream bytes; the cap does not change what a client receives.
+#
+# RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+PROFILES="storage.filesystem upstreams.mock-files stats.retention-fast"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
