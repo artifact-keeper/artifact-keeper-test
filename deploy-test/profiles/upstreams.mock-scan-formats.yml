@@ -1,14 +1,14 @@
 # =============================================================================
 # profiles/upstreams.mock-scan-formats.yml - Maven / NuGet / Cargo / Go /
-# RubyGems / Composer / Pub / Conan / CocoaPods / Swift / Debian / RPM
-# upstream whose packages carry known identities, for the scan-on-proxy
-# tiers
+# RubyGems / Composer / Pub / Conan / CocoaPods / Swift / Debian / RPM /
+# Alpine upstream whose packages carry known identities, for the
+# scan-on-proxy tiers
 # =============================================================================
 # Adds `mock-scan`, a stdlib-only Python HTTP server that serves a small Maven
 # repository, a NuGet V3 feed, a Cargo sparse registry, a Go module proxy, a
 # RubyGems source, a Composer repository, a Pub repository, a Conan v2
-# server, a CocoaPods pod source, a Swift registry, a Debian archive and an
-# RPM yum tree built at start-up
+# server, a CocoaPods pod source, a Swift registry, a Debian archive, an RPM
+# yum tree and an Alpine branch built at start-up
 # with fixed timestamps (identical bytes on every run). Some packages name
 # coordinates with long-published advisories (log4j-core 2.14.1, commons-text
 # 1.9, Newtonsoft.Json 12.0.1, regex 1.5.4), some name coordinates no advisory
