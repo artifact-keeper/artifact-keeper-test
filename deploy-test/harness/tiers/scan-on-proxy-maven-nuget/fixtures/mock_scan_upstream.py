@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # =============================================================================
 # mock_scan_upstream.py - a Maven + NuGet V3 + Cargo sparse + Go + RubyGems +
-# Composer + Pub + Conan upstream whose packages carry KNOWN identities, for
-# the scan-on-proxy tiers
+# Composer + Pub + Conan + CocoaPods + Swift upstream whose packages carry
+# KNOWN identities, for the scan-on-proxy tiers
 # =============================================================================
 # The scan-on-proxy gate (artifact-keeper#4098, #4100 Maven, #4101 Cargo,
 # #4102 NuGet) buffers a proxied package, establishes what it is served as from
@@ -72,6 +72,18 @@
 #       dtfclean 1.0.0  conan_sources.tgz with no requirements
 #       dtfliar 1.0.0   conan_sources.tgz is not a gzipped tar
 #       (each also has conanfile.py and conanmanifest.txt)
+#   CocoaPods (upstream base http://<self>/cocoapods)           #4109
+#     pods/<name>-<v>.tar.gz (root <name>.podspec.json)
+#       DtfVulnPod 1.0.0   ships a Gemfile.lock pinning rack 2.0.7 (the
+#                          bundled scanner has no CocoaPods advisory data,
+#                          so only a vendored component can be graded)
+#       DtfCleanPod 1.0.0
+#       DtfLiarPod 2.0.0   podspec declares 1.0.0
+#   Swift registry (upstream base http://<self>/swift)          #4110
+#     <scope>/<name>/<v>.zip (<name>/Package.swift)
+#       dtf.vulnpkg 1.0.0  ships a Gemfile.lock pinning rack 2.0.7
+#       dtf.cleanpkg 1.0.0
+#       dtf.liarpkg 1.0.0  no Package.swift
 #
 # Control endpoints (never counted):
 #   GET /__readyz                 healthcheck
@@ -425,6 +437,42 @@ def add_conan(name, version, requires=(), broken=False):
 add_conan("dtfvuln", "1.0.0", requires=["openssl/1.1.1k"])
 add_conan("dtfclean", "1.0.0")
 add_conan("dtfliar", "1.0.0", broken=True)
+
+
+# ----------------------------------------------------------------- CocoaPods / Swift
+RACK_GEMFILE_LOCK = (
+    "GEM\n  remote: https://rubygems.org/\n  specs:\n    rack (2.0.7)\n\n"
+    "PLATFORMS\n  ruby\n\nDEPENDENCIES\n  rack (= 2.0.7)\n"
+)
+
+
+def add_pod(name, version, declared=None, vendored_lock=False):
+    spec = json.dumps({"name": name, "version": declared or version, "summary": "dtf scan fixture"})
+    entries = [(f"{name}.podspec.json", spec), ("Sources/Dtf.swift", "struct Dtf {}\n")]
+    if vendored_lock:
+        entries.append(("Gemfile.lock", RACK_GEMFILE_LOCK))
+    FILES[f"cocoapods/pods/{name}-{version}.tar.gz"] = tar_gz(entries)
+
+
+add_pod("DtfVulnPod", "1.0.0", vendored_lock=True)
+add_pod("DtfCleanPod", "1.0.0")
+add_pod("DtfLiarPod", "2.0.0", declared="1.0.0")
+
+
+def add_swift(scope, name, version, vendored_lock=False, manifest=True):
+    entries = [(f"{name}/Sources/Dtf/Dtf.swift", "struct Dtf {}\n")]
+    if manifest:
+        entries.insert(0, (f"{name}/Package.swift",
+                           "// swift-tools-version:5.5\nimport PackageDescription\n"
+                           f"let package = Package(name: \"{name}\")\n"))
+    if vendored_lock:
+        entries.append((f"{name}/Gemfile.lock", RACK_GEMFILE_LOCK))
+    FILES[f"swift/{scope}/{name}/{version}.zip"] = zip_bytes(entries)
+
+
+add_swift("dtf", "vulnpkg", "1.0.0", vendored_lock=True)
+add_swift("dtf", "cleanpkg", "1.0.0")
+add_swift("dtf", "liarpkg", "1.0.0", manifest=False)
 
 
 def ctype(path):
