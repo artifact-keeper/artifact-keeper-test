@@ -1,0 +1,22 @@
+# DTF tier manifest: scan-iso-rootfs-inventory  (artifact-keeper 1.12.0, #1966)
+# Profile-set: filesystem only. LOCAL-ONLY: the scan runs the backend image's
+# bundled Grype with its pre-seeded DB and the bundled unsquashfs; the ISO
+# fixtures are written at run time by fixtures/make_fixtures.py (stdlib
+# Python, no xorriso or squashfs-tools on the runner), so nothing depends on
+# the network.
+#
+# WHAT IT GUARDS:
+#   * An uploaded ISO9660 live medium was staged as one opaque file: Grype
+#     cataloged nothing inside it, the scan stored 0 packages and the
+#     repository graded A. Since #1966 the scanner locates the embedded
+#     squashfs rootfs (live/filesystem.squashfs), extracts its package
+#     database and grades it: the dpkg status names openssl
+#     3.0.11-1~deb12u2, which is vulnerable on Debian 12.
+#   * An ISO whose squashfs is corrupt read exactly as clean as an empty one.
+#     Since #1966 the scan is recorded not_cataloged with a reason and
+#     inventory_status 'partial', and flags the repository.
+#
+# Red: ak-backend:1.11.5. Green: an image carrying #1966.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
