@@ -94,6 +94,14 @@ score_of() { # REPO_KEY -> "grade has_uncataloged_scan"
     | jq -r '(.score // {}) | "\(.grade // "none") \(.has_uncataloged_scan // "none")"' 2>/dev/null || true
 }
 score_is() { [ "$(score_of "$1")" = "$2" ]; }
+# #4336 (1.12.0) replaced the F floor with grade_status + coverage: a repository
+# whose only artifact catalogs nothing is `unrated` with no letter. An image
+# that reports grade_status is judged on that; older images keep the floor.
+has_grade_status() {
+  [ -n "$(api_get "/api/v1/repositories/$1/security" 2>/dev/null | jq -r '.score.grade_status // empty' 2>/dev/null || true)" ]
+}
+# expect_uncataloged REPO LEGACY -> the expected score_of string
+expect_uncataloged() { if has_grade_status "$1"; then echo "none true"; else echo "$2"; fi; }
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -183,9 +191,10 @@ done
 # ---------------------------------------------------------------------------
 begin_test "FIX #4036/#4094: the conda package Grype cannot catalog is recorded not_cataloged with a reason; repo flagged, grade F"
 row=$(grype_row "$R_CONDA" ".tar.bz2")
-wait_until "conda repo score" 30 score_is "$R_CONDA" "F true" || true
+want_r_conda=$(expect_uncataloged "$R_CONDA" "F true")
+wait_until "conda repo score" 30 score_is "$R_CONDA" "$want_r_conda" || true
 sc=$(score_of "$R_CONDA")
-if [ "${row%%|*}" = "not_cataloged" ] && [ -n "${row#*|}" ] && [ "$sc" = "F true" ]; then
+if [ "${row%%|*}" = "not_cataloged" ] && [ -n "${row#*|}" ] && [ "$sc" = "$want_r_conda" ]; then
   pass
 else
   fail "grype row '${row}', score '${sc}' (pre-fix: complete / grade A)"
@@ -194,10 +203,11 @@ fi
 begin_test "FIX #4154: a plain generic .zip nothing catalogs is not_cataloged (Grype and, set-level, the dependency scanner) and flags the repo without flooring the grade"
 row=$(grype_row "$R_ZIP" "docs-${SUF}.zip")
 dep=$(grype_row "$R_ZIP" "docs-${SUF}.zip" dependency)
-wait_until "zip repo score" 30 score_is "$R_ZIP" "A true" || true
+want_r_zip=$(expect_uncataloged "$R_ZIP" "A true")
+wait_until "zip repo score" 30 score_is "$R_ZIP" "$want_r_zip" || true
 sc=$(score_of "$R_ZIP")
 if [ "${row%%|*}" = "not_cataloged" ] && [ -n "${row#*|}" ] && [ "${dep%%|*}" = "not_cataloged" ] \
-   && [[ "${dep#*|}" == "no scanner cataloged any component"* ]] && [ "$sc" = "A true" ]; then
+   && [[ "${dep#*|}" == "no scanner cataloged any component"* ]] && [ "$sc" = "$want_r_zip" ]; then
   pass
 else
   fail "grype row '${row}', dependency row '${dep}', score '${sc}'"
@@ -206,9 +216,10 @@ fi
 begin_test "FIX #4154: a package-shaped generic .whl nothing catalogs floors the grade to F"
 wait_until "whl scan row" 30 has_scan "$R_WHL" || true
 row=$(grype_row "$R_WHL" ".whl")
-wait_until "whl repo score" 30 score_is "$R_WHL" "F true" || true
+want_r_whl=$(expect_uncataloged "$R_WHL" "F true")
+wait_until "whl repo score" 30 score_is "$R_WHL" "$want_r_whl" || true
 sc=$(score_of "$R_WHL")
-if [ "${row%%|*}" = "not_cataloged" ] && [ "$sc" = "F true" ]; then
+if [ "${row%%|*}" = "not_cataloged" ] && [ "$sc" = "$want_r_whl" ]; then
   pass
 else
   fail "grype row '${row}', score '${sc}' (pre-fix: complete / grade A)"
