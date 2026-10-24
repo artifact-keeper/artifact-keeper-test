@@ -1,0 +1,25 @@
+# DTF tier manifest: storage-integrity-serve-routes  (artifact-keeper#4323)
+# Profile-set: filesystem / single. Sibling of storage-integrity (#3919, which
+# covers the generic download route). The oracle damages stored objects on the
+# backend's /data volume (a throwaway postgres:16-alpine container with
+# --volumes-from the backend; the backend image has no shell) and asserts that
+# the other serve paths fail closed:
+#
+#   #4323  a small corrupted object answers 502 {"code":"STORED_OBJECT_INTEGRITY"}
+#          with none of its bytes on the generic download route, on a
+#          format-native route (Terraform module archive, served through the
+#          shared hosted fetch) and through a virtual repository (generic),
+#          where the 502 is final: the walk does not fall through to the
+#          second member's bytes for the same path. A corrupted object above
+#          the 4 MiB pre-check limit is never delivered complete on the
+#          format route.
+#          RED on ak-backend:1.11.5: the generic route answers 200 and aborts
+#          the body; the format route and the virtual answer 200 with the
+#          corrupted bytes, complete.
+#   Controls: intact objects download byte-identical on every route; a
+#          proper sub-range of a corrupted object is still served.
+#
+# RATE_LIMIT_ENABLED=false: ~40 calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
