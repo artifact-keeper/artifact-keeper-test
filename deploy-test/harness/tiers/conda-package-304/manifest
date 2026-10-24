@@ -1,0 +1,38 @@
+# DTF tier manifest: conda-package-304
+#   (artifact-keeper#4579 conditional package downloads, #4181 one-statement
+#    package route; 1.12.0)
+# Profile-set: filesystem / single + upstreams=mock-conda (the conda-channel-
+# types tier's stdlib-python static conda channel on 172.16.<slot>.70; it
+# serves the real package dtfup-alpha-2.0-0.tar.bz2 in noarch and logs every
+# request line to stdout).
+#
+# THE BUG
+# #4579  Conda package downloads ignored If-None-Match and If-Modified-Since
+#        and carried no ETag or Last-Modified, so an artifact manager in front
+#        of Artifact Keeper that revalidates its cache (Nexus in the #4579
+#        walkthrough) re-downloaded every package on each refresh, while
+#        repodata was correctly answered 304. Fixed: every package response
+#        carries ETag "<sha256>" and Last-Modified, and a request whose
+#        validator matches is 304 with no body, on a hosted channel, a cached
+#        Remote, a Virtual (served by a hosted member and by a cached Remote
+#        member), and under both token URL layouts.
+#
+# CONTROLS (pass on every image)
+#   a hosted, a Remote and a Virtual package download is 200 with the right
+#   bytes, with and without a stale validator.
+#
+# FIX CASES (RED on ak-backend:1.11.5: 200 with the full body, no ETag)
+#   hosted / token layouts / virtual-over-hosted: ETag is the sha256, 304 on
+#     If-None-Match (exact and W/ forms) and on If-Modified-Since.
+#   cached Remote and virtual-over-cached-Remote: ETag is the sha256, 304 on
+#     If-None-Match, and the mock sees no request for the package.
+#   a quarantined hosted package is refused 409 even with a matching
+#     validator (CONTROL on 1.11.5, where it is 409 too).
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~40 calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the remote's upstream is the mock on a
+# private address.
+PROFILES="storage.filesystem upstreams.mock-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
