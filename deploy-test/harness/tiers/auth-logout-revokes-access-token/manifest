@@ -1,0 +1,33 @@
+# DTF tier manifest: auth-logout-revokes-access-token  (artifact-keeper#4883; 1.12.0)
+# Profile-set: filesystem / single. No extra services.
+# Sibling of auth-logout-revokes-session (#4831), which covers the refresh
+# token; this tier covers the access token of the same session.
+#
+# THE BEHAVIOUR
+# POST /api/v1/auth/logout must end the session's ACCESS token too, not only
+# its refresh-token family. Before the fix the access token is a stateless JWT
+# and a Bearer replay of it keeps answering 200 for its whole lifetime
+# (JWT_ACCESS_TOKEN_EXPIRY_MINUTES, 30 by default) after a 200 logout. The fix
+# records the session's family at logout (and at refresh-token replay
+# detection) and refuses access tokens of that family; other replicas follow
+# within SESSION_REVOCATION_CACHE_TTL_SECS (default 5 s).
+#
+# THE GATES
+#   (FIX)      after a 200 logout, a Bearer replay of the session's access
+#              token on GET /api/v1/auth/me is 401 within 5 s (polled every
+#              0.5 s), for the API shape (Bearer + `{}` body) and the browser
+#              shape (the login's cookie jar, then the cookie's access token
+#              replayed as a Bearer header). RED on 1.11.5: 200 for 5 s.
+#   (FIX)      refresh-token replay detection (a consumed refresh token whose
+#              successor was also used) ends the access tokens of that
+#              family within 5 s. RED on 1.11.5: 200.
+#   (CONTROL)  both images: the access token answers 200 before logout; a
+#              second session of the same user still answers 200 after the
+#              first one logs out (per-session scoping); a password change
+#              ends the old access token (credential watermark, 401 within
+#              5 s); an API token of the user is not affected by logout.
+#
+# RATE_LIMIT_ENABLED=false: about ten logins and refreshes back-to-back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
