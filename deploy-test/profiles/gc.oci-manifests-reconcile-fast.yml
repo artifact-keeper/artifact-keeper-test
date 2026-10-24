@@ -1,0 +1,19 @@
+# =============================================================================
+# profiles/gc.oci-manifests-reconcile-fast.yml: the oci_manifests reconcile
+# every 15 s
+# =============================================================================
+# Since #1683 (1.12.0) the backend reconciles the `oci_manifests` existence
+# table at startup and then every OCI_MANIFESTS_RECONCILE_INTERVAL_SECS
+# (default 21600, six hours): it adds a row for a tagged manifest that has
+# none and removes the row of a manifest that is no longer addressable (no
+# tag, no live index edge, no live artifacts row) once the row is older than
+# 600 s. The oci-manifests-reconcile tier needs several passes inside its
+# run, so this sets the interval to 15 s. A release without #1683 ignores
+# the variable (its backfill runs once, at startup).
+#
+# Nothing else changes, so it composes onto any storage profile.
+# =============================================================================
+services:
+  backend:
+    environment:
+      OCI_MANIFESTS_RECONCILE_INTERVAL_SECS: "15"
