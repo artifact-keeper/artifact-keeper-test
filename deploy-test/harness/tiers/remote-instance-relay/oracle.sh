@@ -4,6 +4,7 @@
 #   #4776 the remote-instance relay (/api/v1/instances/{id}/proxy/{*path})
 #         forwards the query string and the caller's Content-Type, relays an
 #         allow-list of response headers, and refuses a relay of a relay
+#   #4795 the relay accepts PATCH, with the same path and owner guards
 # See the manifest for THE BUG, THE PEER and the gates.
 #
 # run.sh exported BASE_URL (instance A), DB_CONTAINER (A's postgres),
@@ -205,6 +206,90 @@ begin_test "FIX(#4776): the refusal also catches a doubled slash and mixed case 
 c="$(code -u "$AUTH" "$(relay "api//v1/Instances/${LOOP_ID}/proxy/health")")"
 if refused "$c"; then pass; else
   fail "relayed GET api//v1/Instances/{id}/proxy/health -> ${c} $(body | head -c 200) (want 400 VALIDATION_ERROR naming api/v1/instances)"
+fi
+
+# =============================================================================
+# PATCH relay (#4795, fixed by #4876, 1.12.0)
+# =============================================================================
+# PATCH requests a non-admin second user on A makes; created here so the
+# owner guard has someone who does not own INST_ID.
+U2="rly-u2-${SLOT}-${SUF}"
+U2_PASS="Dtf-$(openssl rand -hex 12 2>/dev/null || date +%s%N)-x"
+U2_ID="$(create_test_user_with_retry "$U2" "$U2_PASS" "${U2}@t.test" 2>/dev/null)" || true
+U2_TOKEN=""
+[ -n "$U2_ID" ] && U2_TOKEN="$(login_as "$U2" "$U2_PASS" 2>/dev/null)" || true
+
+# Number of lines in B's log that carry the marker $1 at all (any method).
+b_marker() { docker logs "$B_CTR" 2>&1 | grep -c -- "$1" || true; }
+# Number of PATCH lines in B's access log whose URI starts with $1.
+b_patch_seen() { docker logs "$B_CTR" 2>&1 | grep 'PATCH' | grep -c "uri=$1" || true; }
+
+begin_test "CONTROL: a second user cannot GET through the admin's instance (404, pre-existing owner guard)"
+if [ -z "$U2_TOKEN" ]; then
+  fail "could not create or log in the second user ${U2} (id=${U2_ID:-none})"
+else
+  c="$(code -H "Authorization: Bearer ${U2_TOKEN}" "$(relay "api/v1/repositories/${R3}")")"
+  if [ "$c" = "404" ]; then pass; else
+    fail "second user relayed GET through the admin's instance -> ${c} $(body | head -c 200) (want 404)"
+  fi
+fi
+
+begin_test "FIX(#4795): a relayed PATCH reaches B, returns B's 200 and updated repository, and B stores the change"
+DESC="patched through the relay ${SUF}"
+p0="$(b_patch_seen "/api/v1/repositories/${R3}")"
+c="$(code -u "$AUTH" -X PATCH -H 'Content-Type: application/json' \
+  -d "{\"description\":\"${DESC}\"}" "$(relay "api/v1/repositories/${R3}")")"
+r_key="$(body | jq -r '.key // empty' 2>/dev/null)"; r_desc="$(body | jq -r '.description // empty' 2>/dev/null)"
+on_b="$(psql_b "SELECT description FROM repositories WHERE key = '${R3}'")"
+p1="$(b_patch_seen "/api/v1/repositories/${R3}")"
+if [ "$c" = "200" ] && [ "$r_key" = "$R3" ] && [ "$r_desc" = "$DESC" ] && [ "$on_b" = "$DESC" ] && [ "$p1" -gt "$p0" ]; then pass; else
+  fail "relayed PATCH api/v1/repositories/${R3} -> ${c} key=${r_key:-none} description='${r_desc}' $(body | head -c 160); B row description='${on_b}'; B PATCH log lines ${p0} -> ${p1} (want 200, the new description on B, one more PATCH on B)"
+fi
+
+begin_test "FIX(#4795): a relayed PATCH returns B's own error status and body (404 for a key B does not have)"
+MISSING="rly-missing-${SLOT}-${SUF}"
+c_d="$(code -u "$AUTH" -X PATCH -H 'Content-Type: application/json' -d '{"description":"x"}' "${B}/api/v1/repositories/${MISSING}")"
+b_d="$(body | jq -cS '{code,message}' 2>/dev/null)"
+p0="$(b_patch_seen "/api/v1/repositories/${MISSING}")"
+c_r="$(code -u "$AUTH" -X PATCH -H 'Content-Type: application/json' -d '{"description":"x"}' "$(relay "api/v1/repositories/${MISSING}")")"
+b_r="$(body | jq -cS '{code,message}' 2>/dev/null)"
+p1="$(b_patch_seen "/api/v1/repositories/${MISSING}")"
+if [ "$c_d" = "404" ] && [ "$c_r" = "404" ] && [ -n "$b_d" ] && [ "$b_r" = "$b_d" ] && [ "$p1" -gt "$p0" ]; then pass; else
+  fail "direct PATCH on B -> ${c_d} ${b_d}; relayed -> ${c_r} ${b_r}; B PATCH log lines ${p0} -> ${p1} (want B's 404 body relayed verbatim and the request seen on B)"
+fi
+
+begin_test "FIX(#4795): a relayed PATCH to a path outside api/ is refused 400 by A and never reaches B"
+MK="dtfpatchpath${SUF//-/}"
+m0="$(b_marker "$MK")"
+c="$(code -u "$AUTH" -X PATCH -H 'Content-Type: application/json' -d '{"x":1}' "$(relay "admin/settings?probe=${MK}")")"
+sleep 1; m1="$(b_marker "$MK")"
+if [ "$c" = "400" ] && body | grep -q 'must start with api/' && [ "$m1" = "$m0" ]; then pass; else
+  fail "relayed PATCH admin/settings -> ${c} $(body | head -c 200); B log lines with marker ${MK}: ${m0} -> ${m1} (want 400 'must start with api/ or health' and nothing on B)"
+fi
+
+begin_test "FIX(#4795): a relayed PATCH to B's instance registry is refused 400 and never reaches B"
+MK="dtfpatchinst${SUF//-/}"
+m0="$(b_marker "$MK")"
+c="$(code -u "$AUTH" -X PATCH -H 'Content-Type: application/json' -d '{"name":"x"}' "$(relay "api/v1/instances/${LOOP_ID}?probe=${MK}")")"
+sleep 1; m1="$(b_marker "$MK")"
+if refused "$c" && [ "$m1" = "$m0" ]; then pass; else
+  fail "relayed PATCH api/v1/instances/{B-self} -> ${c} $(body | head -c 200); B log lines with marker ${MK}: ${m0} -> ${m1} (want 400 VALIDATION_ERROR naming api/v1/instances and nothing on B)"
+fi
+
+begin_test "FIX(#4795): a second user's PATCH through the admin's instance is 404 and never reaches B"
+if [ -z "$U2_TOKEN" ]; then
+  fail "no second-user token (see the owner CONTROL)"
+else
+  MK="dtfpatchowner${SUF//-/}"
+  m0="$(b_marker "$MK")"
+  before="$(psql_b "SELECT description FROM repositories WHERE key = '${R3}'")"
+  c="$(code -H "Authorization: Bearer ${U2_TOKEN}" -X PATCH -H 'Content-Type: application/json' \
+    -d '{"description":"not the owner"}' "$(relay "api/v1/repositories/${R3}?probe=${MK}")")"
+  sleep 1; m1="$(b_marker "$MK")"
+  after="$(psql_b "SELECT description FROM repositories WHERE key = '${R3}'")"
+  if [ "$c" = "404" ] && [ "$m1" = "$m0" ] && [ "$after" = "$before" ]; then pass; else
+    fail "second user relayed PATCH -> ${c} $(body | head -c 200); B log lines with marker ${MK}: ${m0} -> ${m1}; R3 description '${before}' -> '${after}' (want 404, nothing on B, no change)"
+  fi
 fi
 
 end_suite
