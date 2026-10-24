@@ -1,0 +1,76 @@
+# DTF tier manifest: replication-labels-and-late-metadata  (artifact-keeper#4889, fix PR #4899, 1.11.7)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}). The .nupkg fixtures are zipped with
+# python3 on the host; protobuf modules are pushed as Connect JSON with curl.
+# The profile does not claim the slot's 172.16.<slot>.0/24 mock subnet.
+#
+# THE BUGS (#4889, left over after #4792)
+# 1. Protobuf labels. The `_labels` index of a module (label name -> commit
+#    digest) was a zero-byte row with checksum `none` that was never queued,
+#    so a buf push or a CreateOrUpdateLabels moved a label on A and the peer
+#    kept resolving the old commit (or nothing). Even if queued, the peer's
+#    upload path refused to overwrite the existing row (immutable) and the
+#    source never re-armed a finished push when the index was rewritten.
+# 2. Late metadata. NuGet (and PyPI, Debian, nested RPM) queued the push
+#    inside the upload service, before the handler wrote the nuspec-derived
+#    artifact_metadata document. A worker that claimed the task in that window
+#    sent the package with no metadata, and nothing re-delivered it once the
+#    document landed.
+#
+# THE PEERS
+# Bidirectional, the same shape as push-sync-echo-and-sidecars: B is a push
+# peer of A (protobuf and nuget repos) and A of B (the same two), each with a
+# `*`-scoped admin API key minted on the other side, set online in the DB.
+# The sync workers (10 s tick) deliver over the slot's compose network.
+#
+# THE PRIMITIVE (late metadata)
+# A BEFORE INSERT OR UPDATE trigger on A's artifact_metadata that matches only
+# this run's NuGet package (its nuspec description) bumps a sequence and then
+# waits, polling a one-row release table, so the handler's metadata write is
+# held open while the oracle watches A's push row. The oracle releases it
+# once A's push for the package has completed, or after 25 s if no push row
+# appeared (the fixed handler queues only after the write). Deterministic in
+# both directions; no timing guess about the worker's tick.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) both images: a NuGet push on A succeeds while its metadata
+#             write is held and the .nupkg reaches B (row, sha256, bytes);
+#             two buf Uploads on A (main -> commit 1, dev -> commit 2) made
+#             before B subscribes queue nothing; peer writes to B's native
+#             NuGet and protobuf routes with X-Artifact-Keeper-Replication:
+#             true queue nothing on B for A; after settling B holds no push
+#             row for A at all and A has no row for the peer writes (echo
+#             control, now also covering B's in-place refresh of a replicated
+#             `_labels`); every push row A holds for B ends completed, one per
+#             artifact.
+#   (FIX)     RED on 1.11.5:
+#             #4889-1 moving main on A through CreateOrUpdateLabels pushes the
+#                     whole label map: B resolves main and dev to commit 2,
+#                     one `_labels` row on B with A's sha256, no package
+#                     version registered for it, A's push row completed;
+#             #4889-1 moving main back after that push finished is
+#                     re-delivered within 60 s through the same push row
+#                     (re-armed, not duplicated);
+#             #4889-2 the NuGet package's nuspec metadata (id, version,
+#                     description) is on B within 60 s, although A's push
+#                     completed while the write was still held on 1.11.5.
+#   (KNOWN-RED pin, not #4889) protobuf commits do not replicate on any
+#             image: the commit row's checksum_sha256 is the commit digest,
+#             not the stored bundle's sha256, so B's chunked-upload complete
+#             answers 409 "checksum mismatch". The commits are uploaded before
+#             B subscribes so those failures (each one backs the whole peer
+#             off) cannot starve the label deliveries; the pin runs last and
+#             passes while the commit push fails. Flip it to an assertion
+#             when that is fixed.
+#
+# Teardown note: `harness/run.sh down --slot N` only knows the --<dimension>
+# profiles. A tier run without --keep tears B down itself.
+#
+# RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: peer endpoints go through
+# validate_outbound_url and both instances sit on private compose addresses.
+PROFILES="storage.filesystem peer.second-instance"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
