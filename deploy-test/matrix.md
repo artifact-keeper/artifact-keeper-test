@@ -54,6 +54,8 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 158 | **A CRAN remote serves its upstream `PACKAGES` so R installs through it** - #4877 (fixed by #4880) | filesystem + `upstreams.mock-multi` (`/ok/cranrich`, gzip-only `/ok/crangz`) + `client.cran` | the remote's `PACKAGES` and `PACKAGES.gz` list exactly the upstream's records byte-equal (continuation lines and MD5sum intact), a gzip-only upstream still yields an index, `install.packages("dtfcrana")` resolves and installs the dependency graph through the remote | **cran-remote-packages-index** | **COVERED** (#603, `fixes-1.11.5-proxy`): green on main `81f0b1c9` (8/8), red on 1.11.4 (2 pass / 6 fail: empty `PACKAGES`, R finds no package). Gate-group proof on main `a5e0aeb3`: 8/8 |
 | 159 | **Deleting a versioned repository purges its older revisions** - #4865 (fixed by #4873) | filesystem (stored objects read off the backend's `/data` volume through a throwaway `postgres:16-alpine` with `--volumes-from`) | a versioning-enabled generic repository A with two revisions of each of two paths, and B pointed at A's root holding one shared revision; after `DELETE` of A the older revision's object is gone within 30 s and the spared shared revision key is in `oci_gc_candidates` with `source_repository_id` = A; HEAD objects are purged, `artifact_versions` cascade, B still downloads the shared object (controls) | **repo-delete-purges-revisions** | **COVERED** (#602, `fixes-1.11.5-storage`): green on `pr-4873` (6/6), red on 1.11.4 (4 pass / 2 fail: older revision object still on the volume, no GC candidate row). Gate-group proof on main `e211aa3f`: 6/6 |
 | 160 | **The PyPI age gate resolves a PEP 440-equal filename version to its release publish time** - #4907 (fixed by #4908, backported to 1.11.x by #4912) | filesystem + `upstreams.mockpypi-agegate` (`172.28.<slot>.50`, a Warehouse JSON and PEP 691 simple index mock for `cuda-toolkit`) | with `upstream_publish_time` and `min_age_days=7` on a PyPI remote, `13.0.3.0` (filename spelling of the 2026-04-14 release `13.0.3`) is listed in the HTML and JSON simple index and downloads 200 with the mock's sha256; controls: `13.4.2` is served, `13.5.0` (one day old) and `13.0.3.1` (no equal release) are absent and 451, and the backend fetched `/pypi/cuda-toolkit/json` | **pypi-age-gate-pep440-lookup** | **COVERED** (#612, `fixes-1.11.6-pypi`): FIX gate, green on main `48b0424c` (`fix-4907`, 17/17) and on the 1.11.x line after #4912; red on 1.11.5 (14 pass / 3 fail: `13.0.3.0` missing from both indexes, download 451) |
+| 161 | **Protobuf label moves, late NuGet metadata and protobuf commits reach a push peer** - #4889 (fixed by #4899), #4921 (fixed by #4934) | filesystem + `peer.second-instance` (bidirectional push peers; `.nupkg` fixtures zipped on the host, protobuf modules pushed as Connect JSON) | `CreateOrUpdateLabels` moving main on A makes B resolve main and dev to the new commit through one `_labels` row with A's sha256 and no package version; moving it back after that push finished is re-delivered within 60 s through the same push row; a NuGet package whose metadata write is held open on A (trigger + release table) has its nuspec id, version and description on B within 60 s; a protobuf commit uploaded to A after B subscribed is pushed (A's push row completed, B's row sha256 equals the bundle A serves) and B serves it to buf by label and by commit id; controls: the `.nupkg` reaches B, peer writes are not echoed, every A push row ends completed | **replication-labels-and-late-metadata** | **COVERED** (#618, #622, `fixes-1.11.7-replication`): FIX gate, green 11/11 on `fix-4921` (an image at or after `9bcfc824`, #4934; #622 flipped the former #4921 KNOWN-RED pin); red on 1.11.5 (6 pass / 5 fail: B resolves no label after either move, B holds no NuGet metadata, the commit push fails 409 `checksum mismatch` and B cannot serve the commit). Gate-group proof: 11/11 on slot 39 (`fixes-1.11.7-replication`, `fix-4921`, 85 s) |
+| 164 | **A blob completion cut by a proxy 504 and re-sent is 201, not 409** - #4902 (fixed by #4919) | filesystem + `proxy.timeout-504` (a stdlib-python proxy from the tier's fixtures that, when armed, answers an upload PUT with 504 a set time after forwarding its body and closes the upstream connection, as Envoy does) | a 768 MiB monolithic `PUT ?digest=` cut by the proxy and re-sent at once through it is 201 (or 503 then 201), blob HEAD is 200 and no session row is left `committing` within 10 s; controls: direct and unarmed-proxy pushes are 201, a retry with a different digest while the cut completion runs is 409 | **oci-blob-completion-retry** | **COVERED** (#619, `fixes-1.11.7-oci`): FIX gate, green on `fix-4902` (#4919, 7/7, 3 of 3 runs); red on 1.11.5 (4 pass / 3 fail: retry 409 `upload session is already being modified`, HEAD 404, row still `committing`). Gate-group proof: 7/7 on slot 39 (`fixes-1.11.7-oci`, `fix-4902`, 18 s) |
 
 ## Consolidated status (this checkpoint)
 
@@ -204,6 +206,49 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 - **On this line:** row 160 is added here; the gate reads its matrix
   (including `fixes-1.11.6-pypi`) from main's `release-gate.yml` and runs
   the tier from this branch.
+
+## 1.11.7 fix-coverage status (rows 124, 161, 164, artifact-keeper-test#617, #618, #619, #622)
+
+- **`maven-upload-tx-and-quality-s3`** (row 124) gained the #4892 gate in
+  #617: a second first upload of a new release path, started while the
+  first is parked inside its insert, used to write the object key before
+  it waited on the publish lock, so the bucket and GET served the 409
+  loser's bytes under the winner's row. It is a FIX gate: red on 1.11.5 on
+  that case only, green on main `b6265bf0` (#4897). The tier stays in
+  `storage-1.11.0`, which on main is now red on any image without the
+  1.11.7 fix. Row 124 is in main's `matrix.md`.
+- **`replication-labels-and-late-metadata`** (row 161, #618, #622) covers
+  #4889: a protobuf `_labels` index that was never queued, refused on the
+  peer and never re-armed, and NuGet push tasks queued before the handler
+  wrote the nuspec metadata; and #4921: a protobuf commit row carried the
+  commit digest as its sha256, so the peer refused the push 409
+  `checksum mismatch`. It is a FIX gate: red on 1.11.5 on exactly the five
+  FIX cases with every control holding (6 pass / 5 fail), green 11/11 on
+  an image at or after `9bcfc824` (#4934; #4899 is `bbc18f34`). #622
+  turned the former #4921 KNOWN-RED pin into those gates; no pin is left
+  in the tier.
+- **Gate wiring:** the new required group `fixes-1.11.7-replication`
+  (about 1.5 min locally). `peer.second-instance` claims no
+  `172.16.<slot>.0/24` mock subnet, only the slot's spare port, and each
+  gate group runs in its own job on its own slot with its tiers one after
+  another, so it never overlaps `push-sync-echo-and-sidecars`,
+  `push-sync-chunked-upload` or `remote-instance-relay`.
+- **`oci-blob-completion-retry`** (row 164, #619) covers #4902: a reverse
+  proxy's response timeout reset the backend mid-completion, which
+  cancelled the handler and left the session `committing` without a
+  heartbeat for the 6 h stale window, so containerd's single re-send got
+  409 and the layer never landed. It is a FIX gate: red on 1.11.5 on
+  exactly the three FIX cases with every control holding, green on
+  `fix-4902` (#4919, `9f3914a8`). It runs as its own required group
+  `fixes-1.11.7-oci` (under a minute); `proxy.timeout-504` uses the dtf
+  network and the slot's spare port, no mock subnet.
+- **On this line:** rows 161 and 164 are added here and the backend fixes
+  are on `release/1.11.x` since backport artifact-keeper#4938 (`f6c721e4`);
+  the gate reads its matrix (including `fixes-1.11.7-replication`,
+  `fixes-1.11.7-oci` and `storage-1.11.0`) from main's `release-gate.yml`
+  and runs these tiers from this branch. From this branch at slot 42, red
+  on 1.11.5 (maven 6/1, replication 6/5, oci 4/3) and green on an image
+  built from `f6c721e4` (7/7, 11/11, 7/7).
 
 ## Brick-2 status (migration / Nexus — #2457)
 
