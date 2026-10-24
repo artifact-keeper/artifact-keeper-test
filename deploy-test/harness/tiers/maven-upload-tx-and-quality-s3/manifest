@@ -1,4 +1,4 @@
-# DTF tier manifest: maven-upload-tx-and-quality-s3  (artifact-keeper#3587, #3814, #3736; fixed in 1.11.0; #4837, fix PR #4874)
+# DTF tier manifest: maven-upload-tx-and-quality-s3  (artifact-keeper#3587, #3814, #3736; fixed in 1.11.0; #4837, fix PR #4874; #4892, fix PR #4897)
 # Profile-set: storage.s3 (MinIO; STORAGE_BACKEND=s3 for every repository).
 #
 # THE BUGS
@@ -19,6 +19,9 @@
 #   artifact_metadata (through the postgres container) that raises for one
 #   artifactId only, PUTs that artifact, inspects the artifacts table, then
 #   drops the trigger and retries. The rest of the database is untouched.
+#   #4892: a BEFORE INSERT trigger on artifacts that parks only the row
+#   carrying the first upload's sha256 (pg_sleep 4) and bumps a sequence so the
+#   oracle knows the first PUT is parked before it starts the second.
 #   #3736: a Maven jar in the S3-backed repository, the trigger API, and the
 #   quality_check_results table plus GET /api/v1/quality/checks.
 #
@@ -30,6 +33,13 @@
 #             #4837: the failed upload's path answers 404 and its object is
 #             gone from the repo-scoped S3 key (was a KNOWN-RED pin: the bytes
 #             stayed and GET served them with 200). RED on 1.11.4.
+#             #4892: two first uploads of one new release path with
+#             different bytes, the second started while the first is parked
+#             in its artifacts insert: PUT 1 201, PUT 2 409, one live row with
+#             PUT 1's sha256, and the MinIO object, the GET body and the .sha1
+#             all match PUT 1 (was: PUT 2 wrote the key before waiting on the
+#             publish lock, so the bucket and GET held the loser's bytes under
+#             the winner's row). RED on 1.11.5.
 #             #3736: within 30 s of the trigger a new quality_check_results
 #             row exists for the S3-stored artifact and GET /quality/checks
 #             lists metadata_completeness=completed and nothing failed.
