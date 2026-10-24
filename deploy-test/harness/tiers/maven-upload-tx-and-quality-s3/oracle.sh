@@ -5,6 +5,8 @@
 #               artifact_metadata row in one transaction: a metadata write
 #               that fails leaves no live artifact behind, and (#4837) no
 #               stored object the download path would still serve
+#   #4892       a second first-upload of a release coordinate that races the
+#               first answers 409 and cannot overwrite the winner's object
 #   #3736       quality checks read the artifact from the repository's
 #               configured storage backend (here S3/MinIO)
 # See the manifest for THE BUGS, the primitives and the gates.
@@ -226,6 +228,72 @@ else
   { [ "$g" = "200" ] && [ "$same" = "yes" ]; } || fail_g "the published coordinate does not serve the winner's bytes (GET ${g}, object ${ob}): the failed publisher's cleanup deleted them"
 fi
 finish_case "a failed overlapping publish destroyed the winner's bytes"
+
+begin_test "FIX #4892: a second first-upload of a release coordinate that races the first cannot replace the winner's stored bytes"
+reset_case
+# Two first uploads of one new release path, different bytes. A trigger on
+# artifacts parks PUT 1 inside its row insert (keyed on PUT 1's sha256, so
+# PUT 2 never parks); a sequence (non-transactional) signals the park. PUT 2
+# starts only once PUT 1 is parked. Before the fix each upload wrote its
+# object before taking the per-coordinate publish lock, so PUT 2 overwrote the
+# key and then answered 409: the row named PUT 1's checksum while MinIO and
+# GET held PUT 2's bytes. With the fix the write happens under the lock, so
+# PUT 2 waits for PUT 1 to commit and answers 409 without touching the key.
+WN_AID="dtfwin${SUF}"
+WP="${GAV}/${WN_AID}/1.0/${WN_AID}-1.0.jar"
+head -c 1024 /dev/urandom > "$W/win1.jar"; head -c 1024 /dev/urandom > "$W/win2.jar"
+W1_SHA="$(sha256sum "$W/win1.jar" | cut -d' ' -f1)"
+W1_SHA1="$(sha1sum "$W/win1.jar" | cut -d' ' -f1)"
+inst="$(docker exec "$DBC" psql -U registry -d artifact_registry -v ON_ERROR_STOP=1 -qc "
+CREATE SEQUENCE dtf_park_seq_${SUF};
+CREATE OR REPLACE FUNCTION dtf_park_art_${SUF}() RETURNS trigger LANGUAGE plpgsql AS \$\$
+BEGIN
+  IF NEW.checksum_sha256 = '${W1_SHA}' THEN
+    PERFORM nextval('dtf_park_seq_${SUF}');
+    PERFORM pg_sleep(4);
+  END IF;
+  RETURN NEW;
+END \$\$;
+CREATE TRIGGER dtf_park_art_${SUF} BEFORE INSERT ON artifacts
+  FOR EACH ROW EXECUTE FUNCTION dtf_park_art_${SUF}();" 2>&1)"; irc=$?
+if [ "$irc" -ne 0 ]; then
+  infra_fail "could not install the artifacts park trigger" "$inst"
+else
+  ( curl -s --max-time 60 -o "$W/wn1.out" -w '%{http_code}' -X PUT -H "Authorization: ${BASIC}" \
+      --data-binary "@$W/win1.jar" "$BASE/maven/${REPO}/${WP}" > "$W/wn1.code" 2>/dev/null ) &
+  parked="no"
+  for _i in $(seq 1 40); do
+    [ "$(psql_q "SELECT is_called FROM dtf_park_seq_${SUF}")" = "t" ] && { parked="yes"; break; }
+    sleep 0.25
+  done
+  ( curl -s --max-time 60 -o "$W/wn2.out" -w '%{http_code}' -X PUT -H "Authorization: ${BASIC}" \
+      --data-binary "@$W/win2.jar" "$BASE/maven/${REPO}/${WP}" > "$W/wn2.code" 2>/dev/null ) &
+  wait
+  docker exec "$DBC" psql -U registry -d artifact_registry -qc \
+    "DROP TRIGGER IF EXISTS dtf_park_art_${SUF} ON artifacts; DROP FUNCTION IF EXISTS dtf_park_art_${SUF}(); DROP SEQUENCE IF EXISTS dtf_park_seq_${SUF};" >/dev/null 2>&1
+  c1="$(cat "$W/wn1.code")"; c2="$(cat "$W/wn2.code")"
+  lr="$(live_rows "$WP")"
+  rsha="$(psql_q "SELECT a.checksum_sha256 FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '${REPO}' AND a.path = '${WP}' AND a.is_deleted = false")"
+  # The object itself, straight from MinIO.
+  docker run --rm --network "ak-dtf${DTF_SLOT}-net" --entrypoint sh \
+    ghcr.io/artifact-keeper/ci-mirror/mc:RELEASE.2025-08-13T08-35-41Z -c \
+    "mc alias set l http://minio:9000 minioadmin minioadmin >/dev/null 2>&1; mc cat 'l/ak-artifacts/maven/${REPO_ID}/${WP}'" \
+    > "$W/win.obj" 2>/dev/null
+  osha="$(sha256sum "$W/win.obj" | cut -d' ' -f1)"; [ -s "$W/win.obj" ] || osha="missing"
+  g="$(mget "$WP" "$W/win.got")"; gsha="$(sha256sum "$W/win.got" | cut -d' ' -f1)"
+  gs="$(mget "${WP}.sha1" "$W/win.sha1")"; s1="$(tr -d '[:space:]' < "$W/win.sha1" | cut -c1-40)"
+  who(){ case "$1" in "$W1_SHA") echo "PUT 1";; "$(sha256sum "$W/win2.jar" | cut -d' ' -f1)") echo "PUT 2";; *) echo "neither";; esac; }
+  note "PUT 1 parked before PUT 2 started: ${parked}; PUT 1: ${c1}; PUT 2: ${c2} $(head -c 120 "$W/wn2.out")"
+  note "live rows ${lr}, row sha256 is $(who "$rsha"); MinIO object is $(who "$osha"); GET ${g} serves $(who "$gsha"); GET .sha1 ${gs} '${s1}' (PUT 1's sha1 ${W1_SHA1})"
+  [ "$parked" = "yes" ] || fail_g "PUT 1 never reached the parked artifacts insert, the race was not staged"
+  [ "$c1" = "201" ] || fail_g "the first publisher answered ${c1}, expected 201"
+  [ "$c2" = "409" ] || fail_g "the racing second publisher answered ${c2}, expected 409 (immutable release)"
+  [ "$lr" = "1" ] && [ "$rsha" = "$W1_SHA" ] || fail_g "expected one live row carrying PUT 1's sha256, got ${lr} row(s), $(who "$rsha")"
+  [ "$osha" = "$W1_SHA" ] || fail_g "#4892: the MinIO object at maven/${REPO_ID}/${WP} holds $(who "$osha")'s bytes, not the committed winner's"
+  { [ "$g" = "200" ] && [ "$gsha" = "$W1_SHA" ]; } || fail_g "#4892: GET answered ${g} serving $(who "$gsha")'s bytes while the row names PUT 1"
+  { [ "$gs" = "200" ] && [ "$s1" = "$W1_SHA1" ]; } || fail_g "the .sha1 (HTTP ${gs}, '${s1}') does not match PUT 1's bytes"
+fi
+finish_case "#4892 a racing first upload replaced the winner's stored bytes"
 
 begin_test "FIX #3736: quality checks triggered for an S3-stored artifact read it and record a result"
 reset_case
