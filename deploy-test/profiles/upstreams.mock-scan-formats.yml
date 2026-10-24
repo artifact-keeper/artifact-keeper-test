@@ -1,9 +1,11 @@
 # =============================================================================
-# profiles/upstreams.mock-scan-formats.yml - Maven / NuGet / Cargo upstream
-# whose packages carry known identities, for the scan-on-proxy tiers
+# profiles/upstreams.mock-scan-formats.yml - Maven / NuGet / Cargo / Go /
+# RubyGems / Composer upstream whose packages carry known identities, for the
+# scan-on-proxy tiers
 # =============================================================================
 # Adds `mock-scan`, a stdlib-only Python HTTP server that serves a small Maven
-# repository, a NuGet V3 feed and a Cargo sparse registry built at start-up
+# repository, a NuGet V3 feed, a Cargo sparse registry, a Go module proxy, a
+# RubyGems source and a Composer repository built at start-up
 # with fixed timestamps (identical bytes on every run). Some packages name
 # coordinates with long-published advisories (log4j-core 2.14.1, commons-text
 # 1.9, Newtonsoft.Json 12.0.1, regex 1.5.4), some name coordinates no advisory

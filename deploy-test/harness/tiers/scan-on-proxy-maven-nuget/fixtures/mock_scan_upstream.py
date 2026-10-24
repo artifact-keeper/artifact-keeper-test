@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # =============================================================================
-# mock_scan_upstream.py - a Maven + NuGet V3 + Cargo sparse upstream whose
-# packages carry KNOWN identities, for the scan-on-proxy tiers
+# mock_scan_upstream.py - a Maven + NuGet V3 + Cargo sparse + Go + RubyGems +
+# Composer upstream whose packages carry KNOWN identities, for the
+# scan-on-proxy tiers
 # =============================================================================
 # The scan-on-proxy gate (artifact-keeper#4098, #4100 Maven, #4101 Cargo,
 # #4102 NuGet) buffers a proxied package, establishes what it is served as from
@@ -41,6 +42,24 @@
 #       dtf-scanclean 1.0.0
 #       dtf-scanliar 2.0.0 (Cargo.toml declares 1.0.0)
 #       dtf-badsum 1.0.0   (index cksum is NOT the crate's sha256)
+#   Go module proxy (upstream base http://<self>/goproxy)       #4103
+#     <module>/@v/list, <module>/@v/<v>.info, .mod, .zip
+#       example.com/dtfscan/vulnmod v1.0.0   go.mod requires golang.org/x/text
+#                                            v0.3.0 (GHSA-69ch-w2m2-3vjp, high)
+#       example.com/dtfscan/cleanmod v1.0.0  no requirements
+#       example.com/dtfscan/liarmod v2.0.0   zip entries are @v1.0.0/ (not the
+#                                            module the request names)
+#   RubyGems (upstream base http://<self>/rubygems)             #4104
+#     gems/<name>-<v>.gem (plain tar with a gzipped gemspec metadata.gz)
+#       rack 2.0.7          (GHSA-3h57-hmj3-gj3p and others, high)
+#       dtf-scanclean 1.0.0
+#       dtf-scanliar 2.0.0  (gemspec declares 1.0.0)
+#   Composer (upstream base http://<self>/composer)             #4105
+#     p2/<vendor>/<pkg>.json   dist.url -> <self>/composer/zipball/<pkg>.zip
+#       dtf/vulnpkg 1.0.0   ships a composer.lock pinning guzzlehttp/guzzle
+#                           6.5.0 (GHSA-f2wf-25xc-69c9 and others, high)
+#       dtf/cleanpkg 1.0.0  no lockfile
+#       dtf/liarpkg 1.0.0   composer.json names other/pkg
 #
 # Control endpoints (never counted):
 #   GET /__readyz                 healthcheck
@@ -246,6 +265,104 @@ add_crate("dtf-badsum", "1.0.0", bad_cksum=True)
 for name, lines in CARGO_INDEX.items():
     FILES[f"cargo/{sparse_prefix(name)}/{name}"] = ("\n".join(lines) + "\n").encode()
 FILES["cargo/config.json"] = json.dumps({"dl": f"{SELF}/cargo/api/v1/crates"}).encode()
+
+
+# ----------------------------------------------------------------- Go
+def go_zip(module, version, gomod, prefix_version=None):
+    prefix = f"{module}@{prefix_version or version}/"
+    return zip_bytes([(prefix + "go.mod", gomod), (prefix + "dtf.go", "package dtf\n")])
+
+
+def add_go(module, version, requires=(), prefix_version=None):
+    gomod = f"module {module}\n\ngo 1.21\n" + "".join(f"\nrequire {m} {v}\n" for m, v in requires)
+    base = f"goproxy/{module}/@v"
+    FILES[f"{base}/{version}.zip"] = go_zip(module, version, gomod, prefix_version)
+    FILES[f"{base}/{version}.mod"] = gomod.encode()
+    FILES[f"{base}/{version}.info"] = json.dumps({"Version": version, "Time": "2020-01-01T00:00:00Z"}).encode()
+    FILES[f"{base}/list"] = f"{version}\n".encode()
+
+
+add_go("example.com/dtfscan/vulnmod", "v1.0.0", requires=[("golang.org/x/text", "v0.3.0")])
+add_go("example.com/dtfscan/cleanmod", "v1.0.0")
+add_go("example.com/dtfscan/liarmod", "v2.0.0", prefix_version="v1.0.0")
+
+
+# ----------------------------------------------------------------- RubyGems
+def gem_bytes(name, declared_version):
+    spec = (
+        "--- !ruby/object:Gem::Specification\n"
+        f"name: {name}\n"
+        "version: !ruby/object:Gem::Version\n"
+        f"  version: {declared_version}\n"
+        "platform: ruby\n"
+        "summary: dtf scan fixture\n"
+    ).encode()
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for entry, data in (
+            ("metadata.gz", gzip.compress(spec, mtime=0)),
+            ("data.tar.gz", gzip.compress(b"", mtime=0)),
+        ):
+            ti = tarfile.TarInfo(entry)
+            ti.size = len(data)
+            ti.mtime = 1577836800
+            ti.mode = 0o644
+            t.addfile(ti, io.BytesIO(data))
+    return raw.getvalue()
+
+
+def add_gem(name, version, declared=None):
+    FILES[f"rubygems/gems/{name}-{version}.gem"] = gem_bytes(name, declared or version)
+
+
+add_gem("rack", "2.0.7")
+add_gem("dtf-scanclean", "1.0.0")
+add_gem("dtf-scanliar", "2.0.0", declared="1.0.0")
+
+
+# ----------------------------------------------------------------- Composer
+COMPOSER_REF = "0123456789abcdef0123456789abcdef01234567"
+
+
+def add_composer(name, version, declared=None, lock_packages=()):
+    pkg = name.split("/")[1]
+    top = f"{name.replace('/', '-')}-0123456/"
+    entries = [(top + "composer.json", json.dumps({"name": declared or name, "type": "library"}))]
+    if lock_packages:
+        lock = {
+            "packages": [
+                {"name": n, "version": v, "type": "library",
+                 "dist": {"type": "zip", "url": "https://example.invalid/x.zip", "reference": "x"}}
+                for n, v in lock_packages
+            ],
+            "packages-dev": [],
+        }
+        entries.append((top + "composer.lock", json.dumps(lock)))
+    entries.append((top + "src/Dtf.php", "<?php\n"))
+    FILES[f"composer/zipball/{pkg}.zip"] = zip_bytes(entries)
+    FILES[f"composer/p2/{name}.json"] = json.dumps(
+        {
+            "packages": {
+                name: [
+                    {
+                        "name": name,
+                        "version": version,
+                        "dist": {
+                            "type": "zip",
+                            "url": f"{SELF}/composer/zipball/{pkg}.zip",
+                            "reference": COMPOSER_REF,
+                        },
+                    }
+                ]
+            }
+        }
+    ).encode()
+
+
+add_composer("dtf/vulnpkg", "1.0.0", lock_packages=[("guzzlehttp/guzzle", "6.5.0")])
+add_composer("dtf/cleanpkg", "1.0.0")
+add_composer("dtf/liarpkg", "1.0.0", declared="other/pkg")
+FILES["composer/packages.json"] = json.dumps({"metadata-url": "/composer/p2/%package%.json", "packages": []}).encode()
 
 
 def ctype(path):
