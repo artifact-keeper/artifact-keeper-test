@@ -103,6 +103,11 @@
 #     Packages/d/dtf-scanliar-2.0-1.el9.noarch.rpm   header says 1.0
 #     Packages/d/dtf-notag-1.0-1.noarch.rpm          no dist tag
 #     repodata/repomd.xml
+#   Alpine (upstream base http://<self>/alpine)                 #4113
+#     v3.19/main/x86_64/busybox-1.36.1-r15.apk       (CVE-2023-42363 and others)
+#     v3.19/main/x86_64/dtf-scanclean-1.0-r0.apk
+#     v3.19/main/x86_64/dtf-scanliar-2.0-r0.apk      .PKGINFO says 1.0-r0
+#     latest-stable/main/x86_64/dtf-scanclean-1.0-r0.apk  (no fixed release)
 #
 # Control endpoints (never counted):
 #   GET /__readyz                 healthcheck
@@ -650,6 +655,11 @@ FILES["rpm/9/BaseOS/x86_64/os/repodata/repomd.xml"] = (
     b'<?xml version="1.0" encoding="UTF-8"?>\n<repomd xmlns="http://linux.duke.edu/metadata/repo">'
     b"<revision>1577836800</revision></repomd>\n"
 )
+# Alpine (upstream base http://<self>/alpine).
+add_apk("alpine", "v3.19", "busybox", "1.36.1-r15", origin="busybox")
+add_apk("alpine", "v3.19", "dtf-scanclean", "1.0-r0")
+add_apk("alpine", "v3.19", "dtf-scanliar", "2.0-r0", declared="1.0-r0")
+add_apk("alpine", "latest-stable", "dtf-scanclean", "1.0-r0")
 
 
 def ctype(path):

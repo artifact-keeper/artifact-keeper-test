@@ -1,0 +1,22 @@
+# DTF tier manifest: scan-on-proxy-alpine  (artifact-keeper 1.12.0: #4113,
+# epic #4097)
+# Profile-set: filesystem + the mock-scan-formats upstream (an Alpine v3.19
+# branch whose packages carry known identities). LOCAL-ONLY: the verdicts
+# come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: before 1.12.0 an Alpine Remote (or a Virtual over one) with
+# scan_on_proxy=true streamed every .apk unscanned (200, no X-AK-Scan) and
+# /api/v1/formats reported alpine `accepted`; the scanner does not catalog a
+# bare .apk at all. 1.12.0 checks the package's own .PKGINFO against the
+# request and grades it on the release the branch names through a synthetic
+# installed system: vulnerable -> 403 scan_blocked, clean -> 200 X-AK-Scan:
+# clean, a package whose .PKGINFO disagrees or whose branch names no release
+# -> 423 under fail_closed with no verdict row, fail_open -> pending then
+# blocked; an ambiguous client path is 400.
+#
+# Red: ak-backend:1.11.5. Green: an image carrying artifact-keeper#4113.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
