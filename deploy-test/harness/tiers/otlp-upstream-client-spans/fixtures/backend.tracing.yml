@@ -1,0 +1,9 @@
+# Tier-local override for otlp-upstream-client-spans: the oracle recreates only
+# the backend with this file layered on the manifest's profiles.
+#   DB_QUERY_SPANS=all (artifact-keeper#3954, 1.12.0): a database CLIENT span
+#   for every statement, while stdout keeps following RUST_LOG (info here, so
+#   no statement text is logged). Older images ignore the variable.
+services:
+  backend:
+    environment:
+      DB_QUERY_SPANS: "all"
