@@ -1,0 +1,32 @@
+# DTF tier manifest: conda-repodata-revision  (artifact-keeper#4174, epic
+#   #4172, tier named in #4188)
+# Profile-set: filesystem / single.
+#
+# THE BUG (1.11.x)
+# #4174  every hosted `repodata.json`, `.zst`, `.bz2`, `current_repodata.json`
+#        and JLAP request listed the whole repository (every row with its
+#        metadata JSON) and re-rendered and re-compressed the subdir: N
+#        installers refreshing one channel cost N full renders, and a warm
+#        request on a 30,000-record subdir cost as much as a cold one.
+#
+# THE FIX (1.12.0, artifact-keeper G5 PR1 and PR2)
+#        a subdir's documents are rendered once per revision (bumped by every
+#        upload, withdrawal, delete and quarantine change) and kept; concurrent
+#        cold requests share one render, counted by
+#        ak_repo_metadata_regenerations_total{format="conda",scope="subdir"}.
+#
+# THE PRIMITIVES
+#   SQL seed (slot Postgres): one hosted channel, 3,000 names x 10 versions
+#     (30,000 noarch rows) with conda metadata
+#   PUT    /conda/{hosted}/noarch/{file}        one real upload (build.sh)
+#   GET    /conda/{hosted}/noarch/repodata.json.zst  x24 concurrent, cold
+#   GET    /api/v1/admin/metrics                Prometheus text
+#   DELETE /conda/{hosted}/noarch/{file}        withdraw
+#   every encoding decoded by fixtures/repodata_check.py (python:3.14-slim)
+#
+# Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
+#
+# RATE_LIMIT_ENABLED=false: bursts of concurrent repodata requests.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
