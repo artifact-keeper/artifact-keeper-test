@@ -1,0 +1,12 @@
+# Tier-local override for otlp-logs-metrics, layered on every backend the
+# oracle recreates: a 2 s metric push interval and a 500 ms log batch delay so
+# a wrongly enabled signal shows up within the oracle's wait, and RUST_LOG with
+# sqlx::query=debug so every SQL statement is a tracing event (stdout carries
+# its text; the OTLP log layer must not). The traces-only endpoint comes from
+# profiles/telemetry.otlp-sink.yml.
+services:
+  backend:
+    environment:
+      OTEL_METRIC_EXPORT_INTERVAL: "2000"
+      OTEL_BLRP_SCHEDULE_DELAY: "500"
+      RUST_LOG: "info,artifact_keeper_backend=debug,tower_http=debug,sqlx::query=debug"

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Steerable OTLP/HTTP sink plus an upload-your-own static upstream (stdlib only).
 
-Used by the deps-1.12.0-controls tier (profiles/telemetry.otlp-sink.yml).
+Used by the deps-1.12.0-controls and otlp-logs-metrics tiers
+(profiles/telemetry.otlp-sink.yml).
 
 OTLP side
   POST /v1/traces, POST /v1/metrics (any other POST path is counted the same way)
@@ -13,6 +14,7 @@ Control side (host-published)
   GET  /__stats                  -> {"paths": {path: count}, "mode": int, "since_mode": {path: count}}
   POST /__mode?status=503        -> every OTLP POST answers that status (200 restores)
   GET  /__grep?needle=X          -> {"hits": number of kept bodies (any path) containing X}
+  GET  /__grep?needle=X&path=/P  -> the same, counting only bodies POSTed to /P
   PUT  /__fx/<path>              -> store the request body, served as GET /<path>
                                     (query string ignored) with Content-Type from
                                     the X-Fx-Content-Type header
@@ -61,8 +63,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(doc).encode())
         if u.path == "/__grep":
             needle = q.get("needle", [""])[0].encode()
+            only = q.get("path", [None])[0]
             with LOCK:
-                hits = sum(1 for bodies in BODIES.values() for b in bodies if needle and needle in b)
+                hits = sum(
+                    1
+                    for path, bodies in BODIES.items()
+                    if only is None or path == only
+                    for b in bodies
+                    if needle and needle in b
+                )
             return self._send(200, json.dumps({"hits": hits}).encode())
         with LOCK:
             fx = FIXTURES.get(u.path)
