@@ -1,0 +1,22 @@
+# DTF tier manifest: scan-on-proxy-cocoapods-swift  (artifact-keeper 1.12.0:
+# #4109 CocoaPods, #4110 Swift, epic #4097)
+# Profile-set: filesystem + the mock-scan-formats upstream (a CocoaPods pod
+# source and a Swift registry whose archives carry known contents).
+# LOCAL-ONLY: the verdicts come from the backend image's bundled Grype and its
+# pre-seeded vulnerability DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: before 1.12.0 a CocoaPods or Swift Remote (or a Virtual over
+# one) with scan_on_proxy=true streamed every proxied archive unscanned (200,
+# no X-AK-Scan) and /api/v1/formats reported both as `accepted`. 1.12.0 routes
+# pod archives and Swift source archives through the shared inline scan gate,
+# graded on their contents (the bundled scanner has no advisory data for
+# either ecosystem, so the vulnerable fixtures vendor a Gemfile.lock):
+# vulnerable -> 403 scan_blocked, clean -> 200 X-AK-Scan: clean with the
+# verdict reused, an archive that does not back the request -> 423 under
+# fail_closed with no verdict row.
+#
+# Red: ak-backend:1.11.5. Green: an image carrying artifact-keeper#4109-#4110.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
