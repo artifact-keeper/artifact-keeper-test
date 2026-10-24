@@ -177,12 +177,15 @@ fi
 # ---------------------------------------------------------------------------
 # #4099: the formats API reports the scan-on-proxy capability
 # ---------------------------------------------------------------------------
-begin_test "FIX #4099: /api/v1/formats reports scan_on_proxy=enforced for maven, nuget, cargo, npm, pypi and accepted for alpine"
-got="$(fmt_field maven scan_on_proxy) $(fmt_field nuget scan_on_proxy) $(fmt_field cargo scan_on_proxy) $(fmt_field npm scan_on_proxy) $(fmt_field pypi scan_on_proxy) $(fmt_field alpine scan_on_proxy)"
-if [ "$got" = "enforced enforced enforced enforced enforced accepted" ]; then
+# alpine is "accepted" on the 1.11 line and "enforced" from 1.12.0 (#4113);
+# either value proves the capability field is reported.
+begin_test "FIX #4099: /api/v1/formats reports scan_on_proxy=enforced for maven, nuget, cargo, npm, pypi and a capability value for alpine"
+got="$(fmt_field maven scan_on_proxy) $(fmt_field nuget scan_on_proxy) $(fmt_field cargo scan_on_proxy) $(fmt_field npm scan_on_proxy) $(fmt_field pypi scan_on_proxy)"
+alpine_cap="$(fmt_field alpine scan_on_proxy)"
+if [ "$got" = "enforced enforced enforced enforced enforced" ] && { [ "$alpine_cap" = "accepted" ] || [ "$alpine_cap" = "enforced" ]; }; then
   pass
 else
-  fail "maven nuget cargo npm pypi alpine = '${got}' (pre-1.11.0: field absent)"
+  fail "maven nuget cargo npm pypi = '${got}', alpine = '${alpine_cap}' (pre-1.11.0: field absent)"
 fi
 
 # ---------------------------------------------------------------------------
