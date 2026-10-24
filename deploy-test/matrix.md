@@ -179,6 +179,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 161 | **Protobuf label moves, late NuGet metadata and protobuf commits reach a push peer** - #4889 (fixed by #4899), #4921 (fixed by #4934) | filesystem + `peer.second-instance` (bidirectional push peers; `.nupkg` fixtures zipped on the host, protobuf modules pushed as Connect JSON) | `CreateOrUpdateLabels` moving main on A makes B resolve main and dev to the new commit through one `_labels` row with A's sha256 and no package version; moving it back after that push finished is re-delivered within 60 s through the same push row; a NuGet package whose metadata write is held open on A (trigger + release table) has its nuspec id, version and description on B within 60 s; a protobuf commit uploaded to A after B subscribed is pushed (A's push row completed, B's row sha256 equals the bundle A serves) and B serves it to buf by label and by commit id; controls: the `.nupkg` reaches B, peer writes are not echoed, every A push row ends completed | **replication-labels-and-late-metadata** | **COVERED** (#618, #622, `fixes-1.11.7-replication`): FIX gate, green 11/11 on `fix-4921` (an image at or after `9bcfc824`, #4934; #622 flipped the former #4921 KNOWN-RED pin); red on 1.11.5 (6 pass / 5 fail: B resolves no label after either move, B holds no NuGet metadata, the commit push fails 409 `checksum mismatch` and B cannot serve the commit). Gate-group proof: 11/11 on slot 39 (`fixes-1.11.7-replication`, `fix-4921`, 85 s) |
 | 162 | **The members of a group are listed and paged stably** - #4027 (fixed by #4821, 1.12.0) | filesystem (an LDAP provider row created through `POST /admin/sso/ldap` whose server never resolves; a group attached to it as a directory sync records it, seven members inserted by one statement so they share `joined_at`) | admin `GET /groups/{id}/members?member_limit=200` returns the 7 members ordered by (joined_at, user_id) with members_total 7; pages of 2 and of 3 concatenate to the same sequence with no repeats or gaps, an offset past the end is empty; a non-admin member sees the same list; the outsider gets 404 like a random id, anonymous 401; controls: group detail members_total 7, writes to the synced group are 409 | **group-members-list** | **COVERED** (#624, `features-1.12.0-api`): FEATURE gate, green on main `162620e3` (`main-1120a`, 11/11); red on 1.11.5 (4 pass / 7 fail: every GET /members is 405) and on every 1.11.x image. Gate-group proof on main `162620e3`: 11/11 on slot 39 (`features-1.12.0-api`, `main-1120a`) |
 | 163 | **OTLP log records and metric points are exported beside spans** - #4337 (fixed by #4820, 1.12.0) | filesystem + `telemetry.otlp-sink` (`172.16.<slot>.71`, the counting sink of `deps-1.12.0-controls`, now with a per-path `/__grep`) | with `OTEL_LOGS_EXPORTER=otlp` and `OTEL_METRICS_EXPORTER=otlp`, `/v1/logs` bodies carry `Request completed` with at least 8 of 10 correlation ids and the startup record, `/v1/metrics` bodies carry `ak_http_requests_total` and `ak_http_request_duration_seconds`, and no log body carries SQL text although stdout does; controls: spans unchanged, nothing on logs or metrics with the exporters unset; guard: with the sink stopped, readiness, request latency and a clean `docker stop` within 25 s | **otlp-logs-metrics** | **COVERED** (#625, `features-1.12.0-api`): FEATURE gate, green on main `162620e3` (`main-1120a`, 8/8); red on 1.11.5 (5 pass / 3 fail: nothing on `/v1/logs` or `/v1/metrics`) and on every 1.11.x image. Gate-group proof on main `162620e3`: 8/8 on slot 39 (`features-1.12.0-api`, `main-1120a`, 48 s) |
+| 164 | **A blob completion cut by a proxy 504 and re-sent is 201, not 409** - #4902 (fixed by #4919) | filesystem + `proxy.timeout-504` (a stdlib-python proxy from the tier's fixtures that, when armed, answers an upload PUT with 504 a set time after forwarding its body and closes the upstream connection, as Envoy does) | a 768 MiB monolithic `PUT ?digest=` cut by the proxy and re-sent at once through it is 201 (or 503 then 201), blob HEAD is 200 and no session row is left `committing` within 10 s; controls: direct and unarmed-proxy pushes are 201, a retry with a different digest while the cut completion runs is 409 | **oci-blob-completion-retry** | **COVERED** (#619, `fixes-1.11.7-oci`): FIX gate, green on `fix-4902` (#4919, 7/7, 3 of 3 runs); red on 1.11.5 (4 pass / 3 fail: retry 409 `upload session is already being modified`, HEAD 404, row still `committing`). Gate-group proof: 7/7 on slot 39 (`fixes-1.11.7-oci`, `fix-4902`, 18 s) |
 
 ## Consolidated status (this checkpoint)
 
@@ -460,7 +461,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   `pypi-contenttype` or `virtual-pypi-platform-wheel` on one subnet.
   A 1.11.x candidate older than 1.11.6 is red on this group.
 
-## 1.11.7 fix-coverage status (rows 124 and 161, artifact-keeper-test#617, #618)
+## 1.11.7 fix-coverage status (rows 124, 161, 164, artifact-keeper-test#617, #618, #619, #622)
 
 - **`maven-upload-tx-and-quality-s3`** (row 124) gained the #4892 gate in
   #617: a second first upload of a new release path, started while the
@@ -486,11 +487,20 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   gate group runs in its own job on its own slot with its tiers one after
   another, so it never overlaps `push-sync-echo-and-sidecars`,
   `push-sync-chunked-upload` or `remote-instance-relay`.
-- **Line:** none of the three backend fixes (#4897, #4899, #4934) is on
-  `release/1.11.x` yet. The 1.11.7 backport needs #617, #618 and #622
-  carried to the test repo's `release/1.11.x`
+- **`oci-blob-completion-retry`** (row 164, #619) covers #4902: a reverse
+  proxy's response timeout reset the backend mid-completion, which
+  cancelled the handler and left the session `committing` without a
+  heartbeat for the 6 h stale window, so containerd's single re-send got
+  409 and the layer never landed. It is a FIX gate: red on 1.11.5 on
+  exactly the three FIX cases with every control holding, green on
+  `fix-4902` (#4919, `9f3914a8`). It runs as its own required group
+  `fixes-1.11.7-oci` (under a minute); `proxy.timeout-504` uses the dtf
+  network and the slot's spare port, no mock subnet.
+- **Line:** none of the four backend fixes (#4897, #4899, #4919, #4934)
+  is on `release/1.11.x` yet. The 1.11.7 backport needs #617, #618, #619
+  and #622 carried to the test repo's `release/1.11.x`
   in the same cycle (artifact-keeper-test#424); until then a 1.11.x
-  candidate runs the line's older copy of row 124 and skips row 161 as NOT
+  candidate runs the line's older copy of row 124 and skips rows 161 and 164 as NOT
   ON THIS LINE.
 
 ## 1.12.0 feature-coverage status (rows 30, 162, 163, artifact-keeper-test#623-#625, artifact-keeper#4932)
