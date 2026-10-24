@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # =============================================================================
 # mock_scan_upstream.py - a Maven + NuGet V3 + Cargo sparse + Go + RubyGems +
-# Composer upstream whose packages carry KNOWN identities, for the
-# scan-on-proxy tiers
+# Composer + Pub + Conan upstream whose packages carry KNOWN identities, for
+# the scan-on-proxy tiers
 # =============================================================================
 # The scan-on-proxy gate (artifact-keeper#4098, #4100 Maven, #4101 Cargo,
 # #4102 NuGet) buffers a proxied package, establishes what it is served as from
@@ -60,6 +60,18 @@
 #                           6.5.0 (GHSA-f2wf-25xc-69c9 and others, high)
 #       dtf/cleanpkg 1.0.0  no lockfile
 #       dtf/liarpkg 1.0.0   composer.json names other/pkg
+#   Pub (upstream base http://<self>/pub)                       #4107
+#     packages/<name>/versions/<v>.tar.gz (root pubspec.yaml)
+#       http 0.12.0         (GHSA-4rgh-jx4f-qfcq, medium)
+#       dtf_scanclean 1.0.0
+#       dtf_scanliar 2.0.0  (pubspec.yaml declares 1.0.0)
+#   Conan v2 (upstream base http://<self>/conan)                #4108
+#     v2/conans/<name>/<v>/_/_/revisions/<rrev>/files/<file>
+#       dtfvuln 1.0.0   conan_sources.tgz ships a conanfile.txt requiring
+#                       openssl/1.1.1k (CVE-2021-3711, critical)
+#       dtfclean 1.0.0  conan_sources.tgz with no requirements
+#       dtfliar 1.0.0   conan_sources.tgz is not a gzipped tar
+#       (each also has conanfile.py and conanmanifest.txt)
 #
 # Control endpoints (never counted):
 #   GET /__readyz                 healthcheck
@@ -363,6 +375,56 @@ add_composer("dtf/vulnpkg", "1.0.0", lock_packages=[("guzzlehttp/guzzle", "6.5.0
 add_composer("dtf/cleanpkg", "1.0.0")
 add_composer("dtf/liarpkg", "1.0.0", declared="other/pkg")
 FILES["composer/packages.json"] = json.dumps({"metadata-url": "/composer/p2/%package%.json", "packages": []}).encode()
+
+
+# ----------------------------------------------------------------- tar.gz
+def tar_gz(entries):
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for entry, data in entries:
+            data = data.encode() if isinstance(data, str) else data
+            ti = tarfile.TarInfo(entry)
+            ti.size = len(data)
+            ti.mtime = 1577836800
+            ti.mode = 0o644
+            t.addfile(ti, io.BytesIO(data))
+    return gzip.compress(raw.getvalue(), mtime=0)
+
+
+# ----------------------------------------------------------------- Pub
+def add_pub(name, version, declared=None):
+    spec = f"name: {name}\nversion: {declared or version}\ndescription: dtf scan fixture\nenvironment:\n  sdk: '>=2.12.0 <4.0.0'\n"
+    FILES[f"pub/packages/{name}/versions/{version}.tar.gz"] = tar_gz(
+        [("pubspec.yaml", spec), ("lib/dtf.dart", "void dtf() {}\n")]
+    )
+
+
+add_pub("http", "0.12.0")
+add_pub("dtf_scanclean", "1.0.0")
+add_pub("dtf_scanliar", "2.0.0", declared="1.0.0")
+
+
+# ----------------------------------------------------------------- Conan
+CONAN_RREV = "0123456789abcdef0123456789abcdef"
+
+
+def add_conan(name, version, requires=(), broken=False):
+    base = f"conan/v2/conans/{name}/{version}/_/_/revisions/{CONAN_RREV}/files"
+    conanfile = f"from conan import ConanFile\nclass Dtf(ConanFile):\n    name = '{name}'\n    version = '{version}'\n"
+    FILES[f"{base}/conanfile.py"] = conanfile.encode()
+    FILES[f"{base}/conanmanifest.txt"] = b"1577836800\nconanfile.py: 0\n"
+    if broken:
+        FILES[f"{base}/conan_sources.tgz"] = b"this is not a gzipped tar"
+        return
+    txt = "[requires]\n" + "".join(f"{r}\n" for r in requires)
+    FILES[f"{base}/conan_sources.tgz"] = tar_gz(
+        [("conanfile.txt", txt), ("src/dtf.c", "int dtf(void) { return 0; }\n")]
+    )
+
+
+add_conan("dtfvuln", "1.0.0", requires=["openssl/1.1.1k"])
+add_conan("dtfclean", "1.0.0")
+add_conan("dtfliar", "1.0.0", broken=True)
 
 
 def ctype(path):
