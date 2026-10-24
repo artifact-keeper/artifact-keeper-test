@@ -3033,6 +3033,33 @@ jobs:
           # one after another. Red on 1.11.5. Required.
           - group: fixes-1.11.6-pypi
             tiers: pypi-age-gate-pep440-lookup
+          # 1.11.7 (artifact-keeper-test#617-#619, #622), also a record of main's
+          # groups. The #4892 gate in maven-upload-tx-and-quality-s3 (#617)
+          # runs in main's storage-1.11.0 group.
+          # replication (artifact-keeper-test#618, #622): a protobuf label
+          # move on A pushes the whole _labels map to a push peer and is
+          # re-delivered when moved again, NuGet metadata written after the
+          # upload reaches the peer (#4889, fixed by #4899), and a protobuf
+          # commit uploaded after the peer subscribed is pushed and served
+          # by B (#4921, fixed by #4934; storage.filesystem +
+          # peer.second-instance, about 1.5 min). The second instance claims
+          # no 172.16.<slot>.0/24 mock subnet, only the slot's spare port;
+          # each group claims its own slot and runs its tiers one after
+          # another, so it never overlaps the other peer.second-instance
+          # tiers. Red on 1.11.6. Required.
+          - group: fixes-1.11.7-replication
+            tiers: replication-labels-and-late-metadata
+          # oci (artifact-keeper-test#619): a monolithic blob completion PUT
+          # cut by a reverse proxy's 504 and re-sent at once is 201, not 409
+          # "upload session is already being modified", and leaves no
+          # `committing` session row (#4902, fixed by #4919;
+          # storage.filesystem + proxy.timeout-504, a stdlib-python proxy
+          # from the tier's own fixtures on the dtf network and the slot's
+          # spare port, no 172.16.<slot>.0/24 subnet; under a minute). Its
+          # own group keeps it off the replication tier's runtime. Red on
+          # 1.11.6. Required.
+          - group: fixes-1.11.7-oci
+            tiers: oci-blob-completion-retry
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

@@ -349,6 +349,10 @@ case "$CMD" in
     # storage-1.11.0 group against this branch's tier.
     # 1.11.6: the PyPI upstream_publish_time age gate resolving a PEP
     # 440-equal filename version to its release publish time (#4907).
+    # 1.11.7: protobuf label moves, late NuGet metadata and protobuf commits
+    # reaching a push peer (#4889, #4921) and a blob completion PUT re-sent
+    # after a proxy 504 (#4902). maven-upload-tx-and-quality-s3 also gates
+    # #4892 since #617, still from main's storage-1.11.0 group.
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -366,7 +370,8 @@ case "$CMD" in
              push-sync-echo-and-sidecars push-sync-chunked-upload metrics-startup-db-retry \
              conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve \
              cran-remote-packages-index repo-delete-purges-revisions \
-             pypi-age-gate-pep440-lookup; do
+             pypi-age-gate-pep440-lookup \
+             replication-labels-and-late-metadata oci-blob-completion-retry; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
