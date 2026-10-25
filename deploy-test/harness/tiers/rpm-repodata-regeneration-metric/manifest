@@ -1,0 +1,24 @@
+# DTF tier manifest: rpm-repodata-regeneration-metric  (#4174)
+# Profile-set: filesystem + a real dnf client.
+#
+# #4174 extracts the RPM repodata fingerprint cache (#2521) into a
+# format-agnostic metadata revision cache and gives it shared metrics:
+# ak_repo_metadata_regenerations_total{format,scope},
+# ak_repo_metadata_regeneration_seconds{format} and
+# ak_repo_metadata_cache_requests_total{format,result}.
+#
+# Oracle (oracle.sh): a hosted RPM root of 300 synthetic packages (rows
+# seeded straight into Postgres: the render reads rows, not package bytes),
+# then
+#   * 20 concurrent cold repomd.xml GETs: all 200, one body, and exactly one
+#     regenerations sample for format="rpm" (RED on 1.11.5: the cache renders
+#     once but reports nothing, so the counter is absent);
+#   * warm repeats add cache hits, no regeneration;
+#   * one more package: the next GET serves a new body and the counter moves
+#     by exactly one;
+#   * `dnf makecache` in a Fedora client accepts the served metadata.
+#
+# RATE_LIMIT_ENABLED=false: the oracle sends bursts of GETs.
+PROFILES="storage.filesystem client.dnf"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
