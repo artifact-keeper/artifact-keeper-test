@@ -41,6 +41,14 @@
 #           types, artifact-keeper#4149). Built on first request, not at
 #           startup, so tiers that never ask for it pay nothing.
 #
+#   /synth/ publishes noarch/repodata.json ONLY as repodata.json.bz2 and no
+#           CEP-16 shard index, and its record set can grow at run time:
+#           `POST /__synth/add?name=<n>&version=<v>` adds a record (the
+#           conda-remote-shards-synth tier, artifact-keeper#4178, adds a
+#           package upstream and expects it after the remote's refresh).
+#           Starts with dtfsyn-alpha 1.0 (.tar.bz2), dtfsyn-alpha 2.0 (.conda)
+#           and dtfsyn-beta 1.0.
+#
 # Env: MOCK_PORT (default 80), MOCK_MARKER (default dtfmockconda).
 # `/__readyz` answers `ok` for the compose healthcheck.
 # =============================================================================
@@ -214,6 +222,34 @@ FILES = {
 }
 
 
+SYNTH_LOCK = threading.Lock()
+SYNTH = {"packages": {}, "packages.conda": {}}
+
+
+def synth_add(name, version, ext=".tar.bz2"):
+    fn = f"{name}-{version}-0{ext}"
+    section = "packages.conda" if ext == ".conda" else "packages"
+    with SYNTH_LOCK:
+        SYNTH[section][fn] = record(name, version)
+
+
+synth_add("dtfsyn-alpha", "1.0")
+synth_add("dtfsyn-alpha", "2.0", ".conda")
+synth_add("dtfsyn-beta", "1.0")
+
+
+def synth_repodata_bz2():
+    with SYNTH_LOCK:
+        doc = {
+            "info": {"subdir": "noarch"},
+            "packages": dict(SYNTH["packages"]),
+            "packages.conda": dict(SYNTH["packages.conda"]),
+            "removed": [],
+            "repodata_version": 1,
+        }
+    return bz2.compress(js(doc))
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -236,6 +272,12 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/fail/"):
             self._send(500, "text/plain", b"mock-conda: forced failure", head)
             return
+        if path == "/synth/noarch/repodata.json.bz2":
+            self._send(200, "application/x-bzip2", synth_repodata_bz2(), head)
+            return
+        if path.startswith("/synth/"):
+            self._send(404, "text/plain", b"not found", head)
+            return
         if path == HUGE_PATH:
             self._send(200, "application/json", huge_repodata(), head)
             return
@@ -253,6 +295,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):  # noqa: N802
         self._route(True)
+
+    def do_POST(self):  # noqa: N802
+        from urllib.parse import parse_qs, urlsplit
+
+        parts = urlsplit(self.path)
+        if parts.path != "/__synth/add":
+            self._send(404, "text/plain", b"not found")
+            return
+        q = parse_qs(parts.query)
+        name, version = q.get("name", [""])[0], q.get("version", ["1.0"])[0]
+        if not name:
+            self._send(400, "text/plain", b"name required")
+            return
+        synth_add(name, version)
+        self._send(200, "text/plain", b"ok")
 
     def log_message(self, fmt, *args):
         print("mock-conda: " + fmt % args, flush=True)

@@ -1,0 +1,30 @@
+# DTF tier manifest: conda-remote-shards-synth  (artifact-keeper#4178, epic
+#   #4172, tier named in #4188)
+# Profile-set: filesystem / single, upstreams.mock-conda.
+#
+# THE BUG (1.11.x)
+# #4178  a Remote conda repository whose upstream publishes no CEP-16 shard
+#        index answered 404 on repodata_shards.msgpack.zst, so every CEP-16
+#        client of it (pixi, rattler, mamba 2) downloaded the whole
+#        repodata.json on every solve.
+#
+# THE FIX (1.12.0, artifact-keeper G5 PR4)
+#        the remote synthesises the shards from the cached upstream
+#        repodata (stream-parsed, stored as origin 'synthesized' in
+#        conda_shard_index) and serves the index and shards itself; a changed
+#        upstream document is resynthesised on the next refresh.
+#
+# THE PRIMITIVES
+#   mock-conda `/synth/` channel: noarch/repodata.json.bz2 only, no shard
+#     index; `POST /__synth/add` adds a record at run time
+#   GET  /conda/{remote}/noarch/repodata_shards.msgpack.zst  (decoded by
+#        conda-sharded-remote-virtual/fixtures/cep16.py, python:3.14-slim)
+#   a REAL rattler client (ghcr.io/prefix-dev/pixi:0.81.0, `pixi search`)
+#     through a logging reverse proxy (fixtures/logproxy.py) in the backend's
+#     network namespace
+#
+# Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
+PROFILES="storage.filesystem upstreams.mock-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
