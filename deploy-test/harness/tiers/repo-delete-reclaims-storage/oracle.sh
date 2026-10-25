@@ -14,13 +14,19 @@
 #    file is on disk and downloads byte-exact.
 # 5. DELETE B (last holder of the first payload): B's tree is empty (both).
 #
-# run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, COMMON_SH, RUN_ID.
+# The repository DELETE answers 200 on 1.11.x and 202 with a job on 1.12.0
+# (#4311); delete_repository_and_wait (harness/lib/repo_delete.sh) waits for
+# the job before any assertion about what is left on disk.
+#
+# run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, COMMON_SH, RUN_ID, DTF_DIR.
 # =============================================================================
 set -uo pipefail
-: "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${ADMIN_PASS:?}"
+: "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${ADMIN_PASS:?}"; : "${DTF_DIR:?}"
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+# shellcheck source=../../lib/repo_delete.sh
+source "${DTF_DIR}/harness/lib/repo_delete.sh"
 set +e
 
 BASE="$BASE_URL"
@@ -87,10 +93,11 @@ if [ "$F" -eq 0 ]; then pass; else fail_fatal "setup failed"; exit 1; fi
 # ---------------------------------------------------------------------------
 begin_test "CONTROL: deleting repo A purges its unique file and leaves repo B's copy served"
 F=0
-code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/v1/repositories/$A" -H "$AH")
-echo "-- DELETE $A -> $code"
-[ "$code" = "200" ] || [ "$code" = "204" ] || F=1
-# The purge runs in a background task after the DB delete.
+delete_repository_and_wait "$BASE" "$TOK" "$A"
+code="$REPO_DELETE_CODE"
+echo "-- DELETE $A -> $code${REPO_DELETE_JOB_ID:+ (job $REPO_DELETE_JOB_ID: $REPO_DELETE_JOB_STATUS)}"
+[ -z "$REPO_DELETE_ERROR" ] || { echo "   $REPO_DELETE_ERROR"; F=1; }
+# 1.11.x: the purge runs in a background task after the DB delete.
 for _ in $(seq 1 20); do
   files_under "$PA" | grep -q "$OA" || break
   sleep 1
@@ -147,10 +154,11 @@ if [ "$F" -eq 0 ]; then pass; else fail "GC over-deleted repo D's copy"; fi
 
 # ---------------------------------------------------------------------------
 begin_test "CONTROL: deleting repo B (last holder) empties its tree"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/v1/repositories/$B" -H "$AH")
+DEL_OK=0; delete_repository_and_wait "$BASE" "$TOK" "$B" || DEL_OK=1
+code="$REPO_DELETE_CODE"
 for _ in $(seq 1 20); do [ -z "$(files_under "$PB")" ] && break; sleep 1; done
 LEFT=$(files_under "$PB")
-if [ "$code" = "200" ] && [ -z "$LEFT" ]; then pass; else fail "DELETE $B -> $code, left: $LEFT"; fi
+if [ "$DEL_OK" -eq 0 ] && [ -z "$LEFT" ]; then pass; else fail "DELETE $B -> $code ${REPO_DELETE_ERROR}, left: $LEFT"; fi
 
 for r in "$C" "$D"; do
   curl -s -o /dev/null -X DELETE "$BASE/api/v1/repositories/$r" -H "$AH"

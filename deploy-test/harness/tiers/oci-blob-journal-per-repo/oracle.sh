@@ -17,6 +17,8 @@ set -uo pipefail
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+# shellcheck source=../../lib/repo_delete.sh
+source "${DTF_DIR:?}/harness/lib/repo_delete.sh"
 # common.sh turns on `set -e`; every probe is judged by the assertion that
 # reads it.
 set +e
@@ -129,10 +131,14 @@ sleep 1
 docker unpause "$MINIO_CTR" >/dev/null 2>&1
 wait "$BPID" 2>/dev/null
 B_FINAL="$(cat "${WORK}/b-final.code" 2>/dev/null)"
+# 1.12.0 answers the delete 202 and removes A in a job (#4311): let it finish
+# before (b) so the two scenarios do not overlap. A no-op on a 1.11.x 200.
+A_DEL_WAIT=ok
+repo_delete_wait "$BASE_URL" "$ADMIN_TOKEN" "$A_DEL" "${WORK}/del-a.json" || A_DEL_WAIT="$REPO_DELETE_ERROR"
 
 begin_test "CONTROL: while B's completion is in flight, the filesystem repository A accepts a push of the same digest and is deleted (both 2xx)"
-if [ -n "$LOC_B" ] && [ "$A_PUSH" = "201" ] && is_2xx "$A_DEL"; then pass; else
-  fail "B session='${LOC_B}' A push=${A_PUSH} A delete=${A_DEL}" "$(head -c 300 "${WORK}/push.body" 2>/dev/null)"
+if [ -n "$LOC_B" ] && [ "$A_PUSH" = "201" ] && is_2xx "$A_DEL" && [ "$A_DEL_WAIT" = "ok" ]; then pass; else
+  fail "B session='${LOC_B}' A push=${A_PUSH} A delete=${A_DEL} (${A_DEL_WAIT})" "$(head -c 300 "${WORK}/push.body" 2>/dev/null)"
 fi
 
 begin_test "#3851: B's journal row for oci-blobs/<digest> survives A's commit of the same digest (rows are per repository)"
@@ -173,14 +179,18 @@ if [ "$B_PUSH_Y" = "201" ] && [ -n "$LOC_A" ] && [ "$HEALTHY" = "yes" ] && [ "$O
 fi
 
 A_DEL2="$(code_to_file "${BASE_URL}/api/v1/repositories/${RA_S3}" "${WORK}/del-a2.json" -X DELETE "${AUTHZ[@]}")"
+# 1.11.x: the purge runs in a background task after the 200. 1.12.0: a job
+# does the delete after the 202 (#4311); wait for it to be terminal.
+A_DEL2_WAIT=ok
+repo_delete_wait "$BASE_URL" "$ADMIN_TOKEN" "$A_DEL2" "${WORK}/del-a2.json" || A_DEL2_WAIT="$REPO_DELETE_ERROR"
 sleep 3
 OBJ_AFTER="$(s3_has "oci-blobs/${DY}" && echo yes || echo no)"
 G2="$(blob_get_exact "$RB" "$DY" "${WORK}/y.bin")"
 CAND="$(psqlq "SELECT count(*) FROM oci_gc_candidates WHERE storage_key = 'oci-blobs/${DY}'")"
 
 begin_test "#3851: deleting A on S3 keeps oci-blobs/<digest> (B still references it): object in MinIO, B pulls byte-exact, the key is recorded in oci_gc_candidates"
-if is_2xx "$A_DEL2" && [ "$OBJ_AFTER" = "yes" ] && [ "$G2" = "200 exact" ] && [ "$CAND" = "1" ]; then pass; else
-  fail "delete A=${A_DEL2} object still in MinIO=${OBJ_AFTER} B blob GET='${G2}' oci_gc_candidates rows='${CAND:0:120}'. Pre-#3851 the delete purged every journaled key of A from the shared namespace, including the object B had committed"
+if is_2xx "$A_DEL2" && [ "$A_DEL2_WAIT" = "ok" ] && [ "$OBJ_AFTER" = "yes" ] && [ "$G2" = "200 exact" ] && [ "$CAND" = "1" ]; then pass; else
+  fail "delete A=${A_DEL2} (${A_DEL2_WAIT}) object still in MinIO=${OBJ_AFTER} B blob GET='${G2}' oci_gc_candidates rows='${CAND:0:120}'. Pre-#3851 the delete purged every journaled key of A from the shared namespace, including the object B had committed"
 fi
 
 end_suite
