@@ -47,6 +47,8 @@ set -uo pipefail
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+# shellcheck source=../../lib/repo_delete.sh
+source "${DTF_DIR:?}/harness/lib/repo_delete.sh"
 
 SUF="${RUN_ID##*-}-$$"
 SLOT="${DTF_SLOT}"
@@ -445,9 +447,12 @@ DEL_OUT="${WORK}/del.json"
 DEL_CODE="$(curl -s -o "$DEL_OUT" -w '%{http_code}' $CURL_TIMEOUT $CURL_RAW \
   -X DELETE "${BASE_URL}/api/v1/repositories/${DOOMED_REPO}" \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" 2>/dev/null || echo 000)"
-if [ "$DEL_CODE" != "200" ] && [ "$DEL_CODE" != "204" ]; then
+# 1.11.x answers 200 with the rows gone; 1.12.0 answers 202 with a job that
+# removes the rows and objects (#4311). Wait for the job before section B
+# reads the object store.
+if ! repo_delete_wait "$BASE_URL" "$ADMIN_TOKEN" "$DEL_CODE" "$DEL_OUT"; then
   begin_test "setup: delete the doomed repository"
-  infra_fail "DELETE /api/v1/repositories/${DOOMED_REPO} returned ${DEL_CODE}" "$(head -c 400 "$DEL_OUT" 2>/dev/null)"
+  infra_fail "DELETE /api/v1/repositories/${DOOMED_REPO}: ${REPO_DELETE_ERROR}" "$(head -c 400 "$DEL_OUT" 2>/dev/null)"
   end_suite
 fi
 

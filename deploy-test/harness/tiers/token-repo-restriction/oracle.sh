@@ -23,6 +23,8 @@ set -uo pipefail
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+# shellcheck source=../../lib/repo_delete.sh
+source "${DTF_DIR:?}/harness/lib/repo_delete.sh"
 
 SUF="${RUN_ID##*-}-$$"
 SLOT="$DTF_SLOT"
@@ -305,6 +307,12 @@ note "TA naming selector [B]: ${code} $(snip | head -c 140)"
 [ "$(tokens_named "$nm")" = "0" ] || gate "the refused widening still stored a token"
 code="$(req DELETE "/api/v1/repositories/${RC}" "$ADMIN_TOKEN")"
 is_2xx "$code" || gate "deleting C answered ${code}"
+# 1.12.0 answers 202 and removes C in a job (#4311); C's row (and so the
+# selector's target) is gone only once the job completes. No-op on a 200.
+if is_2xx "$code"; then
+  repo_delete_wait "$BASE_URL" "$ADMIN_TOKEN" "$code" "$WORK/body" \
+    || gate "deleting C did not finish: ${REPO_DELETE_ERROR}"
+fi
 for ep in /api/v1/auth/tokens /api/v1/profile/access-tokens; do
   nm="trr-orphan-${ep##*/}-${SUF}"
   code="$(req POST "$ep" "$TC" "{\"name\":\"${nm}\",\"scopes\":[\"read:artifacts\"]}")"

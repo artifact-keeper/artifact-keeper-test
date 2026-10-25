@@ -17,6 +17,8 @@ set -uo pipefail
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+# shellcheck source=../../lib/repo_delete.sh
+source "${DTF_DIR:?}/harness/lib/repo_delete.sh"
 # common.sh turns on errexit; every probe here is judged, never fatal.
 set +e
 
@@ -132,6 +134,13 @@ reset_case
 st="$(send DELETE "/api/v1/repositories/${A}")"
 note "DELETE ${A}: ${st} $(head -c 160 "$W/send.out")"
 ok2xx "$st" || fail_g "the repository delete answered ${st}"
+# 1.11.x deletes the rows before it answers 200; 1.12.0 answers 202 and a job
+# deletes them (#4311). Wait for the job before counting rows.
+if ok2xx "$st"; then
+  repo_delete_wait "$BASE_URL" "$ADMIN_TOKEN" "$st" "$W/send.out" \
+    || fail_g "the repository delete did not finish: ${REPO_DELETE_ERROR}"
+  [ -z "$REPO_DELETE_JOB_ID" ] || note "delete job ${REPO_DELETE_JOB_ID}: ${REPO_DELETE_JOB_STATUS}"
+fi
 left="$(psql_q "SELECT count(*) FROM artifact_versions WHERE repository_id = '${A_ID}'")"
 note "artifact_versions rows left for ${A_ID}: ${left}"
 [ "$left" = "0" ] || fail_g "${left} artifact_versions rows survived the repository delete"
