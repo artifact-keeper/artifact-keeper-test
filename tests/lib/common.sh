@@ -474,6 +474,7 @@ _feature_min_version() {
     # in the 1.11.0 dev window, as for virtual_nested_members.
     # Gates tests/formats/test-maven-prefixes.sh.
     "maven_prefixes_no_nesting")      echo "1.10.0" ;;
+    "github_mirror_formats")          echo "1.11.0" ;;
     *) return 1 ;;
   esac
 }
