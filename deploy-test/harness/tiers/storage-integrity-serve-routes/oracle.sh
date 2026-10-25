@@ -183,4 +183,38 @@ dl "$W/sub" "$U_GEN" -H 'Range: bytes=0-49'; note "Range 0-49: $(dl_desc /dev/nu
   || fail_g "sub-range not served"
 finish_case "sub-range regressed"
 
+begin_test "setup (#4323 OCI): a docker repository with two layer blobs pushed over /v2"
+reset_case
+D="sisr-oci-$SUF"
+ERR=""
+[ "$(mkrepo "$D" docker)" = "$D" ] || ERR="${ERR} create $D;"
+head -c 300000 /dev/urandom > "$W/layer-ok.bin"; head -c 300000 /dev/urandom > "$W/layer-bad.bin"
+for f in layer-ok layer-bad; do
+  c="$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST -H 'Content-Type: application/octet-stream' \
+    --data-binary "@$W/$f.bin" "$BASE/v2/$D/app/blobs/uploads/?digest=sha256:$(sha_of "$W/$f.bin")" || true)"
+  [ "$c" = "201" ] || ERR="${ERR} blob $f=HTTP$c;"
+done
+K_OCI_BAD="$(psql_q "SELECT ob.storage_key FROM oci_blobs ob JOIN repositories r ON r.id=ob.repository_id
+  WHERE r.key='$D' AND ob.digest='sha256:$(sha_of "$W/layer-bad.bin")' LIMIT 1;" | tr -d '[:space:]')"
+[ -n "$K_OCI_BAD" ] || ERR="${ERR} no oci_blobs row for the blob to corrupt;"
+if [ -n "$ERR" ]; then infra_fail "OCI fixture setup failed:${ERR}"; else pass; fi
+U_OCI_OK="$BASE/v2/$D/app/blobs/sha256:$(sha_of "$W/layer-ok.bin")"
+U_OCI_BAD="$BASE/v2/$D/app/blobs/sha256:$(sha_of "$W/layer-bad.bin")"
+
+begin_test "CONTROL (#4323 OCI): an intact layer blob pulls byte-identical over /v2"
+reset_case
+dl "$W/oci-ok" "$U_OCI_OK"; note "GET intact blob: $(dl_desc /dev/null)"
+[ "$DL_RC" -eq 0 ] && [ "$DL_CODE" = "200" ] && [ "$DL_SHA" = "$(sha_of "$W/layer-ok.bin")" ] || fail_g "intact blob pull"
+finish_case "an intact OCI blob pull regressed"
+
+begin_test "FIX #4323: a layer blob whose stored bytes no longer match its digest is never delivered complete over /v2"
+reset_case
+if [ -z "${K_OCI_BAD:-}" ] || ! flip "$D" "$K_OCI_BAD" "$W/layer-bad.bin"; then infra_fail "could not corrupt the OCI blob ${K_OCI_BAD:-}"; else
+  dl "$W/oci-bad" "$U_OCI_BAD"; note "GET corrupted blob: $(dl_desc /dev/null)"
+  if [ "$DL_RC" -eq 0 ] && [ "$DL_CODE" = "200" ] && [ "$DL_SIZE" = "300000" ]; then
+    fail_g "the corrupted blob was delivered as a complete 200 transfer (sha ${DL_SHA:0:16}, the digest names $(sha_of "$W/layer-bad.bin" | cut -c1-16))"
+  fi
+  finish_case "a corrupted OCI blob was served to completion"
+fi
+
 end_suite
