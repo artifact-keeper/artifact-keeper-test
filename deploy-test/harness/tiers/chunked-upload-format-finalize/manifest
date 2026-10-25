@@ -1,0 +1,35 @@
+# DTF tier manifest: chunked-upload-format-finalize
+#   artifact-keeper#1846: a chunked upload (/api/v1/uploads) into a Maven,
+#   npm, PyPI or RPM repository is indexed by the format exactly as a single
+#   upload through the format's own route is.
+#   Profile-set: storage.s3 (MinIO), so the Maven POM and npm tarball are
+#   parsed from the staged chunks on the backend and the wheel and RPM from a
+#   local assembly, the two completion paths.
+#
+# THE GAP
+#   PUT /api/v1/uploads/{id}/complete committed a generic artifacts row (named
+#   after the file, no format metadata) for every format except Incus and
+#   Debian (#4413). maven-metadata.xml is generated from rows carrying a
+#   `maven` metadata document, the npm packument and the PyPI simple index
+#   look rows up by package name, so a chunked jar, tarball or wheel never
+#   appeared in its index; an RPM showed in primary.xml (the completion parsed
+#   its header) but its row and catalog entry were named after the file.
+#
+# Gates:
+#   (CONTROL, both images) the same artifacts uploaded through each format's
+#   own route (Maven PUT, npm publish, twine-style POST, RPM PUT) into a
+#   second repository of each format appear in that repository's index.
+#   (FIX) the chunked jar + POM appear in maven-metadata.xml; the chunked npm
+#   tarball appears in the packument with its package.json dependencies; the
+#   chunked wheel appears in /simple/<project>/ with data-requires-python; the
+#   chunked RPM's row and catalog entry carry its NEVRA name and
+#   version-release (and it is in primary.xml); a tarball whose package.json
+#   names another package is refused with 400 and stores nothing;
+#   `Prefer: respond-async` answers 202 and polls to completed.
+#
+# RATE_LIMIT_ENABLED=false: back-to-back API calls.
+#
+# Red: ak-backend:1.11.5. Green: ak-backend:lane-w3a.
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
