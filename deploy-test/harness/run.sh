@@ -463,8 +463,10 @@ case "$CMD" in
     # 1.11.7: protobuf label moves, late NuGet metadata and protobuf commits
     # reaching a push peer (#4889, #4921), and a 504-cut OCI blob completion
     # that succeeds when re-sent (#4902); maven-upload-tx-and-quality-s3 above gates #4892 since
-    # #617. 1.12.0 features (red on every 1.11.x image): the paged group
-    # members list (#4027) and OTLP log and metric export (#4337);
+    # #617. 1.11.8: chunked uploads apply the quota and the upload quarantine
+    # hold like the native routes (#5003 on the line, #4992 on main).
+    # 1.12.0 features (red on every 1.11.x image): the paged group members
+    # list (#4027) and OTLP log and metric export (#4337);
     # remote-instance-relay above gates the relayed PATCH (#4795) since #623.
     # More 1.12.0 features: scan-on-proxy for Go, RubyGems, Composer, Pub,
     # Conan, CocoaPods and Swift (#4103-#4110), the admin downloads
@@ -481,6 +483,11 @@ case "$CMD" in
     # generic PUTs (#4186, split out of generic-concurrent-put-contract),
     # CEP-16 shards stored at write time (#4173), conda repodata revisions
     # (#4174, #4176, #4882) and CLIENT spans for upstream senders (#3954).
+    # Batch 4: the Maven publish-age gate (#4702), chunked uploads indexed
+    # by Maven, npm, PyPI and RPM (#1846), Maven single PUTs staged on object storage (#4990),
+    # repository delete as a background job (#4311), conda JLAP patches
+    # (#4175), synthesised shards for conda remotes (#4178) and OCI reads by
+    # digest keyed on oci_manifests (#1683).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -543,7 +550,13 @@ case "$CMD" in
              scan-gate-blocked-body-and-audit \
              storage-gc-bounded-deletes oci-manifests-reconcile storage-integrity-serve-routes \
              generic-conditional-put \
-             conda-shard-o1 conda-repodata-revision otlp-upstream-client-spans; do
+             conda-shard-o1 conda-repodata-revision otlp-upstream-client-spans \
+             maven-age-gate \
+             chunked-upload-format-finalize upload-staging-object-store-single-put \
+             repo-delete-reclaims-storage-job \
+             conda-jlap-incremental conda-remote-shards-synth \
+             oci-last-tag-delete-by-digest oci-manifests-reconcile-populated \
+             chunked-upload-admission; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

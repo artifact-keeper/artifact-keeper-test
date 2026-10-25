@@ -3379,6 +3379,19 @@ jobs:
           # 1.11.6. Required.
           - group: fixes-1.11.7-oci
             tiers: oci-blob-completion-retry
+          # 1.11.8 fix coverage (artifact-keeper-test#663): green on main with
+          # the fix, red on 1.11.7. A chunked upload session applies the
+          # repository quota unless it is a trusted replication session (an
+          # administrator or a service account; the
+          # x-artifact-keeper-replication header alone does not exempt it),
+          # leaving no row or object behind when refused, and honours the
+          # upload quarantine hold as the native PUT does (fixed by #5003 on
+          # release/1.11.x from cc51568a, and by #4992 on main;
+          # chunked-upload-admission, storage.filesystem, under a minute).
+          # The fix is on the line, so this tier may be cherry-picked onto
+          # this repo's release/1.11.x. Red on 1.11.7 and 1.11.5. Required.
+          - group: fixes-1.11.8
+            tiers: chunked-upload-admission
           # 1.12.0 feature coverage (artifact-keeper-test#624, #625, tracked
           # in artifact-keeper#4932): the paged GET /groups/{id}/members of
           # an LDAP-synced group (#4027, fixed by #4821; storage.filesystem,
@@ -3406,9 +3419,15 @@ jobs:
           # network + upstreams.mock-recorder on 172.16.<slot>.77). It shares
           # the otlp-spans sink profile with bind-ip-and-otel, which gates
           # 1.11.x in ops-1.11.x, so it runs here instead, after
-          # otlp-logs-metrics on the same slot, one after another.
+          # otlp-logs-metrics on the same slot, one after another. Batch 4
+          # adds the publish-age gate on Maven Remotes and Virtuals
+          # (artifact-keeper-test#653; #4702, fixed by #4997; maven-age-gate,
+          # upstreams.mock-maven-agegate on 172.16.<slot>.78, brought up and
+          # down on the group's slot after the other tiers' mocks). The same
+          # FEATURE rule applies: red on every 1.11.x image, never
+          # cherry-picked onto release/1.11.x.
           - group: features-1.12.0-api
-            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token otlp-upstream-client-spans
+            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token otlp-upstream-client-spans maven-age-gate
           # 1.12.0 scan-on-proxy (artifact-keeper-test#628-#630): Go,
           # RubyGems and Composer (#4103-#4105, fixed by #4942), Pub and
           # Conan (#4107, #4108, fixed by #4943) and CocoaPods and Swift
@@ -3462,13 +3481,40 @@ jobs:
           # If-Match / If-None-Match (#4186, fixed by #4983;
           # generic-conditional-put, the cases #648 first added to
           # generic-concurrent-put-contract, split out so fixes-1.11.4 stays
-          # green on 1.11.x). About 3 min locally. FEATURE gates: red on
+          # green on 1.11.x). artifact-keeper-test#661 adds a hosted OCI
+          # layer blob case to storage-integrity-serve-routes (#4323, fixed
+          # by #5000). Batch 4 (artifact-keeper-test#654-#656) adds chunked
+          # uploads indexed by Maven, npm, PyPI and RPM like their native
+          # routes (#1846, fixed by #4992; chunked-upload-format-finalize,
+          # storage.s3), Maven single PUTs staged on object storage with no
+          # local scratch (#4990, fixed by #4993;
+          # upload-staging-object-store-single-put, storage.s3 +
+          # scratch.readonly) and a large repository delete answering 202
+          # with a background job that re-checks references before each
+          # object delete (#4311, fixed by #4996;
+          # repo-delete-reclaims-storage-job, storage.s3 +
+          # proxy.route-timeout). About 5 min locally. FEATURE gates: red on
           # every 1.11.x image. Never cherry-pick these tiers onto this
           # repo's release/1.11.x and never move them into a group a 1.11.x
           # gate is expected to pass; on a 1.11.x candidate they run as NOT
           # ON THIS LINE. Local containers only, so required.
           - group: features-1.12.0-storage
-            tiers: storage-gc-bounded-deletes oci-manifests-reconcile storage-integrity-serve-routes generic-conditional-put
+            tiers: storage-gc-bounded-deletes oci-manifests-reconcile storage-integrity-serve-routes generic-conditional-put chunked-upload-format-finalize upload-staging-object-store-single-put repo-delete-reclaims-storage-job
+          # 1.12.0 OCI (artifact-keeper-test#660): manifest reads by digest,
+          # the referrers API and the storage GC orphan predicate keyed on
+          # oci_manifests (#1683, third slice, fixed by #5000;
+          # oci-last-tag-delete-by-digest) and the oci_manifests reconcile
+          # on a populated repository of 570 manifest digests removing and
+          # adding exactly the expected rows and changing no GET status
+          # (oci-manifests-reconcile-populated). Both on storage.filesystem
+          # + gc.oci-manifests-reconcile-fast. Its own job keeps the
+          # storage group short. FEATURE gates: red on every 1.11.x image.
+          # Never cherry-pick these tiers onto this repo's release/1.11.x
+          # and never move them into a group a 1.11.x gate is expected to
+          # pass; on a 1.11.x candidate they run as NOT ON THIS LINE. Local
+          # containers only, so required.
+          - group: features-1.12.0-oci
+            tiers: oci-last-tag-delete-by-digest oci-manifests-reconcile-populated
           # 1.12.0 conda (artifact-keeper-test#641, #642): CEP-16 shards
           # stored at write time and served by address in one lookup, p95
           # flat in channel size (#4173, fixed by #4961; conda-shard-o1),
@@ -3476,13 +3522,22 @@ jobs:
           # concurrent cold requests and a warm revision cache (#4174,
           # #4176, #4882, fixed by #4961, #4962; conda-repodata-revision).
           # storage.filesystem only, about 2 min locally; its own job keeps
-          # the latency assertions off the api group's load. FEATURE gates:
+          # the latency assertions off the api group's load. Batch 4
+          # (artifact-keeper-test#658, #659) adds JLAP patches served from
+          # stored repodata revisions to a real conda 25.11 client
+          # (condaforge/miniforge3:25.11.0-1 with --experimental=jlap) (#4175,
+          # fixed by #4998; conda-jlap-incremental, storage.filesystem) and
+          # CEP-16 shards synthesised for a Remote whose upstream has no
+          # shard index, read by a real pixi 0.81.0 (#4178, fixed by #4999;
+          # conda-remote-shards-synth, upstreams.mock-conda on
+          # 172.16.<slot>.70). Both pull their client image from a public
+          # registry and talk only to the slot's own containers. FEATURE gates:
           # red on every 1.11.x image. Never cherry-pick these tiers onto
           # this repo's release/1.11.x and never move them into a group a
           # 1.11.x gate is expected to pass; on a 1.11.x candidate they run
           # as NOT ON THIS LINE. Local containers only, so required.
           - group: features-1.12.0-conda
-            tiers: conda-shard-o1 conda-repodata-revision
+            tiers: conda-shard-o1 conda-repodata-revision conda-jlap-incremental conda-remote-shards-synth
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
