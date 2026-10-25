@@ -207,14 +207,17 @@ dl "$W/oci-ok" "$U_OCI_OK"; note "GET intact blob: $(dl_desc /dev/null)"
 [ "$DL_RC" -eq 0 ] && [ "$DL_CODE" = "200" ] && [ "$DL_SHA" = "$(sha_of "$W/layer-ok.bin")" ] || fail_g "intact blob pull"
 finish_case "an intact OCI blob pull regressed"
 
-begin_test "FIX #4323: a layer blob whose stored bytes no longer match its digest is never delivered complete over /v2"
+begin_test "FIX #4323: a small layer blob whose stored bytes no longer match its digest is 502 STORED_OBJECT_INTEGRITY with none of its bytes over /v2"
 reset_case
 if [ -z "${K_OCI_BAD:-}" ] || ! flip "$D" "$K_OCI_BAD" "$W/layer-bad.bin"; then infra_fail "could not corrupt the OCI blob ${K_OCI_BAD:-}"; else
-  dl "$W/oci-bad" "$U_OCI_BAD"; note "GET corrupted blob: $(dl_desc /dev/null)"
+  dl "$W/oci-bad" "$U_OCI_BAD"; note "GET corrupted blob: $(dl_desc "$W/oci-bad")"
   if [ "$DL_RC" -eq 0 ] && [ "$DL_CODE" = "200" ] && [ "$DL_SIZE" = "300000" ]; then
     fail_g "the corrupted blob was delivered as a complete 200 transfer (sha ${DL_SHA:0:16}, the digest names $(sha_of "$W/layer-bad.bin" | cut -c1-16))"
   fi
-  finish_case "a corrupted OCI blob was served to completion"
+  [ "$DL_CODE" = "502" ] || fail_g "the corrupted blob answered HTTP $DL_CODE (curl exit $DL_RC), want 502"
+  [ "$(jqr '.errors[0].code' < "$W/oci-bad")" = "STORED_OBJECT_INTEGRITY" ] || fail_g "the OCI error body is not {errors: [{code: STORED_OBJECT_INTEGRITY}]}"
+  [ "${DL_SIZE:-0}" -lt 300000 ] || fail_g "the 502 carried ${DL_SIZE} bytes"
+  finish_case "a corrupted OCI blob was not refused with 502"
 fi
 
 end_suite

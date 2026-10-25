@@ -17,8 +17,9 @@
 #          the body; the format route and the virtual answer 200 with the
 #          corrupted bytes, complete.
 #   #4323  OCI blob pulls (GET /v2/<repo>/<image>/blobs/<digest>) verify the
-#          stored bytes against the digest: a corrupted layer is never
-#          delivered as a complete 200 transfer.
+#          stored bytes against the digest: a corrupted 300 KB layer is
+#          answered 502 with the OCI error code STORED_OBJECT_INTEGRITY and
+#          none of its bytes (larger layers are cut short before their end).
 #          RED on ak-backend:1.11.5: the corrupted layer is served complete.
 #   Controls: intact objects download byte-identical on every route; a
 #          proper sub-range of a corrupted object is still served.
