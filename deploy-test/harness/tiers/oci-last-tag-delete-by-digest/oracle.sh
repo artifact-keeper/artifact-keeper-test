@@ -128,18 +128,21 @@ push(){ # <ref> <media type> <name>: record a failed push in ERR
 # child1:  pushed as app:c1, referenced by index idx1 (app:idx1), c1 deleted
 # child2:  pushed as app:c2, referenced by index idx2 (app:idx2), c2 deleted,
 #          then app:idx2 moved to the image "moved"
-for n in only subject child1 child2 moved; do
+# child3:  pushed as app:c3, referenced by index idx3 (app:idx3), then
+#          deleted BY DIGEST while app:idx3 stays tagged
+for n in only subject child1 child2 child3 moved; do
   codes="$(oci_image "$n")"
   [ "$codes" = "201 201" ] || ERR="${ERR} blobs of ${n}=${codes};"
 done
-D_ONLY="$(man_digest only)"; D_SUBJ="$(man_digest subject)"; D_C1="$(man_digest child1)"; D_C2="$(man_digest child2)"
+D_ONLY="$(man_digest only)"; D_SUBJ="$(man_digest subject)"; D_C1="$(man_digest child1)"; D_C2="$(man_digest child2)"; D_C3="$(man_digest child3)"
 oci_image sig --arg subj "$D_SUBJ" >/dev/null
 D_SIG="$(man_digest sig)"
-oci_index idx1 "$D_C1"; oci_index idx2 "$D_C2"
-D_IDX1="$(man_digest idx1)"; D_IDX2="$(man_digest idx2)"
+oci_index idx1 "$D_C1"; oci_index idx2 "$D_C2"; oci_index idx3 "$D_C3"
+D_IDX1="$(man_digest idx1)"; D_IDX2="$(man_digest idx2)"; D_IDX3="$(man_digest idx3)"
 push only "$MT" only; push subject "$MT" subject; push "$D_SIG" "$MT" sig
 push c1 "$MT" child1; push idx1 "$IT" idx1
 push c2 "$MT" child2; push idx2 "$IT" idx2
+push c3 "$MT" child3; push idx3 "$IT" idx3
 [ -z "$ERR" ] || { infra_fail "fixture pushes failed:${ERR}"; end_suite; }
 echo "-- repo ${REPO} (${REPO_ID}): only ${D_ONLY}, subject ${D_SUBJ}, sig ${D_SIG}, child1 ${D_C1} (idx1 ${D_IDX1}), child2 ${D_C2} (idx2 ${D_IDX2})"
 pass
@@ -162,18 +165,22 @@ psql_x "INSERT INTO oci_manifests (repository_id, digest, content_type, size_byt
         VALUES ('${REPO_ID}', '${D_ONLY}', '${MT}', $(wc -c < "$W/only.man.json" | tr -d ' '), NOW() - interval '1 hour')
         ON CONFLICT DO NOTHING;" || { infra_fail "could not re-insert the stale row"; end_suite; }
 
-begin_test "FIX #1683: deleting a subject's only tag detaches its referrers; the signature still pulls by digest"
+begin_test "CONTROL: the referrers listing follows the referrer: a subject's signature stays listed after the subject's only tag is deleted and after the subject is pushed again"
 reset_case
 before="$(referrers_n "$D_SUBJ")"
 c="$(man_req DELETE subject)"
 after="$(referrers_n "$D_SUBJ")"
 sg="$(man_req GET "$D_SIG")"
-note "referrers of the subject before: ${before}; DELETE manifests/subject HTTP ${c}; after: ${after}; GET signature by digest ${sg}"
+ERR=""; push subject "$MT" subject
+again="$(referrers_n "$D_SUBJ")"
+note "referrers of the subject before: ${before}; DELETE manifests/subject HTTP ${c}; after: ${after}; GET signature by digest ${sg}; re-push ${ERR:-201}; after the re-push: ${again}"
 [ "$before" = "200 1" ] || fail_g "the signature was not listed as a referrer before the delete (${before})"
 case "$c" in 200|202|204) ;; *) fail_g "tag delete was HTTP ${c}";; esac
-[ "$after" = "200 0" ] || fail_g "GET referrers of the deleted subject is '${after}', expected an empty index"
+[ "$after" = "200 1" ] || fail_g "GET referrers of the deleted subject is '${after}', expected the signature (it still exists and names the subject)"
 [ "$sg" = "200" ] || fail_g "the signature no longer pulls by digest (HTTP ${sg})"
-finish_case "#1683: the referrers of a deleted subject are still listed"
+[ -z "$ERR" ] || fail_g "re-pushing the subject failed:${ERR}"
+[ "$again" = "200 1" ] || fail_g "GET referrers of the re-pushed subject is '${again}', expected the signature"
+finish_case "the referrers of a deleted or re-pushed subject are no longer listed"
 
 begin_test "FIX #1683: the untagged child of a tagged index still pulls by digest after its own tag is deleted, and after a storage GC run"
 reset_case
@@ -204,6 +211,18 @@ note "DELETE c2 HTTP ${c2}; PUT app:idx2 (moved) HTTP ${m}; idx2 by digest ${gi2
 [ "$o2" = "yes" ] || fail_g "storage GC removed the manifest object of a child its index still serves"
 [ "$g2_after" = "200" ] || fail_g "the child of the untagged index answers ${g2_after} by digest after GC, expected 200"
 finish_case "#1683: storage GC reclaims the child of an untagged index that still pulls by digest"
+
+begin_test "FIX #1683: a child pushed under a tag and deleted BY DIGEST answers 404 by digest while its index stays tagged, and its row is gone"
+reset_case
+c="$(man_req DELETE "$D_C3")"
+g="$(man_req GET "$D_C3")"; h="$(man_req HEAD "$D_C3")"; gi3="$(man_req GET "$D_IDX3")"
+note "DELETE manifests/<child3 digest> HTTP ${c}; GET by digest ${g}, HEAD ${h}; oci_manifests rows $(om_rows "$D_C3"); idx3 by digest ${gi3}"
+case "$c" in 200|202|204) ;; *) fail_g "delete by digest was HTTP ${c}";; esac
+[ "$g" = "404" ] || fail_g "GET by digest after a delete by digest was HTTP ${g}, expected 404"
+[ "$h" = "404" ] || fail_g "HEAD by digest after a delete by digest was HTTP ${h}, expected 404"
+[ "$(om_rows "$D_C3")" = "0" ] || fail_g "the delete by digest left the oci_manifests row"
+[ "$gi3" = "200" ] || fail_g "the tagged index answers ${gi3} by digest"
+finish_case "a manifest deleted by digest is still served"
 
 # Let the reconcile run on the stale row of the "only" image.
 T0="$(date +%s)"

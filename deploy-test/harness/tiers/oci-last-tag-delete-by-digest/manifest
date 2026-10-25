@@ -17,10 +17,17 @@
 #             (re-inserted with SQL and aged past the 600 s minimum) answers
 #             404 by digest and the reconcile removes it within 75 s; RED on
 #             1.11.5: the row stays (no reconcile).
-#   (FIX)     an image pushed, a signature pushed by digest with the image as
+#   (CONTROL) an image pushed, a signature pushed by digest with the image as
 #             its subject, then the image's only tag deleted:
-#             GET .../referrers/<subject> lists nothing; the signature itself
-#             still pulls by digest. RED on 1.11.5: the referrer is listed.
+#             GET .../referrers/<subject> still lists the signature (it exists
+#             and names the subject, distribution spec), the signature pulls
+#             by digest, and after the subject is pushed again it is still
+#             listed. Green on 1.11.5 and on the readers image.
+#   (FIX)     a child pushed under a tag, referenced by a tagged index, then
+#             deleted by digest: GET and HEAD by digest answer 404 and its
+#             oci_manifests row is gone; the index still pulls. RED on 1.11.5:
+#             404, but the row stays. Also red on the readers branch before
+#             its review fix: the row stayed and the child answered 200.
 #   (FIX)     the child of a tagged index, pushed under its own tag that is
 #             then deleted: GET child by digest is 200 and stays 200 after a
 #             storage GC run, its object stays on disk. RED on 1.11.5: 404 by
