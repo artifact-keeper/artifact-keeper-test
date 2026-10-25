@@ -3423,11 +3423,18 @@ jobs:
           # adds the publish-age gate on Maven Remotes and Virtuals
           # (artifact-keeper-test#653; #4702, fixed by #4997; maven-age-gate,
           # upstreams.mock-maven-agegate on 172.16.<slot>.78, brought up and
-          # down on the group's slot after the other tiers' mocks). The same
-          # FEATURE rule applies: red on every 1.11.x image, never
-          # cherry-picked onto release/1.11.x.
+          # down on the group's slot after the other tiers' mocks). It also
+          # carries repository grade status and coverage in place of the F
+          # floor (artifact-keeper-test#652; #4336, fixed by #4995;
+          # scan-grade-status-coverage, upstreams.mock-scan-formats on
+          # 172.16.<slot>.72 as a fixture server only, the bundled Grype
+          # grading). Its oracle waits for the whole expected score (status,
+          # letter and coverage counts); its earlier flake was backend #5006
+          # (a lost score recalculation, fixed by #5007). The same FEATURE
+          # rule applies: red on every 1.11.x image, never cherry-picked onto
+          # release/1.11.x.
           - group: features-1.12.0-api
-            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token otlp-upstream-client-spans maven-age-gate
+            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token otlp-upstream-client-spans maven-age-gate scan-grade-status-coverage
           # 1.12.0 scan-on-proxy (artifact-keeper-test#628-#630): Go,
           # RubyGems and Composer (#4103-#4105, fixed by #4942), Pub and
           # Conan (#4107, #4108, fixed by #4943) and CocoaPods and Swift

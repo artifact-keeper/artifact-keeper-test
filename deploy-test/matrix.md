@@ -208,6 +208,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 190 | **OCI reads by digest, referrers and storage GC key on oci_manifests** - #1683, third slice (fixed by #5000, 1.12.0) | filesystem + `gc.oci-manifests-reconcile-fast` (the reconcile every 15 s); images pushed over `/v2` with curl, storage GC through `POST /api/v1/admin/storage-gc` | referrers of a subject whose only tag was deleted are gone while the signature still pulls; an untagged child of a tagged index pulls by digest before and after a GC run; GC keeps the child of an index whose tag moved away and both pull by digest; a stale row left by a last-tag delete answers 404 and is removed by the reconcile; control: a last-tag delete answers 404 by digest (GET, HEAD) and its row is gone | **oci-last-tag-delete-by-digest** | **COVERED** (#660, `features-1.12.0-oci`): FEATURE gate, green 6/6 on `lane-w3c` (#5000); red on 1.11.5 (2 pass / 4 fail) and on every 1.11.x image; main `e12faa5f` before #5000 was 3 / 3. Gate-group proof on main `e6569472` (`main-1120d`): 7/7 on slot 51 (`features-1.12.0-oci`, group 158 s; the tier now reports 7 cases) |
 | 191 | **The oci_manifests reconcile on a populated repository adds and removes exactly the expected rows** - #1683, precondition for the readers (fixed by #5000, 1.12.0) | filesystem + `gc.oci-manifests-reconcile-fast`; 30 groups giving 570 manifest digests (tagged images, last-tag deletes, tag overwrites, multi-arch indexes, untagged children, an index of indexes, migrated indexes, referrers, deletes by digest, stale rows K and missing rows L) | every digest is fetched by digest before and after the pass; the rows removed are exactly K, the rows added exactly L, no removed row's digest answered 200 before the pass and no GET status changed | **oci-manifests-reconcile-populated** | **COVERED** (#660, `features-1.12.0-oci`): FEATURE gate, green 5/5 on `lane-w3c` (removed K=30, added L=30, statuses unchanged); red on 1.11.5 (2 pass / 3 fail: K stays, L is not re-added), on main `e12faa5f` before #5000 (3 pass / 2 fail: it removed 120 rows, K plus C1, the F leaf and the G child, all serving 200 by digest) and on every 1.11.x image. Gate-group proof on main `e6569472` (`main-1120d`): 5/5 on slot 51 (`features-1.12.0-oci`, group 158 s; this tier 104 s) |
 | 192 | **Chunked uploads apply the quota and the upload quarantine hold like native routes** - fixed by #5003 on `release/1.11.x` (from `cc51568a`, 1.11.8) and by #4992 on main | filesystem | a non-admin writer's over-quota chunked session with `x-artifact-keeper-replication: true` is 413 at create (or 507 at completion) and leaves no artifact row, no stored object and a 404 download; a chunked upload into a quarantine-enabled repository is `quarantined` in the listing and the database and its download is 409; controls: an in-quota chunked upload completes byte-identical, the same over-quota replication request from an administrator is admitted, a native PUT into the quarantine repository is held the same way | **chunked-upload-admission** | **COVERED** (#663, `fixes-1.11.8`): FIX gate, green 7/7 on `line-1118` (`release/1.11.x` at `cc51568a`) and on `main-f0211b43`; red on 1.11.7 and 1.11.5 (4 pass / 3 fail: the replication-header upload admitted with its row and object left and a 200 download, the chunked artifact `not_quarantined` and downloadable) and on `lane-w3a` (built before #4992). Gate-group proof on main `e6569472` (`main-1120d`): 7/7 on slot 51 (`fixes-1.11.8`, group 16 s) |
+| 193 | **Repository scores carry grade status and coverage instead of the F floor** - #4336 (fixed by #4995, 1.12.0) | filesystem + `upstreams.mock-scan-formats` (`172.16.<slot>.72`, a fixture server for the clean Maven jar only; scans use the backend image's bundled Grype) | a generic repository with scan_on_upload holding a clean jar and a package-shaped `.whl` Grype catalogs nothing from reads `grade_status` `incomplete` with coverage scanned 2, cataloged 1, uncataloged 1, failed 0 and a letter that is not F; the `.whl` scan row is `unrated` with a reason and the jar's `rated`; the dashboard counts `repos_incomplete`, `repos_rated` and `repos_unrated`; after the `.whl` is deleted the repository is `rated` with the jar's letter and coverage 1 of 1; after the jar is deleted too it is `unrated` with `grade` null; every FIX poll waits, bounded, for the whole expected state (a scan set writes its rows `not_cataloged` provisionally, #4154, so the score settles in steps); control: both uploads are scanned, the `.whl` row is `not_cataloged` with a reason and the repository is flagged `has_uncataloged_scan` | **scan-grade-status-coverage** | **COVERED** (#652, `features-1.12.0-api`): FEATURE gate, green 8/8 in 10 of 10 runs in a row on main `9a800ffc` (`main-5006`, with #5007); red on 1.11.5 (3 pass / 5 fail: `grade` F, no `grade_status` or `coverage`, no status after the deletes) and on every 1.11.x image. Its earlier flake (2 of 10 on `e6569472`) was backend #5006, a score recalculation lost to a serialization failure, fixed by #5007. Gate-group proof on main `9a800ffc` (`main-5006`): 8/8 tiers on slot 51 (`features-1.12.0-api`, group 206 s) |
 
 ## Consolidated status (this checkpoint)
 
@@ -548,7 +549,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   onto the test repo's `release/1.11.x`; a 1.11.x candidate older than
   1.11.8 is red on this group.
 
-## 1.12.0 feature-coverage status (rows 30, 162, 163, 165-191, artifact-keeper-test#623-#625, #628-#632, #634-#639, #641, #642, #644-#649, #653-#656, #658-#661, artifact-keeper#4932)
+## 1.12.0 feature-coverage status (rows 30, 162, 163, 165-191, 193, artifact-keeper-test#623-#625, #628-#632, #634-#639, #641, #642, #644-#649, #652-#656, #658-#661, artifact-keeper#4932)
 
 - **Three feature tiers** cover the 1.12.0 features merged on 2026-10-24
   without an end-to-end test: the relayed PATCH (#4795, #4876) as an
@@ -640,12 +641,20 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   `maven-rollup-anchor-escape`, `repo-delete-purges-revisions`,
   `oci-blob-journal-per-repo`, `token-repo-restriction`) to accept the
   #4996 202 job answer through `lib/repo_delete.sh`.
-- **Not wired yet:** `scan-grade-status-coverage` (#652, backend #4995) was
-  red once in six runs on `main-1120d`: in its first group run the
-  repository read `incomplete` with both artifacts uncataloged
-  (`A|incomplete|2|0|2|0`) before the jar's catalog count settled, and it was green 8/8 in the five
-  runs after. It stays out of the gate until the race is fixed.
-  `scan-iso-rootfs-inventory` (#651, backend #4991) was still in review.
+- **Not wired yet:** `scan-iso-rootfs-inventory` (#651, backend #4991) was
+  still in review.
+- **scan-grade-status-coverage (row 193):** red once in six runs on
+  `main-1120d`: in its first group run the repository read `incomplete`
+  with both artifacts uncataloged (`A|incomplete|2|0|2|0`). Every FIX poll
+  now waits, bounded, for the whole expected state (status, letter and
+  coverage counts) and names it on timeout; no assertion changed. With that
+  wait it was still red 2 of 10 on `e6569472`, stuck at
+  `A|incomplete|2|0|2|0` for the whole window: backend #5006, two scans
+  completing together lost one score recalculation to a serialization
+  failure, fixed by #5007 (per-repository advisory lock plus retry). Green
+  8/8 in 10 runs in a row on `main-5006` (backend main `9a800ffc`), red on
+  1.11.5 with the same five FIX gates failing. It joins
+  `features-1.12.0-api` (eight tiers, 206 s).
 - **Batch 4 gate wiring:** `maven-age-gate` joins `features-1.12.0-api`
   (seven tiers, 210 s). The three upload and delete tiers join
   `features-1.12.0-storage` (seven tiers, 289 s). The two conda tiers join

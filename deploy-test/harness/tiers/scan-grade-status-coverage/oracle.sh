@@ -48,8 +48,34 @@ summary() {
   jq -r '(.score // {}) | "\(.grade // "none")|\(.grade_status // "none")|\(.coverage.scanned // "none")|\(.coverage.cataloged // "none")|\(.coverage.uncataloged // "none")|\(.coverage.failed // "none")"' \
     "${WORK_DIR}/sec.json" 2>/dev/null || echo "none|none|none|none|none|none"
 }
-status_is() { [ "$(summary | cut -d'|' -f2)" = "$1" ]; }
 field() { echo "$1" | cut -d'|' -f"$2"; }
+# The score settles in steps: a scan set writes its rows `not_cataloged`
+# PROVISIONALLY (#4154) and restores them to `complete` when the whole set
+# finishes, and the score is recalculated along the way. So the status alone
+# can already read `incomplete` while the jar is still counted uncataloged
+# (A|incomplete|2|0|2|0). Every FIX poll below therefore waits for the WHOLE
+# expected state (status, grade and coverage), bounded, and the assertion
+# after it re-reads that state; a timeout names what was missing. A state that
+# never settles within the bound is a backend defect, not a slow scan: before
+# backend #5006 (fixed by #5007) a recalculation lost to a serialization
+# failure left A|incomplete|2|0|2|0 stored until the next scan or delete.
+# Each predicate leaves the last reading in SUM.
+SUM=""
+want_incomplete() { # jar + uncataloged archive: incomplete, scanned 2, cataloged 1, uncataloged 1, failed 0, a letter not F
+  SUM=$(summary)
+  [ "$(field "$SUM" 2)" = "incomplete" ] && [ "$(field "$SUM" 3)" = "2" ] && [ "$(field "$SUM" 4)" = "1" ] \
+    && [ "$(field "$SUM" 5)" = "1" ] && [ "$(field "$SUM" 6)" = "0" ] && [ "$(field "$SUM" 1)" != "F" ] \
+    && [ "$(field "$SUM" 1)" != "none" ]
+}
+want_rated() { # GRADE: after the archive's delete, rated with GRADE, scanned 1, cataloged 1, uncataloged 0, failed 0
+  SUM=$(summary)
+  [ "$(field "$SUM" 2)" = "rated" ] && [ "$(field "$SUM" 1)" = "$1" ] && [ "$(field "$SUM" 3)" = "1" ] \
+    && [ "$(field "$SUM" 4)" = "1" ] && [ "$(field "$SUM" 5)" = "0" ] && [ "$(field "$SUM" 6)" = "0" ]
+}
+want_unrated() { # no scans left: unrated, no letter, scanned 0
+  SUM=$(summary)
+  [ "$(field "$SUM" 2)" = "unrated" ] && [ "$(field "$SUM" 1)" = "none" ] && [ "$(field "$SUM" 3)" = "0" ]
+}
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -93,29 +119,34 @@ else fail "grype row '${row}', score $(head -c 300 "${WORK_DIR}/sec.json" 2>/dev
 # ---------------------------------------------------------------------------
 # One scannable jar + one uncataloged archive: incomplete, 1 of 2, no F
 # ---------------------------------------------------------------------------
-wait_until "incomplete status" 30 status_is incomplete || true
-sum=$(summary)
 begin_test "FIX #4336: jar + uncataloged archive is incomplete with coverage 1 of 2 and no F"
-if [ "$(field "$sum" 2)" = "incomplete" ] && [ "$(field "$sum" 3)" = "2" ] && [ "$(field "$sum" 4)" = "1" ] \
-   && [ "$(field "$sum" 5)" = "1" ] && [ "$(field "$sum" 6)" = "0" ] && [ "$(field "$sum" 1)" != "F" ] \
-   && [ "$(field "$sum" 1)" != "none" ]; then pass
-else fail "#4336: grade|status|scanned|cataloged|uncataloged|failed = ${sum} (pre-fix: F|none|...)" \
+wait_until "incomplete with coverage scanned 2, cataloged 1, uncataloged 1, failed 0 and a letter not F" 60 want_incomplete || true
+if want_incomplete; then pass
+else fail "#4336: grade|status|scanned|cataloged|uncataloged|failed = ${SUM} after 60s (want <not F>|incomplete|2|1|1|0; pre-fix: F|none|...)" \
   "$(head -c 600 "${WORK_DIR}/sec.json" 2>/dev/null)"; fi
-REAL_GRADE="$(field "$sum" 1)"
+REAL_GRADE="$(field "$SUM" 1)"
 
 begin_test "FIX #4336: scan rows carry grade_status: the .whl unrated with a reason, the jar rated"
-api_get "/api/v1/repositories/${REPO}/security/scans?per_page=100" 2>/dev/null > "${WORK_DIR}/scans.json" || true
-whl_row=$(jq -r --arg p "$WHL_PATH" '[.items[]? | select((.artifact_name // "") | test("whl$")) | select(.scan_type == "grype")][0] | "\(.grade_status // "none")|\(.grade_status_reason // "none")"' "${WORK_DIR}/scans.json" 2>/dev/null || echo "none|none")
-jar_rated=$(jq -r '[.items[]? | select((.artifact_name // "") | test("jar$")) | select(.status == "completed") | .grade_status] | index("rated") != null' "${WORK_DIR}/scans.json" 2>/dev/null || echo false)
-if [ "${whl_row%%|*}" = "unrated" ] && [ "${whl_row#*|}" != "none" ] && [ "$jar_rated" = "true" ]; then pass
-else fail "#4336: whl row ${whl_row}, jar rated=${jar_rated}" "$(head -c 800 "${WORK_DIR}/scans.json" 2>/dev/null)"; fi
+want_scan_rows() { # the .whl's grype row unrated with a reason, a completed jar row rated
+  api_get "/api/v1/repositories/${REPO}/security/scans?per_page=100" 2>/dev/null > "${WORK_DIR}/scans.json" || true
+  whl_row=$(jq -r --arg p "$WHL_PATH" '[.items[]? | select((.artifact_name // "") | test("whl$")) | select(.scan_type == "grype")][0] | "\(.grade_status // "none")|\(.grade_status_reason // "none")"' "${WORK_DIR}/scans.json" 2>/dev/null || echo "none|none")
+  jar_rated=$(jq -r '[.items[]? | select((.artifact_name // "") | test("jar$")) | select(.status == "completed") | .grade_status] | index("rated") != null' "${WORK_DIR}/scans.json" 2>/dev/null || echo false)
+  [ "${whl_row%%|*}" = "unrated" ] && [ "${whl_row#*|}" != "none" ] && [ "$jar_rated" = "true" ]
+}
+wait_until "whl scan row unrated with a reason and a jar scan row rated" 30 want_scan_rows || true
+if want_scan_rows; then pass
+else fail "#4336: whl row ${whl_row}, jar rated=${jar_rated} after 30s" "$(head -c 800 "${WORK_DIR}/scans.json" 2>/dev/null)"; fi
 
 begin_test "FIX #4336: the security dashboard counts repositories by grade status"
-api_get "/api/v1/security/dashboard" 2>/dev/null > "${WORK_DIR}/dash.json" || true
-inc=$(jq -r '.repos_incomplete // "none"' "${WORK_DIR}/dash.json" 2>/dev/null || echo none)
-if [ "$inc" != "none" ] && [ "$inc" -ge 1 ] 2>/dev/null \
-   && [ "$(jq -r 'has("repos_rated") and has("repos_unrated")' "${WORK_DIR}/dash.json" 2>/dev/null)" = "true" ]; then pass
-else fail "#4336: dashboard repos_incomplete=${inc}" "$(head -c 400 "${WORK_DIR}/dash.json" 2>/dev/null)"; fi
+want_dashboard() { # repos_incomplete >= 1, repos_rated and repos_unrated present
+  api_get "/api/v1/security/dashboard" 2>/dev/null > "${WORK_DIR}/dash.json" || true
+  inc=$(jq -r '.repos_incomplete // "none"' "${WORK_DIR}/dash.json" 2>/dev/null || echo none)
+  [ "$inc" != "none" ] && [ "$inc" -ge 1 ] 2>/dev/null \
+    && [ "$(jq -r 'has("repos_rated") and has("repos_unrated")' "${WORK_DIR}/dash.json" 2>/dev/null)" = "true" ]
+}
+wait_until "dashboard repos_incomplete >= 1 with repos_rated and repos_unrated" 30 want_dashboard || true
+if want_dashboard; then pass
+else fail "#4336: dashboard repos_incomplete=${inc} after 30s" "$(head -c 400 "${WORK_DIR}/dash.json" 2>/dev/null)"; fi
 
 # ---------------------------------------------------------------------------
 # Delete the archive: rated with the real letter
@@ -123,11 +154,9 @@ else fail "#4336: dashboard repos_incomplete=${inc}" "$(head -c 400 "${WORK_DIR}
 begin_test "FIX #4336: after the archive is deleted the repository is rated with its real grade"
 d1=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X DELETE -H "$(auth_header)" \
   "${BASE_URL}/api/v1/repositories/${REPO}/artifacts/${WHL_PATH}" 2>/dev/null || echo 000)
-wait_until "rated status" 30 status_is rated || true
-sum=$(summary)
-if [[ "$d1" =~ ^20[04]$ ]] && [ "$(field "$sum" 2)" = "rated" ] && [ "$(field "$sum" 1)" = "$REAL_GRADE" ] \
-   && [ "$(field "$sum" 3)" = "1" ] && [ "$(field "$sum" 4)" = "1" ] && [ "$(field "$sum" 5)" = "0" ]; then pass
-else fail "#4336: delete HTTP ${d1}; grade|status|scanned|cataloged|uncataloged|failed = ${sum} (want ${REAL_GRADE}|rated|1|1|0|0)" \
+wait_until "rated with ${REAL_GRADE} and coverage scanned 1, cataloged 1, uncataloged 0, failed 0" 30 want_rated "$REAL_GRADE" || true
+if [[ "$d1" =~ ^20[04]$ ]] && want_rated "$REAL_GRADE"; then pass
+else fail "#4336: delete HTTP ${d1}; grade|status|scanned|cataloged|uncataloged|failed = ${SUM} after 30s (want ${REAL_GRADE}|rated|1|1|0|0)" \
   "$(head -c 600 "${WORK_DIR}/sec.json" 2>/dev/null)"; fi
 
 # ---------------------------------------------------------------------------
@@ -136,11 +165,9 @@ else fail "#4336: delete HTTP ${d1}; grade|status|scanned|cataloged|uncataloged|
 begin_test "FIX #4336: with no scans left the repository is unrated with no grade letter"
 d2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X DELETE -H "$(auth_header)" \
   "${BASE_URL}/api/v1/repositories/${REPO}/artifacts/${JAR_PATH}" 2>/dev/null || echo 000)
-wait_until "unrated status" 30 status_is unrated || true
-sum=$(summary)
-if [[ "$d2" =~ ^20[04]$ ]] && [ "$(field "$sum" 2)" = "unrated" ] && [ "$(field "$sum" 1)" = "none" ] \
-   && [ "$(field "$sum" 3)" = "0" ]; then pass
-else fail "#4336: delete HTTP ${d2}; grade|status|scanned|... = ${sum} (want none|unrated|0|...)" \
+wait_until "unrated with no letter and coverage scanned 0" 30 want_unrated || true
+if [[ "$d2" =~ ^20[04]$ ]] && want_unrated; then pass
+else fail "#4336: delete HTTP ${d2}; grade|status|scanned|... = ${SUM} after 30s (want none|unrated|0|...)" \
   "$(head -c 600 "${WORK_DIR}/sec.json" 2>/dev/null)"; fi
 
 end_suite
