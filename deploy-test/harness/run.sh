@@ -487,7 +487,8 @@ case "$CMD" in
     # by Maven, npm, PyPI and RPM (#1846), Maven single PUTs staged on object storage (#4990),
     # repository delete as a background job (#4311), conda JLAP patches
     # (#4175), synthesised shards for conda remotes (#4178) and OCI reads by
-    # digest keyed on oci_manifests (#1683).
+    # digest keyed on oci_manifests (#1683). Then repository grade status
+    # and coverage in place of the F floor (#4336).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -556,7 +557,8 @@ case "$CMD" in
              repo-delete-reclaims-storage-job \
              conda-jlap-incremental conda-remote-shards-synth \
              oci-last-tag-delete-by-digest oci-manifests-reconcile-populated \
-             chunked-upload-admission; do
+             chunked-upload-admission \
+             scan-grade-status-coverage; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
