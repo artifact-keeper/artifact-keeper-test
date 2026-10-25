@@ -1,0 +1,41 @@
+# DTF tier manifest: chunked-upload-admission  (backend #5003 on release/1.11.x,
+# #4992 on main; first line release 1.11.8)
+# Profile-set: filesystem / single. Quota admission and the upload quarantine
+# hold are DB and service side; the oracle drives the chunked upload-session
+# API (`/api/v1/uploads`) and the native single-request upload over HTTP, with
+# DB truth via docker exec psql and an object sweep of the backend's /data
+# volume through a throwaway helper container (the backend image has no shell).
+#
+# Behaviour under test: the chunked upload-session API admits writes the same
+# way the native routes do.
+#   - Chunked uploads apply the repository quota unless the session is a
+#     trusted replication session (an administrator or a service account).
+#     The replication header on its own does not exempt a session.
+#   - Chunked uploads honour the repository's upload quarantine hold: an
+#     artifact completed through the session API is `quarantined` and its
+#     download is refused (409) until the hold lapses, exactly like a native
+#     single-request upload into the same repository.
+#
+# Oracle (RELEASE_GATE=1, no skips):
+#   (CONTROL quota)       a non-admin writer's chunked upload within the quota
+#                         completes 200 and downloads byte-identical.
+#   (FIX quota)           the same writer, sending the replication header, opens
+#                         a session over the quota: refused (413 at session
+#                         create, or 507 at completion if create is admitted).
+#   (FIX quota residue)   afterwards no artifact row and no stored object hold
+#                         the refused bytes, and the path downloads 404.
+#   (CONTROL trusted)     the same over-quota replication request from an
+#                         administrator is admitted (trusted replication).
+#   (FIX quarantine)      a chunked upload into a quarantine-enabled repository
+#                         completes and the artifact lists as `quarantined`
+#                         with its download refused 409.
+#   (CONTROL native hold) a native single-request upload into the same
+#                         repository is held the same way.
+#
+# Red/green: the two quota FIX gates and the quarantine FIX gate are RED on
+# 1.11.7 and earlier; every CONTROL is GREEN on every image.
+#
+# RATE_LIMIT_ENABLED=false: two logins and ~40 back-to-back API calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
