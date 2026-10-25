@@ -1,0 +1,51 @@
+# DTF tier manifest: oci-manifests-reconcile-populated
+#   artifact-keeper#1683 (1.12.0): the precondition for the oci_manifests
+#   readers. On a populated repository the reconcile adds and removes exactly
+#   the expected rows, and removes no row of a manifest a client can still
+#   pull by digest.
+#
+# Profile-set: filesystem + gc.oci-manifests-reconcile-fast (the reconcile
+# every 15 s). Everything is pushed over /v2 with curl; the shapes no client
+# can produce today are made with SQL, each standing for a real history.
+#
+# THE POPULATION (OLP_GROUPS groups, default 30, about 19 manifests each,
+# under image img-<g>; scr-<g> is a scratch image name)
+#   A  image tagged                                              keep
+#   B  image tagged, its only tag deleted                        absent
+#   C  image tagged, the tag then moved to C2: C1 untagged with
+#      its blob refs (a 1.11 reader serves it by digest)         keep (both)
+#   D  index tagged, two children pushed by digest               keep (all)
+#   E  index tagged, two children pushed under their own tags
+#      that are then deleted (untagged children)                 keep (all)
+#   F  index of indexes: leaf scr:l, middle index scr:m, top
+#      index img:f; scr:l then scr:m deleted                     keep (all)
+#   G  migrated (pre-#2457) index: its artifacts row moved to a
+#      generic CAS key with SQL and its tag removed, its child's
+#      tag and artifacts rows removed (kept only by the edge)    keep (both)
+#   H  signature of A pushed by digest                           keep
+#   J  image pushed, deleted by digest                           absent
+#   K  image whose last tag was deleted, its row put back with
+#      SQL (what a 1.11.0 replica's delete left)                 remove
+#   L  image tagged, its row deleted with SQL (a push served by
+#      a pre-268 replica)                                        add
+#
+# THE PASS
+#   Every digest is fetched by digest under img-<g> (status before), every
+#   row is aged an hour back with SQL (the reconcile skips rows younger than
+#   600 s), the reconcile runs until two consecutive 15 s windows change
+#   nothing, then every digest is fetched again (status after).
+#
+# THE GATES
+#   (1) rows removed are exactly the K rows; (2) rows added are exactly the
+#   L rows; (3) no removed row's digest answered 200 by digest before the
+#   pass; (4) no digest's GET status changed across the pass except the L
+#   images', which serve throughout.
+#   On ak-backend:1.12.0 main before the readers slice (#4954's predicate):
+#   gates 1 and 3 fail on C1, the F leaf and the G child, which a 1.11
+#   reader still serves by digest.
+#
+# Wall clock: about 3 min for 30 groups.
+# RATE_LIMIT_ENABLED=false: about 2,000 requests back to back.
+PROFILES="storage.filesystem gc.oci-manifests-reconcile-fast"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
