@@ -1,0 +1,30 @@
+# DTF tier manifest: scan-grade-status-coverage  (artifact-keeper#4336)
+# Profile-set: filesystem + the mock-scan-formats upstream, used ONLY as a
+# fixture server for the clean Maven jar (nothing is proxied). LOCAL-ONLY:
+# scans run the backend image's bundled Grype with its pre-seeded DB.
+#
+# THE FEATURE (#4336): a failed scan or an archive no scanner could catalog
+# used to floor a repository's grade letter to F (#2167, #4036, #4154) while
+# its score stayed 100. Repository scores now carry `grade_status`
+# (`rated` | `incomplete` | `unrated`) and `coverage` (artifacts, scanned,
+# cataloged, partial, failed, uncataloged, coverage_pct); `grade` is the
+# letter over what was assessed and `null` when nothing was. Scan rows carry
+# `grade_status` / `grade_status_reason`; the dashboard counts repositories by
+# status. Deleting an artifact recalculates its repository's score.
+#
+# THE GATES (one generic repository, scan_enabled + scan_on_upload, holding a
+# scannable jar and a package-shaped .whl Grype catalogs nothing from):
+#   (FIX)     with both: grade_status incomplete, coverage scanned 2,
+#             cataloged 1, uncataloged 1, and no F (the jar's real letter);
+#             the .whl's scan row is unrated with a reason, the jar's rated;
+#             the dashboard reports the status counts. After the .whl is
+#             deleted: rated with the jar's letter, coverage 1 of 1. After the
+#             jar is deleted too (no scans left): unrated, grade null.
+#             RED on 1.11.5: grade F, no grade_status or coverage fields.
+#   (CONTROL) both images: the uploads are accepted and both get completed
+#             scans; the .whl's scan row is not_cataloged with a reason; the
+#             repository is flagged has_uncataloged_scan.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
