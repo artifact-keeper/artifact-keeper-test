@@ -17,6 +17,10 @@
 #                                      mean a new validator.
 #   POST /__delay?path=<p>&ms=<n>      hold every GET of <p> n ms before the
 #                                      status line (0 clears).
+#   POST /__status?path=<p>&code=<n>   answer every GET/HEAD of <p> with status
+#                                      n and a short body, whatever is stored
+#                                      (0 clears). An S3 bucket without list
+#                                      permission answers 403 for a missing key.
 #   GET  /__requests?path=<p>          {"path", "get", "head", "conditional"}:
 #                                      requests seen for <p> (any status).
 #   GET  /__log                        every request seen, one per line:
@@ -47,6 +51,7 @@ PORT = int(os.environ.get("MOCK_PORT", "80"))
 LOCK = threading.Lock()
 FILES = {}    # path -> (body, ctype, etag)
 DELAYS = {}   # path -> ms
+STATUS = {}   # path -> forced status code
 COUNTS = {}   # path -> {"get": n, "head": n, "conditional": n}
 LOG = []
 
@@ -86,9 +91,13 @@ class Handler(BaseHTTPRequestHandler):
                 c["conditional"] += 1
             entry = FILES.get(p)
             delay = DELAYS.get(p, 0)
+            forced = STATUS.get(p, 0)
         if delay and not head:
             time.sleep(delay / 1000.0)
-        if entry is None:
+        if forced:
+            code = forced
+            self._send(forced, b'{"errors":[{"detail":"forced status"}]}', "application/json", head=head)
+        elif entry is None:
             code = 404
             self._send(404, b'{"errors":[{"detail":"not found"}]}', "application/json", head=head)
         else:
@@ -151,6 +160,15 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 DELAYS[p] = ms
             return self._json(200, {"path": p, "ms": ms})
+        if url.path == "/__status":
+            p = q.get("path", [""])[0]
+            code = int(q.get("code", ["0"])[0])
+            with LOCK:
+                if code:
+                    STATUS[p] = code
+                else:
+                    STATUS.pop(p, None)
+            return self._json(200, {"path": p, "code": code})
         return self._json(404, {"error": "unknown control endpoint"})
 
 
