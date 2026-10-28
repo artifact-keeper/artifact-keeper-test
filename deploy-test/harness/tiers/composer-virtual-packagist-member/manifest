@@ -1,0 +1,18 @@
+# DTF tier manifest: composer-virtual-packagist-member  (artifact-keeper#4951)
+# Profile-set: filesystem + upstreams.mock-scan-formats (its Packagist-shaped
+# Composer upstream: p2/<vendor>/<pkg>.json whose dist.url points at a
+# separate /composer/zipball/<pkg>.zip endpoint) + client.composer (a real
+# Composer 2 client on the DTF network only, so it can reach the backend but
+# not the mock).
+#
+# #4951: a Composer Virtual over a non-scanning Remote member pointing at a
+# Packagist-style upstream answered 404 for the dist the Remote serves, because
+# the virtual walk synthesized dist/<vendor>/<pkg>/<version>/<ref>.zip against
+# the member's upstream base. The virtual p2 metadata also passed the member's
+# dist.url through verbatim, so clients bypassed the Virtual entirely.
+#
+# Red on 1.11.7 (and 1.12.0 main before the fix); green with the fix.
+PROFILES="storage.filesystem upstreams.mock-scan-formats client.composer"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
