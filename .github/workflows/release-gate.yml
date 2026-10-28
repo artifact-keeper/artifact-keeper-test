@@ -3402,6 +3402,19 @@ jobs:
           # release/1.11.x.
           - group: fixes-1.11.8
             tiers: chunked-upload-admission proxy-rescan-verdict
+          # 1.11.9 fix coverage (artifact-keeper-test#672): a virtual conda
+          # channel's package allowlist applies to its hosted members too
+          # (artifact-keeper#5055, fixed by #5058 on main and #5059 on
+          # release/1.11.x). An unlisted hosted package is absent from every
+          # index form and 404 on download through the virtual, a real
+          # micromamba client cannot resolve it, and `"scope": "remote_only"`
+          # restores pass-through at once (conda-allowlist-hosted-members,
+          # storage.filesystem + upstreams.mock-conda on 172.16.<slot>.70 +
+          # client.conda on the dtf network, under a minute). Red on 1.11.8,
+          # green on the fix. The fix is on the line, so this tier is
+          # cherry-picked onto this repo's release/1.11.x. Required.
+          - group: fixes-1.11.9
+            tiers: conda-allowlist-hosted-members
           # 1.12.0 feature coverage (artifact-keeper-test#624, #625, tracked
           # in artifact-keeper#4932): the paged GET /groups/{id}/members of
           # an LDAP-synced group (#4027, fixed by #4821; storage.filesystem,

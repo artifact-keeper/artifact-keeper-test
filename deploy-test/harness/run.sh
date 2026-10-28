@@ -566,7 +566,8 @@ case "$CMD" in
              scan-grade-status-coverage \
              scan-iso-rootfs-inventory conda-remote-403-probe-fallback \
              composer-virtual-packagist-member \
-             proxy-rescan-verdict; do
+             proxy-rescan-verdict \
+             conda-allowlist-hosted-members; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
