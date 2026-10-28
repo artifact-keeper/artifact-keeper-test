@@ -1,0 +1,18 @@
+# DTF tier manifest: proxy-rescan-verdict  (GHSA-9vgh-8jfp-78ff; fixed by
+# artifact-keeper#5030 on main and #5031 on release/1.11.x, shipped in 1.11.8)
+# Profile-set: filesystem + the mock-scan-formats upstream. LOCAL-ONLY: the
+# verdicts come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: POST /api/v1/repositories/{key}/security/proxy-scans/rescan
+# runs without a request coordinate, so it cannot pin a .nupkg the way the
+# download gate does. A rescan whose scanner cataloged no components in such
+# a package must be inconclusive (503 RESCAN_SCAN_FAILED) and keep the stored
+# verdict; the next fail_closed pull stays 403. A self-cataloging jar is the
+# control: its rescan grades it vulnerable again on every image.
+#
+# Red: ak-backend:1.11.7. Green: ak-backend:1.11.8 and main.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
