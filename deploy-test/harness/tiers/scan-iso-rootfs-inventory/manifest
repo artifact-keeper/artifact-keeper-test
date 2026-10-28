@@ -16,7 +16,7 @@
 #     Since #1966 the scan is recorded not_cataloged with a reason and
 #     inventory_status 'partial', and flags the repository.
 #
-# Red: ak-backend:1.11.5. Green: an image carrying #1966.
+# Red: ak-backend:1.11.7. Green: an image carrying #1966.
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

@@ -15,7 +15,7 @@
 # RUN_ID, DTF_SLOT, DB_CONTAINER, COMMON_SH. The two ISOs are written by
 # fixtures/make_fixtures.py. Scans run the backend image's bundled Grype.
 #
-# Green: an image carrying #1966. Red: ak-backend:1.11.5 (every FIX case;
+# Green: an image carrying #1966. Red: ak-backend:1.11.7 (every FIX case;
 # the controls pass on both).
 # =============================================================================
 set -uo pipefail
