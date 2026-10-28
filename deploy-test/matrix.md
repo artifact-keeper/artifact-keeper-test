@@ -56,6 +56,8 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 160 | **The PyPI age gate resolves a PEP 440-equal filename version to its release publish time** - #4907 (fixed by #4908, backported to 1.11.x by #4912) | filesystem + `upstreams.mockpypi-agegate` (`172.28.<slot>.50`, a Warehouse JSON and PEP 691 simple index mock for `cuda-toolkit`) | with `upstream_publish_time` and `min_age_days=7` on a PyPI remote, `13.0.3.0` (filename spelling of the 2026-04-14 release `13.0.3`) is listed in the HTML and JSON simple index and downloads 200 with the mock's sha256; controls: `13.4.2` is served, `13.5.0` (one day old) and `13.0.3.1` (no equal release) are absent and 451, and the backend fetched `/pypi/cuda-toolkit/json` | **pypi-age-gate-pep440-lookup** | **COVERED** (#612, `fixes-1.11.6-pypi`): FIX gate, green on main `48b0424c` (`fix-4907`, 17/17) and on the 1.11.x line after #4912; red on 1.11.5 (14 pass / 3 fail: `13.0.3.0` missing from both indexes, download 451) |
 | 161 | **Protobuf label moves, late NuGet metadata and protobuf commits reach a push peer** - #4889 (fixed by #4899), #4921 (fixed by #4934) | filesystem + `peer.second-instance` (bidirectional push peers; `.nupkg` fixtures zipped on the host, protobuf modules pushed as Connect JSON) | `CreateOrUpdateLabels` moving main on A makes B resolve main and dev to the new commit through one `_labels` row with A's sha256 and no package version; moving it back after that push finished is re-delivered within 60 s through the same push row; a NuGet package whose metadata write is held open on A (trigger + release table) has its nuspec id, version and description on B within 60 s; a protobuf commit uploaded to A after B subscribed is pushed (A's push row completed, B's row sha256 equals the bundle A serves) and B serves it to buf by label and by commit id; controls: the `.nupkg` reaches B, peer writes are not echoed, every A push row ends completed | **replication-labels-and-late-metadata** | **COVERED** (#618, #622, `fixes-1.11.7-replication`): FIX gate, green 11/11 on `fix-4921` (an image at or after `9bcfc824`, #4934; #622 flipped the former #4921 KNOWN-RED pin); red on 1.11.5 (6 pass / 5 fail: B resolves no label after either move, B holds no NuGet metadata, the commit push fails 409 `checksum mismatch` and B cannot serve the commit). Gate-group proof: 11/11 on slot 39 (`fixes-1.11.7-replication`, `fix-4921`, 85 s) |
 | 164 | **A blob completion cut by a proxy 504 and re-sent is 201, not 409** - #4902 (fixed by #4919) | filesystem + `proxy.timeout-504` (a stdlib-python proxy from the tier's fixtures that, when armed, answers an upload PUT with 504 a set time after forwarding its body and closes the upstream connection, as Envoy does) | a 768 MiB monolithic `PUT ?digest=` cut by the proxy and re-sent at once through it is 201 (or 503 then 201), blob HEAD is 200 and no session row is left `committing` within 10 s; controls: direct and unarmed-proxy pushes are 201, a retry with a different digest while the cut completion runs is 409 | **oci-blob-completion-retry** | **COVERED** (#619, `fixes-1.11.7-oci`): FIX gate, green on `fix-4902` (#4919, 7/7, 3 of 3 runs); red on 1.11.5 (4 pass / 3 fail: retry 409 `upload session is already being modified`, HEAD 404, row still `committing`). Gate-group proof: 7/7 on slot 39 (`fixes-1.11.7-oci`, `fix-4902`, 18 s) |
+| 192 | **Chunked uploads apply the quota and the upload quarantine hold like native routes** - fixed by #5003 on `release/1.11.x` (from `cc51568a`, 1.11.8) and by #4992 on main | filesystem | a non-admin writer's over-quota chunked session with `x-artifact-keeper-replication: true` is 413 at create (or 507 at completion) and leaves no artifact row, no stored object and a 404 download; a chunked upload into a quarantine-enabled repository is `quarantined` in the listing and the database and its download is 409; controls: an in-quota chunked upload completes byte-identical, the same over-quota replication request from an administrator is admitted, a native PUT into the quarantine repository is held the same way | **chunked-upload-admission** | **COVERED** (#663, `fixes-1.11.8`): FIX gate, green 7/7 on `line-1118` (`release/1.11.x` at `cc51568a`) and on `main-f0211b43`; red on 1.11.7 and 1.11.5 (4 pass / 3 fail: the replication-header upload admitted with its row and object left and a 200 download, the chunked artifact `not_quarantined` and downloadable) and on `lane-w3a` (built before #4992). Gate-group proof on main `e6569472` (`main-1120d`): 7/7 on slot 51 (`fixes-1.11.8`, group 16 s) |
+| 196 | **A proxy rescan that cannot grade a package keeps the stored verdict** - GHSA-9vgh-8jfp-78ff (fixed by #5030 on main and #5031 on `release/1.11.x`, 1.11.8) | filesystem + `upstreams.mock-scan-formats` (`172.16.<slot>.72`; verdicts from the backend image's bundled Grype) | after a fail_closed pull of Newtonsoft.Json 12.0.1 through a NuGet Remote is 403 `scan_blocked` with a `vulnerable` verdict, `POST .../security/proxy-scans/rescan` of the cached `.nupkg` is 503 `RESCAN_SCAN_FAILED`, the stored verdict stays `vulnerable` and the next pull is still 403 `scan_blocked`; controls: the first pull, the proxy cache row, the log4j-core 2.14.1 pull through a fail_closed Maven Remote and its rescan graded `vulnerable` again | **proxy-rescan-verdict** | **COVERED** (#668, `fixes-1.11.8`): FIX gate, green 8/8 on the published 1.11.8 and on main `79e52871`; red on 1.11.7 (5 pass / 3 fail: the `.nupkg` rescan 200 `clean` with `package_count` 0, the stored verdict `clean`, the next pull 200 `X-AK-Scan: clean`). Gate-group proof on main `79e52871` (`main-79e5287`): 8/8 on slot 52 (`fixes-1.11.8`, two tiers, group 50 s) |
 
 ## Consolidated status (this checkpoint)
 
@@ -249,6 +251,40 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   and runs these tiers from this branch. From this branch at slot 42, red
   on 1.11.5 (maven 6/1, replication 6/5, oci 4/3) and green on an image
   built from `f6c721e4` (7/7, 11/11, 7/7).
+
+## 1.11.8 fix-coverage status (rows 192, 196, artifact-keeper-test#663, #668)
+
+- **`chunked-upload-admission`** (row 192) covers the chunked upload-session
+  admission fixes: a session opened with `x-artifact-keeper-replication:
+  true` skipped the repository quota whoever opened it, and a chunked
+  completion ignored the upload quarantine hold, so the artifact downloaded
+  at once. Only a trusted replication session (an administrator or a
+  service account) is now exempt from the quota, and a refused upload
+  leaves no row or object. It is a FIX gate: red on 1.11.7 and 1.11.5 on
+  exactly the three FIX cases with every control holding (4 pass / 3 fail),
+  green 7/7 on `release/1.11.x` from `cc51568a` (#5003) and on main from
+  `f0211b43` (#4992, `96d227ad`).
+- **Gate wiring:** the new required group `fixes-1.11.8` (storage.filesystem,
+  16 s locally). The fix is on the line, so this tier may be cherry-picked
+  onto the test repo's `release/1.11.x`; a 1.11.x candidate older than
+  1.11.8 is red on this group.
+- **`proxy-rescan-verdict`** (row 196, #668) covers GHSA-9vgh-8jfp-78ff
+  (reported by @yushao2): a proxy rescan without a request coordinate
+  cataloged nothing in a `.nupkg`, recorded `clean` over the stored
+  `vulnerable` verdict and lifted the fail_closed block for that digest.
+  The rescan is now inconclusive (503 `RESCAN_SCAN_FAILED`) and keeps the
+  verdict. FIX gate: red on 1.11.7 on exactly the three FIX cases (5 pass /
+  3 fail), green 8/8 on the published 1.11.8 and on main `79e52871`. It was
+  held on an unpushed branch until the advisory was published.
+- **Batch 5 gate wiring:** `proxy-rescan-verdict` joins `fixes-1.11.8` (two
+  tiers, 50 s on main `79e52871`). The fix is on the line (#5031), so the
+  tier is cherry-picked onto the test repo's `release/1.11.x`.
+- **On this line:** rows 192 and 196 are added here. The backend fixes are
+  on `release/1.11.x` since #5003 (`cc51568a`) and #5031 (`1a1939f8`), both
+  in 1.11.8. The gate reads its matrix (including `fixes-1.11.8`) from
+  main's `release-gate.yml` and runs these tiers from this branch. From
+  this branch, red on 1.11.7 (chunked-upload-admission 4/3,
+  proxy-rescan-verdict 5/3) and green on the published 1.11.8 (7/7, 8/8).
 
 ## Brick-2 status (migration / Nexus — #2457)
 

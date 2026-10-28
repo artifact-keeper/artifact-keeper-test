@@ -371,7 +371,8 @@ case "$CMD" in
              conda-remote-shard-recovers proxy-metadata-budget-env conda-virtual-stale-serve \
              cran-remote-packages-index repo-delete-purges-revisions \
              pypi-age-gate-pep440-lookup \
-             replication-labels-and-late-metadata oci-blob-completion-retry; do
+             replication-labels-and-late-metadata oci-blob-completion-retry \
+             chunked-upload-admission proxy-rescan-verdict; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

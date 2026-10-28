@@ -3060,6 +3060,19 @@ jobs:
           # 1.11.6. Required.
           - group: fixes-1.11.7-oci
             tiers: oci-blob-completion-retry
+          # 1.11.8 fix coverage (artifact-keeper-test#663, #668). This line's
+          # copy is a record: the gate runs main's release-gate.yml and only
+          # reads tiers from this branch. chunked-upload-admission: chunked
+          # upload sessions apply the quota unless the session is a trusted
+          # replication session and honour the upload quarantine hold
+          # (#5003 on this line, #4992 on main). proxy-rescan-verdict: a
+          # proxy rescan that catalogs no components in a package archive is
+          # 503 RESCAN_SCAN_FAILED and keeps the stored vulnerable verdict
+          # (GHSA-9vgh-8jfp-78ff, #5031 on this line, #5030 on main;
+          # storage.filesystem + upstreams.mock-scan-formats). Both red on
+          # 1.11.7, green on 1.11.8. Required.
+          - group: fixes-1.11.8
+            tiers: chunked-upload-admission proxy-rescan-verdict
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
