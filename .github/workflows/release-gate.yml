@@ -3390,8 +3390,18 @@ jobs:
           # chunked-upload-admission, storage.filesystem, under a minute).
           # The fix is on the line, so this tier may be cherry-picked onto
           # this repo's release/1.11.x. Red on 1.11.7 and 1.11.5. Required.
+          # Batch 5 adds the proxy rescan verdict fix (artifact-keeper-test#668;
+          # GHSA-9vgh-8jfp-78ff, fixed by #5030 on main and #5031 on
+          # release/1.11.x): a rescan of a proxied package archive that
+          # catalogs no components is 503 RESCAN_SCAN_FAILED and keeps the
+          # stored vulnerable verdict, so the next fail_closed pull is still
+          # 403 (proxy-rescan-verdict, storage.filesystem +
+          # upstreams.mock-scan-formats on 172.16.<slot>.72, bundled Grype,
+          # under a minute). Red on 1.11.7, green on 1.11.8. The fix is on
+          # the line, so this tier is cherry-picked onto this repo's
+          # release/1.11.x.
           - group: fixes-1.11.8
-            tiers: chunked-upload-admission
+            tiers: chunked-upload-admission proxy-rescan-verdict
           # 1.12.0 feature coverage (artifact-keeper-test#624, #625, tracked
           # in artifact-keeper#4932): the paged GET /groups/{id}/members of
           # an LDAP-synced group (#4027, fixed by #4821; storage.filesystem,
@@ -3432,9 +3442,20 @@ jobs:
           # letter and coverage counts); its earlier flake was backend #5006
           # (a lost score recalculation, fixed by #5007). The same FEATURE
           # rule applies: red on every 1.11.x image, never cherry-picked onto
-          # release/1.11.x.
+          # release/1.11.x. Batch 5 adds ISO9660 live media inventoried
+          # through their squashfs rootfs, and an unreadable rootfs recorded
+          # not_cataloged (artifact-keeper-test#651; #1966, fixed by #4991;
+          # scan-iso-rootfs-inventory, storage.filesystem, bundled Grype and
+          # unsquashfs, fixtures written at run time by stdlib Python), and a
+          # Composer Virtual serving a Packagist-style Remote member's p2
+          # metadata with dist.url routed through the Virtual and the
+          # member's real dist, installed by a real Composer 2 client
+          # (artifact-keeper-test#667; #4951, fixed by #5009;
+          # composer-virtual-packagist-member, upstreams.mock-scan-formats on
+          # 172.16.<slot>.72 + client.composer on the dtf network only). Same
+          # FEATURE rule.
           - group: features-1.12.0-api
-            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token otlp-upstream-client-spans maven-age-gate scan-grade-status-coverage
+            tiers: group-members-list otlp-logs-metrics api-contracts-1120 conda-package-304 auth-logout-revokes-access-token otlp-upstream-client-spans maven-age-gate scan-grade-status-coverage scan-iso-rootfs-inventory composer-virtual-packagist-member
           # 1.12.0 scan-on-proxy (artifact-keeper-test#628-#630): Go,
           # RubyGems and Composer (#4103-#4105, fixed by #4942), Pub and
           # Conan (#4107, #4108, fixed by #4943) and CocoaPods and Swift
@@ -3538,13 +3559,21 @@ jobs:
           # shard index, read by a real pixi 0.81.0 (#4178, fixed by #4999;
           # conda-remote-shards-synth, upstreams.mock-conda on
           # 172.16.<slot>.70). Both pull their client image from a public
-          # registry and talk only to the slot's own containers. FEATURE gates:
+          # registry and talk only to the slot's own containers. Batch 5
+          # (artifact-keeper-test#666) adds the plain repodata.json fallback
+          # when a Remote's compressed probes answer 401/403, signed channels
+          # keeping upstream's signed .json, and a Virtual member evicting an
+          # undecodable cached .zst (#4929, fixed by #4984;
+          # conda-remote-403-probe-fallback, upstreams.mock-files). Its
+          # single-Remote cases also pass on 1.11.7 (the line never had the
+          # transcode) but its Virtual cases do not, so it stays out of every
+          # 1.11.x gate. FEATURE gates:
           # red on every 1.11.x image. Never cherry-pick these tiers onto
           # this repo's release/1.11.x and never move them into a group a
           # 1.11.x gate is expected to pass; on a 1.11.x candidate they run
           # as NOT ON THIS LINE. Local containers only, so required.
           - group: features-1.12.0-conda
-            tiers: conda-shard-o1 conda-repodata-revision conda-jlap-incremental conda-remote-shards-synth
+            tiers: conda-shard-o1 conda-repodata-revision conda-jlap-incremental conda-remote-shards-synth conda-remote-403-probe-fallback
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

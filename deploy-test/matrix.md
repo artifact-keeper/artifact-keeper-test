@@ -209,6 +209,10 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 191 | **The oci_manifests reconcile on a populated repository adds and removes exactly the expected rows** - #1683, precondition for the readers (fixed by #5000, 1.12.0) | filesystem + `gc.oci-manifests-reconcile-fast`; 30 groups giving 570 manifest digests (tagged images, last-tag deletes, tag overwrites, multi-arch indexes, untagged children, an index of indexes, migrated indexes, referrers, deletes by digest, stale rows K and missing rows L) | every digest is fetched by digest before and after the pass; the rows removed are exactly K, the rows added exactly L, no removed row's digest answered 200 before the pass and no GET status changed | **oci-manifests-reconcile-populated** | **COVERED** (#660, `features-1.12.0-oci`): FEATURE gate, green 5/5 on `lane-w3c` (removed K=30, added L=30, statuses unchanged); red on 1.11.5 (2 pass / 3 fail: K stays, L is not re-added), on main `e12faa5f` before #5000 (3 pass / 2 fail: it removed 120 rows, K plus C1, the F leaf and the G child, all serving 200 by digest) and on every 1.11.x image. Gate-group proof on main `e6569472` (`main-1120d`): 5/5 on slot 51 (`features-1.12.0-oci`, group 158 s; this tier 104 s) |
 | 192 | **Chunked uploads apply the quota and the upload quarantine hold like native routes** - fixed by #5003 on `release/1.11.x` (from `cc51568a`, 1.11.8) and by #4992 on main | filesystem | a non-admin writer's over-quota chunked session with `x-artifact-keeper-replication: true` is 413 at create (or 507 at completion) and leaves no artifact row, no stored object and a 404 download; a chunked upload into a quarantine-enabled repository is `quarantined` in the listing and the database and its download is 409; controls: an in-quota chunked upload completes byte-identical, the same over-quota replication request from an administrator is admitted, a native PUT into the quarantine repository is held the same way | **chunked-upload-admission** | **COVERED** (#663, `fixes-1.11.8`): FIX gate, green 7/7 on `line-1118` (`release/1.11.x` at `cc51568a`) and on `main-f0211b43`; red on 1.11.7 and 1.11.5 (4 pass / 3 fail: the replication-header upload admitted with its row and object left and a 200 download, the chunked artifact `not_quarantined` and downloadable) and on `lane-w3a` (built before #4992). Gate-group proof on main `e6569472` (`main-1120d`): 7/7 on slot 51 (`fixes-1.11.8`, group 16 s) |
 | 193 | **Repository scores carry grade status and coverage instead of the F floor** - #4336 (fixed by #4995, 1.12.0) | filesystem + `upstreams.mock-scan-formats` (`172.16.<slot>.72`, a fixture server for the clean Maven jar only; scans use the backend image's bundled Grype) | a generic repository with scan_on_upload holding a clean jar and a package-shaped `.whl` Grype catalogs nothing from reads `grade_status` `incomplete` with coverage scanned 2, cataloged 1, uncataloged 1, failed 0 and a letter that is not F; the `.whl` scan row is `unrated` with a reason and the jar's `rated`; the dashboard counts `repos_incomplete`, `repos_rated` and `repos_unrated`; after the `.whl` is deleted the repository is `rated` with the jar's letter and coverage 1 of 1; after the jar is deleted too it is `unrated` with `grade` null; every FIX poll waits, bounded, for the whole expected state (a scan set writes its rows `not_cataloged` provisionally, #4154, so the score settles in steps); control: both uploads are scanned, the `.whl` row is `not_cataloged` with a reason and the repository is flagged `has_uncataloged_scan` | **scan-grade-status-coverage** | **COVERED** (#652, `features-1.12.0-api`): FEATURE gate, green 8/8 in 10 of 10 runs in a row on main `9a800ffc` (`main-5006`, with #5007); red on 1.11.5 (3 pass / 5 fail: `grade` F, no `grade_status` or `coverage`, no status after the deletes) and on every 1.11.x image. Its earlier flake (2 of 10 on `e6569472`) was backend #5006, a score recalculation lost to a serialization failure, fixed by #5007. Gate-group proof on main `9a800ffc` (`main-5006`): 8/8 tiers on slot 51 (`features-1.12.0-api`, group 206 s) |
+| 194 | **ISO live media are inventoried through their squashfs rootfs; an unreadable rootfs is not_cataloged** - #1966 (fixed by #4991, 1.12.0) | filesystem (both ISOs written at run time by `fixtures/make_fixtures.py`, stdlib Python; scans use the backend image's bundled Grype and `unsquashfs`) | a hybrid Rock Ridge ISO holding `live/filesystem.squashfs` with a Debian 12 dpkg `status` is scanned with `scan_packages` > 0 including `openssl 3.0.11-1~deb12u2` and an openssl finding with a CVE; the same ISO with its squashfs tables overwritten is `not_cataloged` with a reason, `inventory_status` `partial` and 0 findings, and its repository reports `has_uncataloged_scan`; controls: both uploads get a completed Grype row and the live ISO's scan is `complete` | **scan-iso-rootfs-inventory** | **COVERED** (#651, `features-1.12.0-api`): FEATURE gate, green 7/7 on `lane-w3d` and on backend #4991 at `fe2f4c32`; red on 1.11.5 and 1.11.7 (3 pass / 4 fail: no packages or openssl findings, the corrupt ISO `complete` with 0 findings, the repository `A` and not flagged) and on every 1.11.x image. Gate-group proof on main `79e52871` (`main-79e5287`): 7/7 on slot 50 (`features-1.12.0-api`, nine tiers, group 261 s) |
+| 195 | **A conda Remote whose compressed probes answer 401/403 falls back to plain repodata; signed channels keep their bytes** - #4929 (fixed by #4984, 1.12.0) | filesystem + `upstreams.mock-files` (`POST /__status` forces 403 on one path, as an S3 bucket without list permission answers for a missing key) | a Remote whose `.zst` / `.bz2` answer 403 serves upstream's plain `repodata.json`; a Virtual whose Remote member answers 403 merges the member's plain document; a signed Remote's plain `repodata.json` is upstream's signed `.json`, not the decoded `.zst`; a Virtual member that cached an undecodable `.zst` evicts it and refetches on the next request; control: a signed Remote proxies `repodata.json.sig` byte for byte | **conda-remote-403-probe-fallback** | **COVERED** (#666, `features-1.12.0-conda`): FEATURE gate, green 6/6 on the #4984 image; red on main `8f4b018b` before the fix (2 pass / 4 fail: 502 on the 403 Remote and Virtual, the signed Remote serves the `.zst` document, the second Virtual read still 502). On 1.11.7 it is 4 pass / 2 fail: the single-Remote cases pass (the line never transcoded) and the two Virtual cases fail, so it is in no 1.11.x gate. Gate-group proof on main `79e52871` (`main-79e5287`): 6/6 on slot 51 (`features-1.12.0-conda`, five tiers, group 247 s) |
+| 196 | **A proxy rescan that cannot grade a package keeps the stored verdict** - GHSA-9vgh-8jfp-78ff (fixed by #5030 on main and #5031 on `release/1.11.x`, 1.11.8) | filesystem + `upstreams.mock-scan-formats` (`172.16.<slot>.72`; verdicts from the backend image's bundled Grype) | after a fail_closed pull of Newtonsoft.Json 12.0.1 through a NuGet Remote is 403 `scan_blocked` with a `vulnerable` verdict, `POST .../security/proxy-scans/rescan` of the cached `.nupkg` is 503 `RESCAN_SCAN_FAILED`, the stored verdict stays `vulnerable` and the next pull is still 403 `scan_blocked`; controls: the first pull, the proxy cache row, the log4j-core 2.14.1 pull through a fail_closed Maven Remote and its rescan graded `vulnerable` again | **proxy-rescan-verdict** | **COVERED** (#668, `fixes-1.11.8`): FIX gate, green 8/8 on the published 1.11.8 and on main `79e52871`; red on 1.11.7 (5 pass / 3 fail: the `.nupkg` rescan 200 `clean` with `package_count` 0, the stored verdict `clean`, the next pull 200 `X-AK-Scan: clean`). Gate-group proof on main `79e52871` (`main-79e5287`): 8/8 on slot 52 (`fixes-1.11.8`, two tiers, group 50 s) |
+| 197 | **A Composer Virtual serves a Packagist-style Remote member's metadata and dist** - #4951 (fixed by #5009, 1.12.0) | filesystem + `upstreams.mock-scan-formats` (`172.16.<slot>.72`, its Packagist shape: `p2` documents whose `dist.url` points at a separate `/composer/zipball/` endpoint) + `client.composer` (a real Composer 2 client on the dtf network only) | the Virtual's `p2` metadata routes `dist.url` through the Virtual, not the upstream host; the Virtual serves the member's real dist bytes; `composer update --prefer-dist` against the Virtual alone installs from dist; control: the Remote alone serves the `p2` metadata and the dist | **composer-virtual-packagist-member** | **COVERED** (#667, `features-1.12.0-api`): FEATURE gate, green 5/5 on the #5009 image; red on 1.11.7 and on main `8f4b018b` before the fix (2 pass / 3 fail: `dist.url` is the mock's zipball URL, Virtual dist 404, composer times out on the upstream host) and on every 1.11.x image. Gate-group proof on main with #5009 (`62d72c8d`): PENDING |
 
 ## Consolidated status (this checkpoint)
 
@@ -532,7 +536,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   candidate runs the line's older copy of row 124 and skips rows 161 and 164 as NOT
   ON THIS LINE.
 
-## 1.11.8 fix-coverage status (row 192, artifact-keeper-test#663)
+## 1.11.8 fix-coverage status (rows 192, 196, artifact-keeper-test#663, #668)
 
 - **`chunked-upload-admission`** (row 192) covers the chunked upload-session
   admission fixes: a session opened with `x-artifact-keeper-replication:
@@ -548,8 +552,19 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   16 s locally). The fix is on the line, so this tier may be cherry-picked
   onto the test repo's `release/1.11.x`; a 1.11.x candidate older than
   1.11.8 is red on this group.
+- **`proxy-rescan-verdict`** (row 196, #668) covers GHSA-9vgh-8jfp-78ff
+  (reported by @yushao2): a proxy rescan without a request coordinate
+  cataloged nothing in a `.nupkg`, recorded `clean` over the stored
+  `vulnerable` verdict and lifted the fail_closed block for that digest.
+  The rescan is now inconclusive (503 `RESCAN_SCAN_FAILED`) and keeps the
+  verdict. FIX gate: red on 1.11.7 on exactly the three FIX cases (5 pass /
+  3 fail), green 8/8 on the published 1.11.8 and on main `79e52871`. It was
+  held on an unpushed branch until the advisory was published.
+- **Batch 5 gate wiring:** `proxy-rescan-verdict` joins `fixes-1.11.8` (two
+  tiers, 50 s on main `79e52871`). The fix is on the line (#5031), so the
+  tier is cherry-picked onto the test repo's `release/1.11.x`.
 
-## 1.12.0 feature-coverage status (rows 30, 162, 163, 165-191, 193, artifact-keeper-test#623-#625, #628-#632, #634-#639, #641, #642, #644-#649, #652-#656, #658-#661, artifact-keeper#4932)
+## 1.12.0 feature-coverage status (rows 30, 162, 163, 165-191, 193-195, 197, artifact-keeper-test#623-#625, #628-#632, #634-#639, #641, #642, #644-#649, #651-#656, #658-#661, #666, #667, artifact-keeper#4932)
 
 - **Three feature tiers** cover the 1.12.0 features merged on 2026-10-24
   without an end-to-end test: the relayed PATCH (#4795, #4876) as an
@@ -641,8 +656,18 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   `maven-rollup-anchor-escape`, `repo-delete-purges-revisions`,
   `oci-blob-journal-per-repo`, `token-repo-restriction`) to accept the
   #4996 202 job answer through `lib/repo_delete.sh`.
-- **Not wired yet:** `scan-iso-rootfs-inventory` (#651, backend #4991) was
-  still in review.
+- **Batch 5 (rows 194, 195, 197):** `scan-iso-rootfs-inventory` (#651, backend
+  #4991) joins `features-1.12.0-api` (nine tiers, 261 s) and
+  `conda-remote-403-probe-fallback` (#666, backend #4984) joins
+  `features-1.12.0-conda` (five tiers, 247 s).
+  `composer-virtual-packagist-member` (#667, backend #5009) joins
+  `features-1.12.0-api` after them. None is cherry-picked
+  onto the test repo's `release/1.11.x`. The conda tier's single-Remote
+  cases pass on 1.11.7 but its Virtual cases do not, so it stays out of
+  every 1.11.x gate even if #4984's Virtual half is backported. Gate-group
+  proof on backend main `79e52871` (`main-79e5287`, pulled by digest
+  `sha256:3eb6b539...` because that Docker Publish run failed its Trivy
+  gate after the push), slots 50-52, every wired tier green.
 - **scan-grade-status-coverage (row 193):** red once in six runs on
   `main-1120d`: in its first group run the repository read `incomplete`
   with both artifacts uncataloged (`A|incomplete|2|0|2|0`). Every FIX poll
