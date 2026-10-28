@@ -1,0 +1,21 @@
+# DTF tier manifest: conda-remote-403-probe-fallback  (artifact-keeper#4929)
+# Profile-set: filesystem + upstreams.mock-files (the oracle writes the
+# channel's documents and forces per-path statuses at run time).
+#
+# #4904 (1.12.0) made a Remote's plain `repodata.json` fetch upstream `.zst`
+# then `.bz2` and fall back to the plain `.json` only on 404. Three follow-ups
+# (#4929), each asserted here against a real backend:
+#   1. A channel on an S3 bucket without list permission answers 403 for the
+#      `.zst`/`.bz2` it does not publish. The plain route (single Remote and a
+#      Virtual's Remote member) must fall back to upstream's plain `.json`.
+#   2. A channel that publishes `repodata.json.sig` signs its plain `.json`;
+#      the plain route must serve those bytes, not the decoded `.zst`.
+#   3. A Virtual member that reads an undecodable cached `.zst` evicts it, so
+#      the next request refetches instead of failing until the entry expires.
+#
+# Red on 1.12.0 main before the fix (sha-8f4b018: the three FIX cases fail);
+# the 1.11.x line never had the transcode, so cases 1 and 2 pass there.
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
