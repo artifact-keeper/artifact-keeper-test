@@ -30,6 +30,7 @@ SLOT="$DTF_SLOT"
 MOCK="http://127.0.0.1:${TRIVY_PORT}"
 ISS_A="https://mock-ci-oidc/a-${SUF}"     # provider PA
 ISS_B="https://mock-ci-oidc/b-${SUF}"     # provider PB: same claims, other issuer
+ISS_K="https://mock-ci-oidc/k-${SUF}"     # provider PK (kubernetes): the short-lived mapping
 AUD="ak-dtf-${SUF}"
 PROJ="dtf/app-${SUF}"                      # the repository claim M_A and M_B require
 SUB_MAIN="repo:${PROJ}:ref:refs/heads/main"
@@ -138,7 +139,12 @@ is_2xx "$code" && [ -n "$MA" ] || SETUP_ERR="${SETUP_ERR} mapping-A(${code}:$(sn
 MA_ACCOUNT_AT_CREATE="$(db "SELECT count(*) FROM users WHERE external_id = 'ci:${PA}:${MA}'")"
 code="$(mk_mapping "$PB" "{\"name\":\"cio-mb-${SUF}\",\"claim_filters\":${FILTERS}}")"; MB="$(jr '.id // empty')"
 is_2xx "$code" && [ -n "$MB" ] || SETUP_ERR="${SETUP_ERR} mapping-B(${code})"
-code="$(mk_mapping "$PA" "{\"name\":\"cio-ms-${SUF}\",\"claim_filters\":{\"repository\":\"dtf/short-${SUF}\"}}")"
+# The short-lived mapping lives on a kubernetes provider: since #5054 only that
+# type caps the minted token at the assertion's exp, which the #4663 own-token
+# case needs (every image caps a kubernetes, or pre-1.11 free-text, provider).
+code="$(mk_provider "cio-pk-${SUF}" "$ISS_K" "$AUD" kubernetes)"; PK="$(jr '.id // empty')"
+is_2xx "$code" && [ -n "$PK" ] || SETUP_ERR="${SETUP_ERR} provider-K(${code})"
+code="$(mk_mapping "$PK" "{\"name\":\"cio-ms-${SUF}\",\"claim_filters\":{\"repository\":\"dtf/short-${SUF}\"}}")"
 is_2xx "$code" || SETUP_ERR="${SETUP_ERR} mapping-short(${code})"
 if [ -n "$SETUP_ERR" ]; then infra_fail "setup failed:${SETUP_ERR}"; end_suite; fi
 echo "-- issuers ${ISS_A} ${ISS_B}; aud ${AUD}; PA=${PA} MA=${MA} PB=${PB} MB=${MB}; repos ${RA} ${RB} ${RG}"
@@ -155,7 +161,9 @@ note "exchange main: ${code} username=${U_MAIN} token_type=$(jr '.token_type') e
 [ "$code" = "200" ] && [ -n "$CT_MAIN" ] || gate "matching assertion answered ${code}: $(snip)"
 [ "$(jr '.token_type')" = "Bearer" ] || gate "token_type is '$(jr '.token_type')'"
 case "$U_MAIN" in ci-*) ;; *) gate "username '${U_MAIN}' is not a ci- service account";; esac
-{ [ -n "$EXP_IN" ] && [ "$EXP_IN" -ge 1 ] && [ "$EXP_IN" -le 300 ]; } || gate "expires_in=${EXP_IN}, expected 1..300 (capped at the assertion's exp)"
+# 1..300 up to 1.11.8 (capped at the assertion's exp), the configured TTL from
+# 1.11.9 (#5054, gated by ci-oidc-token-lifetime); never above 3600 on either.
+{ [ -n "$EXP_IN" ] && [ "$EXP_IN" -ge 1 ] && [ "$EXP_IN" -le 3600 ]; } || gate "expires_in=${EXP_IN}, expected 1..3600"
 code="$(req GET /api/v1/auth/me "$CT_MAIN")"
 U_MAIN_ID="$(jr '.id // empty')"
 [ "$code" = "200" ] && [ "$(jr '.username')" = "$U_MAIN" ] && [ "$(jr '.is_admin')" = "false" ] \
@@ -304,7 +312,7 @@ finish_case "an expired assertion buys an expires_in: 0 session"
 
 begin_test "FIX #4663: AK's own session token is refused once its exp has passed (no 60 s leeway)"
 reset_case
-code="$(xchg "$(jwt "$(claims "$ISS_A" "x" "dtf/short-${SUF}" 8)")")"
+code="$(xchg "$(jwt "$(claims "$ISS_K" "x" "dtf/short-${SUF}" 8)")")"
 ST="$(jr '.access_token // empty')"; st_exp="$(jr '.expires_in // empty')"
 note "assertion exp now+8: ${code} expires_in=${st_exp}"
 { [ "$code" = "200" ] && [ -n "$st_exp" ] && [ "$st_exp" -ge 1 ] && [ "$st_exp" -le 8 ]; } || gate "short exchange answered ${code} expires_in=${st_exp}, expected 200 and 1..8"
