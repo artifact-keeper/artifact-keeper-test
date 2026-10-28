@@ -1,0 +1,23 @@
+# DTF tier manifest: scan-proxy-duplicate-entries
+# Profile-set: filesystem + the mock-dup-entries upstream. LOCAL-ONLY: the
+# verdicts come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: the scan-on-proxy gate establishes what a proxied package is
+# from the package's own manifest, read by a reader that takes one entry. A
+# package archive with two entries at the manifest's path is read one way by
+# that reader and unpacked the other way by the scan extractor (and by some
+# clients), so the gate must not establish an identity for it: under
+# fail_closed it is withheld (423 scan_pending) and nothing is scanned or
+# recorded for its digest, the way an unreadable archive is treated. Covered
+# per format: npm (tgz), Maven (jar, second copy as ./META-INF/...), NuGet
+# (nupkg, one raw name twice), Cargo (crate) and conda (tar.bz2).
+#
+# The same packages with their manifest once are the controls: served 200
+# X-AK-Scan: clean on every image.
+#
+# Red: ak-backend:1.11.8. Green: the fixed main and 1.11.x line images.
+PROFILES="storage.filesystem upstreams.mock-dup-entries"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
