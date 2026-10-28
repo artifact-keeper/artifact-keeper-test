@@ -1,0 +1,30 @@
+# DTF tier manifest: conda-allowlist-hosted-members
+#   (artifact-keeper#5055; fixed in 1.11.9 and 1.12.0)
+# Profile-set: filesystem / single + upstreams=mock-conda (the conda-channel-types
+# tier's stdlib-python static conda channel on 172.16.<slot>.70; it publishes
+# dtfup-alpha 1.0 and 2.0 and dtfup-blocked 1.0 in noarch) + client=conda (a
+# real micromamba 2.0 client on the DTF network).
+#
+# THE BUG
+# #5055  The package allowlist of a virtual conda channel (#4576) filtered only
+#        what REMOTE members contributed. Hosted (local/staging) members passed
+#        through unfiltered in every index form and on downloads, so the
+#        channel served packages outside its list: anyone who could publish to
+#        a hosted member put a package on every channel containing it. Fixed:
+#        the list applies to every member by default, in repodata.json (plain,
+#        .zst, .bz2), current_repodata.json, channeldata.json, the CEP-16 shard
+#        index (main) and on downloads through the virtual; a hosted package
+#        the list does not admit is dropped and still owns its name (the
+#        upstream's records of that name stay out). A per-channel opt-out,
+#        `"scope": "remote_only"`, restores pass-through. Direct reads of the
+#        hosted repository are unchanged.
+#
+# RED image: ak-backend:1.11.8 (every FIX case). GREEN: 1.11.9 and 1.12.0.
+#
+# RATE_LIMIT_ENABLED=false: one admin login then ~40 authenticated calls back
+# to back. UPSTREAM_ALLOW_PRIVATE_IPS=true: the remote's upstream is the mock
+# on a private address (the profile also scopes AK_SSRF_ALLOW_PRIVATE_CIDRS).
+PROFILES="storage.filesystem upstreams.mock-conda client.conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
