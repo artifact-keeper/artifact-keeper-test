@@ -1,0 +1,33 @@
+# DTF tier manifest: ci-oidc-token-lifetime  (artifact-keeper#5054)
+# Profile-set: filesystem + sso.mock-ci-oidc (the stdlib-python CI OIDC issuer
+# of the ci-oidc-exchange tier: discovery and JWKS over TLS, RS256 assertions
+# with claims the oracle chooses on its http control port).
+#
+# THE BUG
+#   #5054  POST /api/v1/auth/ci/token capped the minted access token at the
+#          presented assertion's own exp (#3820). GitHub Actions ID tokens
+#          live about five minutes, so every token exchanged from GitHub
+#          Actions died after about five minutes whatever TTL was configured,
+#          and a longer build step failed with 401. Fixed: for every provider
+#          type but kubernetes the assertion only has to be valid at exchange
+#          time and the minted token lives AK's configured TTL (on 1.12.0 the
+#          provider's token_ttl_secs, default 900; on the 1.11 line the access
+#          token TTL), never more than 3600 s. kubernetes keeps the cap.
+#
+# THE GATES
+#   (CONTROL) every image: an assertion 300 s past exp and one 30 s past exp
+#     (inside the verifier's leeway) are refused with 401 and no token; a
+#     kubernetes provider's token still expires no later than its assertion;
+#     the exchange returns no refresh_token.
+#   (FIX #5054) RED on 1.11.8: a GitHub-shaped assertion (exp now+300) mints
+#     a token with expires_in and JWT exp above 300 s and at most 3600 s; a
+#     token exchanged from an assertion that expires 6 s later still works
+#     10 s later.
+#   GREEN on 1.11.9 and 1.12.0.
+#
+# The per-provider token_ttl_secs setting (1.12.0 only) is gated by the
+# separate tier ci-oidc-provider-token-ttl, so this one can run on the 1.11
+# line unchanged.
+PROFILES="storage.filesystem sso.mock-ci-oidc"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
