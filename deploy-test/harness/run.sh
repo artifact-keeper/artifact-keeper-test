@@ -514,6 +514,7 @@ case "$CMD" in
              rest-mutation-authz-1-11 token-repo-restriction generic-route-scan-gate index-metadata-cred-scoping \
              upstream-url-userinfo-redaction virtual-member-gates plugin-reload-ssrf http-edge-limits \
              admin-setup-gate plugins-disabled xff-authz-trust ci-oidc-exchange upload-slot-exhaustion \
+             ci-oidc-token-lifetime ci-oidc-provider-token-ttl \
              repo-mutation-authz migration-authz token-colon-scope ledger-triggers-authoritative quota-admission-o1 \
              redact-userinfo-leak nuget-cred-scoping rpm-p3-curation inline-scan-hosted-gate-2954 \
              inline-scan-fail-open-2954 inline-scan-proxy-pypi-2954 scan-verdict-dbversion \
