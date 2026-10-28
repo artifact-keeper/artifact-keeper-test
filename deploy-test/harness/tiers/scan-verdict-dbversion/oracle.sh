@@ -133,13 +133,18 @@ break_grype_and_restart() {
 }
 
 # Seed / overwrite a clean verdict for a digest at a given scanner_version.
+# The row carries components_cataloged = 1, as a real scan of a wheel does:
+# since artifact-keeper#3396 (1.11.9) a clean verdict that cataloged nothing
+# is never reused under fail_closed, so a row without a catalog would be
+# re-scanned whatever its scanner_version and the SAME-VERSION leg would no
+# longer test the version comparison.
 seed_clean_row() { # <digest> <scanner_version>
   docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
-    "INSERT INTO proxy_scan_results (checksum_sha256, scan_type, verdict, scanner_version)
-       VALUES ('$1','grype','clean','$2')
+    "INSERT INTO proxy_scan_results (checksum_sha256, scan_type, verdict, scanner_version, components_cataloged)
+       VALUES ('$1','grype','clean','$2',1)
      ON CONFLICT (checksum_sha256, scan_type) DO UPDATE
        SET verdict='clean', findings_count=0, critical_count=0, high_count=0,
-           medium_count=0, low_count=0, max_severity=NULL,
+           medium_count=0, low_count=0, max_severity=NULL, components_cataloged=1,
            scanner_version='$2', scanned_at=now();" >/dev/null 2>&1
 }
 
