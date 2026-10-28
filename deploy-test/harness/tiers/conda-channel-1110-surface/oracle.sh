@@ -22,11 +22,14 @@
 #   R    remote -> mock
 #   V    virtual {H, R}
 #   AL   virtual {H, R}, allowlist: dtfup-a* at >=2, dtfup-blocked on linux-64
+#        (default scope all_members: since 1.11.9 / artifact-keeper#5055 the
+#        list also filters H, so c11-keep and c11-nap are dropped too)
 #   AL2  virtual {R},    allowlist: dtfup-blocked only
 #   SV   private virtual {HP, HQ}; a service account holds read on SV and HP
 #        (not HQ) and a token whose repository_ids name SV only
 #
-# Every FIX case is RED on ak-backend:1.10.0 and GREEN on 1.11.0+; every
+# Every FIX case is RED on ak-backend:1.10.0 and GREEN on 1.11.0+ (the AL
+# repodata case on 1.11.9+, where #5055 filters hosted members); every
 # CONTROL holds on both. See the manifest for the bugs.
 # =============================================================================
 set -uo pipefail
@@ -417,17 +420,21 @@ fi
 # =============================================================================
 # #4576 allowlist on the index
 # =============================================================================
-begin_test "FIX #4576: glob + version-spec + subdirs entries filter the remote records of repodata.json and .bz2, report X-AK-Allowlist-Dropped, and leave hosted records alone"
+# Since artifact-keeper#5055 (1.11.9) the default scope (all_members) filters
+# hosted members too: the unlisted hosted c11-keep and c11-nap are dropped with
+# the two non-admitted remote records. The remote_only opt-out that keeps
+# hosted records is covered by conda-allowlist-hosted-members.
+begin_test "FIX #4576: glob + version-spec + subdirs entries filter repodata.json and .bz2 and report X-AK-Allowlist-Dropped (hosted members filtered too, #5055)"
 st="$(hget "/conda/${AL}/noarch/repodata.json" "$WORK/al_rd.json")"
 hget "/conda/${AL}/noarch/repodata.json.bz2" "$WORK/al_rd.bz2" >/dev/null
 bzip2 -dc "$WORK/al_rd.bz2" > "$WORK/al_rd_bz2.json" 2>/dev/null
 dropped="$(hdr "$WORK/al_rd.json" X-AK-Allowlist-Dropped)"
-if [ "$AL_SETUP" = "200" ] && [ "$st" = "200" ] && [ "$dropped" = "2" ] \
-   && jq -e --arg a2 "$UP_ALPHA2" --arg k "$KEEP" --arg n "$NAP" "(.packages | keys) == ([\$a2, \$k, \$n] | sort)" "$WORK/al_rd.json" >/dev/null 2>&1 \
-   && jq -e --arg a2 "$UP_ALPHA2" --arg k "$KEEP" --arg n "$NAP" "(.packages | keys) == ([\$a2, \$k, \$n] | sort)" "$WORK/al_rd_bz2.json" >/dev/null 2>&1; then
+if [ "$AL_SETUP" = "200" ] && [ "$st" = "200" ] && [ "$dropped" = "4" ] \
+   && jq -e --arg a2 "$UP_ALPHA2" "(.packages | keys) == [\$a2]" "$WORK/al_rd.json" >/dev/null 2>&1 \
+   && jq -e --arg a2 "$UP_ALPHA2" "(.packages | keys) == [\$a2]" "$WORK/al_rd_bz2.json" >/dev/null 2>&1; then
   pass
 else
-  fail "allowlist entries not applied (want ${UP_ALPHA2} + hosted ${KEEP}/${NAP}, X-AK-Allowlist-Dropped: 2)" \
+  fail "allowlist entries not applied (want only ${UP_ALPHA2}; hosted ${KEEP}/${NAP} and two remote records dropped, X-AK-Allowlist-Dropped: 4)" \
     "PUT HTTP ${AL_SETUP}; GET HTTP ${st}; header='${dropped}'; json keys=$(keys_of "$WORK/al_rd.json"); bz2 keys=$(keys_of "$WORK/al_rd_bz2.json")"
 fi
 
