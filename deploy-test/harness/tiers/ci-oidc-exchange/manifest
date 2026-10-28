@@ -43,7 +43,8 @@
 #
 # THE GATES
 #   (CONTROL) every image: a matching assertion exchanges (Bearer, ci- account,
-#     expires_in capped at the assertion's exp, /auth/me works); a wrong
+#     expires_in 1..3600, /auth/me works; since #5054 a non-kubernetes token
+#     is no longer capped at the assertion's exp, see ci-oidc-token-lifetime); a wrong
 #     audience, wrong subject, wrong repository claim, a signature by a key the
 #     JWKS does not publish, an assertion expired 300 s ago and a missing
 #     header are 401, an unknown issuer is 404 naming it; an nbf 20 s ahead
@@ -58,6 +59,9 @@
 # carries such an audience (it needs a provider written before an upgrade, or
 # by SQL, and a backend restart), and the #4117 503 when a reconcile fails
 # during an exchange (needs a DB fault mid-request).
+#
+# The #4663 own-token case exchanges through a kubernetes-type provider, the
+# only type whose token still expires with its assertion after #5054.
 #
 # RATE_LIMIT_ENABLED=false: ~60 calls back to back. The oracle sleeps 13 s once
 # (the #4663 own-token expiry).

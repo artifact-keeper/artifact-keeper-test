@@ -1,0 +1,21 @@
+# DTF tier manifest: ci-oidc-provider-token-ttl  (artifact-keeper#5054, 1.12.0)
+# Profile-set: filesystem + sso.mock-ci-oidc (see ci-oidc-exchange).
+#
+# THE FEATURE
+#   #5054  A CI OIDC exchange's minted token lives the provider's
+#          token_ttl_secs (migration 307): default 900, 60..3600, set on
+#          POST/PUT /api/v1/admin/ci-oidc; anything outside is 400 and writes
+#          nothing. The 1.11 line has no such column (its fix uses the global
+#          access-token TTL), so this tier is main-only; the line's gate runs
+#          ci-oidc-token-lifetime.
+#
+# THE GATES
+#   (FIX #5054) RED on 1.11.8 and on the 1.11 line: a new provider reports
+#     token_ttl_secs 900 and its exchange's expires_in is about 900; one created
+#     with 1800 mints about 1800; 59, 3601 and 86400 are refused with 400 on
+#     create (no row) and on update (stored value kept); PUT 120 mints about
+#     120.
+#   GREEN on 1.12.0.
+PROFILES="storage.filesystem sso.mock-ci-oidc"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
