@@ -3413,8 +3413,22 @@ jobs:
           # client.conda on the dtf network, under a minute). Red on 1.11.8,
           # green on the fix. The fix is on the line, so this tier is
           # cherry-picked onto this repo's release/1.11.x. Required.
+          # The group also carries a CI OIDC exchange minting a token that
+          # lives the configured TTL, not the CI assertion's remaining
+          # lifetime (artifact-keeper#5054, fixed by #5057 on main and #5060
+          # on release/1.11.x; artifact-keeper-test#671, #676;
+          # ci-oidc-token-lifetime, storage.filesystem + sso.mock-ci-oidc on
+          # 172.16.<slot>.61, about 20 s, after the conda tier's mock is
+          # down). Red on 1.11.8, green on the fix, on the line too.
           - group: fixes-1.11.9
-            tiers: conda-allowlist-hosted-members
+            tiers: conda-allowlist-hosted-members ci-oidc-token-lifetime
+          # 1.12.0 feature (artifact-keeper#5054): the per-provider
+          # token_ttl_secs (ci-oidc-provider-token-ttl, storage.filesystem +
+          # sso.mock-ci-oidc on 172.16.<slot>.61, a few seconds). FEATURE
+          # gate: red on every 1.11.x image, never cherry-picked onto
+          # release/1.11.x, NOT ON THIS LINE on a 1.11.x candidate.
+          - group: features-1.12.0-ci-oidc
+            tiers: ci-oidc-provider-token-ttl
           # 1.12.0 feature coverage (artifact-keeper-test#624, #625, tracked
           # in artifact-keeper#4932): the paged GET /groups/{id}/members of
           # an LDAP-synced group (#4027, fixed by #4821; storage.filesystem,
