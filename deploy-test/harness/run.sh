@@ -488,7 +488,12 @@ case "$CMD" in
     # repository delete as a background job (#4311), conda JLAP patches
     # (#4175), synthesised shards for conda remotes (#4178) and OCI reads by
     # digest keyed on oci_manifests (#1683). Then repository grade status
-    # and coverage in place of the F floor (#4336).
+    # and coverage in place of the F floor (#4336). Batch 5: ISO live media
+    # inventoried through their squashfs rootfs (#1966), conda plain
+    # repodata fallback on 401/403 probes (#4929), Composer Virtuals over
+    # Packagist-style Remote members (#4951) and, for 1.11.8, a proxy
+    # rescan that cannot grade a package keeping the stored verdict
+    # (GHSA-9vgh-8jfp-78ff, #5030 on main, #5031 on the line).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -558,7 +563,10 @@ case "$CMD" in
              conda-jlap-incremental conda-remote-shards-synth \
              oci-last-tag-delete-by-digest oci-manifests-reconcile-populated \
              chunked-upload-admission \
-             scan-grade-status-coverage; do
+             scan-grade-status-coverage \
+             scan-iso-rootfs-inventory conda-remote-403-probe-fallback \
+             composer-virtual-packagist-member \
+             proxy-rescan-verdict; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
