@@ -552,6 +552,15 @@ else
 Before #3925 RPM was a file-copy-only format and the migration provisioned a generic repository."
 fi
 
+# Since 1.12.0 hosted RPM repodata is precomputed in the background a few
+# seconds after the last write (artifact-keeper#4544). Ask for the build and
+# wait for it, so the read below sees every migrated package. Best effort:
+# an image without the endpoint (404) renders repodata on request, which is
+# already current.
+RB_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${CURLF[@]}" --max-time 330 -X POST \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "${BASE_URL}/api/v1/repositories/${RPM}/rpm/repodata/rebuild?wait=true" 2>/dev/null || echo 000)"
+echo "  rpm repodata rebuild?wait=true -> HTTP ${RB_CODE} (404 on images without precomputed repodata)"
 PRIM_CODE="$(fetch "/rpm/${RPM}/repodata/primary.xml.gz" "${WORK}/primary.xml.gz")"
 gunzip -c "${WORK}/primary.xml.gz" > "${WORK}/primary.xml" 2>/dev/null || true
 # The akdep-app <package> block alone.
