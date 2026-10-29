@@ -1,0 +1,70 @@
+# =============================================================================
+# profiles/upstreams.mock-dup-entries.yml - npm / Maven / NuGet / Cargo / conda
+# upstream whose packages carry their manifest twice, for the
+# scan-proxy-duplicate-entries tier
+# =============================================================================
+# Adds `mock-dup`, a stdlib-only Python HTTP server that serves, per format,
+# one package whose archive holds two entries at the manifest's path and one
+# ordinary control package, all built at start-up with fixed timestamps. See
+# harness/tiers/scan-proxy-duplicate-entries/fixtures/mock_dup_entries.py.
+#
+# The overlay:
+#   * ADDS `mock-dup` at 172.16.<slot>.73 on a per-slot 172.16.<slot>.0/24
+#     subnet; AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 lets a Remote point at
+#     it (the tier manifest also sets UPSTREAM_ALLOW_PRIVATE_IPS=true).
+#   * PUBLISHES the mock's control endpoints (/__sha256) on
+#     127.0.0.1:${TRIVY_PORT} (8250+N, the spare per-slot port), so this
+#     profile cannot be combined with another that publishes TRIVY_PORT.
+#   * PATCHES backend onto that network and pins the json-file log driver (the
+#     oracle greps a backend warn line from `docker logs`).
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT.
+# =============================================================================
+services:
+  mock-dup:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-dup
+    command: ["python3", "/app/mock_dup_entries.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_SELF: http://172.16.${DTF_SLOT}.73
+    volumes:
+      - "${DTF_DIR}/harness/tiers/scan-proxy-duplicate-entries/fixtures/mock_dup_entries.py:/app/mock_dup_entries.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockdup:
+        ipv4_address: 172.16.${DTF_SLOT}.73
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-dup:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockdup: {}
+
+networks:
+  mockdup:
+    name: ak-dtf${DTF_SLOT}-mockdup
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

@@ -373,7 +373,8 @@ case "$CMD" in
              pypi-age-gate-pep440-lookup \
              replication-labels-and-late-metadata oci-blob-completion-retry \
              chunked-upload-admission proxy-rescan-verdict \
-             conda-allowlist-hosted-members; do
+             conda-allowlist-hosted-members \
+             proxy-rescan-cross-repo scan-proxy-duplicate-entries; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
