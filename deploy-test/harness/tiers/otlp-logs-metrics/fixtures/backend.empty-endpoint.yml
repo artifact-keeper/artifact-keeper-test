@@ -1,0 +1,7 @@
+# Tier-local override for otlp-logs-metrics, leg E (#4931 item 3): the
+# endpoint variable set but empty must count as unset (OpenTelemetry off);
+# before 1.12.0 an empty string turned the OTel path on.
+services:
+  backend:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""

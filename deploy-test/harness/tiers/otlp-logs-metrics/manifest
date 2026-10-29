@@ -1,4 +1,5 @@
-# DTF tier manifest: otlp-logs-metrics  (artifact-keeper#4337, fixed by #4820; 1.12.0)
+# DTF tier manifest: otlp-logs-metrics  (artifact-keeper#4337, fixed by #4820;
+# #4931 follow-ups fixed by #4959 and #5018; 1.12.0)
 # Profile-set: filesystem + telemetry.otlp-sink (OTLP/HTTP export, http/protobuf,
 # to the stdlib sink harness/tiers/deps-1.12.0-controls/fixtures/otlp_sink.py,
 # which counts POSTs per path and keeps their raw bodies for a grep, optionally
@@ -48,8 +49,30 @@
 #             25 s with a clean exit (not SIGKILL) and no panic is logged.
 #             Both images (1.11.5 exports spans only, which already fail
 #             soft); they guard the new exporters against a regression.
+#   (FIX #4931, #5018; RED on 1.11.9, which exports no log records)
+#             fields    the exported "Request completed" records carry the
+#                       request's own method and uri attributes (#5018 copies
+#                       them from the request because the log layer exports
+#                       event fields only): method=GET, and the exact uri of at
+#                       least 8 of the 10 requests. Matched as protobuf
+#                       KeyValue bytes, so a span field cannot satisfy it.
+#             redacted  one request with ?page=1&token=<random> is exported as
+#                       uri=<path>?page=1&token=[REDACTED]; the random value
+#                       is in no /v1/logs body.
+#             member    a go.mod miss through a Go virtual with one local
+#                       member exports artifact_keeper.virtual.member_count as
+#                       the integer 1, not the string "1".
+# Leg B, signals on, OTEL_EXPORTER_OTLP_ENDPOINT="not a url" (#4931 item 2,
+#   fixed by #4959; fixtures/backend.bad-endpoint.yml).
+#   (FIX)     /readyz answers, admin login works, no panic, and stderr says
+#             "OTLP span export disabled". RED on 1.11.9 (the span exporter
+#             panics at startup).
+# Leg E, OTEL_EXPORTER_OTLP_ENDPOINT="" (#4931 item 3, fixed by #4959;
+#   fixtures/backend.empty-endpoint.yml).
+#   (FIX)     /readyz answers, no panic, and "OpenTelemetry tracing enabled"
+#             does not print. RED on 1.11.9 (an empty value turns OTel on).
 #
-# RATE_LIMIT_ENABLED=false: three logins across the recreates.
+# RATE_LIMIT_ENABLED=false: five logins across the recreates.
 PROFILES="storage.filesystem telemetry.otlp-sink"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
