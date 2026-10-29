@@ -1,0 +1,30 @@
+# DTF tier manifest: repository-patch-clears-null  (artifact-keeper#4729, fixed by #5019; 1.12.0)
+# Profile-set: filesystem / single. Pure HTTP plus DB truth (docker exec psql)
+# on one local generic repository. No mocks, no egress, no extra subnet.
+#
+# THE BUG
+# PATCH /api/v1/repositories/{key} with {"description": null} or
+# {"quota_bytes": null} answered 200 and changed nothing: both request fields
+# were bare Option<_>, so an explicit null deserialized like an omitted field
+# and the service's COALESCE($n, column) UPDATE kept the stored value. #5019
+# gives both the three-way semantics project_id already has: omit to leave
+# unchanged, null to clear (a NULL quota means unlimited), a value to set.
+#
+# THE GATES
+#   (CONTROL) PATCH with values sets description and quota_bytes (response and
+#             row); a PATCH that omits both (it only renames) leaves them
+#             untouched; with a 1000-byte quota a 600-byte upload is admitted
+#             and a second 600-byte upload is refused (413 at the session or
+#             507 at complete). Green on both images.
+#   (FIX)     {"quota_bytes": null} clears the quota (response and row) while
+#             the omitted description stays; the 600-byte upload refused
+#             before is then admitted. RED on 1.11.9 (quota stays 1000, upload
+#             still refused).
+#   (FIX)     {"description": null} clears the description (response and row)
+#             while the omitted quota_bytes stays. RED on 1.11.9.
+#   (FIX)     both fields null in one PATCH clear both. RED on 1.11.9.
+#
+# RATE_LIMIT_ENABLED=false: one login plus about 20 back-to-back API calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
