@@ -1,0 +1,31 @@
+# DTF tier manifest: proxy-rescan-cross-repo
+# Profile-set: filesystem + the mock-scan-formats upstream. LOCAL-ONLY: the
+# verdicts come from the backend image's bundled Grype and its pre-seeded
+# vulnerability DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: proxy scan verdicts are keyed by content digest and shared
+# across repositories, so the decision "a zero-catalog scan cannot grade this"
+# must not depend on the FORMAT OF THE REPOSITORY doing the rescan. A generic
+# Remote proxies the exact bytes of a package, and its rescan runs without a
+# coordinate and without a catalog requirement. On an affected build that
+# records a clean, zero-component verdict for the digest, and a later
+# fail_closed package pull of the same digest reuses it and is served instead
+# of refused. The gate must refuse that reuse (403) and the generic rescan of
+# a package the engine cannot grade must leave no reusable clean row.
+#
+# On main the same holds for a pull whose identity cannot be established
+# (an RPM Remote asked for install media, or for an RPM with no dist tag):
+# fail_closed withholds it (423), and a generic rescan of the same bytes must
+# not lift that. RPM does not scan on proxy on the 1.11 line, so those cases
+# are not-applicable there.
+#
+# A self-cataloging jar (a rescan grades it vulnerable again), a fail_closed
+# package pull that was never poisoned (403) and the RPM pulls before any
+# rescan (423) are the controls; they hold on every image.
+#
+# Red: ak-backend:1.11.8 (NuGet case) and main before the fix (RPM cases).
+# Green: the fixed main and line images.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
