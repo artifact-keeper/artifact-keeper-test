@@ -1,0 +1,7 @@
+# Tier-local override for otlp-logs-metrics, leg B (#4931 item 2): an
+# unparseable OTLP endpoint. Each exporter must report it on stderr and turn
+# its signal off; before 1.12.0 the span exporter panicked at startup.
+services:
+  backend:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "not a url"
