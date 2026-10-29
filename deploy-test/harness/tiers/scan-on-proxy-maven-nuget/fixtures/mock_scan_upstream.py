@@ -651,6 +651,11 @@ add_rpm("rpm", "openssl-libs", "3.0.7", "17.el9_2", "x86_64", epoch=1,
 add_rpm("rpm", "dtf-scanclean", "1.0", "1.el9", "noarch")
 add_rpm("rpm", "dtf-scanliar", "2.0", "1.el9", "noarch", declared="1.0")
 add_rpm("rpm", "dtf-notag", "1.0", "1", "noarch")
+# A non-package file in the yum tree (install media): an RPM Remote cannot
+# establish what it is served as; no scanner catalogs anything in it.
+FILES["rpm/9/BaseOS/x86_64/os/images/boot.iso"] = b"".join(
+    b"dtf install media block %06d\n" % i for i in range(2048)
+)
 FILES["rpm/9/BaseOS/x86_64/os/repodata/repomd.xml"] = (
     b'<?xml version="1.0" encoding="UTF-8"?>\n<repomd xmlns="http://linux.duke.edu/metadata/repo">'
     b"<revision>1577836800</revision></repomd>\n"
