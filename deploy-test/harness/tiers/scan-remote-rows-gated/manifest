@@ -1,0 +1,27 @@
+# DTF tier manifest: scan-remote-rows-gated  (artifact-keeper 1.12.0:
+# #4514 plan item A3, backend PR #5071)
+# Profile-set: filesystem + the mock-scan-formats upstream (Go, RubyGems,
+# Composer, Pub, CocoaPods and Swift fixtures with known identities).
+# LOCAL-ONLY: verdicts come from the backend image's bundled Grype and its
+# pre-seeded DB (no scanner sidecar, no OSV, no internet).
+#
+# WHAT IT GUARDS: a Remote can hold `artifacts` rows of its own (replication,
+# a publish into the remote, rows recorded before proxied content stopped
+# being stored as rows). Before #5071 the Go, RubyGems, Composer, Pub,
+# CocoaPods and Swift routes served such a row from storage without the scan
+# gate, even on a fail_closed Remote that scans on proxy. Now the stored bytes
+# go through the gate: a vulnerable row is 403 scan_blocked, a row whose
+# archive does not back the requested coordinate is 423 under fail_closed,
+# and a clean row is served 200 with X-AK-Scan: clean.
+#
+# The rows are seeded by pulling each fixture through an unscanned Remote and
+# recording an artifacts row in the target Remotes that points at that cached
+# blob (proxy-cache keys resolve at the shared storage root). The target
+# Remotes' upstream is a path the mock does not serve, and the oracle checks
+# it got no request, so every answer below comes from the stored row.
+#
+# Red: ak-backend:1.11.9. Green: an image carrying artifact-keeper#5071.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
