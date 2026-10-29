@@ -1,0 +1,16 @@
+# DTF tier manifest: rpm-hosted-repodata-precomputed
+# Profile-set: filesystem / single + client.dnf (a real Fedora RPM client).
+#
+# artifact-keeper#4544 (#5067, #5069, #5073): hosted RPM repodata is built in
+# the background and served from storage. The oracle publishes two RPMs (the
+# second depends on the first), calls `rebuild?wait=true` (read-your-writes
+# for CI), checks that the served repomd.xml is the stored revision, runs a
+# real `dnf makecache` + `dnf install` through the client, and checks the
+# stored bytes equal the on-request render (`repodata_mode: on_request`) of
+# the same content. Red on 1.11.9 (the rebuild endpoint does not exist: 404).
+#
+# RATE_LIMIT_ENABLED=false: admin login, uploads and back-to-back metadata
+# fetches through one admin user.
+PROFILES="storage.filesystem client.dnf"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
