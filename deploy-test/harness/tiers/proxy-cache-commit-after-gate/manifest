@@ -1,0 +1,25 @@
+# DTF tier manifest: proxy-cache-commit-after-gate  (artifact-keeper 1.12.0:
+# #4514 plan item A2 as adopted, "option (c)", backend PR #5070)
+# Profile-set: filesystem + the mock-scan-formats upstream (Maven, NuGet and Go
+# fixtures with known identities; the mock counts every GET). LOCAL-ONLY:
+# verdicts come from the backend image's bundled Grype and its pre-seeded DB.
+#
+# WHAT IT GUARDS: before #5070 a proxied file was committed to the proxy
+# cache before the scan gate ran, so a body the gate withheld under
+# fail_closed as inconclusive (423 scan_pending) stayed in the cache: a
+# catalog row, a listing entry, and later pulls answered from it without
+# going upstream. Now the commit of a fresh fill waits for the gate: an
+# inconclusive body is dropped (no catalog row, no listing entry, the next
+# pull fetches it from the upstream again), while a vulnerable body is still
+# committed (403 scan_blocked; it stays cached, listed in
+# /api/v1/security/proxy-blocked and the policy-blocks queue, and the next
+# pull is refused from the stored verdict without an upstream fetch).
+#
+# Not covered: the #5068 redirect checks (presigned redirects need an object
+# store backend; this tier runs on the filesystem profile).
+#
+# Red: ak-backend:1.11.9. Green: an image carrying artifact-keeper#5070.
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
