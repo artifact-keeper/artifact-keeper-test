@@ -3420,8 +3420,20 @@ jobs:
           # ci-oidc-token-lifetime, storage.filesystem + sso.mock-ci-oidc on
           # 172.16.<slot>.61, about 20 s, after the conda tier's mock is
           # down). Red on 1.11.8, green on the fix, on the line too.
+          # It also carries two scan-on-proxy checks (artifact-keeper-test
+          # #681, #682), both storage.filesystem + bundled Grype, seconds
+          # each. proxy-rescan-cross-repo: a clean, zero-component verdict a
+          # generic Remote rescan records for a package digest does not serve
+          # a later fail_closed package pull of that digest (#5043 on main,
+          # #5048 on release/1.11.x; upstreams.mock-scan-formats on
+          # 172.16.<slot>.72; its RPM cases are not applicable on the line).
+          # scan-proxy-duplicate-entries: a package archive with two entries
+          # at its manifest path is withheld (423) under fail_closed in npm,
+          # Maven, NuGet, Cargo and conda (#5050 on main, #5052 on the line;
+          # upstreams.mock-dup-entries on 172.16.<slot>.73). Both red on
+          # 1.11.8, green on 1.11.9, cherry-picked onto release/1.11.x.
           - group: fixes-1.11.9
-            tiers: conda-allowlist-hosted-members ci-oidc-token-lifetime
+            tiers: conda-allowlist-hosted-members ci-oidc-token-lifetime proxy-rescan-cross-repo scan-proxy-duplicate-entries
           # 1.12.0 feature (artifact-keeper#5054): the per-provider
           # token_ttl_secs (ci-oidc-provider-token-ttl, storage.filesystem +
           # sso.mock-ci-oidc on 172.16.<slot>.61, a few seconds). FEATURE
