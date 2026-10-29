@@ -217,6 +217,10 @@ audit_phase(){ # <action> <phase>
   psql_q "SELECT count(*) FROM audit_log WHERE action='$1' AND details->>'phase'='$2';" | tr -d '[:space:]'
 }
 audit_count(){ psql_q "SELECT count(*) FROM audit_log WHERE action='$1';" | tr -d '[:space:]'; }
+# One row per finished call: since artifact-keeper#5078 a repair call writes a
+# `started` row and then one `completed`/`failed`/`cancelled` row; older images
+# wrote a single row with no `phase`, which counts as finished.
+audit_done_count(){ psql_q "SELECT count(*) FROM audit_log WHERE action='$1' AND COALESCE(details->>'phase','completed')='completed';" | tr -d '[:space:]'; }
 mkfile(){ head -c "$2" /dev/urandom > "$1"; }
 
 # =============================================================================
@@ -616,10 +620,10 @@ else
   RC="$(ghost_rows "$GHOST_PATH")"; [ "$RC" = "1" ] || fail_g "ghost has $RC rows after two runs (want 1)"
   AC=""
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    AC="$(audit_count STORAGE_REINDEX_RUN)"; [ "${AC:-0}" -ge 3 ] 2>/dev/null && break; sleep 1
+    AC="$(audit_done_count STORAGE_REINDEX_RUN)"; [ "${AC:-0}" -ge 3 ] 2>/dev/null && break; sleep 1
   done
-  note "audit_log STORAGE_REINDEX_RUN rows: ${AC:-?}"
-  [ "${AC:-0}" -ge 3 ] 2>/dev/null || fail_g "reindex runs not audited (${AC:-0} rows)"
+  note "audit_log STORAGE_REINDEX_RUN rows: total=$(audit_count STORAGE_REINDEX_RUN) completed=${AC:-?}"
+  [ "${AC:-0}" -ge 3 ] 2>/dev/null || fail_g "reindex runs not audited (${AC:-0} completed rows)"
 fi
 finish_case "ghost-object reindex missing or wrong"
 
