@@ -216,6 +216,8 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 198 | **A virtual conda channel's allowlist applies to its hosted members** - #5055 (fixed by #5058 on main and #5059 on `release/1.11.x`, 1.11.9) | filesystem + `upstreams.mock-conda` (`172.16.<slot>.70`) + `client.conda` (a real micromamba 2.0 client on the dtf network) | with an allowlist admitting `dtfal-listed` and `dtfup-blocked`, the virtual's `repodata.json`, `.zst`, `.bz2`, `current_repodata.json` and `channeldata.json` omit the hosted `dtfal-hidden`, its download through the virtual is a 404 byte-identical to an absent package, micromamba cannot resolve it, and the unlisted hosted `dtfup-alpha 0.5` still owns its name (no upstream record either); `"scope": "remote_only"` restores hosted pass-through at once and micromamba installs `dtfal-hidden`; a `PUT` without `scope` keeps the stored scope; switching back and widening the list take effect at once; controls: the listed hosted package downloads and installs, direct reads of the hosted repository are unchanged, deleting the list restores the unfiltered channel | **conda-allowlist-hosted-members** | **COVERED** (#672, `fixes-1.11.9`): FIX gate, green 20/20 on the main fix (`7d1e7c13` content) and on the `release/1.11.x` backport; red on 1.11.8 (9 pass / 11 fail: the hidden hosted package in every index form and downloadable, micromamba installs it, `scope` refused 400) |
 | 199 | **A CI OIDC exchange mints a token living the configured TTL, not the CI assertion's remaining lifetime** - #5054 (fixed by #5057, 1.12.0; line backport #5060, 1.11.9) | filesystem + `sso.mock-ci-oidc` (`172.16.<slot>.61`) | a GitHub-shaped assertion with 300 s left mints a token above 300 s and at most 3600 s; a token from an assertion expiring in 6 s works 10 s later; expired assertions are 401; a `kubernetes` provider keeps the cap; no refresh token | **ci-oidc-token-lifetime** | **COVERED** (#671, `fixes-1.11.9`, line #676) - red on 1.11.8 (4 pass / 2 fail), green on the fix (6/6) |
 | 200 | **Per-provider CI OIDC token TTL** - #5054 (fixed by #5057, 1.12.0) | filesystem + `sso.mock-ci-oidc` (`172.16.<slot>.61`) | `token_ttl_secs` defaults to 900 and is the minted lifetime; 59, 3601 and 86400 are 400 on create and update; an update takes effect on the next exchange | **ci-oidc-provider-token-ttl** | **COVERED** (#671, `features-1.12.0-ci-oidc`, FEATURE gate, never on release/1.11.x) - red on 1.11.8 (1 pass / 4 fail), green on the fix (5/5) |
+| 201 | **A cross-repository rescan that graded no components does not lift a fail_closed pull** - fixed by #5043 on main and #5048 on `release/1.11.x`, 1.11.9 | filesystem + `upstreams.mock-scan-formats` (`172.16.<slot>.72`; verdicts from the backend image's bundled Grype) | a non-admin writer proxies the Newtonsoft.Json 12.0.1 `.nupkg` through a generic Remote and rescans it; the first fail_closed NuGet pull of the same digest is then 403 and the stored verdict `vulnerable`; a clean, zero-component row already stored for a jar's digest does not serve a fail_closed Maven pull of it (403); where RPM scans on proxy (main), fail_closed RPM pulls of install media and of an RPM with no dist tag stay 423 after a generic rescan of the same bytes; controls: no row before the first pull, the generic proxy serves the bytes, an untouched fail_closed log4j-core 2.14.1 pull is 403 `vulnerable` and its generic rescan grades it `vulnerable` again, RPM pulls before any rescan are 423 with no row | **proxy-rescan-cross-repo** | **COVERED** (#681, `fixes-1.11.9`): FIX gate, green on 1.11.9 (9 pass, 5 RPM cases not applicable on the line); red on 1.11.8 (6 pass / 3 fail: the generic rescan 200 `clean` with `package_count` 0, the NuGet pull 200 `X-AK-Scan: clean`, the pre-seeded row serves the Maven pull) |
+| 202 | **A package archive with two entries at its manifest path is withheld under fail_closed** - fixed by #5050 on main and #5052 on `release/1.11.x`, 1.11.9 | filesystem + `upstreams.mock-dup-entries` (`172.16.<slot>.73`, archives built at start-up; verdicts from the backend image's bundled Grype) | for npm, Maven, NuGet, Cargo and conda through a fail_closed scan-on-proxy Remote, `dtf-dup` 1.0.0 (manifest twice, one copy naming another package) is 423 `scan_pending` and leaves no `proxy_scan_results` row; control: `dtf-single` 1.0.0 (manifest once) is 200 `X-AK-Scan: clean` | **scan-proxy-duplicate-entries** | **COVERED** (#682, `fixes-1.11.9`): FIX gate, green 17/17 on 1.11.9, on the main fix and on the line backport; red on 1.11.8 (7 pass / 10 fail: every duplicated package 200 `clean` with a verdict row, every control passes) |
 
 ## Consolidated status (this checkpoint)
 
@@ -539,7 +541,7 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   candidate runs the line's older copy of row 124 and skips rows 161 and 164 as NOT
   ON THIS LINE.
 
-## 1.11.9 fix-coverage status (row 198, artifact-keeper-test#672)
+## 1.11.9 fix-coverage status (rows 198, 201, 202, artifact-keeper-test#672, #681, #682)
 
 - **`conda-allowlist-hosted-members`** (row 198) covers #5055: a virtual
   conda channel's package allowlist filtered only remote members, so hosted
@@ -552,6 +554,20 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   line, so this tier is cherry-picked onto the test repo's
   `release/1.11.x`; a 1.11.x candidate older than 1.11.9 is red on this
   group.
+- **`proxy-rescan-cross-repo`** (row 201, #681) covers #5043 / #5048: proxy
+  scan verdicts are keyed by digest and shared across repositories, and a
+  generic Remote's rescan of a package's bytes recorded a clean,
+  zero-component verdict that a later fail_closed package pull of the same
+  digest reused. FIX gate: red on 1.11.8 (6 pass / 3 fail), green on 1.11.9
+  (9 pass, its 5 RPM cases not applicable where RPM does not scan on proxy).
+- **`scan-proxy-duplicate-entries`** (row 202, #682) covers #5050 / #5052:
+  the scan identity check and the archive extractor read a package with two
+  entries at its manifest path differently. Such an archive is now withheld
+  (423) under fail_closed with nothing recorded. FIX gate: red on 1.11.8
+  (7 pass / 10 fail), green 17/17 on 1.11.9.
+- **Wiring:** both join `fixes-1.11.9` (four tiers). Both fixes are on the
+  line, so both tiers are cherry-picked onto the test repo's
+  `release/1.11.x`.
 
 ## 1.11.8 fix-coverage status (rows 192, 196, artifact-keeper-test#663, #668)
 
