@@ -40,12 +40,15 @@ NEXUS_FIXTURES_FILE="${NEXUS_STATE_DIR}/fixtures.json"
 mkdir -p "${NEXUS_STATE_DIR}" 2>/dev/null || true
 
 # --- skopeo (missing on host -> run containerized, host network) ------------
-# PINNED BY DIGEST (v1.22.2, the bytes `latest` has pointed at since
-# 2026-05-31). This is a third-party image fetched from quay.io at gate time;
-# a floating tag makes a release gate non-deterministic for no benefit, and
-# every other image the DTF stands up is already pinned (the backend by
-# candidate digest, Nexus at sonatype/nexus3:3.90.4@sha256:...).
-SKOPEO_IMAGE="${SKOPEO_IMAGE:-quay.io/skopeo/stable:v1.22.2@sha256:c7d3c512612f52805023cd38351081dad7e2729fc13d14b701e47c7c8bdd6615}"
+# PINNED BY DIGEST, to a `-immutable` tag. This is a third-party image fetched
+# from quay.io at gate time; a floating tag makes a release gate
+# non-deterministic for no benefit, and every other image the DTF stands up is
+# already pinned (the backend by candidate digest, Nexus at
+# sonatype/nexus3:3.90.4@sha256:...).
+# Use only `vX.Y.Z-immutable` here. Upstream rebuilds its plain version tags
+# (vX.Y.Z, vX.Y, latest) and quay then drops the replaced digest, so a digest
+# taken from one of those tags stops pulling with `manifest unknown`.
+SKOPEO_IMAGE="${SKOPEO_IMAGE:-quay.io/skopeo/stable:v1.22.3-immutable@sha256:c0ee1f4edca5c01cb8d5611124f92f3cc47196ecab68aee5d0f90834e00574d5}"
 skopeo() { docker run --rm --network host "${SKOPEO_IMAGE}" "$@"; }
 
 log()  { printf '\033[36m[dtf-migration]\033[0m %s\n' "$*" >&2; }
