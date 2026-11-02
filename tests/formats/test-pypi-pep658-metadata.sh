@@ -162,7 +162,7 @@ begin_test "Fetch wheel .metadata sibling URL"
 # The wheel anchor href in the simple index can be relative; resolve it
 # against PYPI_URL/simple/<name>/.
 WHEEL_HREF=$(grep -oE "href=\"[^\"]*${WHEEL_BASENAME}[^\"]*\"" "$SIMPLE_HTML" \
-  | head -n1 | sed -E 's/^href="([^"]+)".*/\1/' | sed -E 's/#.*//')
+  | head -n1 | sed -E 's/^href="([^"]+)".*/\1/' | sed -E 's/#.*//') || WHEEL_HREF=""
 
 if [ -z "$WHEEL_HREF" ]; then
   skip "wheel anchor not present in simple index, cannot resolve .metadata URL"
@@ -219,8 +219,11 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Advertised metadata hash matches served bytes (if present)"
+# PEP 714 allows data-core-metadata="true" with no hash, which is what a hosted
+# repo serves. `|| ...`: under set -e -o pipefail a grep with no match would end
+# the suite here, before the skip below, and with no failure recorded.
 ADVERTISED_HASH=$(grep -oE 'data-(dist-info|core)-metadata="sha256=[a-f0-9]+"' "$SIMPLE_HTML" \
-  | head -n1 | sed -E 's/.*sha256=([a-f0-9]+)".*/\1/')
+  | head -n1 | sed -E 's/.*sha256=([a-f0-9]+)".*/\1/') || ADVERTISED_HASH=""
 
 if [ -z "$ADVERTISED_HASH" ]; then
   skip "no sha256 hash advertised on data-*-metadata attribute (attribute may be boolean-only)"

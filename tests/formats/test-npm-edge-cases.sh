@@ -403,8 +403,10 @@ encoded_large=$(echo "$LARGE_PKG" | sed 's|/|%2f|g')
 # Write base64 to file to avoid argument list too long for large tarballs
 base64 < "$LARGE_TARBALL" | tr -d '\n' > "${WORK_DIR}/large_b64.txt"
 
-# Build JSON payload using python3 to handle large base64 data
-large_payload=$(python3 -c "
+# Build the JSON payload in a file: at ~13 MB it cannot go on curl's command
+# line (execve fails with E2BIG), which left upload_status empty.
+LARGE_PAYLOAD_FILE="${WORK_DIR}/large_payload.json"
+python3 -c "
 import json, sys
 b64_data = open('${WORK_DIR}/large_b64.txt').read()
 payload = {
@@ -433,13 +435,13 @@ payload = {
     }
 }
 json.dump(payload, sys.stdout)
-")
+" > "$LARGE_PAYLOAD_FILE"
 
 upload_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 120 \
   -X PUT \
   -H "$(format_auth_header)" \
   -H "Content-Type: application/json" \
-  -d "$large_payload" \
+  --data-binary "@${LARGE_PAYLOAD_FILE}" \
   "${NPM_REGISTRY}/${encoded_large}") || true
 
 if [ "$upload_status" = "200" ] || [ "$upload_status" = "201" ]; then
