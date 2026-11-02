@@ -7,13 +7,14 @@
 #
 # Endpoints: ${BASE_URL}/conda/{repo_key}/
 #
-# Requires: curl, jq, zip
+# Requires: curl, jq, zip, zstd
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "conda-native-conformance"
 auth_admin
 setup_workdir
 require_cmd zip
+require_cmd zstd
 
 REPO_KEY="test-conda-native-${RUN_ID}"
 SUBDIR="linux-64"
@@ -39,12 +40,11 @@ sha256_hex() {
 #
 # The .conda format is a ZIP archive containing:
 #   - metadata.json (top-level package metadata)
-#   - info-<name>-<version>-<build>.tar.zst (or .tar.bz2): package info
-#   - pkg-<name>-<version>-<build>.tar.zst (or .tar.bz2): package content
+#   - info-<name>-<version>-<build>.tar.zst: package info
+#   - pkg-<name>-<version>-<build>.tar.zst: package content
 #
-# For a minimal test package we create a valid ZIP with the metadata.json
-# and small info/pkg inner archives using plain tar (the server validates
-# the .conda extension but not necessarily the inner compression).
+# The inner archives must be real zstd-compressed tars: the server opens
+# info-*.tar.zst and answers 400 for a .conda without one, as conda itself would.
 # ---------------------------------------------------------------------------
 
 build_conda_native_pkg() {
@@ -91,20 +91,19 @@ EOJSON
 }
 EOJSON
 
-  # Tar the info directory (use plain tar for portability)
-  (cd "${build_dir}/info-content" && tar cf "${build_dir}/info-${name}-${version}-${build}.tar" info/)
+  (cd "${build_dir}/info-content" && tar cf - info/ | zstd -q -o "${build_dir}/info-${name}-${version}-${build}.tar.zst")
 
   # Create a minimal pkg directory and tar it
   local pkg_dir="${build_dir}/pkg-content/lib"
   mkdir -p "${pkg_dir}"
   echo "placeholder" > "${pkg_dir}/${name}.txt"
-  (cd "${build_dir}/pkg-content" && tar cf "${build_dir}/pkg-${name}-${version}-${build}.tar" lib/)
+  (cd "${build_dir}/pkg-content" && tar cf - lib/ | zstd -q -o "${build_dir}/pkg-${name}-${version}-${build}.tar.zst")
 
   # Package everything into a .conda ZIP
   (cd "${build_dir}" && zip -q "${outfile}" \
     metadata.json \
-    "info-${name}-${version}-${build}.tar" \
-    "pkg-${name}-${version}-${build}.tar")
+    "info-${name}-${version}-${build}.tar.zst" \
+    "pkg-${name}-${version}-${build}.tar.zst")
 }
 
 # ---------------------------------------------------------------------------
