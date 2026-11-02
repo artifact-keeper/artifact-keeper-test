@@ -1,0 +1,24 @@
+# DTF tier manifest: rpm-repodata-large-root-memory  (#4544)
+# Profile-set: filesystem / single.
+#
+# #4544: a cold hosted RPM repodata render loaded every live row's metadata
+# JSON (file lists included) and built every uncompressed document in memory
+# before gzipping; a root of 2,541 packages with 2.5 GB of metadata was
+# OOM-killed at a 10 GiB limit and clients saw 503. The fix streams the rows
+# from one snapshot in batches bounded by metadata bytes and gzips and hashes
+# each document incrementally.
+#
+# Oracle (oracle.sh): seeds 2,000 synthetic packages (rows in Postgres, about
+# 0.5 MiB of file-list metadata each, about 1 GiB in all; the render reads
+# rows, not package bytes), caps the backend container at 2 GiB with no swap,
+# and asks for repomd.xml cold.
+#   RED  (1.11.5): the render is OOM-killed (connection reset, container
+#        OOMKilled) or answers 5xx.
+#   GREEN: 200, primary.xml.gz and filelists.xml.gz list all 2,000 packages
+#        and match the checksums repomd.xml advertises, and the container
+#        stayed up under the limit.
+#
+# RATE_LIMIT_ENABLED=false for parity with the other RPM tiers.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
