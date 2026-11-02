@@ -1,0 +1,27 @@
+# DTF tier manifest: npm-version-route-dist-tags (artifact-keeper#5063, PR #5113)
+# Profile-set: filesystem / single + upstreams.mock-npm-tags (an npm upstream on
+# 172.16.<slot>.86; see fixtures/mock_npm_tags.py).
+#
+# THE BUG: GET /npm/{repo}/{package}/{version} and the scoped form answered 404
+# for a dist-tag such as `latest`, while an exact version worked. The npm registry
+# resolves a tag on this route, and clients and scripts use /{package}/latest to
+# find the current version. format-conformance's npm plugin only reads dist-tags
+# from the packument, so it never exercised this route with a tag.
+#
+#   (FIX) `latest` and a custom tag return the tagged version's document on Local
+#         (latest derived, `next` stored), Remote and Virtual; `latest` on a scoped
+#         package on Remote and Virtual.
+#         On an age-gated Remote, and a Virtual over it, `latest` resolves to the
+#         newest version old enough to download and `old` resolves.
+#         RED on 1.11.10: each is 404.
+#   (CONTROL) both images: an exact version resolves on every repository type, and
+#         an unknown tag is 404. An exact version wins over a stored tag of the same
+#         name. A tag naming an unlisted version is 404. On the age-gated Remote a
+#         tag naming a gated version is 404, and the exact gated version is still
+#         served on this route (the gate applies at download).
+#
+# RATE_LIMIT_ENABLED=false: not under test.
+PROFILES="storage.filesystem upstreams.mock-npm-tags"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

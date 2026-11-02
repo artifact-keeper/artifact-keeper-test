@@ -3434,6 +3434,31 @@ jobs:
           # 1.11.8, green on 1.11.9, cherry-picked onto release/1.11.x.
           - group: fixes-1.11.9
             tiers: conda-allowlist-hosted-members ci-oidc-token-lifetime proxy-rescan-cross-repo scan-proxy-duplicate-entries
+          # 1.11.11 fix coverage: the companion tiers of the 1.11.11 patch fixes,
+          # each red on 1.11.10 and green on the line (faec02d0) and on main.
+          # image-inspect-repository-scope (storage.s3, seconds): image-inspect
+          # and base-info resolve a digest and read config and provenance blobs
+          # only within the requested repository and image (#5096, #5111).
+          # oci-scan-proxy-unclassifiable (upstreams.mock-oci-classify on
+          # 172.16.<slot>.83, bundled Grype): a manifest scan-on-proxy cannot
+          # classify is withheld under fail_closed and pending under fail_open
+          # (#5097). upstream-ip-literal-refused (upstreams.mock-helm-literal on
+          # 172.16.<slot>.84/.85 and a listener in the backend's netns): an IP
+          # literal read from upstream content is refused 502 in inherit and
+          # direct routing (#5095). sso-idp-user-agent-and-status (sso.mock-idp-waf
+          # on 172.16.<slot>.60/.61): the SSO and CI OIDC clients send a
+          # User-Agent and report an IdP's HTTP errors by status (#5036).
+          # npm-version-route-dist-tags (upstreams.mock-npm-tags on
+          # 172.16.<slot>.86): the npm version route resolves dist-tags (#5063).
+          # gcs-error-url-redaction (storage.gcs-emulator; the emulator is stopped
+          # mid-run): GCS request URLs stay out of /health and API error bodies
+          # (#5093). It also carries the 1.11.10 companion that had no group:
+          # pypi-age-gate-substitute-scanned (upstreams.mockpypi-agegate, bundled
+          # Grype; #5075): the age-gate substitute download carries the scan
+          # header. Red on 1.11.9, green from 1.11.10. All cherry-picked onto
+          # release/1.11.x.
+          - group: fixes-1.11.11
+            tiers: image-inspect-repository-scope oci-scan-proxy-unclassifiable upstream-ip-literal-refused sso-idp-user-agent-and-status npm-version-route-dist-tags gcs-error-url-redaction pypi-age-gate-substitute-scanned
           # 1.12.0 feature (artifact-keeper#5054): the per-provider
           # token_ttl_secs (ci-oidc-provider-token-ttl, storage.filesystem +
           # sso.mock-ci-oidc on 172.16.<slot>.61, a few seconds). FEATURE
