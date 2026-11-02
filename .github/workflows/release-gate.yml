@@ -2278,6 +2278,28 @@ jobs:
           path: /tmp/test-results/*.xml
           if-no-files-found: ignore
 
+      - name: Install kubectl
+        if: failure()
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+
+      # Capture now: teardown's pod-logs artifact only holds the running pod's
+      # log, and resilience-tests restart the backend later in the gate, which
+      # discards this job's window. Best effort, so it cannot mask the failure.
+      - name: Capture backend logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/webhook-logs
+          kubectl -n "test-${RUN_ID}" logs -l app.kubernetes.io/component=backend \
+            --tail=-1 --timestamps > /tmp/webhook-logs/backend.log 2>&1 || true
+
+      - name: Upload backend logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: backend-logs-webhooks
+          path: /tmp/webhook-logs/
+          if-no-files-found: ignore
+
   # -------------------------------------------------------------------
   # Search tests
   # -------------------------------------------------------------------

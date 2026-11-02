@@ -227,7 +227,18 @@ else
     LATEST_HEADERS=$(tail -n 1 "$WEBHOOK_RECEIVER_LOG" | jq -r '.headers')
     pass
   else
-    fail "receiver saw 0 POSTs after repo create within 60s"
+    # Delivery is queued, so a miss here is either this delivery failing or
+    # other rows ahead of it. Report which: this row's state, and every webhook
+    # on the backend (the gate's jobs share it, so another suite's leftover
+    # subscriber shows up here).
+    fail "receiver saw ${seen} POSTs and logged no entry after repo create within 60s" "$(
+      echo "this webhook's deliveries:"
+      api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries" 2>/dev/null \
+        | jq -c '.items[]? | {id, event, success, attempts, max_attempts, response_status, next_retry_at, delivered_at}' 2>/dev/null
+      echo "webhooks on this backend:"
+      api_get "/api/v1/webhooks?per_page=100" 2>/dev/null \
+        | jq -c '.total as $t | {total: $t}, (.items[]? | {name, url, events, is_enabled})' 2>/dev/null
+    )"
   fi
 fi
 
