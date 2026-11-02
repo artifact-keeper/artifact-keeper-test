@@ -232,31 +232,35 @@ begin_test "Download package archive"
 dl_file="${WORK_DIR}/downloaded-pkg.zip"
 dl_ok=false
 
-# Try the Composer dist endpoint
-dl_status=$(curl -sf -o "$dl_file" -w '%{http_code}' $CURL_TIMEOUT \
+# Fetch the dist.url the metadata emits, exactly as the composer client does.
+# Never hardcode the path: the route is /dist/{vendor}/{package}/{version}/{ref}
+# and {ref} is the archive's SHA-256 (see test-composer-dist-cache.sh).
+dist_url=$(curl -sf $CURL_TIMEOUT \
   -H "$(format_auth_header)" \
-  "${COMPOSER_BASE}/dist/${VENDOR}/${PACKAGE}/${PKG_VERSION}.zip" 2>/dev/null) || true
+  "${COMPOSER_BASE}/p2/${VENDOR}/${PACKAGE}.json" 2>/dev/null \
+  | jq -r --arg n "$FULL_NAME" --arg v "$PKG_VERSION" \
+      '.packages[$n][] | select(.version == $v) | .dist.url // empty' 2>/dev/null) || dist_url=""
 
-if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
-  dl_ok=true
-fi
-
-# Fallback: try the management API
-if [ "$dl_ok" = "false" ]; then
-  if curl -sf $CURL_TIMEOUT \
-      -H "$(auth_header)" \
-      -o "$dl_file" \
-      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${VENDOR}/${PACKAGE}/${PKG_VERSION}/${VENDOR}-${PACKAGE}-${PKG_VERSION}.zip" 2>/dev/null; then
-    if [ -s "$dl_file" ]; then
-      dl_ok=true
-    fi
-  fi
-fi
-
-if [ "$dl_ok" = "true" ]; then
-  pass
+if [ -z "$dist_url" ]; then
+  fail "p2 metadata has no dist.url for ${FULL_NAME} ${PKG_VERSION}"
 else
-  fail "could not download package archive (dist status: ${dl_status})"
+  dl_status=$(curl -s -o "$dl_file" -w '%{http_code}' $CURL_TIMEOUT \
+    -H "$(format_auth_header)" \
+    "$dist_url" 2>/dev/null) || dl_status="000"
+
+  if [ "$dl_status" = "200" ] && [ -s "$dl_file" ]; then
+    dl_ok=true
+  fi
+
+  if [ "$dl_ok" = "true" ]; then
+    if assert_eq "$(shasum -a 256 "$dl_file" | awk '{print $1}')" \
+        "$(shasum -a 256 "$PKG_ZIP" | awk '{print $1}')" \
+        "downloaded archive differs from the uploaded zip"; then
+      pass
+    fi
+  else
+    fail "could not download package archive from ${dist_url} (status: ${dl_status})"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
