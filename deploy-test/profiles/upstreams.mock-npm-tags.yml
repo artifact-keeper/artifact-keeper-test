@@ -1,0 +1,54 @@
+# =============================================================================
+# profiles/upstreams.mock-npm-tags.yml - an npm upstream with dist-tags, for the
+# npm-version-route-dist-tags tier (artifact-keeper#5063)
+# =============================================================================
+# Adds `mock-npm-tags` (harness/tiers/npm-version-route-dist-tags/fixtures/
+# mock_npm_tags.py) at 172.16.<slot>.86 on a per-slot 172.16.<slot>.0/24 subnet.
+# AK_SSRF_ALLOW_PRIVATE_CIDRS admits only its /32; the tier manifest also sets
+# UPSTREAM_ALLOW_PRIVATE_IPS=true for the fetch.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-npm-tags:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-npm-tags
+    command: ["python3", "-I", "/app/mock_npm_tags.py"]
+    environment:
+      MOCK_PORT: "80"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/npm-version-route-dist-tags/fixtures/mock_npm_tags.py:/app/mock_npm_tags.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mocknpmtags:
+        ipv4_address: 172.16.${DTF_SLOT}.86
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-npm-tags:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.86/32
+    networks:
+      dtf: {}
+      mocknpmtags: {}
+
+networks:
+  mocknpmtags:
+    name: ak-dtf${DTF_SLOT}-mocknpmtags
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

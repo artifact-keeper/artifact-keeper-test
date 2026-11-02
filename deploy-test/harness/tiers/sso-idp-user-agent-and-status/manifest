@@ -1,0 +1,31 @@
+# DTF tier manifest: sso-idp-user-agent-and-status (artifact-keeper#5036, PR #5114)
+# Profile-set: filesystem / single + sso.mock-idp-waf (the OIDC and CI OIDC mocks
+# behind a mock WAF that answers a request with no User-Agent with a 403 HTML page,
+# and records every User-Agent it sees).
+#
+# THE BUG: the SSO HTTP client sent no User-Agent and the discovery handler parsed
+# the body without checking the status. Behind a WAF with the common
+# NoUserAgent_HEADER rule, OIDC discovery failed with "invalid JSON ... line 1
+# column 1" on a 403 HTML page. The other OIDC fixtures never look at the header.
+#
+#   (FIX) behind the WAF, a whole OIDC login (redirect, callback with a user
+#         session) and a whole CI OIDC exchange succeed, and every request the
+#         backend sent the IdP carries User-Agent artifact-keeper/<version>.
+#         An IdP that answers 403 HTML whatever the User-Agent is reported by
+#         status, for OIDC discovery, the OIDC JWKS endpoint, the OIDC token
+#         endpoint, CI OIDC discovery and the CI OIDC JWKS endpoint: the server log
+#         names the endpoint and the 403, not an invalid-JSON parse error.
+#         RED on 1.11.10: login and exchange fail, requests carry no User-Agent,
+#         and the log reports a parse error.
+#         The block-page issuers are not behind the User-Agent rule, so the parse
+#         error is what 1.11.10 fails on there, not the missing header.
+#   (CONTROL) both images: a failing response body never carries the block page. An
+#         OAuth JSON 400 from the token endpoint keeps naming the IdP's error code.
+#
+# NOT PROVEN HERE: an actual AWS WAF. The refusal is the mock's reproduction of the
+# reported behaviour.
+#
+# RATE_LIMIT_ENABLED=false: not under test, many auth endpoint requests in a burst.
+PROFILES="storage.filesystem sso.mock-idp-waf"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

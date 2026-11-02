@@ -1,0 +1,49 @@
+# DTF tier manifest: image-inspect-repository-scope
+# (artifact-keeper#5096, PR #5098; artifact-keeper#5111, PR #5112)
+# Profile-set: s3 / single. One MinIO bucket shared by every repository: OCI
+# manifests and blobs are digest-keyed there, not namespaced per repository, so
+# the object behind another repository's digest is readable under any key. A
+# filesystem stack is rooted per repository and cannot show the cross-repository
+# half of either bug.
+#
+# THE BUGS
+#   #5096  GET /api/v1/repositories/{key}/image-inspect and
+#          .../image-builds/base-info resolved a tag through oci_tags, but
+#          returned a sha256: reference unchanged and read it by digest. A digest
+#          of another repository, or of another image in the same repository,
+#          was described under the requested repository and image.
+#   #5111  The config and provenance blobs a resolved manifest names were read
+#          by digest without asking whether the repository records them. A
+#          manifest pushed into a repository can name any blob digest.
+#
+# SETUP: a private repository holding team/app and an index, a public repository
+# holding team/app, other/thing and manifests that borrow the private content.
+# Reads of the public repository are anonymous: that is who the bug exposed the
+# private content to. Every image carries a marker in its config and every
+# refusal is also checked for the private marker.
+#
+#   (FIX #5096) on the public repository:
+#     - the private image's digest, a private index child's digest, and an index
+#       pushed there that lists the private child: 404, the digest case
+#       byte-identical (hex masked) to a digest that exists nowhere, no private
+#       marker; base-info `found: false`.
+#     - a digest of other/thing under team/app, and the other way round: 404.
+#     - a platform child under another image name: 404.
+#   (FIX #5111) on the public repository:
+#     - a manifest naming the private config: 404 by tag and digest, identical
+#       (hex masked) to a manifest naming a config stored nowhere, no private
+#       marker; base-info `found: false`.
+#     - an attested index whose provenance blob is the private repository's: 200
+#       without provenance and without the private Dockerfile.
+#   (CONTROL) both images: tag and digest of the public image, an index by tag
+#       and by digest and its platform child, a provenance blob the repository
+#       records (Dockerfile returned), the private image through the admin on its
+#       own repository, an absent digest 404, base-info `found: true`.
+#
+# RED on 1.11.10: every FIX case above answers 200 / `found: true` with the
+# other repository's or image's config. GREEN on 1.11.11.
+#
+# RATE_LIMIT_ENABLED=false: not under test, about 60 requests in a burst.
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
