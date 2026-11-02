@@ -143,26 +143,21 @@ begin_test "Download chart via URL from index.yaml"
 # Extract the chart download URL from index.yaml.
 # The urls field in index.yaml looks like:
 #   urls:
-#   - /helm/{repo}/charts/{name}-{version}.tgz
-# or it may be a full URL.
-CHART_URL=$(echo "$INDEX_BODY" | grep -oE "/helm/${REPO_KEY}/charts/${CHART_NAME}-${CHART_V1}\.tgz" | head -1)
-if [ -z "$CHART_URL" ]; then
-  # Try alternate extraction: look for any URL containing the chart filename
-  CHART_URL=$(echo "$INDEX_BODY" | grep -oE "[^ \"']*${CHART_NAME}-${CHART_V1}\.tgz" | head -1)
-fi
+#   - charts/{name}-{version}.tgz
+# A relative entry resolves against the repository URL, as `helm pull` does.
+# (`|| true`: under set -e -o pipefail a grep with no match would end the suite.)
+CHART_URL=$(echo "$INDEX_BODY" | grep -oE "[^ \"']*${CHART_NAME}-${CHART_V1}\.tgz" | head -1) || true
 
-if [ -z "$CHART_URL" ]; then
-  # Fall back to the standard path
-  CHART_URL="/helm/${REPO_KEY}/charts/${CHART_NAME}-${CHART_V1}.tgz"
-fi
+case "$CHART_URL" in
+  "")        DOWNLOAD_URL="" ;;
+  http*://*) DOWNLOAD_URL="$CHART_URL" ;;
+  /*)        DOWNLOAD_URL="${BASE_URL}${CHART_URL}" ;;
+  *)         DOWNLOAD_URL="${BASE_URL}/helm/${REPO_KEY}/${CHART_URL}" ;;
+esac
 
-# Make the URL absolute if it starts with /
-DOWNLOAD_URL="${CHART_URL}"
-if [[ "$DOWNLOAD_URL" = /* ]]; then
-  DOWNLOAD_URL="${BASE_URL}${DOWNLOAD_URL}"
-fi
-
-if curl -sf -H "$(format_auth_header)" \
+if [ -z "$DOWNLOAD_URL" ]; then
+  fail "index.yaml has no url for ${CHART_NAME}-${CHART_V1}.tgz"
+elif curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/downloaded-chart.tgz" \
     "$DOWNLOAD_URL" 2>/dev/null; then
   if [ -s "${WORK_DIR}/downloaded-chart.tgz" ]; then
