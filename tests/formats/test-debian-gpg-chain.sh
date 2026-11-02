@@ -94,15 +94,17 @@ CTRL
 }
 
 # ---------------------------------------------------------------------------
-# 1. Create signing key (RSA 4096). If the signing API is not present on
+# 1. Create OpenPGP signing key (RSA 4096). If the signing API is not present on
 #    this backend, the whole suite skips: the chain we want to exercise
 #    does not exist without a key.
 # ---------------------------------------------------------------------------
 
-begin_test "Create RSA signing key for Debian repo"
+begin_test "Create OpenPGP signing key for Debian repo"
 KEY_RESP=""
+# key_type=gpg: apt verifies OpenPGP signatures. A plain `rsa` key is the X.509
+# keypair for raw-RSA formats (Alpine, Conda) and cannot sign a Release file.
 if KEY_RESP=$(api_post "/api/v1/signing/keys" \
-    "{\"name\":\"${KEY_NAME}\",\"key_type\":\"rsa\",\"algorithm\":\"rsa4096\"}" 2>/dev/null); then
+    "{\"name\":\"${KEY_NAME}\",\"key_type\":\"gpg\",\"algorithm\":\"rsa4096\"}" 2>/dev/null); then
   KEY_ID=$(echo "$KEY_RESP" | jq -r '.id // .key_id // empty')
   if [ -n "$KEY_ID" ] && [ "$KEY_ID" != "null" ]; then
     pass
@@ -134,19 +136,21 @@ else
 fi
 
 begin_test "Attach signing key to repo (enable=true)"
+# The config route takes the repository's UUID, not its key.
+REPO_ID=$(api_get "/api/v1/repositories/${REPO_KEY}" | jq -r '.id // empty') || REPO_ID=""
 SIGN_STATUS=$(curl -s -o "${WORK_DIR}/sign-cfg.json" -w '%{http_code}' \
-    -X PUT \
+    -X POST \
     -H "$(auth_header)" \
     -H "Content-Type: application/json" \
-    -d "{\"key_id\":\"${KEY_ID}\",\"enabled\":true}" \
-    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/signing") || SIGN_STATUS="000"
+    -d "{\"signing_key_id\":\"${KEY_ID}\",\"sign_metadata\":true}" \
+    "${BASE_URL}/api/v1/signing/repositories/${REPO_ID}/config") || SIGN_STATUS="000"
 
 if [ "$SIGN_STATUS" -ge 200 ] 2>/dev/null && [ "$SIGN_STATUS" -lt 300 ] 2>/dev/null; then
   pass
 elif [ "$SIGN_STATUS" = "404" ] || [ "$SIGN_STATUS" = "501" ]; then
   skip_suite "per-repo signing config endpoint not available (HTTP ${SIGN_STATUS})"
 else
-  fail "PUT /repositories/${REPO_KEY}/signing returned ${SIGN_STATUS}"
+  fail "POST /signing/repositories/${REPO_ID}/config returned ${SIGN_STATUS}"
   end_suite
 fi
 
