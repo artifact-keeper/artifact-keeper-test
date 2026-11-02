@@ -2,7 +2,7 @@
 # test-generic-conformance.sh - Generic repository (raw file storage) conformance tests
 #
 # Validates that the generic repository handles file uploads, downloads,
-# nested paths, content integrity, 404 for missing files, and overwrites.
+# nested paths, content integrity, 404 for missing files, and refused overwrites.
 #
 # Endpoints: ${BASE_URL}/api/v1/repositories/{repo_key}/ (management API)
 #
@@ -115,37 +115,40 @@ if assert_eq "$status" "404" "expected 404 for nonexistent path, got ${status}";
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Overwrite: PUT same path replaces the file
+# 6. Immutability: a second PUT to an occupied path is refused and the first
+#    upload keeps being served. The upload route documents this 409 (#1941).
+#    Replacing bytes takes a delete first, or versioning on the repository.
 # ---------------------------------------------------------------------------
 
-begin_test "Overwrite replaces file content"
+begin_test "Second PUT to the same path is 409 and leaves the file unchanged"
 echo "original content for overwrite test" > "${WORK_DIR}/overwrite.txt"
 ORIG_OVERWRITE_SHA=$(shasum -a 256 "${WORK_DIR}/overwrite.txt" | awk '{print $1}')
-
-# Upload the original
-api_upload "/api/v1/repositories/${REPO_KEY}/artifacts/overwrite-test/data.txt" \
-    "${WORK_DIR}/overwrite.txt" "text/plain" > /dev/null 2>&1 || true
-
-# Upload a replacement with different content
 echo "replaced content for overwrite test -- different bytes" > "${WORK_DIR}/overwrite-v2.txt"
-NEW_SHA=$(shasum -a 256 "${WORK_DIR}/overwrite-v2.txt" | awk '{print $1}')
 
-if api_upload "/api/v1/repositories/${REPO_KEY}/artifacts/overwrite-test/data.txt" \
-    "${WORK_DIR}/overwrite-v2.txt" "text/plain" > /dev/null; then
-  # Download and verify the new content is served
-  if curl -sf $CURL_TIMEOUT \
+if ! api_upload "/api/v1/repositories/${REPO_KEY}/artifacts/overwrite-test/data.txt" \
+    "${WORK_DIR}/overwrite.txt" "text/plain" > /dev/null; then
+  fail "first upload to overwrite-test/data.txt returned non-2xx"
+else
+  second_status=$(curl -s -o "${WORK_DIR}/overwrite-resp.json" -w '%{http_code}' $CURL_TIMEOUT -X PUT \
+    -H "$(auth_header)" \
+    -H "Content-Type: text/plain" \
+    --data-binary "@${WORK_DIR}/overwrite-v2.txt" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/overwrite-test/data.txt") || second_status="000"
+  second_code=$(jq -r '.code // empty' "${WORK_DIR}/overwrite-resp.json" 2>/dev/null) || second_code=""
+
+  if [ "$second_status" != "409" ] || [ "$second_code" != "CONFLICT" ]; then
+    fail "second upload returned HTTP ${second_status} code '${second_code}', expected 409 CONFLICT"
+  elif ! curl -sf $CURL_TIMEOUT \
       -H "$(auth_header)" \
       -o "${WORK_DIR}/overwrite-dl.txt" \
       "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/overwrite-test/data.txt"; then
+    fail "download after refused overwrite returned non-2xx"
+  else
     DL_SHA=$(shasum -a 256 "${WORK_DIR}/overwrite-dl.txt" | awk '{print $1}')
-    if assert_eq "$DL_SHA" "$NEW_SHA" "overwritten file should have new content SHA256"; then
+    if assert_eq "$DL_SHA" "$ORIG_OVERWRITE_SHA" "refused overwrite changed the stored file"; then
       pass
     fi
-  else
-    fail "download after overwrite returned non-2xx"
   fi
-else
-  fail "overwrite upload returned non-2xx"
 fi
 
 end_suite
