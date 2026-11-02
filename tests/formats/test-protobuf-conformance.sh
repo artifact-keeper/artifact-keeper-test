@@ -14,7 +14,7 @@ auth_admin
 setup_workdir
 
 REPO_KEY="test-proto-conf-${RUN_ID}"
-PROTO_BASE="${BASE_URL}/protobuf/${REPO_KEY}"
+PROTO_BASE="${BASE_URL}/proto/${REPO_KEY}"
 OWNER="conforg"
 MODULE="confservice"
 
@@ -82,13 +82,16 @@ sleep 1
 
 begin_test "Download proto module via Connect RPC"
 DOWNLOAD_URL="${PROTO_BASE}/buf.registry.module.v1beta1.DownloadService/Download"
-DOWNLOAD_BODY="{\"resourceRefs\":[{\"owner\":\"${OWNER}\",\"module\":\"${MODULE}\"}]}"
+DOWNLOAD_BODY="{\"values\":[{\"resourceRef\":{\"owner\":\"${OWNER}\",\"module\":\"${MODULE}\"}}]}"
 
 if resp=$(curl -sf $CURL_TIMEOUT -X POST "$DOWNLOAD_URL" \
     -H "$(format_auth_header)" \
     -H "Content-Type: application/json" \
     -d "$DOWNLOAD_BODY" 2>&1); then
-  if assert_contains "$resp" "$MODULE" "download response should contain module name"; then
+  # The uploaded file comes back, base64 encoded, under its uploaded path.
+  dl_content=$(echo "$resp" | jq -r --arg m "$MODULE" \
+    '[.contents[].files[] | select(.path | contains($m)) | .content][0] // empty' 2>/dev/null) || dl_content=""
+  if assert_eq "$dl_content" "$PROTO_B64" "downloaded proto file differs from the uploaded one"; then
     pass
   fi
 else
