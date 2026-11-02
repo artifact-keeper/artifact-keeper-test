@@ -755,18 +755,26 @@ fi
 # ===========================================================================
 
 begin_test "dist.integrity (SRI hash) present in packument"
-# We published with integrity in npm_publish; verify it survived round-trip
+# npm_publish sends only dist.shasum, so the registry computes dist.integrity:
+# sha256-<base64 of the tarball digest>, which npm verifies on install (the
+# format-conformance tier's integrity_sha case asserts the same with a real npm).
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${NPM_REGISTRY}/${SEM_PKG}" 2>/dev/null); then
   integrity=$(echo "$resp" | jq -r '.versions["1.0.0"].dist.integrity // empty')
   if [ -n "$integrity" ]; then
-    # SRI hash should start with "sha512-"
-    if [[ "$integrity" == sha512-* ]]; then
-      pass
-    else
+    INTEGRITY_TGZ="${WORK_DIR}/integrity-check.tgz"
+    tarball_url=$(echo "$resp" | jq -r '.versions["1.0.0"].dist.tarball // empty')
+    if [[ "$integrity" != sha256-* ]]; then
       echo "  integrity value: ${integrity}"
-      fail "integrity field present but not in expected sha512 SRI format"
+      fail "integrity field present but not in the sha256 SRI format the registry emits"
+    elif ! curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" -o "$INTEGRITY_TGZ" "$tarball_url" 2>/dev/null; then
+      fail "could not download dist.tarball ${tarball_url} to check dist.integrity"
+    else
+      served_b64=$(openssl dgst -sha256 -binary "$INTEGRITY_TGZ" | base64 | tr -d '\n')
+      if assert_eq "${integrity#sha256-}" "$served_b64" "dist.integrity does not match the served tarball"; then
+        pass
+      fi
     fi
   else
     # Check if shasum is at least present as a fallback
