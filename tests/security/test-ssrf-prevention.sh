@@ -11,6 +11,29 @@ auth_admin
 setup_workdir
 
 # ---------------------------------------------------------------------------
+# Helper: delete a webhook this suite created
+# ---------------------------------------------------------------------------
+
+# delete_created_webhook CREATE_RESPONSE_FILE
+#
+# Deletes the webhook by the id in its create response, and returns non-zero if
+# it could not, so the caller reports it. GET /api/v1/webhooks is paginated and
+# returns {items, total}, so looking the webhook up by name is not reliable.
+#
+# A leftover webhook here does real damage. The release gate's jobs share one
+# backend, and these webhooks are global artifact_uploaded subscribers, so every
+# upload by every later suite enqueues a delivery to them. The delivery worker
+# claims 50 due rows per 30s tick, oldest first, so that backlog delays delivery
+# to all other webhooks. See candidate run 41524203663.
+delete_created_webhook() {
+  local webhook_id
+  webhook_id=$(jq -r '.id // empty' "$1" 2>/dev/null) || webhook_id=""
+  [ -n "$webhook_id" ] || return 1
+  curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/webhooks/${webhook_id}" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
 # Helper: test that a webhook with a given URL is rejected
 # ---------------------------------------------------------------------------
 
@@ -33,8 +56,8 @@ test_webhook_ssrf() {
   local webhook_name
   webhook_name="sec-ssrf-wh-${RUN_ID}-$(echo "$description" | tr ' /' '-' | head -c 20)"
 
-  local status
-  status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+  local status create_resp="${WORK_DIR}/webhook-create.json"
+  status=$(curl -s -o "$create_resp" -w '%{http_code}' $CURL_TIMEOUT \
     -X POST \
     -H "$(auth_header)" \
     -H "Content-Type: application/json" \
@@ -44,15 +67,9 @@ test_webhook_ssrf() {
   if [ "$status" = "400" ] || [ "$status" = "422" ]; then
     pass
   elif [ "$status" = "200" ] || [ "$status" = "201" ]; then
-    # Clean up created webhook
-    cleanup_resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
-      "${BASE_URL}/api/v1/webhooks" 2>/dev/null) || true
-    webhook_id=$(echo "$cleanup_resp" | jq -r ".[] | select(.name==\"${webhook_name}\") | .id // empty" 2>/dev/null) || true
-    if [ -n "$webhook_id" ]; then
-      curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" \
-        "${BASE_URL}/api/v1/webhooks/${webhook_id}" >/dev/null 2>&1 || true
-    fi
-    if [ "$allowlist_exemptable" = "1" ]; then
+    if ! delete_created_webhook "$create_resp"; then
+      fail "could not delete webhook ${webhook_name} after it was accepted (${description}, HTTP ${status}); it stays subscribed on the shared backend" "$(head -c 500 "$create_resp")"
+    elif [ "$allowlist_exemptable" = "1" ]; then
       skip "private-CIDR webhook allowlist active in this deploy (${description}, HTTP ${status}); RFC1918 target intentionally permitted (artifact-keeper#1224 / artifact-keeper-test#122)"
     else
       fail "webhook with SSRF URL was accepted (${description}, HTTP ${status})"
@@ -173,7 +190,8 @@ test_remote_repo_ssrf "localhost" "http://localhost:5432/"
 
 begin_test "Legitimate external webhook URL is accepted"
 legit_name="sec-ssrf-legit-${RUN_ID}"
-legit_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+legit_resp="${WORK_DIR}/webhook-legit-create.json"
+legit_status=$(curl -s -o "$legit_resp" -w '%{http_code}' $CURL_TIMEOUT \
   -X POST \
   -H "$(auth_header)" \
   -H "Content-Type: application/json" \
@@ -181,15 +199,11 @@ legit_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/api/v1/webhooks") || true
 
 if [ "$legit_status" = "200" ] || [ "$legit_status" = "201" ]; then
-  # Clean up
-  cleanup_resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
-    "${BASE_URL}/api/v1/webhooks" 2>/dev/null) || true
-  webhook_id=$(echo "$cleanup_resp" | jq -r ".[] | select(.name==\"${legit_name}\") | .id // empty" 2>/dev/null) || true
-  if [ -n "$webhook_id" ]; then
-    curl -sf $CURL_TIMEOUT -X DELETE -H "$(auth_header)" \
-      "${BASE_URL}/api/v1/webhooks/${webhook_id}" >/dev/null 2>&1 || true
+  if delete_created_webhook "$legit_resp"; then
+    pass
+  else
+    fail "could not delete webhook ${legit_name} after it was accepted; it stays subscribed on the shared backend" "$(head -c 500 "$legit_resp")"
   fi
-  pass
 elif [ "$legit_status" = "404" ]; then
   skip "webhook endpoint not available"
 else
