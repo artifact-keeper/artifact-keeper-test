@@ -569,7 +569,11 @@ case "$CMD" in
              composer-virtual-packagist-member \
              proxy-rescan-verdict \
              conda-allowlist-hosted-members \
-             proxy-rescan-cross-repo scan-proxy-duplicate-entries; do
+             proxy-rescan-cross-repo scan-proxy-duplicate-entries \
+             image-inspect-repository-scope oci-scan-proxy-unclassifiable \
+             upstream-ip-literal-refused sso-idp-user-agent-and-status \
+             npm-version-route-dist-tags gcs-error-url-redaction \
+             pypi-age-gate-substitute-scanned; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

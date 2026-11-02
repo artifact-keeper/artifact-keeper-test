@@ -1,0 +1,33 @@
+# DTF tier manifest: oci-scan-proxy-unclassifiable (artifact-keeper#5097, PR #5099)
+# Profile-set: filesystem / single + upstreams.mock-oci-classify (a raw-body OCI
+# upstream on 172.16.<slot>.83). Verdicts for the runnable control come from the
+# backend image's bundled Grype and seeded DB.
+#
+# THE BUG: on a Remote OCI repository with scan-on-proxy, the gate ran the scan
+# only when the manifest parsed as a runnable image, so "could not classify" was
+# treated as "not an image" and served without a scan, even under fail_closed.
+# serde is case-sensitive, ignores unknown keys and rejects duplicates; Docker and
+# containerd decode with Go's encoding/json, which folds key case and lets the
+# last duplicate win. A manifest can be a runnable image to the client and
+# unclassifiable to the server.
+#
+# SHAPES (see fixtures/mock_oci_classify.py): case-variant Config/Layers, a
+# duplicated config (Helm first, image last), manifests:null beside an image, a
+# case-variant MediaType in a layer descriptor, a non-ASCII key Go folds onto
+# config, an unknown config media type over a rootfs layer.
+#
+#   (FIX) fail_closed Remote: each shape is 423, on the first and on a repeat
+#         GET, by tag and by digest. fail_open and record_only Remotes: 200 with
+#         X-AK-Scan: pending. A Virtual over the fail_closed Remote: 423, and a
+#         schema1 manifest 403.
+#         RED on 1.11.10: all served 200 with no X-AK-Scan header.
+#   (CONTROL) both images: a pure index, a Helm chart, a Flux artifact and a
+#         cosign attestation are 200 with no X-AK-Scan under fail_closed; a
+#         runnable image is scanned (a clean proxy_scan_results row for its
+#         digest) and served; a schema1 manifest is 403 on the direct Remote.
+#
+# RATE_LIMIT_ENABLED=false: not under test.
+PROFILES="storage.filesystem upstreams.mock-oci-classify"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

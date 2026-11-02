@@ -1,0 +1,109 @@
+# =============================================================================
+# profiles/upstreams.mock-helm-literal.yml - a Helm upstream whose index.yaml
+# names chart URLs on IP literals, for the upstream-ip-literal-refused tier
+# (artifact-keeper#5095)
+# =============================================================================
+# Adds three instances of harness/tiers/upstream-ip-literal-refused/fixtures/
+# mock_helm_literal.py:
+#
+#   * mock-helm at 172.16.<slot>.84: the index and the admitted charts.
+#   * mock-decoy at 172.16.<slot>.85: a private address no policy admits.
+#   * mock-loopback in the backend's network namespace (`network_mode:
+#     service:backend`, like topology.two-replica.yml), on 127.0.0.1:18099: the
+#     listener a loopback chart URL reaches when the literal is dialled.
+#
+# The overlay patches backend onto that network and admits ONLY mock-helm's /32
+# through AK_SSRF_ALLOW_PRIVATE_CIDRS. UPSTREAM_ALLOW_PRIVATE_IPS stays at its
+# false default: the production posture, in which an operator admits one internal
+# mirror.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  mock-helm:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-helm
+    command: ["python3", "-I", "/app/mock_helm_literal.py"]
+    environment:
+      MOCK_BIND: "0.0.0.0:80"
+      MOCK_ROLE: helm
+      MOCK_SELF_IP: 172.16.${DTF_SLOT}.84
+      MOCK_DECOY_IP: 172.16.${DTF_SLOT}.85
+    volumes:
+      - "${DTF_DIR}/harness/tiers/upstream-ip-literal-refused/fixtures/mock_helm_literal.py:/app/mock_helm_literal.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this (python exits 2: can't open file).
+    security_opt:
+      - label=disable
+    healthcheck: &mock_health
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockhelmlit:
+        ipv4_address: 172.16.${DTF_SLOT}.84
+
+  mock-decoy:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-decoy
+    command: ["python3", "-I", "/app/mock_helm_literal.py"]
+    environment:
+      MOCK_BIND: "0.0.0.0:80"
+      MOCK_ROLE: decoy
+    volumes:
+      - "${DTF_DIR}/harness/tiers/upstream-ip-literal-refused/fixtures/mock_helm_literal.py:/app/mock_helm_literal.py:ro"
+    security_opt:
+      - label=disable
+    healthcheck: *mock_health
+    networks:
+      mockhelmlit:
+        ipv4_address: 172.16.${DTF_SLOT}.85
+
+  mock-loopback:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-mock-loopback
+    command: ["python3", "-I", "/app/mock_helm_literal.py"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    network_mode: "service:backend"
+    environment:
+      MOCK_BIND: "127.0.0.1:18099"
+      MOCK_ROLE: loopback
+    volumes:
+      - "${DTF_DIR}/harness/tiers/upstream-ip-literal-refused/fixtures/mock_helm_literal.py:/app/mock_helm_literal.py:ro"
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:18099/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-helm:
+        condition: service_healthy
+      mock-decoy:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.84/32
+    networks:
+      dtf: {}
+      mockhelmlit: {}
+
+networks:
+  mockhelmlit:
+    name: ak-dtf${DTF_SLOT}-mockhelmlit
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

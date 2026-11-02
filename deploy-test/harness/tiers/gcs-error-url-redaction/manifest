@@ -1,0 +1,33 @@
+# DTF tier manifest: gcs-error-url-redaction (artifact-keeper#5093, PR #5094)
+# Profile-set: gcs-emulator / single (the profile of gcs-custom-endpoint, which is
+# only an upload/download round trip and never sees a failing storage request).
+#
+# THE BUG: a reqwest transport error stringifies with the request URL, which names
+# the endpoint host, the bucket and the object key. The GCS backend copied that
+# text into its storage errors, so a refused connection or an unresolvable
+# GCS_ENDPOINT host showed all three in the unauthenticated /health and /healthz
+# storage message and in API error bodies such as the OCI blob-upload 500.
+#
+# METHOD: the oracle stops the emulator mid-run, so every GCS request fails in
+# transport, then reads what a client sees.
+#
+#   (FIX) /health and /healthz report storage unhealthy, and their bodies name no
+#         URL, no endpoint host or port, no bucket; a failing OCI blob upload's
+#         body names none of those and no object key.
+#         RED on 1.11.10: each of those bodies repeats the request URL.
+#   (CONTROL) both images: with the emulator up, storage is healthy and a blob
+#         upload succeeds; with it down the health check really does report the
+#         failure, so the absence of a URL is not the absence of a message. A
+#         failing Maven upload and download name no URL either, which already held
+#         on 1.11.10: they guard the same text on another route, they do not
+#         discriminate the fix.
+#
+# NOT PROVEN HERE: fake-gcs-server runs in the emulator's static-token mode, so the
+# service-account and metadata-server token fetches (also redacted by the fix) are
+# not exercised. Real Google Cloud Storage is not used. The S3 and Azure sites the
+# same PR trimmed are unit-tested in artifact-keeper only.
+#
+# RATE_LIMIT_ENABLED=false: not under test.
+PROFILES="storage.gcs-emulator"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

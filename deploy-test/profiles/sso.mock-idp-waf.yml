@@ -1,0 +1,115 @@
+# =============================================================================
+# profiles/sso.mock-idp-waf.yml - an OIDC IdP and a CI OIDC issuer behind a mock
+# WAF, for the sso-idp-user-agent-and-status tier (artifact-keeper#5036)
+# =============================================================================
+# Adds the existing mocks wrapped by tier-local fixtures that refuse a request
+# with no User-Agent with a 403 HTML page and record every User-Agent they see:
+#
+#   * mock-oidc (harness/tiers/sso-idp-user-agent-and-status/fixtures/waf_oidc.py
+#     over oidc-exchange-and-login/fixtures/mock_oidc.py) at 172.16.<slot>.60. Its
+#     /authorize is advertised on the slot's spare ${TRIVY_PORT} (8250+N), as in
+#     sso.oidc-entra-shape.yml.
+#   * mock-ci-oidc (fixtures/waf_ci_oidc.py over ci-oidc-exchange/fixtures/
+#     mock_ci_oidc.py) at 172.16.<slot>.61, TLS on :443 as in sso.mock-ci-oidc.yml.
+#     Its control port is published on the slot's spare ${NEXUS_API_PORT} (8260+N);
+#     this tier runs no Nexus.
+#
+# SSRF: AK_SSRF_ALLOW_PRIVATE_CIDRS=172.16.0.0/12 as in both source profiles. The
+# backend's log driver is pinned to json-file: the oracle reads `docker logs`.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR, TRIVY_PORT,
+# NEXUS_API_PORT.
+# =============================================================================
+services:
+  mock-oidc:
+    image: python:3.12.13-slim-bookworm
+    container_name: ak-dtf${DTF_SLOT}-mock-oidc
+    command: ["python3", "-I", "/app/waf_oidc.py"]
+    environment:
+      MOCK_PORT: "80"
+      MOCK_ISSUER: "http://mock-oidc"
+      MOCK_AUTHORIZE_URL: "http://127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}/authorize"
+      MOCK_OIDC_SUB: "dtf-oidc-user"
+      MOCK_OIDC_EMAIL: "dtf-oidc-user@dtf.test"
+      MOCK_OIDC_GROUPS: ""
+      MOCK_ID_TOKEN_MODE: "always"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/oidc-exchange-and-login/fixtures/mock_oidc.py:/app/mock_oidc.py:ro"
+      - "${DTF_DIR}/harness/tiers/sso-idp-user-agent-and-status/fixtures/waf_oidc.py:/app/waf_oidc.py:ro"
+    # On an SELinux-enforcing host (rootless podman on Fedora) a bind-mounted file
+    # under $HOME cannot be read by the container without this.
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      mockidpwaf:
+        ipv4_address: 172.16.${DTF_SLOT}.60
+
+  mock-ci-oidc:
+    image: python:3.12.13-slim-bookworm
+    container_name: ak-dtf${DTF_SLOT}-mock-ci-oidc
+    command: ["python3", "-I", "/app/waf_ci_oidc.py"]
+    environment:
+      MOCK_HTTP_PORT: "80"
+      MOCK_HTTPS_PORT: "443"
+      MOCK_PUBLIC_BASE: "https://mock-ci-oidc"
+      MOCK_TLS_DIR: /tls
+      MOCK_TLS_HOST: mock-ci-oidc
+    volumes:
+      - "${DTF_DIR}/harness/tiers/ci-oidc-exchange/fixtures/mock_ci_oidc.py:/app/mock_ci_oidc.py:ro"
+      - "${DTF_DIR}/harness/tiers/sso-idp-user-agent-and-status/fixtures/waf_ci_oidc.py:/app/waf_ci_oidc.py:ro"
+      - idp_waf_tls:/tls
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:${NEXUS_API_PORT:?set NEXUS_API_PORT}:80"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks:
+      mockidpwaf:
+        ipv4_address: 172.16.${DTF_SLOT}.61
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-oidc:
+        condition: service_healthy
+      mock-ci-oidc:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.0.0/12
+      CUSTOM_CA_CERT_PATH: /etc/dtf-ci-oidc/ca.crt
+    volumes:
+      - idp_waf_tls:/etc/dtf-ci-oidc:ro
+    logging:
+      driver: json-file
+    networks:
+      dtf: {}
+      mockidpwaf: {}
+
+networks:
+  mockidpwaf:
+    name: ak-dtf${DTF_SLOT}-mockidpwaf
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24
+
+volumes:
+  idp_waf_tls:
+    name: ak-dtf${DTF_SLOT}_idp_waf_tls

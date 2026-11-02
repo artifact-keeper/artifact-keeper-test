@@ -218,6 +218,13 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
 | 200 | **Per-provider CI OIDC token TTL** - #5054 (fixed by #5057, 1.12.0) | filesystem + `sso.mock-ci-oidc` (`172.16.<slot>.61`) | `token_ttl_secs` defaults to 900 and is the minted lifetime; 59, 3601 and 86400 are 400 on create and update; an update takes effect on the next exchange | **ci-oidc-provider-token-ttl** | **COVERED** (#671, `features-1.12.0-ci-oidc`, FEATURE gate, never on release/1.11.x) - red on 1.11.8 (1 pass / 4 fail), green on the fix (5/5) |
 | 201 | **A cross-repository rescan that graded no components does not lift a fail_closed pull** - fixed by #5043 on main and #5048 on `release/1.11.x`, 1.11.9 | filesystem + `upstreams.mock-scan-formats` (`172.16.<slot>.72`; verdicts from the backend image's bundled Grype) | a non-admin writer proxies the Newtonsoft.Json 12.0.1 `.nupkg` through a generic Remote and rescans it; the first fail_closed NuGet pull of the same digest is then 403 and the stored verdict `vulnerable`; a clean, zero-component row already stored for a jar's digest does not serve a fail_closed Maven pull of it (403); where RPM scans on proxy (main), fail_closed RPM pulls of install media and of an RPM with no dist tag stay 423 after a generic rescan of the same bytes; controls: no row before the first pull, the generic proxy serves the bytes, an untouched fail_closed log4j-core 2.14.1 pull is 403 `vulnerable` and its generic rescan grades it `vulnerable` again, RPM pulls before any rescan are 423 with no row | **proxy-rescan-cross-repo** | **COVERED** (#681, `fixes-1.11.9`): FIX gate, green on 1.11.9 (9 pass, 5 RPM cases not applicable on the line); red on 1.11.8 (6 pass / 3 fail: the generic rescan 200 `clean` with `package_count` 0, the NuGet pull 200 `X-AK-Scan: clean`, the pre-seeded row serves the Maven pull) |
 | 202 | **A package archive with two entries at its manifest path is withheld under fail_closed** - fixed by #5050 on main and #5052 on `release/1.11.x`, 1.11.9 | filesystem + `upstreams.mock-dup-entries` (`172.16.<slot>.73`, archives built at start-up; verdicts from the backend image's bundled Grype) | for npm, Maven, NuGet, Cargo and conda through a fail_closed scan-on-proxy Remote, `dtf-dup` 1.0.0 (manifest twice, one copy naming another package) is 423 `scan_pending` and leaves no `proxy_scan_results` row; control: `dtf-single` 1.0.0 (manifest once) is 200 `X-AK-Scan: clean` | **scan-proxy-duplicate-entries** | **COVERED** (#682, `fixes-1.11.9`): FIX gate, green 17/17 on 1.11.9, on the main fix and on the line backport; red on 1.11.8 (7 pass / 10 fail: every duplicated package 200 `clean` with a verdict row, every control passes) |
+| 203 | **Image inspect resolves a digest and reads blobs only within the requested repository and image** - #5096 (#5098), #5111 (#5112), 1.11.11 | s3 (one shared MinIO bucket) | anonymous on a public repository: a private repository's digest, its index child and an index listing that child are 404 (the digest case byte-identical to an absent digest, hex masked), another image's digest in the same repository is 404, base-info is `found: false`; a manifest naming the private config is 404 identical to a config stored nowhere; an attestation naming the private provenance blob resolves without provenance; controls: own tag, digest, index, child and recorded provenance resolve | **image-inspect-repository-scope** | **COVERED** (`fixes-1.11.11`): FIX gate, green 29/29 on the line and main; red on 1.11.10 (13 pass / 16 fail: 200 with the private marker) |
+| 204 | **OCI scan-on-proxy withholds a manifest it cannot classify** - #5097 (#5099), 1.11.11 | filesystem + `upstreams.mock-oci-classify` (`172.16.<slot>.83`; bundled Grype) | case-variant keys, a duplicated config, `manifests: null`, a case-variant layer `MediaType`, a non-ASCII key folding onto config and an unknown config over a rootfs layer are 423 under fail_closed (repeat GET, by digest, through a Virtual) and 200 `X-AK-Scan: pending` under fail_open and record_only; schema1 is 403 through the Virtual; controls: index, Helm, Flux and cosign pass with no header, a runnable image is scanned clean | **oci-scan-proxy-unclassifiable** | **COVERED** (`fixes-1.11.11`): FIX gate, green 38/38 on the line and main; red on 1.11.10 (7 pass / 31 fail: served 200 with no header) |
+| 205 | **An IP-literal destination read from upstream content meets the outbound address policy** - #5095 (#5100), 1.11.11 | filesystem + `upstreams.mock-helm-literal` (`172.16.<slot>.84`, `.85`, a listener in the backend's netns) | a Helm chart URL on 127.0.0.1 (dotted, integer, hex, octal, mapped IPv6), 169.254.169.254 or a non-admitted private address is 502 `UPSTREAM_DESTINATION_REFUSED` under inherit and direct routing and no listener is dialled; controls: an admitted literal, a host name and a relative URL serve the chart | **upstream-ip-literal-refused** | **COVERED** (`fixes-1.11.11`): FIX gate, green 23/23 on the line and main; red on 1.11.10 (8 pass / 15 fail: the listeners serve the chart) |
+| 206 | **The SSO client sends a User-Agent to identity providers and reports their HTTP errors by status** - #5036 (#5114), 1.11.11 | filesystem + `sso.mock-idp-waf` (`172.16.<slot>.60`, `.61`) | behind a mock WAF refusing requests with no User-Agent, an OIDC login and a CI OIDC exchange complete and every IdP request carries `artifact-keeper/<version>`; a 403 HTML page at OIDC discovery, JWKS and token and at CI OIDC discovery and JWKS is logged by status, not as a JSON parse error; controls: no block page in a response, an OAuth JSON 400 keeps its error code | **sso-idp-user-agent-and-status** | **COVERED** (`fixes-1.11.11`): FIX gate, green 20/20 on the line and main; red on 1.11.10 (10 pass / 10 fail) |
+| 207 | **The npm version route resolves dist-tags** - #5063 (#5113), 1.11.11 | filesystem + `upstreams.mock-npm-tags` (`172.16.<slot>.86`) | `/{package}/latest` and a custom tag return the tagged version on Local, Remote and Virtual (scoped too on Remote and Virtual), and through the gated tags on an age-gated Remote and a Virtual over it; controls: exact versions, an exact version over a same-named tag, unknown, unlisted and gated tags 404 | **npm-version-route-dist-tags** | **COVERED** (`fixes-1.11.11`): FIX gate, green 29/29 on the line and main; red on 1.11.10 (17 pass / 12 fail: 404) |
+| 208 | **GCS request URLs stay out of client-visible errors** - #5093 (#5094), 1.11.11 | `storage.gcs-emulator` (the emulator is stopped mid-run) | `/health`, `/healthz` and a failing OCI blob upload name no URL, endpoint host or bucket; controls: healthy with the emulator up, the health check reports the failure, Maven upload and download errors name no URL | **gcs-error-url-redaction** | **COVERED** (`fixes-1.11.11`): FIX gate, green 9/9 on the line and main; red on 1.11.10 (6 pass / 3 fail); token fetches and real GCS not exercised |
+| 209 | **The age-gate substitute download carries the scan result header** - #5075 (#5077), 1.11.10 | filesystem + `upstreams.mockpypi-agegate` (bundled Grype) | on a fail_closed PyPI Remote the last-known-good substitute is 200 `X-AK-Scan: clean` with a clean verdict row for its digest | **pypi-age-gate-substitute-scanned** | **COVERED** (#692, `fixes-1.11.11`): FIX gate, red on 1.11.9 (8 pass / 2 fail), green from 1.11.10 |
 
 ## Consolidated status (this checkpoint)
 
@@ -540,6 +547,33 @@ defect classes) + **7, 9** (the two controls we currently disable/omit).
   in the same cycle (artifact-keeper-test#424); until then a 1.11.x
   candidate runs the line's older copy of row 124 and skips rows 161 and 164 as NOT
   ON THIS LINE.
+
+## 1.11.11 fix-coverage status (rows 203-209)
+
+Every tier here is a FIX gate on the 1.11.x line: run from this branch against
+`release/1.11.x` at `faec02d0` (`sha-faec02d`), and from `main` against the main
+image. A tier's RED column is the published image before its fix.
+
+- **`image-inspect-repository-scope`** (row 203) covers #5096 / #5098 and #5111 /
+  #5112 on one shared MinIO bucket: red on 1.11.10 (13 pass / 16 fail), green 29/29.
+- **`oci-scan-proxy-unclassifiable`** (row 204) covers #5097 / #5099: red on
+  1.11.10 (7 pass / 31 fail), green 38/38.
+- **`upstream-ip-literal-refused`** (row 205) covers #5095 / #5100: red on 1.11.10
+  (8 pass / 15 fail, the loopback listener and the private decoy serve the chart),
+  green 23/23. `proxy-egress`'s IP-literal case is the create-time 400/422, not this.
+- **`sso-idp-user-agent-and-status`** (row 206) covers #5036 / #5114: red on 1.11.10
+  (10 pass / 10 fail), green 20/20.
+- **`npm-version-route-dist-tags`** (row 207) covers #5063 / #5113: red on 1.11.10
+  (17 pass / 12 fail), green 29/29.
+- **`gcs-error-url-redaction`** (row 208) covers #5093 / #5094 on fake-gcs-server:
+  red on 1.11.10 (6 pass / 3 fail), green 9/9. Not exercised: the service-account
+  and metadata-server token fetches, and real Google Cloud Storage.
+- **`pypi-age-gate-substitute-scanned`** (row 209, #692) covers #5075, a 1.11.10
+  fix: red on 1.11.9 (8 pass / 2 fail), green from 1.11.10. It had no gate group
+  until now.
+- **Gate wiring:** the new required group `fixes-1.11.11` runs all seven. main's
+  `release-gate.yml` names the group; a 1.11.x candidate runs the tiers from this
+  repo's `release/1.11.x`.
 
 ## 1.11.9 fix-coverage status (rows 198, 201, 202, artifact-keeper-test#672, #681, #682)
 
