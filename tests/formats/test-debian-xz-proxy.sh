@@ -173,55 +173,49 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# 6. Path traversal with ../ returns 400
+# 6. Path traversal on a hosted repo serves nothing.
+#
+# A hosted repo answers any unknown dists path with 404 (dists_proxy_catchall),
+# so the assertion is on what is served: 400 or 404, and none of the bytes the
+# probe is after. curl runs with --path-as-is throughout, or it would resolve
+# the dot segments itself and the probe would never reach the backend.
 # -------------------------------------------------------------------------
 
 DISTS_BASE="/debian/${REPO_KEY}/dists/${DISTRIBUTION}"
 
-begin_test "Path traversal with ../ returns 400"
-TRAVERSAL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+# probe_traversal LABEL URL OUTFILE: echoes the HTTP status.
+probe_traversal() {
+  curl -s --path-as-is -o "$2" -w '%{http_code}' \
     -H "$(format_auth_header)" \
-    "${BASE_URL}${DISTS_BASE}/../../../etc/passwd") || true
+    "$1" || echo "000"
+}
 
-if [ "$TRAVERSAL_STATUS" = "400" ]; then
-  pass
-else
-  fail "path traversal ../ returned HTTP ${TRAVERSAL_STATUS}, expected 400"
-fi
+# assert_refused LABEL STATUS OUTFILE: 400/404 and no file content in the body.
+assert_refused() {
+  local label="$1" status="$2" body="$3"
+  if [ "$status" != "400" ] && [ "$status" != "404" ]; then
+    fail "${label} returned HTTP ${status}, expected 400 or 404"
+  elif grep -qE '^root:|Package: xztest|^debian-binary' "$body" 2>/dev/null; then
+    fail "${label} returned HTTP ${status} with file content in the body"
+  else
+    pass
+  fi
+}
 
-# -------------------------------------------------------------------------
-# 7. Path traversal with percent-encoded ../ returns 400
-# -------------------------------------------------------------------------
+begin_test "Hosted repo: path traversal with ../ is refused"
+assert_refused "path traversal ../" \
+  "$(probe_traversal "${BASE_URL}${DISTS_BASE}/../../../etc/passwd" "${WORK_DIR}/t1.out")" "${WORK_DIR}/t1.out"
 
-begin_test "Path traversal with encoded %2e%2e returns 400"
-# Use --path-as-is to prevent curl from normalizing the percent-encoded dots
-ENCODED_STATUS=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}${DISTS_BASE}/%2e%2e/%2e%2e/%2e%2e/etc/passwd") || true
+begin_test "Hosted repo: path traversal with encoded %2e%2e is refused"
+assert_refused "percent-encoded traversal" \
+  "$(probe_traversal "${BASE_URL}${DISTS_BASE}/%2e%2e/%2e%2e/%2e%2e/etc/passwd" "${WORK_DIR}/t2.out")" "${WORK_DIR}/t2.out"
 
-if [ "$ENCODED_STATUS" = "400" ]; then
-  pass
-else
-  fail "percent-encoded path traversal returned HTTP ${ENCODED_STATUS}, expected 400"
-fi
-
-# -------------------------------------------------------------------------
-# 8. Path traversal in the middle of the path returns 400
-# -------------------------------------------------------------------------
-
-begin_test "Path traversal mid-path (../../pool) returns 400"
-MID_STATUS=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}${DISTS_BASE}/${COMPONENT}/../../pool/main/xztest_1.0.0_amd64.deb") || true
-
-if [ "$MID_STATUS" = "400" ]; then
-  pass
-else
-  fail "mid-path traversal returned HTTP ${MID_STATUS}, expected 400"
-fi
+begin_test "Hosted repo: mid-path traversal (../../pool) does not reach the stored .deb"
+assert_refused "mid-path traversal" \
+  "$(probe_traversal "${BASE_URL}${DISTS_BASE}/${COMPONENT}/../../pool/main/xztest_1.0.0_amd64.deb" "${WORK_DIR}/t3.out")" "${WORK_DIR}/t3.out"
 
 # -------------------------------------------------------------------------
-# 9. Valid nested dists path is not rejected
+# 7. Valid nested dists path is not rejected
 # -------------------------------------------------------------------------
 
 begin_test "Valid nested dists path returns 200 or 404 (not 400)"
@@ -240,20 +234,59 @@ else
   fail "valid nested path returned unexpected HTTP ${VALID_STATUS}"
 fi
 
+begin_test "Hosted repo: fully percent-encoded traversal (%2e%2e%2f) is refused"
+assert_refused "fully percent-encoded traversal" \
+  "$(probe_traversal "${BASE_URL}${DISTS_BASE}/%2e%2e%2f%2e%2e%2fetc%2fpasswd" "${WORK_DIR}/t4.out")" "${WORK_DIR}/t4.out"
+
 # -------------------------------------------------------------------------
-# 10. Path traversal with backslash-encoded dots returns 400
+# 8. #814 proper: the catch-all only fetches upstream on a REMOTE repo, so that
+#    is where a traversal could escape. The mock records every request the
+#    backend makes; a dists fetch must arrive, the probes must not.
 # -------------------------------------------------------------------------
 
-begin_test "Path traversal with mixed encoding (%2e%2e%2f) returns 400"
-# Some attacks use full percent-encoding for the slash as well
-MIXED_STATUS=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is \
-    -H "$(format_auth_header)" \
-    "${BASE_URL}${DISTS_BASE}/%2e%2e%2f%2e%2e%2fetc%2fpasswd") || true
-
-if [ "$MIXED_STATUS" = "400" ]; then
-  pass
+begin_test "Remote repo: traversal probes never leave the upstream's dists tree"
+if [ -z "${MOCK_UPSTREAM_HOSTNAME:-}" ]; then
+  skip "needs MOCK_UPSTREAM_HOSTNAME reachable from the backend pod"
+elif ! start_mock_upstream "${WORK_DIR}/mock-state"; then
+  fail "mock upstream did not start"
 else
-  fail "fully percent-encoded traversal returned HTTP ${MIXED_STATUS}, expected 400"
+  mkdir -p "${MOCK_STATE_DIR}/files/deb/dists/${DISTRIBUTION}/${COMPONENT}/i18n" "${MOCK_STATE_DIR}/files/etc"
+  echo "translation canary" > "${MOCK_STATE_DIR}/files/deb/dists/${DISTRIBUTION}/${COMPONENT}/i18n/Translation-en"
+  echo "root:traversal-canary" > "${MOCK_STATE_DIR}/files/etc/passwd"
+
+  REMOTE_KEY="${REPO_KEY}-remote"
+  if ! create_remote_repo "$REMOTE_KEY" "debian" "${MOCK_BASE_URL}/deb"; then
+    fail "could not create debian remote repo"
+  else
+    REMOTE_DISTS="${BASE_URL}/debian/${REMOTE_KEY}/dists/${DISTRIBUTION}"
+    CONTROL_STATUS=$(probe_traversal "${REMOTE_DISTS}/${COMPONENT}/i18n/Translation-en" "${WORK_DIR}/r0.out")
+    REMOTE_BAD=""
+    n=0
+    for probe in \
+        "../../../../etc/passwd" \
+        "%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd" \
+        "${COMPONENT}/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd" \
+        "%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd"; do
+      n=$((n + 1))
+      st=$(probe_traversal "${REMOTE_DISTS}/${probe}" "${WORK_DIR}/r${n}.out")
+      if [ "$st" != "400" ] && [ "$st" != "404" ]; then
+        REMOTE_BAD="${REMOTE_BAD} ${probe}=>${st}"
+      fi
+      if grep -q 'traversal-canary' "${WORK_DIR}/r${n}.out" 2>/dev/null; then
+        REMOTE_BAD="${REMOTE_BAD} ${probe}=>leaked"
+      fi
+    done
+    MOCK_LOG="${MOCK_STATE_DIR}/request-log.txt"
+    if [ "$CONTROL_STATUS" != "200" ] || ! grep -q "dists/${DISTRIBUTION}/${COMPONENT}/i18n/Translation-en" "$MOCK_LOG"; then
+      fail "control fetch through the remote returned HTTP ${CONTROL_STATUS}; the probes prove nothing"
+    elif grep -qE 'etc(/|%2[fF])passwd' "$MOCK_LOG"; then
+      fail "a traversal probe reached the upstream" "$(grep -E 'etc(/|%2[fF])passwd' "$MOCK_LOG" | head -5)"
+    elif [ -n "$REMOTE_BAD" ]; then
+      fail "traversal probe not refused:${REMOTE_BAD}"
+    else
+      pass
+    fi
+  fi
 fi
 
 end_suite
