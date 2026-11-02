@@ -1495,6 +1495,19 @@ jobs:
           fi
           echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
 
+      - name: Install tools the audited scripts need
+        run: |
+          # A script's skip_suite is a hard fail under RELEASE_GATE=1, so a tool
+          # missing here reads as a failing suite. ruby provides `gem` for
+          # test-rubygems-native-client.sh; zstd builds the .conda fixtures in
+          # test-conda-native-conformance.sh.
+          missing=""
+          command -v gem  &>/dev/null || missing="$missing ruby"
+          command -v zstd &>/dev/null || missing="$missing zstd"
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq $missing > /dev/null
+          fi
+
       - name: Run formats audit lane
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
