@@ -1,0 +1,32 @@
+# DTF tier manifest: pypi-age-gate-substitute-scanned  (artifact-keeper#5075, PR #5077)
+# Profile-set: filesystem / single + the canned PyPI upstream of the
+# pypi-age-gate-pep440-lookup tier (mock-pypi, profile upstreams.mockpypi-agegate)
+# serving `cuda-toolkit` with Warehouse JSON publish times: 13.4.2 (old) and
+# 13.5.0 (uploaded a day ago). Scanning uses the backend image's bundled Grype
+# and seeded DB (no network).
+#
+# WHAT IT PROVES (#5075): when the download age gate withholds a young version,
+# a PyPI Remote answers with the newest older version it holds (the
+# last-known-good substitute). On a Remote that scans on proxy, that substitute
+# download goes through the same scan-on-proxy route as any other distribution
+# download (#5077), so it carries the scan result header like any other
+# distribution download and records a digest-keyed scan verdict.
+#
+# SETUP: one Remote PyPI repo over http://mock-pypi/, scan_on_proxy on
+# (fail_closed), age gate on (min_age_days 7, mode upstream_publish_time), and
+# an `artifacts` row for cuda_toolkit-13.4.2 seeded in the DB so the gate has a
+# last-known-good version (the same shape the backend unit test seeds). The
+# substitute is the mock's clean wheel.
+#
+#   (FIX)     GET cuda_toolkit-13.5.0 (young) -> 200 with the 13.4.2 bytes AND
+#             `X-AK-Scan: clean`, AND a `clean` proxy_scan_results row for the
+#             13.4.2 digest. RED on 1.11.9 (header absent, no verdict row).
+#   (CONTROL) both images: the substitute bytes are the mock's 13.4.2 wheel; a
+#             direct GET of cuda_toolkit-13.0.3.0 (old, no seeded row) serves
+#             200 `X-AK-Scan: clean`; the backend read /pypi/cuda-toolkit/json
+#             from the mock.
+#
+# RATE_LIMIT_ENABLED=false: admin login + repo/scan/gate setup + a few GETs.
+PROFILES="storage.filesystem upstreams.mockpypi-agegate"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

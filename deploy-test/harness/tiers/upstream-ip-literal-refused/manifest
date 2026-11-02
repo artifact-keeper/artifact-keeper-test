@@ -1,0 +1,35 @@
+# DTF tier manifest: upstream-ip-literal-refused (artifact-keeper#5095, PR #5100)
+# Profile-set: filesystem / single + upstreams.mock-helm-literal (mock-helm at
+# 172.16.<slot>.84, admitted by a /32 entry; mock-decoy at .85, not admitted;
+# mock-loopback on 127.0.0.1:18099 inside the backend's network namespace).
+#
+# THE BUG: a Remote fetches URLs it reads from upstream content, such as the chart
+# URL in a Helm index.yaml. With direct or inherited routing the only check was
+# the connect-time resolver check, which never sees an IP literal, so a chart URL
+# on a loopback, link-local or private literal was dialled even though the same
+# address is refused when saved as a repository's upstream URL.
+#
+# proxy-egress does not cover this: its IP-literal case is the create-time refusal
+# of a saved upstream URL (400/422). Nothing there reads a URL from upstream
+# content, and this fix's refusal is a 502 at fetch time.
+#
+#   (FIX) on a Helm Remote under `inherit` and one under `direct`, a chart whose
+#         index URL names 127.0.0.1 in dotted, integer, hex, octal and IPv4-mapped
+#         IPv6 spellings, 169.254.169.254, or the decoy's private address is 502
+#         with code UPSTREAM_DESTINATION_REFUSED and no address in the body, and
+#         neither listener receives a request.
+#         RED on 1.11.10: the listeners receive the requests and the route
+#         answers 200 with their bytes.
+#   (CONTROL) both images: both listeners are reachable from the backend's network
+#         namespace (so "received nothing" means something), and an admitted
+#         literal, a host name and a relative URL still serve the chart.
+#
+# NOT COVERED HERE: `explicit` routing refused the same literals before this fix
+# and proxy-egress guards that a configured proxy keeps working. The fix's other
+# effects (NAT64 prefixes, the CI OIDC jwks_uri check, the VS Code gallery POST
+# going through client_for) are unit-tested in artifact-keeper only.
+#
+# RATE_LIMIT_ENABLED=false: not under test.
+PROFILES="storage.filesystem upstreams.mock-helm-literal"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
