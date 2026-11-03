@@ -2282,6 +2282,47 @@ webhook_receiver_host() {
   fi
 }
 
+# create_signing_webhook <json-payload>
+# Runs inside an open begin_test, for a suite that can only check anything
+# against a signed delivery: creates the webhook, sets WEBHOOK_ID and records
+# the test's outcome.
+#
+# A refused create is a failure under RELEASE_GATE=1 and a skip elsewhere, and
+# either way the message carries the status and body. api_post hides both, and
+# treating every refusal as a skip let these suites stay green with their real
+# checks skipped because the deploy had no AK_WEBHOOK_SECRET_KEY
+# (artifact-keeper#5196). Sets SUITE_BLOCKED=true on a refused create.
+create_signing_webhook() {
+  local payload="$1" out status reason
+  WEBHOOK_ID=""
+  out=$(mktemp)
+  status=$(curl -s $CURL_TIMEOUT -o "$out" -w '%{http_code}' -X POST \
+    -H "$(auth_header)" \
+    -H "Content-Type: application/json" \
+    -d "$payload" "${BASE_URL}/api/v1/webhooks") || status="000"
+  case "$status" in
+    2*)
+      WEBHOOK_ID=$(jq -r '.id // empty' "$out" 2>/dev/null) || WEBHOOK_ID=""
+      rm -f "$out"
+      if [ -z "$WEBHOOK_ID" ]; then
+        fail "create returned HTTP ${status} with no id"
+      else
+        pass
+      fi
+      ;;
+    *)
+      SUITE_BLOCKED=true
+      reason="webhook create returned HTTP ${status}: $(head -c 300 "$out" 2>/dev/null) (this suite needs AK_WEBHOOK_SECRET_KEY on the backend and a receiver URL its SSRF check allows)"
+      rm -f "$out"
+      if [ "${RELEASE_GATE:-0}" = "1" ]; then
+        fail "$reason"
+      else
+        skip "$reason"
+      fi
+      ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # Mock HTTP upstream fixture
 # ---------------------------------------------------------------------------

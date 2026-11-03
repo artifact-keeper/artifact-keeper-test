@@ -237,6 +237,11 @@ write_suite "${WORK}/suite-allpass.sh" "selftest-allpass" \
 'begin_test "one"
 pass'
 
+# artifact-keeper#5196: a refused create in a signing suite.
+write_suite "${WORK}/suite-signing-create.sh" "selftest-signing-create" \
+'begin_test "create"
+create_signing_webhook "{}"'
+
 # #396 fixtures. All three are driven against a stub serving a version BELOW
 # ${FEATURE}'"'"'s floor, so require_feature takes its version-shortfall path.
 write_suite "${WORK}/suite-na-plus-provisioning.sh" "selftest-na-plus-provisioning" \
@@ -414,6 +419,20 @@ run_case "no gate + version-gated skip -> graceful skip, exit 0" 0 "${WORK}/suit
   BASE_URL="$STUB_URL"
 
 stop_stub
+
+echo ""
+echo "5a. create_signing_webhook: a refused create is not a skip under the gate"
+
+# BASE_URL has nothing listening, so the create cannot succeed. Before #5196 this
+# path was a skip in every mode, which kept four signing suites green with their
+# real checks skipped.
+run_case "gate + refused signing webhook create -> fail, exit 1" 1 "${WORK}/suite-signing-create.sh" \
+  "FAIL: webhook create returned HTTP 000" "SKIP:" \
+  RELEASE_GATE=1 BASE_URL="$DEAD_URL"
+
+run_case "no gate + refused signing webhook create -> skip, exit 0" 0 "${WORK}/suite-signing-create.sh" \
+  "SKIP: webhook create returned HTTP 000" "FAIL:" \
+  BASE_URL="$DEAD_URL"
 
 echo ""
 echo "6. skip_suite: capability-exemption allowlist directionality"

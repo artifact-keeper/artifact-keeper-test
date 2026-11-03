@@ -8,15 +8,17 @@
 #
 # Test plan:
 #   1. Create webhook with secret S0.
-#   2. POST /api/v1/webhooks/<id>/rotate-secret. The response carries the
-#      new plaintext secret S1 and the previous_secret_expires_at window.
+#   2. POST /api/v1/webhooks/<id>/rotate-secret. The response carries a new
+#      secret_digest and the previous_secret_expires_at window, and must NOT
+#      carry the new plaintext secret S1 (GHSA-qcmj, artifact-keeper#2818).
 #   3. Fire /test (or wait for a producer-driven delivery) and capture the
 #      receiver entry.
 #   4. Assert the X-ArtifactKeeper-Signature header has exactly two v1=
 #      tokens.
-#   5. Recompute HMAC(S1, t.body) and HMAC(S0, t.body); both must appear in
-#      the header (in either order; the contract pins current-first but
-#      receivers MUST tolerate either).
+#   5. The second token equals HMAC(S0, t.body), the previous secret, and the
+#      first one, the current secret's, does not. No API returns S1, so its
+#      token cannot be recomputed here: what ties it to the new secret is the
+#      digest change in step 2 and that it differs from S0's token.
 #
 # Companion backend PR: artifact-keeper#1140.
 #
@@ -103,42 +105,41 @@ else
     --arg url "$WEBHOOK_RECEIVER_URL" \
     --arg secret "$INITIAL_SECRET" \
     '{name: $name, url: $url, secret: $secret, events: ["artifact_uploaded"], enabled: true}')
-  if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
-    WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
-    if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then
-      fail "create returned no id"
-    else
-      pass
-    fi
-  else
-    SUITE_BLOCKED=true
-    skip "webhook create rejected (URL '${WEBHOOK_RECEIVER_URL}' likely blocked by SSRF allow-list)"
-  fi
+  create_signing_webhook "$PAYLOAD"
 fi
 
 # -------------------------------------------------------------------------
 # Rotate the secret. The response carries:
-#   { secret: "<new plaintext>", secret_digest: "<hex>",
+#   { id: "<uuid>", secret_digest: "whsec_...abcd",
 #     previous_secret_expires_at: "<rfc3339>" }
+# and never the new plaintext (GHSA-qcmj, artifact-keeper#2818).
 # -------------------------------------------------------------------------
 
-NEW_SECRET=""
+ROTATED=false
 PREV_EXPIRES_AT=""
 
-begin_test "POST /rotate-secret returns new secret + previous_secret_expires_at"
+begin_test "POST /rotate-secret returns a new digest + previous_secret_expires_at, and no raw secret"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
+  OLD_DIGEST=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}" 2>/dev/null | jq -r '.secret_digest // empty')
   if rot_resp=$(api_post "/api/v1/webhooks/${WEBHOOK_ID}/rotate-secret" "" 2>/dev/null); then
-    NEW_SECRET=$(echo "$rot_resp" | jq -r '.secret // empty')
+    NEW_DIGEST=$(echo "$rot_resp" | jq -r '.secret_digest // empty')
     PREV_EXPIRES_AT=$(echo "$rot_resp" | jq -r '.previous_secret_expires_at // empty')
-    if [ -z "$NEW_SECRET" ] || [ "$NEW_SECRET" = "null" ]; then
-      fail "rotate-secret response missing .secret: ${rot_resp:0:200}"
+    if echo "$rot_resp" | jq -e 'has("secret")' >/dev/null 2>&1; then
+      # Do not print the response: it holds a secret.
+      fail "rotate-secret response carries a raw .secret (GHSA-qcmj)"
+    elif [ -z "$NEW_DIGEST" ] || [ -z "$OLD_DIGEST" ] || [ "$NEW_DIGEST" = "$OLD_DIGEST" ]; then
+      fail "secret_digest did not change across the rotation: before='${OLD_DIGEST}' after='${NEW_DIGEST}'"
     elif [ -z "$PREV_EXPIRES_AT" ] || [ "$PREV_EXPIRES_AT" = "null" ]; then
       fail "rotate-secret response missing .previous_secret_expires_at: ${rot_resp:0:200}"
     else
+      ROTATED=true
       pass
     fi
+  elif [ "${RELEASE_GATE:-0}" = "1" ]; then
+    SUITE_BLOCKED=true
+    fail "/rotate-secret failed, so the overlap window cannot be checked"
   else
     SUITE_BLOCKED=true
     skip "/rotate-secret endpoint unavailable"
@@ -155,7 +156,7 @@ LATEST_BODY=""
 SIG_HEADER=""
 
 begin_test "Capture a delivery during the overlap window"
-if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$NEW_SECRET" ]; then
+if [ "$SUITE_BLOCKED" = "true" ] || [ "$ROTATED" != "true" ]; then
   skip "rotation not performed"
 else
   # Reset the receiver counter + log so we read fresh entries.
@@ -215,34 +216,28 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Both tokens must validate: one against the new secret, one against the
-# previous (initial) secret. The contract pins current-first, but tests
-# accept either order.
+# The tokens are ordered current-first. The previous secret's token must
+# validate, so a receiver that has not rotated keeps verifying. The current
+# secret's token must be a different one. It cannot be recomputed: no API
+# returns the rotated secret (GHSA-qcmj).
 # -------------------------------------------------------------------------
 
-begin_test "Both v1= tokens validate (one matches new secret, one matches previous)"
+begin_test "Second v1= token validates against the previous secret; first is from a different secret"
 if [ "$SUITE_BLOCKED" = "true" ] || [ "${#V1_TOKENS[@]}" -ne 2 ] || [ -z "$SIG_TS" ]; then
   skip "no token pair to validate"
 else
-  hmac_with() {
-    printf '%s.%s' "$SIG_TS" "$LATEST_BODY" \
-      | openssl dgst -sha256 -hmac "$1" 2>/dev/null \
-      | awk '{print $NF}'
-  }
-  expect_new=$(hmac_with "$NEW_SECRET")
-  expect_prev=$(hmac_with "$INITIAL_SECRET")
+  expect_prev=$(printf '%s.%s' "$SIG_TS" "$LATEST_BODY" \
+    | openssl dgst -sha256 -hmac "$INITIAL_SECRET" 2>/dev/null \
+    | awk '{print $NF}')
 
-  matched_new=false
-  matched_prev=false
-  for tok in "${V1_TOKENS[@]}"; do
-    [ "$tok" = "$expect_new" ]  && matched_new=true
-    [ "$tok" = "$expect_prev" ] && matched_prev=true
-  done
-
-  if [ "$matched_new" = "true" ] && [ "$matched_prev" = "true" ]; then
-    pass
+  if [ -z "$expect_prev" ]; then
+    fail "openssl produced an empty HMAC"
+  elif [ "${V1_TOKENS[1]}" != "$expect_prev" ]; then
+    fail "second token is not HMAC(previous secret, t.body): tokens=${V1_TOKENS[*]} expect_prev=${expect_prev}"
+  elif [ "${V1_TOKENS[0]}" = "$expect_prev" ]; then
+    fail "first token is still the previous secret's: the rotation did not change the signing secret"
   else
-    fail "token validation failed: matched_new=${matched_new} matched_prev=${matched_prev} (tokens: ${V1_TOKENS[*]}, expect_new=${expect_new}, expect_prev=${expect_prev})"
+    pass
   fi
 fi
 

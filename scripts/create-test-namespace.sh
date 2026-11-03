@@ -20,6 +20,11 @@
 #                            Note: setting it also makes the backend ignore
 #                            WEBHOOK_ALLOW_PRIVATE_IPS, so include the webhook
 #                            receiver's address (runner pod CIDR, or a host /32).
+#   AK_TEST_WEBHOOK_SECRET_KEY
+#                          - Optional. The backend's AK_WEBHOOK_SECRET_KEY, base64
+#                            of 32 bytes. Unset, a key is generated for the
+#                            namespace. Test-only either way: never pass a real
+#                            deployment's key.
 
 set -euo pipefail
 
@@ -156,6 +161,29 @@ if [ -n "${AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS:-}" ]; then
   echo "  SSRF private-CIDR allowlist override: ${AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS}"
   HELM_CMD+=(--set-string "backend.env.AK_SSRF_ALLOW_PRIVATE_CIDRS=${AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS//,/\\,}")
 fi
+
+# Webhook signing key (artifact-keeper#5196). Without one the backend refuses a
+# webhook with a secret, and the signing suites cannot check anything. It is
+# generated here, so no key sits in the repository, and kept in the namespace, so
+# re-running against the same namespace does not orphan secrets the backend has
+# already encrypted with it. Never echo it.
+WEBHOOK_KEY_SECRET="ak-test-webhook-secret-key"
+WEBHOOK_KEY="${AK_TEST_WEBHOOK_SECRET_KEY:-}"
+if [ -z "$WEBHOOK_KEY" ]; then
+  WEBHOOK_KEY="$(kubectl get secret "$WEBHOOK_KEY_SECRET" --namespace "$NAMESPACE" \
+    -o jsonpath='{.data.key}' 2>/dev/null | base64 -d || true)"
+fi
+if [ -z "$WEBHOOK_KEY" ]; then
+  WEBHOOK_KEY="$(openssl rand -base64 32)"
+  echo "  Generated a test-only webhook signing key"
+fi
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  echo "::add-mask::${WEBHOOK_KEY}"
+fi
+printf '%s' "$WEBHOOK_KEY" | kubectl create secret generic "$WEBHOOK_KEY_SECRET" \
+  --namespace "$NAMESPACE" --from-file=key=/dev/stdin \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+HELM_CMD+=(--set-string "secrets.webhookSecretKey=${WEBHOOK_KEY}")
 
 # No Trivy DB pull credentials are injected. #298 appended a deploy-time
 # GITHUB_TOKEN as scannerAdapter.env.TRIVY_USERNAME/TRIVY_PASSWORD, but a
