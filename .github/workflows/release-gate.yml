@@ -84,6 +84,11 @@ on:
         required: false
         type: string
         default: 'main'
+      cli_tag:
+        description: 'ak CLI release for cli-smoke, such as v1.11.0. Empty = the latest release.'
+        required: false
+        type: string
+        default: ''
       run_smoke_with_deps:
         description: |
           Run the clean-install-smoke-with-deps variant (issue #53).
@@ -119,6 +124,11 @@ on:
         required: false
         type: string
         default: 'main'
+      cli_tag:
+        description: 'ak CLI release for cli-smoke, such as v1.11.0. Empty = the latest release.'
+        required: false
+        type: string
+        default: ''
       run_smoke_with_deps:
         required: false
         type: boolean
@@ -721,6 +731,60 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: junit-real-flow-smoke
+          path: /tmp/test-results/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------
+  # The released `ak` CLI against this candidate: doctor, repo create,
+  # list and show, artifact push and pull, repo delete.
+  #
+  # Non-blocking for now: continue-on-error, and deliberately not in the
+  # collect-results predicate (continue-on-error doesn't change
+  # needs.<job>.result, so the predicate is what decides). The result still
+  # shows in the summary. Make it blocking, by adding it to the predicate
+  # and dropping continue-on-error, after three green gate runs with
+  # CLI 1.11.0 or newer.
+  # -------------------------------------------------------------------
+  cli-smoke:
+    needs: deploy
+    runs-on: ak-e2e-runners
+    timeout-minutes: 8
+    continue-on-error: true
+    env:
+      BASE_URL: ${{ needs.deploy.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      RELEASE_GATE: '1'
+      CLI_TAG: ${{ inputs.cli_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Run the suite from the tests ref that matches the candidate's line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+        run: scripts/switch-tests-ref.sh
+
+      - name: Run the CLI smoke
+        run: |
+          script=tests/release-gate/test-cli-smoke.sh
+          # A release line's branch can predate this script.
+          if [ ! -f "$script" ]; then
+            echo "::warning title=cli-smoke::$script isn't on this release line, so this run tested nothing"
+            exit 0
+          fi
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          chmod +x "$script"
+          "./$script"
+
+      - name: Upload CLI smoke results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-cli-smoke
           path: /tmp/test-results/
           if-no-files-found: ignore
 
@@ -3879,7 +3943,7 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, format-tests-audit, format-tests-registration-check, security-tests, security-grype-scan-completes, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests, dtf-gate, dtf-advisory]
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, cli-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, format-tests-audit, format-tests-registration-check, security-tests, security-grype-scan-completes, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests, dtf-gate, dtf-advisory]
     if: always()
     # Result rollup only: aggregates needs[].result and downloads JUnit
     # artifacts. No cluster access. Runs on a hosted runner so a
@@ -3902,7 +3966,7 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests format-tests-audit format-tests-registration-check repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes compatibility-tests stress-tests resilience-tests mesh-tests dtf-gate dtf-advisory; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke cli-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests format-tests-audit format-tests-registration-check repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes compatibility-tests stress-tests resilience-tests mesh-tests dtf-gate dtf-advisory; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
@@ -3910,6 +3974,7 @@ jobs:
               clean-install-smoke-with-deps) status="${{ needs.clean-install-smoke-with-deps.result }}" ;;
               chart-upgrade-smoke) status="${{ needs.chart-upgrade-smoke.result }}" ;;
               real-flow-smoke) status="${{ needs.real-flow-smoke.result }}" ;;
+              cli-smoke) status="${{ needs.cli-smoke.result }}" ;;
               scan-completion-gate) status="${{ needs.scan-completion-gate.result }}" ;;
               sbom-correctness-gate) status="${{ needs.sbom-correctness-gate.result }}" ;;
               pinned-cve-gate) status="${{ needs.pinned-cve-gate.result }}" ;;
@@ -3971,9 +4036,11 @@ jobs:
         # predicate. Grype image-scan efficacy remains hard-gated by
         # pinned-cve-image-gate.
         #
-        # stress-tests, mesh-tests, and format-tests-audit are intentionally
-        # excluded (continue-on-error: true, named waivers or rationale on
-        # the jobs themselves):
+        # stress-tests, mesh-tests, format-tests-audit, and cli-smoke are
+        # intentionally excluded (continue-on-error: true, named waivers or
+        # rationale on the jobs themselves):
+        #   - cli-smoke: the released `ak` CLI, new here; see the job header
+        #     for when it becomes blocking.
         #   - stress-tests: bcrypt-bound auth saturation under sustained
         #     load on shared ARC runners (artifact-keeper#991).
         #   - mesh-tests: its job header always documented it as advisory,
@@ -4058,7 +4125,7 @@ jobs:
         run: |
           echo "::error::Release gate FAILED - one or more required test suites did not pass"
           echo "Review the workflow summary above for details"
-          echo "Note: stress-tests, mesh-tests, and format-tests-audit are non-blocking (named waivers or rationale on those jobs); their outcomes are shown in the summary but do not gate the release"
+          echo "Note: stress-tests, mesh-tests, format-tests-audit, and cli-smoke are non-blocking (named waivers or rationale on those jobs); their outcomes are shown in the summary but do not gate the release"
           echo "Note: resilience-tests is blocking for the crash, data and network categories only; its restart and storage categories are non-blocking under a named waiver on that job (artifact-keeper-test#338)"
           exit 1
 
