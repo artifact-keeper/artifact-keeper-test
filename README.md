@@ -66,8 +66,8 @@ Each of the 38 package format handlers gets an E2E test that creates a repositor
 │ Misc Native      │ terraform, composer, hex, rubygems, nuget,      │
 │                  │ cocoapods, cran                                  │
 │ Generic/Protocol │ generic, gitlfs, protobuf, bazel, conan,        │
-│                  │ ansible, p2, jetbrains, vagrant, wasm,           │
-│                  │ puppet, chef                                     │
+│                  │ ansible, p2, jetbrains, agentplugins, vagrant,   │
+│                  │ wasm, puppet, chef                               │
 └──────────────────┴──────────────────────────────────────────────────┘
 ```
 

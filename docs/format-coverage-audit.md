@@ -60,6 +60,7 @@ that format.
 
 | Script                                   | What it actually does                                                  | Native client | Format HTTP | Mgmt API |
 |------------------------------------------|------------------------------------------------------------------------|---------------|-------------|----------|
+| test-agentplugins.sh                     | builds plugin zips with `zip`, curl PUT/GET against `/agentplugins/{key}/`, jq on every marketplace document, REST delete and re-index; `ak agent plugins` steps when the CLI has them | conditional | yes | yes      |
 | test-alpine.sh                           | curl PUT/GET against `/alpine/{key}/`                                  | no            | yes         | yes      |
 | test-ansible.sh                          | curl POST to `/ansible/{key}/api/v3/...`                               | no            | yes         | yes      |
 | test-bazel.sh                            | curl PUT/GET                                                           | no            | yes         | yes      |

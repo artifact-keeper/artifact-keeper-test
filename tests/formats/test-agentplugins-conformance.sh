@@ -1,0 +1,464 @@
+#!/usr/bin/env bash
+# test-agentplugins-conformance.sh - Agent Plugins repository conformance
+#
+# Pins the wire contract of the agentplugins format (artifact-keeper#5251)
+# beyond the happy path in test-agentplugins.sh:
+#
+#   1. claude-marketplace.json obeys the rules Claude Code enforces when it
+#      loads a marketplace from a URL: the marketplace `name` and every entry
+#      `name` match ^[A-Za-z0-9][A-Za-z0-9._-]*$ and contain no "..",
+#      `owner.name` is present, no entry uses a relative-path source (only
+#      `archive` sources work for a hosted marketplace), and each entry's
+#      `version` equals the version in its archive path.
+#   2. Publishes the backend must refuse with 400: no manifest, a manifest
+#      `name` that differs from the slug, a manifest `version` that differs
+#      from the path, a `../` entry, a non-SemVer version, a filename that is
+#      not {name}-{version}.zip, and an uppercase slug. None of them may
+#      appear in an index afterwards.
+#   3. A remote agentplugins repository is refused (hosted only).
+#   4. A private repository is readable through the token-in-path prefix
+#      /agentplugins/t/{token}/{repo}/..., archive URLs keep that prefix and
+#      download with no Authorization header, and the plain URL without
+#      credentials is refused.
+#   5. Index documents carry an ETag and answer If-None-Match with 304.
+#
+# AK_EXTERNAL_URL is not asserted (it depends on the deployment), so archive
+# URLs are compared by path only and downloaded from BASE_URL.
+#
+# Capability gate: as in test-agentplugins.sh, a backend that answers
+# repository creation with `400 Invalid format: agentplugins` does not ship
+# the format, and the suite stands down through skip_suite and the
+# agentplugins_format row of _CAPABILITY_EXEMPTIONS.
+#
+# Requires: curl, jq, zip, python3, sha256sum
+
+# shellcheck source=../lib/common.sh disable=SC1091
+source "$(dirname "$0")/../lib/common.sh"
+
+begin_suite "agentplugins-conformance"
+auth_admin
+setup_workdir
+require_cmd jq
+require_cmd zip
+require_cmd python3
+require_cmd sha256sum
+
+REPO_KEY="test-ap-conf-${RUN_ID}"
+PRIVATE_KEY="test-ap-priv-${RUN_ID}"
+REMOTE_KEY="test-ap-remote-${RUN_ID}"
+GATE_REASON="repository format 'agentplugins' is not known to this backend (POST /api/v1/repositories: 400 Invalid format: agentplugins); Agent Plugins format not shipped"
+NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+
+PLUGIN="conf-plugin"
+PLUGIN_VERSION="1.2.3"
+PRIV_PLUGIN="priv-plugin"
+PRIV_VERSION="0.1.0"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+url_path() {
+  printf '%s' "$1" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]+##'
+}
+
+sha_of() {
+  sha256sum "$1" | cut -d' ' -f1
+}
+
+# create_ap_repo KEY IS_PUBLIC: create an agentplugins local repository.
+# Stands the suite down when the backend does not know the format. Echoes
+# nothing; returns 0 on 2xx.
+create_ap_repo() {
+  local key="$1" is_public="$2" out="${WORK_DIR}/create-${1}.json" status="000"
+  for _ in 1 2 3 4; do
+    status=$(curl -s -o "$out" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+      -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+      -d "{\"key\":\"${key}\",\"name\":\"${key}\",\"format\":\"agentplugins\",\"repo_type\":\"local\",\"is_public\":${is_public}}" \
+      "${BASE_URL}/api/v1/repositories" 2>/dev/null) || status="000"
+    case "$status" in
+      000|401|429|503) sleep 2 ;;
+      *) break ;;
+    esac
+  done
+  if [ "$status" = "400" ] && grep -q 'Invalid format: agentplugins' "$out" 2>/dev/null; then
+    skip_suite "$GATE_REASON"
+  fi
+  if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 300 ] 2>/dev/null; then
+    add_exit_handler "curl -s -o /dev/null -X DELETE -H \"\$(auth_header)\" \"${BASE_URL}/api/v1/repositories/${key}\" || true"
+    return 0
+  fi
+  CREATE_ERROR="HTTP ${status}: $(head -c 300 "$out" 2>/dev/null)"
+  return 1
+}
+
+# ap_put REPO ZIP PATH: PUT ZIP to /agentplugins/REPO/PATH. Sets PUT_STATUS
+# and PUT_BODY.
+ap_put() {
+  local repo="$1" zip="$2" path="$3" out="${WORK_DIR}/put-resp.txt"
+  PUT_STATUS=$(curl -s -o "$out" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+    -X PUT -H "$(format_auth_header)" -H "Content-Type: application/zip" \
+    --data-binary "@${zip}" \
+    "${BASE_URL}/agentplugins/${repo}/${path}" 2>/dev/null) || PUT_STATUS="000"
+  PUT_BODY=$(cat "$out" 2>/dev/null || true)
+}
+
+# claude_manifest DIR NAME VERSION: write DIR/.claude-plugin/plugin.json plus
+# one skill. An empty NAME or VERSION omits that field.
+claude_manifest() {
+  local dir="$1" name="$2" version="$3"
+  mkdir -p "${dir}/.claude-plugin" "${dir}/skills/check"
+  jq -n --arg name "$name" --arg version "$version" '
+    {description: "Agent Plugins conformance fixture", author: {name: "Artifact Keeper Release Gate"}}
+    + (if $name == "" then {} else {name: $name} end)
+    + (if $version == "" then {} else {version: $version} end)' \
+    > "${dir}/.claude-plugin/plugin.json"
+  cat > "${dir}/skills/check/SKILL.md" <<'EOF'
+---
+name: check
+description: Conformance fixture skill.
+---
+
+Run the conformance check.
+EOF
+}
+
+# build_zip NAME MANIFEST_NAME MANIFEST_VERSION: a Claude-layout zip at
+# WORK_DIR/NAME.zip, echoes its path.
+build_zip() {
+  local label="$1" dir="${WORK_DIR}/src-${1}"
+  rm -rf "$dir"
+  claude_manifest "$dir" "$2" "$3"
+  rm -f "${WORK_DIR}/${label}.zip"
+  (cd "$dir" && zip -qrX "${WORK_DIR}/${label}.zip" .)
+  echo "${WORK_DIR}/${label}.zip"
+}
+
+# expect_400 DESCRIPTION ZIP PATH
+expect_400() {
+  local description="$1" zip="$2" path="$3"
+  begin_test "Publish refused with 400: ${description}"
+  ap_put "$REPO_KEY" "$zip" "$path"
+  if assert_eq "$PUT_STATUS" "400" "PUT ${path} returned HTTP ${PUT_STATUS}, expected 400 (${description})"; then
+    pass
+  else
+    echo "    body: ${PUT_BODY:0:300}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
+
+begin_test "Create agentplugins local repository"
+if create_ap_repo "$REPO_KEY" true; then
+  pass
+else
+  fail_fatal "could not create agentplugins repository: ${CREATE_ERROR}"
+fi
+
+begin_test "Publish a valid Claude-layout plugin"
+GOOD_ZIP=$(build_zip "good" "$PLUGIN" "$PLUGIN_VERSION")
+GOOD_SHA=$(sha_of "$GOOD_ZIP")
+ap_put "$REPO_KEY" "$GOOD_ZIP" "${PLUGIN}/${PLUGIN_VERSION}/${PLUGIN}-${PLUGIN_VERSION}.zip"
+if [ "$PUT_STATUS" = "201" ]; then
+  pass
+else
+  fail_fatal "valid publish returned HTTP ${PUT_STATUS}, expected 201" "${PUT_BODY:0:600}"
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Claude Code marketplace schema rules
+# ---------------------------------------------------------------------------
+
+CLAUDE_DOC="${WORK_DIR}/claude-marketplace.json"
+CLAUDE_HDR="${WORK_DIR}/claude-marketplace.headers"
+CLAUDE_STATUS=$(curl -s -D "$CLAUDE_HDR" -o "$CLAUDE_DOC" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  -H "$(format_auth_header)" \
+  "${BASE_URL}/agentplugins/${REPO_KEY}/claude-marketplace.json" 2>/dev/null) || CLAUDE_STATUS="000"
+
+begin_test "claude-marketplace.json is served as JSON"
+if [ "$CLAUDE_STATUS" != "200" ]; then
+  fail "GET claude-marketplace.json returned HTTP ${CLAUDE_STATUS}" "$(head -c 400 "$CLAUDE_DOC" 2>/dev/null)"
+elif ! jq -e '.plugins | type == "array"' "$CLAUDE_DOC" >/dev/null 2>&1; then
+  fail "claude-marketplace.json has no plugins array" "$(head -c 600 "$CLAUDE_DOC")"
+else
+  pass
+fi
+
+begin_test "Marketplace name is a valid Claude Code marketplace name"
+MP_NAME=$(jq -r '.name // empty' "$CLAUDE_DOC" 2>/dev/null) || MP_NAME=""
+if [[ ! "$MP_NAME" =~ $NAME_RE ]]; then
+  fail "marketplace name '${MP_NAME}' does not match ${NAME_RE}"
+elif [[ "$MP_NAME" == *..* ]]; then
+  fail "marketplace name '${MP_NAME}' contains '..'"
+else
+  pass
+fi
+
+begin_test "Marketplace owner.name is present"
+OWNER=$(jq -r '.owner.name // empty' "$CLAUDE_DOC" 2>/dev/null) || OWNER=""
+if [ -n "$OWNER" ]; then
+  pass
+else
+  fail "owner.name is missing" "$(jq -c '.owner' "$CLAUDE_DOC" 2>/dev/null)"
+fi
+
+begin_test "Every entry has a valid name, an archive source and the path version"
+PROBLEMS=""
+COUNT=$(jq '.plugins | length' "$CLAUDE_DOC" 2>/dev/null) || COUNT=0
+for (( i = 0; i < COUNT; i++ )); do
+  e_name=$(jq -r ".plugins[$i].name // empty" "$CLAUDE_DOC")
+  e_type=$(jq -r ".plugins[$i].source | type" "$CLAUDE_DOC")
+  e_kind=$(jq -r ".plugins[$i].source.source? // empty" "$CLAUDE_DOC")
+  e_sha=$(jq -r ".plugins[$i].source.sha256? // empty" "$CLAUDE_DOC")
+  e_url=$(jq -r ".plugins[$i].source.url? // empty" "$CLAUDE_DOC")
+  e_version=$(jq -r ".plugins[$i].version // empty" "$CLAUDE_DOC")
+  if [[ ! "$e_name" =~ $NAME_RE ]] || [[ "$e_name" == *..* ]]; then
+    PROBLEMS="${PROBLEMS}entry ${i}: name '${e_name}' is not a valid plugin name; "
+  fi
+  # A string source is a relative path inside a git-hosted marketplace;
+  # Claude Code cannot resolve one from a URL marketplace.
+  if [ "$e_type" != "object" ]; then
+    PROBLEMS="${PROBLEMS}${e_name}: source is a ${e_type} (relative path), not an object; "
+    continue
+  fi
+  if [ "$e_kind" != "archive" ]; then
+    PROBLEMS="${PROBLEMS}${e_name}: source.source=${e_kind:-<none>}, expected archive; "
+  fi
+  if ! [[ "$e_sha" =~ ^[0-9a-f]{64}$ ]]; then
+    PROBLEMS="${PROBLEMS}${e_name}: source.sha256 '${e_sha}' is not 64 lowercase hex; "
+  fi
+  e_path=$(url_path "$e_url")
+  # .../{name}/{version}/{name}-{version}.zip: the version is the next-to-last segment.
+  path_version=$(printf '%s' "$e_path" | awk -F/ '{print $(NF-1)}')
+  if [ "$e_path" != "/agentplugins/${REPO_KEY}/${e_name}/${path_version}/${e_name}-${path_version}.zip" ]; then
+    PROBLEMS="${PROBLEMS}${e_name}: source.url '${e_url}' is not {name}/{version}/{name}-{version}.zip; "
+  elif [ "$e_version" != "$path_version" ]; then
+    PROBLEMS="${PROBLEMS}${e_name}: version ${e_version} differs from path version ${path_version}; "
+  fi
+done
+if [ "$COUNT" -lt 1 ]; then
+  fail "claude-marketplace.json has no entries after a valid publish"
+elif [ -n "$PROBLEMS" ]; then
+  fail "$PROBLEMS" "$(head -c 1200 "$CLAUDE_DOC")"
+else
+  pass
+fi
+
+begin_test "Entry sha256 matches the archive bytes and the published zip"
+E_URL=$(jq -r --arg n "$PLUGIN" '.plugins[] | select(.name == $n) | .source.url' "$CLAUDE_DOC" 2>/dev/null) || E_URL=""
+E_SHA=$(jq -r --arg n "$PLUGIN" '.plugins[] | select(.name == $n) | .source.sha256' "$CLAUDE_DOC" 2>/dev/null) || E_SHA=""
+E_VER=$(jq -r --arg n "$PLUGIN" '.plugins[] | select(.name == $n) | .version' "$CLAUDE_DOC" 2>/dev/null) || E_VER=""
+DL="${WORK_DIR}/entry.zip"
+if [ -z "$E_URL" ]; then
+  fail "${PLUGIN} is not in claude-marketplace.json" "$(head -c 800 "$CLAUDE_DOC")"
+elif ! curl -sf -o "$DL" "${CURL_TIMEOUT_ARGS[@]}" -H "$(format_auth_header)" "${BASE_URL}$(url_path "$E_URL")"; then
+  fail "archive ${E_URL} did not download"
+elif assert_eq "$(sha_of "$DL")" "$E_SHA" "downloaded archive hashes to $(sha_of "$DL"), entry says ${E_SHA}" && \
+     assert_eq "$E_SHA" "$GOOD_SHA" "entry sha256 ${E_SHA} is not the published zip's ${GOOD_SHA}" && \
+     assert_eq "$E_VER" "$PLUGIN_VERSION" "entry version ${E_VER}, published ${PLUGIN_VERSION}"; then
+  pass
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Publishes the backend must refuse
+# ---------------------------------------------------------------------------
+
+NEG_NONE="${WORK_DIR}/neg-none.zip"
+mkdir -p "${WORK_DIR}/src-neg-none/docs"
+echo "not a plugin" > "${WORK_DIR}/src-neg-none/docs/README.md"
+(cd "${WORK_DIR}/src-neg-none" && zip -qrX "$NEG_NONE" .)
+expect_400 "zip without any plugin manifest" "$NEG_NONE" "neg-none/1.0.0/neg-none-1.0.0.zip"
+
+NEG_NAME=$(build_zip "neg-name" "some-other-name" "1.0.0")
+expect_400 "manifest name differs from the slug" "$NEG_NAME" "neg-name/1.0.0/neg-name-1.0.0.zip"
+
+NEG_VERSION=$(build_zip "neg-version" "neg-version" "9.9.9")
+expect_400 "manifest version differs from the path version" "$NEG_VERSION" "neg-version/1.0.0/neg-version-1.0.0.zip"
+
+# zip(1) normalises "../" away, so write the traversal entry with zipfile.
+NEG_TRAVERSAL="${WORK_DIR}/neg-traversal.zip"
+python3 -I - "$NEG_TRAVERSAL" <<'EOF'
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr(".claude-plugin/plugin.json",
+               json.dumps({"name": "neg-traversal", "version": "1.0.0"}))
+    z.writestr("skills/check/SKILL.md", "---\nname: check\ndescription: x\n---\n")
+    z.writestr("../escape.txt", "escaped")
+EOF
+expect_400 "entry named ../escape.txt" "$NEG_TRAVERSAL" "neg-traversal/1.0.0/neg-traversal-1.0.0.zip"
+
+NEG_SEMVER=$(build_zip "neg-semver" "neg-semver" "")
+expect_400 "non-SemVer version v1" "$NEG_SEMVER" "neg-semver/v1/neg-semver-v1.zip"
+
+NEG_FILE=$(build_zip "neg-file" "neg-file" "1.0.0")
+expect_400 "filename is not {name}-{version}.zip" "$NEG_FILE" "neg-file/1.0.0/something-else-1.0.0.zip"
+
+NEG_UPPER=$(build_zip "neg-upper" "" "1.0.0")
+expect_400 "uppercase slug" "$NEG_UPPER" "Neg-Upper/1.0.0/Neg-Upper-1.0.0.zip"
+
+begin_test "Refused publishes do not appear in marketplace.json"
+ALL_DOC="${WORK_DIR}/marketplace.json"
+ALL_STATUS=$(curl -s -o "$ALL_DOC" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -H "$(format_auth_header)" \
+  "${BASE_URL}/agentplugins/${REPO_KEY}/marketplace.json" 2>/dev/null) || ALL_STATUS="000"
+ALL_NAMES=$(jq -r '[.plugins[].name] | sort | join(",")' "$ALL_DOC" 2>/dev/null) || ALL_NAMES=""
+if [ "$ALL_STATUS" != "200" ]; then
+  fail "GET marketplace.json returned HTTP ${ALL_STATUS}"
+elif assert_eq "$ALL_NAMES" "$PLUGIN" "marketplace.json lists [${ALL_NAMES}], expected only [${PLUGIN}]"; then
+  pass
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Hosted only
+# ---------------------------------------------------------------------------
+
+begin_test "Creating a remote agentplugins repository is refused with 400"
+REMOTE_OUT="${WORK_DIR}/remote.json"
+REMOTE_STATUS=$(curl -s -o "$REMOTE_OUT" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+  -d "{\"key\":\"${REMOTE_KEY}\",\"name\":\"${REMOTE_KEY}\",\"format\":\"agentplugins\",\"repo_type\":\"remote\",\"upstream_url\":\"https://example.com/marketplace.json\",\"is_public\":true}" \
+  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || REMOTE_STATUS="000"
+if [ "$REMOTE_STATUS" -ge 200 ] 2>/dev/null && [ "$REMOTE_STATUS" -lt 300 ] 2>/dev/null; then
+  api_delete "/api/v1/repositories/${REMOTE_KEY}" >/dev/null 2>&1 || true
+fi
+if assert_eq "$REMOTE_STATUS" "400" "remote repository creation returned HTTP ${REMOTE_STATUS}, expected 400"; then
+  pass
+else
+  echo "    body: $(head -c 300 "$REMOTE_OUT" 2>/dev/null)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Private repository through the token-in-path prefix
+# ---------------------------------------------------------------------------
+
+READ_TOKEN=""
+READ_TOKEN_ID=""
+
+begin_test "Create a private agentplugins repository"
+if create_ap_repo "$PRIVATE_KEY" false; then
+  PRIVATE_READY=true
+  pass
+else
+  PRIVATE_READY=false
+  fail "could not create private agentplugins repository: ${CREATE_ERROR}"
+fi
+
+begin_test "Mint a repository-scoped read token"
+if [ "$PRIVATE_READY" = true ]; then
+  MINT_OUT="${WORK_DIR}/mint.json"
+  MINT_STATUS=$(curl -s -o "$MINT_OUT" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+    -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d "{\"name\":\"e2e-agentplugins-read-${RUN_ID}\",\"scopes\":[\"read:artifacts\"],\"expires_in_days\":1}" \
+    "${BASE_URL}/api/v1/repositories/${PRIVATE_KEY}/tokens" 2>/dev/null) || MINT_STATUS="000"
+  READ_TOKEN=$(jq -r '.token // empty' "$MINT_OUT" 2>/dev/null) || READ_TOKEN=""
+  READ_TOKEN_ID=$(jq -r '.id // empty' "$MINT_OUT" 2>/dev/null) || READ_TOKEN_ID=""
+  if [ -n "$READ_TOKEN" ]; then
+    if [ -n "$READ_TOKEN_ID" ]; then
+      add_exit_handler "curl -s -o /dev/null -X DELETE -H \"\$(auth_header)\" \"${BASE_URL}/api/v1/repositories/${PRIVATE_KEY}/tokens/${READ_TOKEN_ID}\" || true"
+    fi
+    pass
+  else
+    fail "token mint returned HTTP ${MINT_STATUS}" "$(head -c 400 "$MINT_OUT" 2>/dev/null)"
+  fi
+else
+  fail "no private repository"
+fi
+
+begin_test "Publish a plugin to the private repository"
+PRIV_ZIP=$(build_zip "priv" "$PRIV_PLUGIN" "$PRIV_VERSION")
+PRIV_SHA=$(sha_of "$PRIV_ZIP")
+PRIV_PUBLISHED=false
+if [ "$PRIVATE_READY" = true ]; then
+  ap_put "$PRIVATE_KEY" "$PRIV_ZIP" "${PRIV_PLUGIN}/${PRIV_VERSION}/${PRIV_PLUGIN}-${PRIV_VERSION}.zip"
+  if assert_eq "$PUT_STATUS" "201" "private publish returned HTTP ${PUT_STATUS}, expected 201: ${PUT_BODY:0:300}"; then
+    PRIV_PUBLISHED=true
+    pass
+  fi
+else
+  fail "no private repository"
+fi
+
+TOKEN_PREFIX="/agentplugins/t/${READ_TOKEN}/"
+TOKEN_DOC="${WORK_DIR}/token-claude.json"
+
+begin_test "Token-in-path claude-marketplace.json is 200 without an Authorization header"
+TOKEN_STATUS="000"
+if [ -n "$READ_TOKEN" ] && [ "$PRIV_PUBLISHED" = true ]; then
+  TOKEN_STATUS=$(curl -s -o "$TOKEN_DOC" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+    "${BASE_URL}${TOKEN_PREFIX}${PRIVATE_KEY}/claude-marketplace.json" 2>/dev/null) || TOKEN_STATUS="000"
+  if assert_eq "$TOKEN_STATUS" "200" "token-in-path marketplace returned HTTP ${TOKEN_STATUS}, expected 200"; then
+    pass
+  fi
+else
+  fail "needs the read token and the private publish"
+fi
+
+begin_test "Token-in-path archive URLs keep the /agentplugins/t/{token}/ prefix"
+TOKEN_URL=$(jq -r '.plugins[0].source.url // empty' "$TOKEN_DOC" 2>/dev/null) || TOKEN_URL=""
+if [ "$TOKEN_STATUS" != "200" ]; then
+  fail "needs the token-in-path marketplace"
+elif assert_contains "$TOKEN_URL" "$TOKEN_PREFIX" "plugins[0].source.url '${TOKEN_URL}' does not contain ${TOKEN_PREFIX}"; then
+  pass
+fi
+
+begin_test "Token-in-path archive downloads with no Authorization header"
+TOKEN_DL="${WORK_DIR}/token-dl.zip"
+if [ -z "$TOKEN_URL" ]; then
+  fail "no archive URL in the token-in-path marketplace"
+else
+  DL_STATUS=$(curl -s -o "$TOKEN_DL" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+    "${BASE_URL}$(url_path "$TOKEN_URL")" 2>/dev/null) || DL_STATUS="000"
+  if assert_eq "$DL_STATUS" "200" "token-in-path archive returned HTTP ${DL_STATUS}, expected 200" && \
+     assert_eq "$(sha_of "$TOKEN_DL")" "$PRIV_SHA" "token-in-path archive bytes differ from the published zip"; then
+    pass
+  fi
+fi
+
+begin_test "Private claude-marketplace.json without credentials is refused"
+if [ "$PRIV_PUBLISHED" = true ]; then
+  ANON_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+    "${BASE_URL}/agentplugins/${PRIVATE_KEY}/claude-marketplace.json" 2>/dev/null) || ANON_STATUS="000"
+  # 401 when the visibility middleware asks for credentials, 404 when it
+  # hides the repository's existence; both are documented outcomes (design
+  # section 11). Anything else, 200 above all, is a leak.
+  case "$ANON_STATUS" in
+    401|404) pass ;;
+    *) fail "anonymous GET of a private marketplace returned HTTP ${ANON_STATUS}, expected 401 or 404" ;;
+  esac
+else
+  fail "needs the private publish"
+fi
+
+begin_test "Private archive without credentials is refused"
+if [ "$PRIV_PUBLISHED" = true ]; then
+  ANON_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+    "${BASE_URL}/agentplugins/${PRIVATE_KEY}/${PRIV_PLUGIN}/${PRIV_VERSION}/${PRIV_PLUGIN}-${PRIV_VERSION}.zip" 2>/dev/null) || ANON_STATUS="000"
+  case "$ANON_STATUS" in
+    401|404) pass ;;
+    *) fail "anonymous GET of a private archive returned HTTP ${ANON_STATUS}, expected 401 or 404" ;;
+  esac
+else
+  fail "needs the private publish"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. ETag and conditional GET
+# ---------------------------------------------------------------------------
+
+begin_test "claude-marketplace.json carries an ETag and If-None-Match yields 304"
+curl -s -D "$CLAUDE_HDR" -o /dev/null "${CURL_TIMEOUT_ARGS[@]}" -H "$(format_auth_header)" \
+  "${BASE_URL}/agentplugins/${REPO_KEY}/claude-marketplace.json" 2>/dev/null || true
+ETAG=$(grep -i '^etag:' "$CLAUDE_HDR" 2>/dev/null | head -1 | cut -d: -f2- | sed -e 's/^ *//' -e 's/\r$//') || ETAG=""
+if [ -z "$ETAG" ]; then
+  fail "no ETag header on claude-marketplace.json" "$(cat "$CLAUDE_HDR" 2>/dev/null)"
+else
+  COND_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+    -H "$(format_auth_header)" -H "If-None-Match: ${ETAG}" \
+    "${BASE_URL}/agentplugins/${REPO_KEY}/claude-marketplace.json" 2>/dev/null) || COND_STATUS="000"
+  if assert_eq "$COND_STATUS" "304" "If-None-Match: ${ETAG} returned HTTP ${COND_STATUS}, expected 304"; then
+    pass
+  fi
+fi
+
+end_suite
