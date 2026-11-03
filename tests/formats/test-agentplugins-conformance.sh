@@ -15,12 +15,15 @@
 #      from the path, a `../` entry, a non-SemVer version, a filename that is
 #      not {name}-{version}.zip, and an uppercase slug. None of them may
 #      appear in an index afterwards.
-#   3. A remote agentplugins repository is refused (hosted only).
+#   3. A remote agentplugins repository is refused (hosted only), and so is
+#      a repository keyed `t`, which would shadow the token route.
 #   4. A private repository is readable through the token-in-path prefix
 #      /agentplugins/t/{token}/{repo}/..., archive URLs keep that prefix and
 #      download with no Authorization header, and the plain URL without
 #      credentials is refused.
-#   5. Index documents carry an ETag and answer If-None-Match with 304.
+#   5. Index documents carry an ETag, answer If-None-Match with 304 and are
+#      Cache-Control: no-cache; token-route responses are private, no-store,
+#      and a bogus path token is 401.
 #
 # AK_EXTERNAL_URL is not asserted (it depends on the deployment), so archive
 # URLs are compared by path only and downloaded from BASE_URL.
@@ -103,6 +106,11 @@ ap_put() {
   PUT_BODY=$(cat "$out" 2>/dev/null || true)
 }
 
+# header_value FILE NAME: the value of header NAME in a curl -D dump.
+header_value() {
+  grep -i "^${2}:" "$1" 2>/dev/null | head -1 | cut -d: -f2- | sed -e 's/^ *//' -e 's/\r$//' || true
+}
+
 # claude_manifest DIR NAME VERSION: write DIR/.claude-plugin/plugin.json plus
 # one skill. An empty NAME or VERSION omits that field.
 claude_manifest() {
@@ -162,6 +170,7 @@ GOOD_ZIP=$(build_zip "good" "$PLUGIN" "$PLUGIN_VERSION")
 GOOD_SHA=$(sha_of "$GOOD_ZIP")
 ap_put "$REPO_KEY" "$GOOD_ZIP" "${PLUGIN}/${PLUGIN_VERSION}/${PLUGIN}-${PLUGIN_VERSION}.zip"
 if [ "$PUT_STATUS" = "201" ]; then
+  PUBLISH_MP_NAME=$(printf '%s' "$PUT_BODY" | jq -r '.marketplace_name // empty' 2>/dev/null) || PUBLISH_MP_NAME=""
   pass
 else
   fail_fatal "valid publish returned HTTP ${PUT_STATUS}, expected 201" "${PUT_BODY:0:600}"
@@ -193,6 +202,11 @@ if [[ ! "$MP_NAME" =~ $NAME_RE ]]; then
 elif [[ "$MP_NAME" == *..* ]]; then
   fail "marketplace name '${MP_NAME}' contains '..'"
 else
+  pass
+fi
+
+begin_test "Publish response marketplace_name is the document's name"
+if assert_eq "$PUBLISH_MP_NAME" "$MP_NAME" "publish response marketplace_name '${PUBLISH_MP_NAME}', claude-marketplace.json name '${MP_NAME}'"; then
   pass
 fi
 
@@ -328,6 +342,21 @@ else
   echo "    body: $(head -c 300 "$REMOTE_OUT" 2>/dev/null)"
 fi
 
+begin_test "An agentplugins repository keyed 't' is refused with 400 (it would shadow /agentplugins/t/)"
+T_OUT="${WORK_DIR}/t-repo.json"
+T_STATUS=$(curl -s -o "$T_OUT" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+  -d '{"key":"t","name":"t","format":"agentplugins","repo_type":"local","is_public":true}' \
+  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || T_STATUS="000"
+if [ "$T_STATUS" -ge 200 ] 2>/dev/null && [ "$T_STATUS" -lt 300 ] 2>/dev/null; then
+  api_delete "/api/v1/repositories/t" >/dev/null 2>&1 || true
+fi
+if assert_eq "$T_STATUS" "400" "creating agentplugins repository 't' returned HTTP ${T_STATUS}, expected 400"; then
+  pass
+else
+  echo "    body: $(head -c 300 "$T_OUT" 2>/dev/null)"
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Private repository through the token-in-path prefix
 # ---------------------------------------------------------------------------
@@ -385,13 +414,29 @@ TOKEN_DOC="${WORK_DIR}/token-claude.json"
 begin_test "Token-in-path claude-marketplace.json is 200 without an Authorization header"
 TOKEN_STATUS="000"
 if [ -n "$READ_TOKEN" ] && [ "$PRIV_PUBLISHED" = true ]; then
-  TOKEN_STATUS=$(curl -s -o "$TOKEN_DOC" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  TOKEN_STATUS=$(curl -s -D "${WORK_DIR}/token.headers" -o "$TOKEN_DOC" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
     "${BASE_URL}${TOKEN_PREFIX}${PRIVATE_KEY}/claude-marketplace.json" 2>/dev/null) || TOKEN_STATUS="000"
   if assert_eq "$TOKEN_STATUS" "200" "token-in-path marketplace returned HTTP ${TOKEN_STATUS}, expected 200"; then
     pass
   fi
 else
   fail "needs the read token and the private publish"
+fi
+
+begin_test "Token-in-path responses are Cache-Control: private, no-store"
+TOKEN_CC=$(header_value "${WORK_DIR}/token.headers" "cache-control")
+if [ "$TOKEN_STATUS" != "200" ]; then
+  fail "needs the token-in-path marketplace"
+elif assert_contains "$TOKEN_CC" "private" "token route Cache-Control '${TOKEN_CC}' lacks private" && \
+     assert_contains "$TOKEN_CC" "no-store" "token route Cache-Control '${TOKEN_CC}' lacks no-store"; then
+  pass
+fi
+
+begin_test "A bogus token in the path is refused with 401"
+BOGUS_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  "${BASE_URL}/agentplugins/t/not-a-real-token-${RUN_ID}/${PRIVATE_KEY}/claude-marketplace.json" 2>/dev/null) || BOGUS_STATUS="000"
+if assert_eq "$BOGUS_STATUS" "401" "bogus token returned HTTP ${BOGUS_STATUS}, expected 401"; then
+  pass
 fi
 
 begin_test "Token-in-path archive URLs keep the /agentplugins/t/{token}/ prefix"
@@ -449,7 +494,7 @@ fi
 begin_test "claude-marketplace.json carries an ETag and If-None-Match yields 304"
 curl -s -D "$CLAUDE_HDR" -o /dev/null "${CURL_TIMEOUT_ARGS[@]}" -H "$(format_auth_header)" \
   "${BASE_URL}/agentplugins/${REPO_KEY}/claude-marketplace.json" 2>/dev/null || true
-ETAG=$(grep -i '^etag:' "$CLAUDE_HDR" 2>/dev/null | head -1 | cut -d: -f2- | sed -e 's/^ *//' -e 's/\r$//') || ETAG=""
+ETAG=$(header_value "$CLAUDE_HDR" "etag")
 if [ -z "$ETAG" ]; then
   fail "no ETag header on claude-marketplace.json" "$(cat "$CLAUDE_HDR" 2>/dev/null)"
 else
@@ -459,6 +504,12 @@ else
   if assert_eq "$COND_STATUS" "304" "If-None-Match: ${ETAG} returned HTTP ${COND_STATUS}, expected 304"; then
     pass
   fi
+fi
+
+begin_test "Index documents are Cache-Control: no-cache"
+INDEX_CC=$(header_value "$CLAUDE_HDR" "cache-control")
+if assert_contains "$INDEX_CC" "no-cache" "claude-marketplace.json Cache-Control '${INDEX_CC}' lacks no-cache"; then
+  pass
 fi
 
 end_suite
