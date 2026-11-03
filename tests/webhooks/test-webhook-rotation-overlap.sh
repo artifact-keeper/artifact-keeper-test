@@ -8,17 +8,18 @@
 #
 # Test plan:
 #   1. Create webhook with secret S0.
-#   2. POST /api/v1/webhooks/<id>/rotate-secret. The response carries a new
-#      secret_digest and the previous_secret_expires_at window, and must NOT
-#      carry the new plaintext secret S1 (GHSA-qcmj, artifact-keeper#2818).
+#   2. POST /api/v1/webhooks/<id>/rotate-secret as an admin. The response
+#      carries the new secret S1 exactly once, marked Cache-Control: no-store,
+#      with a new secret_digest and the previous_secret_expires_at window
+#      (artifact-keeper#5235). A later GET or LIST of the webhook must not
+#      return S1 (GHSA-qcmj, artifact-keeper#2818). S1 is a secret: no message
+#      in this suite prints the rotate response.
 #   3. Fire /test (or wait for a producer-driven delivery) and capture the
 #      receiver entry.
 #   4. Assert the X-ArtifactKeeper-Signature header has exactly two v1=
 #      tokens.
-#   5. The second token equals HMAC(S0, t.body), the previous secret, and the
-#      first one, the current secret's, does not. No API returns S1, so its
-#      token cannot be recomputed here: what ties it to the new secret is the
-#      digest change in step 2 and that it differs from S0's token.
+#   5. The first token equals HMAC(S1, t.body), the current secret, and the
+#      second equals HMAC(S0, t.body), the previous secret.
 #
 # Companion backend PR: artifact-keeper#1140.
 #
@@ -110,39 +111,73 @@ fi
 
 # -------------------------------------------------------------------------
 # Rotate the secret. The response carries:
-#   { id: "<uuid>", secret_digest: "whsec_...abcd",
+#   { id: "<uuid>", secret: "whsec_...", secret_digest: "whsec_...abcd",
 #     previous_secret_expires_at: "<rfc3339>" }
-# and never the new plaintext (GHSA-qcmj, artifact-keeper#2818).
+# and is the only place the new secret ever appears (artifact-keeper#5235).
+# Do not print the response body or headers from here on.
 # -------------------------------------------------------------------------
 
 ROTATED=false
 PREV_EXPIRES_AT=""
+ROTATED_SECRET=""
 
-begin_test "POST /rotate-secret returns a new digest + previous_secret_expires_at, and no raw secret"
+begin_test "POST /rotate-secret returns the new secret once, no-store, with a new digest + previous_secret_expires_at"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
   OLD_DIGEST=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}" 2>/dev/null | jq -r '.secret_digest // empty')
-  if rot_resp=$(api_post "/api/v1/webhooks/${WEBHOOK_ID}/rotate-secret" "" 2>/dev/null); then
-    NEW_DIGEST=$(echo "$rot_resp" | jq -r '.secret_digest // empty')
-    PREV_EXPIRES_AT=$(echo "$rot_resp" | jq -r '.previous_secret_expires_at // empty')
-    if echo "$rot_resp" | jq -e 'has("secret")' >/dev/null 2>&1; then
-      # Do not print the response: it holds a secret.
-      fail "rotate-secret response carries a raw .secret (GHSA-qcmj)"
-    elif [ -z "$NEW_DIGEST" ] || [ -z "$OLD_DIGEST" ] || [ "$NEW_DIGEST" = "$OLD_DIGEST" ]; then
-      fail "secret_digest did not change across the rotation: before='${OLD_DIGEST}' after='${NEW_DIGEST}'"
-    elif [ -z "$PREV_EXPIRES_AT" ] || [ "$PREV_EXPIRES_AT" = "null" ]; then
-      fail "rotate-secret response missing .previous_secret_expires_at: ${rot_resp:0:200}"
-    else
-      ROTATED=true
-      pass
-    fi
-  elif [ "${RELEASE_GATE:-0}" = "1" ]; then
-    SUITE_BLOCKED=true
-    fail "/rotate-secret failed, so the overlap window cannot be checked"
+  rot_body=$(mktemp)
+  rot_headers=$(mktemp)
+  rot_status=$(curl -s $CURL_TIMEOUT -o "$rot_body" -D "$rot_headers" -w '%{http_code}' -X POST \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/webhooks/${WEBHOOK_ID}/rotate-secret") || rot_status="000"
+  case "$rot_status" in
+    2*)
+      ROTATED_SECRET=$(jq -r '.secret // empty' "$rot_body" 2>/dev/null)
+      NEW_DIGEST=$(jq -r '.secret_digest // empty' "$rot_body" 2>/dev/null)
+      PREV_EXPIRES_AT=$(jq -r '.previous_secret_expires_at // empty' "$rot_body" 2>/dev/null)
+      rot_cache=$(tr -d '\r' < "$rot_headers" | sed -nE 's/^[Cc]ache-[Cc]ontrol:[[:space:]]*//p' | tail -n 1)
+      if [ -z "$ROTATED_SECRET" ]; then
+        fail "rotate-secret response carries no .secret, so a receiver cannot verify after the overlap ends (artifact-keeper#5235)"
+      elif [ "$ROTATED_SECRET" = "$INITIAL_SECRET" ]; then
+        fail "rotate-secret returned the previous secret, not a new one"
+      elif [ "$rot_cache" != "no-store" ]; then
+        fail "rotate-secret response must be Cache-Control: no-store, got '${rot_cache}'"
+      elif [ -z "$NEW_DIGEST" ] || [ -z "$OLD_DIGEST" ] || [ "$NEW_DIGEST" = "$OLD_DIGEST" ]; then
+        fail "secret_digest did not change across the rotation: before='${OLD_DIGEST}' after='${NEW_DIGEST}'"
+      elif [ -z "$PREV_EXPIRES_AT" ]; then
+        fail "rotate-secret response missing .previous_secret_expires_at"
+      else
+        ROTATED=true
+        pass
+      fi
+      ;;
+    *)
+      SUITE_BLOCKED=true
+      if [ "${RELEASE_GATE:-0}" = "1" ]; then
+        fail "/rotate-secret returned HTTP ${rot_status}, so the overlap window cannot be checked"
+      else
+        skip "/rotate-secret endpoint unavailable (HTTP ${rot_status})"
+      fi
+      ;;
+  esac
+  rm -f "$rot_body" "$rot_headers"
+fi
+
+begin_test "GET and LIST of the webhook never return the rotated secret"
+if [ "$ROTATED" != "true" ]; then
+  skip "rotation not performed"
+else
+  read_one=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}" 2>/dev/null) || read_one=""
+  read_all=$(api_get "/api/v1/webhooks?per_page=1000" 2>/dev/null) || read_all=""
+  if [ -z "$read_one" ] || [ -z "$read_all" ]; then
+    fail "could not read the webhook back"
+  elif printf '%s%s' "$read_one" "$read_all" | grep -qF "$ROTATED_SECRET"; then
+    fail "a webhook read returned the rotated secret (GHSA-qcmj)"
+  elif [ "$(echo "$read_one" | jq -r '.secret // empty')" != "" ]; then
+    fail "GET /webhooks/<id> carries a .secret field"
   else
-    SUITE_BLOCKED=true
-    skip "/rotate-secret endpoint unavailable"
+    pass
   fi
 fi
 
@@ -216,26 +251,29 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# The tokens are ordered current-first. The previous secret's token must
-# validate, so a receiver that has not rotated keeps verifying. The current
-# secret's token must be a different one. It cannot be recomputed: no API
-# returns the rotated secret (GHSA-qcmj).
+# The tokens are ordered current-first. Each must validate against its own
+# secret: the first against the one the rotation returned, so a receiver that
+# has rotated verifies, and the second against the previous one, so a receiver
+# that has not yet rotated keeps verifying.
 # -------------------------------------------------------------------------
 
-begin_test "Second v1= token validates against the previous secret; first is from a different secret"
-if [ "$SUITE_BLOCKED" = "true" ] || [ "${#V1_TOKENS[@]}" -ne 2 ] || [ -z "$SIG_TS" ]; then
+begin_test "First v1= token validates against the current secret, second against the previous"
+if [ "$SUITE_BLOCKED" = "true" ] || [ "${#V1_TOKENS[@]}" -ne 2 ] || [ -z "$SIG_TS" ] || [ -z "$ROTATED_SECRET" ]; then
   skip "no token pair to validate"
 else
+  expect_cur=$(printf '%s.%s' "$SIG_TS" "$LATEST_BODY" \
+    | openssl dgst -sha256 -hmac "$ROTATED_SECRET" 2>/dev/null \
+    | awk '{print $NF}')
   expect_prev=$(printf '%s.%s' "$SIG_TS" "$LATEST_BODY" \
     | openssl dgst -sha256 -hmac "$INITIAL_SECRET" 2>/dev/null \
     | awk '{print $NF}')
 
-  if [ -z "$expect_prev" ]; then
+  if [ -z "$expect_cur" ] || [ -z "$expect_prev" ]; then
     fail "openssl produced an empty HMAC"
+  elif [ "${V1_TOKENS[0]}" != "$expect_cur" ]; then
+    fail "first token is not HMAC(current secret, t.body): tokens=${V1_TOKENS[*]} expect_cur=${expect_cur}"
   elif [ "${V1_TOKENS[1]}" != "$expect_prev" ]; then
     fail "second token is not HMAC(previous secret, t.body): tokens=${V1_TOKENS[*]} expect_prev=${expect_prev}"
-  elif [ "${V1_TOKENS[0]}" = "$expect_prev" ]; then
-    fail "first token is still the previous secret's: the rotation did not change the signing secret"
   else
     pass
   fi
