@@ -110,7 +110,7 @@ lint_rules() {
     curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
       "${BASE_URL}/api/v1/security/scans/${sid}/findings?per_page=200" 2>/dev/null \
       | jq -r '(.items // .)[]? | [.title, .cve_id, .affected_component, .source, .description] | map(strings) | join(" ")' 2>/dev/null
-  done | grep -oE "$LINT_RULES_RE" | sort -u
+  done | { grep -oE "$LINT_RULES_RE" || true; } | sort -u
 }
 
 # lint_scan_seen ARTIFACT_ID: a scan of type mcp_lint, or any lint rule

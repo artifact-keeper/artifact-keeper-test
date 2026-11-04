@@ -18,7 +18,19 @@
 # upload is 409 mcp_version_exists. mcp_require_bundle_signature refuses an
 # unsigned bundle (422 mcp_bundle_unsigned). Quarantining the bundle holds
 # the version like any backing package (a no-grant user gets the plain 404,
-# the admin 404 mcp_backing_artifact_blocked); releasing it restores it.
+# the admin 404 mcp_backing_artifact_blocked); releasing it restores it. A
+# bundle download follows the owning version's reader serve decision: the
+# bundle of a held or soft-deleted version is the plain 404.
+#
+# Signatures (needs openssl; skipped without it): the suite signs bundles
+# with a throwaway self-signed RSA certificate (PKCS#7 detached SignedData,
+# SHA-256, in an MCPB_SIG_V1 block in the layout before upstream #194). A
+# signature that verifies is `valid` only for a certificate listed in
+# MCP_TRUSTED_BUNDLE_SIGNERS, so this one is `self_signed` with its
+# fingerprint; bytes changed after signing are 422
+# mcp_bundle_signature_invalid; under mcp_require_bundle_signature the
+# self-signed bundle is 422 mcp_bundle_signer_untrusted on upload and a
+# publish pinning one uploaded earlier is 422 mcp_bundle_signature_required.
 #
 # The repository is private so the ticket is what authorises the anonymous
 # download (on a public one any anonymous caller could read the bundle).
@@ -31,8 +43,10 @@
 # with the router fallback. Then mcp_skip_later_phase mcp_bundles.
 #
 # Not covered: an EXPIRED ticket (five minutes, not configurable from the
-# API); a bogus and a reused ticket are asserted instead. Signed bundles
-# (PKCS#7, `mcpb sign`) are not built here.
+# API); a bogus and a reused ticket are asserted instead. A `valid`
+# signature needs the instance to trust a signer the suite controls
+# (MCP_TRUSTED_BUNDLE_SIGNERS is deployment configuration), so it is not
+# asserted.
 #
 # Requires: curl, jq, python3, sha256sum.
 
@@ -104,6 +118,35 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("manifest.json", json.dumps(manifest, indent=2))
     z.writestr("server/index.js", "process.stdin.pipe(process.stdout);\n")
 PY
+}
+
+# make_signer DIR: a throwaway self-signed RSA certificate. Sets SIGN_KEY,
+# SIGN_CERT, SIGN_CN and SIGN_FPR (sha256 of the certificate DER, lower hex).
+make_signer() {
+  SIGN_KEY="${1}/signer.key"
+  SIGN_CERT="${1}/signer.pem"
+  SIGN_CN="AK e2e MCPB signer ${RUN_ID}"
+  mkdir -p "$1"
+  openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 2 -subj "/CN=${SIGN_CN}" \
+    -keyout "$SIGN_KEY" -out "$SIGN_CERT" >/dev/null 2>&1 || return 1
+  SIGN_FPR=$(openssl x509 -in "$SIGN_CERT" -outform DER | sha256sum | cut -d' ' -f1)
+  [ -n "$SIGN_FPR" ]
+}
+
+# sign_bundle IN OUT [SIGNED_SOURCE]: OUT = IN + an MCPB_SIG_V1 block whose
+# SignedData covers SIGNED_SOURCE (default IN; another file makes a
+# signature that does not cover OUT's archive).
+sign_bundle() {
+  local der="${2}.p7s"
+  openssl cms -sign -binary -md sha256 -nosmimecap -outform DER \
+    -signer "$SIGN_CERT" -inkey "$SIGN_KEY" -in "${3:-$1}" -out "$der" >/dev/null 2>&1 || return 1
+  python3 -I -c '
+import struct, sys
+archive, der, out = sys.argv[1:4]
+sig = open(der, "rb").read()
+with open(out, "wb") as f:
+    f.write(open(archive, "rb").read() + b"MCPB_SIG_V1" + struct.pack("<I", len(sig)) + sig + b"MCPB_SIG_END")
+' "$1" "$der" "$2"
 }
 
 # ---------------------------------------------------------------------------
@@ -184,6 +227,82 @@ else
     pass
   else
     fail "unsigned upload with the signature required: ${why}"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Signatures and signer trust
+# ---------------------------------------------------------------------------
+
+SIGN_READY=0
+SIGN_WHY=""
+if ! command -v openssl >/dev/null 2>&1; then
+  SIGN_WHY="openssl not installed on the runner"
+elif ! make_signer "${WORK_DIR}/signer"; then
+  SIGN_WHY="openssl could not make a self-signed certificate"
+else
+  build_bundle "${WORK_DIR}/v2.zip" 2.0.0 "Return the text argument unchanged."
+  build_bundle "${WORK_DIR}/v3.zip" 3.0.0 "Return the text argument unchanged."
+  build_bundle "${WORK_DIR}/v3-other.zip" 3.0.0 "Return the text argument, changed after signing."
+  build_bundle "${WORK_DIR}/v4.zip" 4.0.0 "Return the text argument unchanged."
+  if sign_bundle "${WORK_DIR}/v2.zip" "${WORK_DIR}/v2-signed.mcpb" \
+    && sign_bundle "${WORK_DIR}/v3-other.zip" "${WORK_DIR}/v3-tampered.mcpb" "${WORK_DIR}/v3.zip" \
+    && sign_bundle "${WORK_DIR}/v4.zip" "${WORK_DIR}/v4-signed.mcpb"; then
+    SIGN_READY=1
+  else
+    SIGN_WHY="openssl cms -sign failed"
+  fi
+fi
+
+SIGNED_ENTRY=""
+begin_test "A signature by a certificate nobody trusts is self_signed, with its fingerprint"
+if [ "$SIGN_READY" != "1" ]; then
+  skip "$SIGN_WHY"
+else
+  upload "${WORK_DIR}/v2-signed.mcpb" 2.0.0
+  sig=$(mcp_json '.signature | "\(.state)|\((.fingerprint // "") | ascii_downcase | gsub(":"; ""))|\(.signer)|\(.selfSigned)"')
+  SIGNED_ENTRY=$(mcp_json '.packageEntry // empty | tojson')
+  if [ "$MCP_STATUS" != "201" ]; then
+    fail "signed upload answered ${MCP_STATUS}: $(mcp_snip)"
+  elif [ "$sig" != "self_signed|${SIGN_FPR}|${SIGN_CN}|true" ]; then
+    fail "signature state|fingerprint|signer|selfSigned is '${sig}', want 'self_signed|${SIGN_FPR}|${SIGN_CN}|true' (valid only for MCP_TRUSTED_BUNDLE_SIGNERS)"
+  else
+    pass
+  fi
+fi
+
+begin_test "Bytes changed after signing are refused (422 mcp_bundle_signature_invalid)"
+if [ "$SIGN_READY" != "1" ]; then
+  skip "$SIGN_WHY"
+else
+  upload "${WORK_DIR}/v3-tampered.mcpb" 3.0.0
+  if why=$(mcp_check_problem 422 mcp_bundle_signature_invalid); then
+    pass
+  else
+    fail "tampered bundle: ${why}"
+  fi
+fi
+
+begin_test "mcp_require_bundle_signature: self_signed is 422 mcp_bundle_signer_untrusted on upload, 422 mcp_bundle_signature_required on publish"
+if [ "$SIGN_READY" != "1" ]; then
+  skip "$SIGN_WHY"
+elif [ -z "$SIGNED_ENTRY" ]; then
+  fail "no packageEntry from the signed upload to publish with"
+elif ! mcp_patch_repo "$REPO" '{"mcp_require_bundle_signature":true}'; then
+  fail "PATCH mcp_require_bundle_signature=true answered ${MCP_STATUS}: $(mcp_snip)"
+else
+  upload "${WORK_DIR}/v4-signed.mcpb" 4.0.0
+  up_why=$(mcp_check_problem 422 mcp_bundle_signer_untrusted) || true
+  mcp_server_json "$NAME" 2.0.0 "[${SIGNED_ENTRY}]" "" > "${WORK_DIR}/v2.json"
+  mcp_publish "$REPO" "${WORK_DIR}/v2.json"
+  pub_why=$(mcp_check_problem 422 mcp_bundle_signature_required) || true
+  mcp_patch_repo "$REPO" '{"mcp_require_bundle_signature":false}' || true
+  if [ -n "$up_why" ]; then
+    fail "self-signed upload with the signature required: ${up_why}"
+  elif [ -n "$pub_why" ]; then
+    fail "publish pinning a self-signed bundle with the signature required: ${pub_why}"
+  else
+    pass
   fi
 fi
 
@@ -291,6 +410,39 @@ else
   else
     pass
   fi
+fi
+
+begin_test "The bundle of a held version is the plain 404, also for the admin"
+DOC_ID=$(mcp_artifact_id "$REPO" "^servers/${NAME}/${VER}/server[.]json$")
+if [ -z "$DOC_ID" ]; then
+  fail "no server.json artifact for ${NAME}@${VER}"
+elif ! mcp_quarantine "$DOC_ID" "release-gate MCP version hold"; then
+  fail "quarantine of the server.json answered ${MCP_STATUS}: $(mcp_snip)"
+else
+  mcp_req GET "$(bundle_url)" admin
+  held_why=$(mcp_check_plain_404) || true
+  mcp_release "$DOC_ID" || true
+  mcp_req GET "$(bundle_url)" admin
+  after_release="$MCP_STATUS"
+  if [ -n "$held_why" ]; then
+    fail "bundle download of a held version: ${held_why}"
+  elif [ "$after_release" != "200" ]; then
+    fail "bundle download after the release answered ${after_release}, want 200"
+  else
+    pass
+  fi
+fi
+
+begin_test "The bundle of a soft-deleted version is the plain 404"
+mcp_req DELETE "$(mcp_base "$REPO")/$(mcp_version_path "$NAME" "$VER")" admin
+del_status="$MCP_STATUS"
+mcp_req GET "$(bundle_url)" admin
+if [ "$del_status" != "200" ]; then
+  fail "DELETE of ${NAME}@${VER} answered ${del_status}: $(mcp_snip)"
+elif why=$(mcp_check_plain_404); then
+  pass
+else
+  fail "bundle download of a deleted version: ${why}"
 fi
 
 end_suite
