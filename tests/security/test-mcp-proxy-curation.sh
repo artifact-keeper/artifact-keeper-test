@@ -303,8 +303,11 @@ for who in anon "$WRITER_TOKEN" admin; do
     [ "$MCP_STATUS" = "404" ] || leaks="${leaks} ${label}:exact:${n}=${MCP_STATUS}"
   done
 done
+# Under allowlist + approval_required the sync ingests approved names only
+# (docs "Sync", step 2): an unapproved name has a catalog row and no stored
+# version, so even the admin gets the unknown-name 404 (no reason body).
 mcp_get "$REMOTE" "$(mcp_version_path "$PENDING" 1.0.0)" admin
-admin_why=$(mcp_check_problem 404 mcp_pending_review) || leaks="${leaks} admin-reason:${admin_why}"
+admin_why=$(mcp_check_plain_404) || leaks="${leaks} admin-plain:${admin_why}"
 mcp_get "$REMOTE" "$(mcp_version_path "$PENDING" 1.0.0)" anon
 anon_why=$(mcp_check_plain_404) || leaks="${leaks} anon-plain:${anon_why}"
 if [ -z "$leaks" ]; then
