@@ -13,9 +13,14 @@
 # .../v0.1/validate with a valid document: the router fallback (404 with the
 # unknown-name body) -> mcp_skip_later_phase mcp_validate.
 #
-# Response shape (guess, upstream registry parity): {"valid": bool,
-# "issues": [{"path"?, "message", ...}]}; a refused document may also answer
-# with the publish error status, in which case the problem body is the issue.
+# Response shape (docs/mcp-registry.md "POST /validate"): always 200 for a
+# document, valid or not (413 mcp_too_large over the cap), with upstream's
+# ValidationResult plus packages: {"valid": bool, "issues": [{type, path,
+# message, severity, reference}], "packages": [...]}. Validation stops at the
+# first error: an invalid document has exactly one `error` issue whose
+# `reference` is the code the publish would answer. The version-taken check
+# (mcp_version_exists) is made only for a repository holder, so an anonymous
+# caller learns nothing a read would not tell it.
 #
 # Requires: curl, jq. mcp-publisher is optional (install_mcp_publisher);
 # without it the publisher test skips.
@@ -32,7 +37,7 @@ require_cmd curl
 require_cmd jq
 mcp_require_registry mcp_validate
 
-# --- Contract names not pinned by the docs yet (guesses) -------------------
+# --- Contract (docs/mcp-registry.md "POST /validate") ----------------------
 VALID_FIELD="valid"
 ISSUES_FIELD="issues"
 
@@ -47,19 +52,26 @@ validate_as() {
     -H "Content-Type: application/json" --data-binary "@$2"
 }
 
+# is_valid_answer: 200, valid true, no `error` issue.
 is_valid_answer() {
-  [ "$MCP_STATUS" = "200" ] && [ "$(mcp_json ".${VALID_FIELD}")" = "true" ]
+  [ "$MCP_STATUS" = "200" ] && [ "$(mcp_json ".${VALID_FIELD}")" = "true" ] \
+    && [ "$(mcp_json "[.${ISSUES_FIELD}[]? | select(.severity == \"error\")] | length")" = "0" ]
 }
 
-# is_invalid_answer: 200 with valid=false and issues, or a 4xx problem body.
-is_invalid_answer() {
-  if [ "$MCP_STATUS" = "200" ]; then
-    [ "$(mcp_json ".${VALID_FIELD}")" = "false" ] && [ "$(mcp_json ".${ISSUES_FIELD} | length")" -gt 0 ] 2>/dev/null
-  else
-    case "$MCP_STATUS" in
-      400|403|413|422) mcp_is_problem && [ -n "$(mcp_json '.detail // empty')" ] ;;
-      *) return 1 ;;
-    esac
+# invalid_why REFERENCE [PATH]: "" when the last answer is 200, valid false,
+# with exactly one `error` issue {type, path, message, severity, reference}
+# whose reference is REFERENCE (and path PATH when given); else why not.
+invalid_why() {
+  local got
+  if [ "$MCP_STATUS" != "200" ]; then
+    echo "HTTP ${MCP_STATUS} (want 200 for any document): $(mcp_snip)"
+    return
+  fi
+  got=$(mcp_json "[.${ISSUES_FIELD}[]? | select(.severity == \"error\")] | if length == 1 then .[0] | \"\(.type)|\(.path)|\(.reference)|\(.message | length > 0)\" else \"\(length) error issues\" end")
+  if [ "$(mcp_json ".${VALID_FIELD}")" != "false" ]; then
+    echo "valid is '$(mcp_json ".${VALID_FIELD}")', want false: $(mcp_snip)"
+  elif ! printf '%s' "$got" | grep -qE "^(schema|semantic)\|${2:-[^|]*}\|${1}\|true$"; then
+    echo "error issue type|path|reference|has-message is '${got}', want reference ${1}${2:+ at path ${2}}: $(mcp_snip)"
   fi
 }
 
@@ -89,17 +101,19 @@ else
   fail "valid document: ${MCP_API_VERSION} ${v01}, v0 ${v0} (want 200 ${VALID_FIELD}=true)" "$(mcp_snip)"
 fi
 
-begin_test "A bad document returns the issues"
+begin_test "A bad document is 200 valid=false with one error issue naming the field"
 validate_as anon "${WORK_DIR}/bad.json"
-if is_invalid_answer; then
+why=$(invalid_why mcp_invalid_server_json description)
+if [ -z "$why" ]; then
   validate_as anon "${WORK_DIR}/bad-name.json"
-  if is_invalid_answer; then
+  why=$(invalid_why mcp_invalid_server_json)
+  if [ -z "$why" ]; then
     pass
   else
-    fail "bad name: HTTP ${MCP_STATUS} $(mcp_snip)"
+    fail "bad name: ${why}"
   fi
 else
-  fail "101-character description: HTTP ${MCP_STATUS} $(mcp_snip)"
+  fail "101-character description: ${why}"
 fi
 
 begin_test "Validate is a dry run: nothing stored"
@@ -119,13 +133,28 @@ else
   fail "validate stored something: detail ${st}, listed ${n}"
 fi
 
+begin_test "A taken name@version is reported to a repository holder only"
+validate_as admin "${WORK_DIR}/good.json"
+holder_why=$(invalid_why mcp_version_exists version)
+validate_as anon "${WORK_DIR}/good.json"
+anon_ok=0
+is_valid_answer && anon_ok=1
+if [ -n "$holder_why" ]; then
+  fail "admin validate of the published ${NAME}@1.0.0: ${holder_why}"
+elif [ "$anon_ok" != "1" ]; then
+  fail "anonymous validate of a taken version must not reveal it (want 200 valid=true): HTTP ${MCP_STATUS} $(mcp_snip)"
+else
+  pass
+fi
+
 begin_test "Validate applies publish policy: a reserved namespace is reported"
 mcp_render_fixture "${CORPUS}/invalid/reserved-namespace.json" "${WORK_DIR}/reserved.json" "SLUG=${SLUG}-r"
 validate_as anon "${WORK_DIR}/reserved.json"
-if is_invalid_answer; then
+why=$(invalid_why mcp_namespace_reserved name)
+if [ -z "$why" ]; then
   pass
 else
-  fail "reserved namespace: HTTP ${MCP_STATUS} $(mcp_snip)"
+  fail "reserved namespace: ${why}"
 fi
 
 begin_test "mcp-publisher validate: valid document exits 0, bad document lists the issue"
