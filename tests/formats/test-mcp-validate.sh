@@ -16,8 +16,10 @@
 # Response shape (docs/mcp-registry.md "POST /validate"): always 200 for a
 # document, valid or not (413 mcp_too_large over the cap), with upstream's
 # ValidationResult plus packages: {"valid": bool, "issues": [{type, path,
-# message, severity, reference}], "packages": [...]}. Validation stops at the
-# first error: an invalid document has exactly one `error` issue whose
+# message, severity, reference}], "packages": [...]}. `packages` is always
+# present: [] for an invalid document, else one {index, registryType,
+# outcome} per package ([] for a remotes-only document). Validation stops at
+# the first error: an invalid document has exactly one `error` issue whose
 # `reference` is the code the publish would answer. The version-taken check
 # (mcp_version_exists) is made only for a repository holder, so an anonymous
 # caller learns nothing a read would not tell it.
@@ -52,10 +54,12 @@ validate_as() {
     -H "Content-Type: application/json" --data-binary "@$2"
 }
 
-# is_valid_answer: 200, valid true, no `error` issue.
+# is_valid_answer: 200, valid true, no `error` issue, `packages` an array
+# (the fixtures here are remotes-only, so []).
 is_valid_answer() {
   [ "$MCP_STATUS" = "200" ] && [ "$(mcp_json ".${VALID_FIELD}")" = "true" ] \
-    && [ "$(mcp_json "[.${ISSUES_FIELD}[]? | select(.severity == \"error\")] | length")" = "0" ]
+    && [ "$(mcp_json "[.${ISSUES_FIELD}[]? | select(.severity == \"error\")] | length")" = "0" ] \
+    && [ "$(mcp_json '.packages | tojson')" = "[]" ]
 }
 
 # invalid_why REFERENCE [PATH]: "" when the last answer is 200, valid false,
@@ -70,6 +74,8 @@ invalid_why() {
   got=$(mcp_json "[.${ISSUES_FIELD}[]? | select(.severity == \"error\")] | if length == 1 then .[0] | \"\(.type)|\(.path)|\(.reference)|\(.message | length > 0)\" else \"\(length) error issues\" end")
   if [ "$(mcp_json ".${VALID_FIELD}")" != "false" ]; then
     echo "valid is '$(mcp_json ".${VALID_FIELD}")', want false: $(mcp_snip)"
+  elif [ "$(mcp_json '.packages | tojson')" != "[]" ]; then
+    echo "packages is '$(mcp_json '.packages | tojson')', want [] (always present, empty for an invalid document): $(mcp_snip)"
   elif ! printf '%s' "$got" | grep -qE "^(schema|semantic)\|${2:-[^|]*}\|${1}\|true$"; then
     echo "error issue type|path|reference|has-message is '${got}', want reference ${1}${2:+ at path ${2}}: $(mcp_snip)"
   fi
@@ -88,7 +94,7 @@ if ! mcp_probe_route POST "$(mcp_base "$REPO")/validate" "$(cat "${WORK_DIR}/goo
   mcp_skip_later_phase mcp_validate "POST $(mcp_url_path "$(mcp_base "$REPO")")/validate answered ${MCP_STATUS} with the router fallback"
 fi
 
-begin_test "A valid document is valid (anonymous, ${MCP_API_VERSION} and /v0)"
+begin_test "A valid document is valid with packages [] (anonymous, ${MCP_API_VERSION} and /v0)"
 validate_as anon "${WORK_DIR}/good.json"
 v01="$MCP_STATUS:$(mcp_json ".${VALID_FIELD}")"
 ok01=0
@@ -101,7 +107,7 @@ else
   fail "valid document: ${MCP_API_VERSION} ${v01}, v0 ${v0} (want 200 ${VALID_FIELD}=true)" "$(mcp_snip)"
 fi
 
-begin_test "A bad document is 200 valid=false with one error issue naming the field"
+begin_test "A bad document is 200 valid=false, packages [], with one error issue naming the field"
 validate_as anon "${WORK_DIR}/bad.json"
 why=$(invalid_why mcp_invalid_server_json description)
 if [ -z "$why" ]; then
