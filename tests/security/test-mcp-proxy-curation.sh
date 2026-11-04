@@ -538,14 +538,14 @@ else
   pass
 fi
 
-begin_test "mcp_server_deny: a bare namespace is 400 (the globs match the full name)"
+begin_test "mcp_server_deny: a bare namespace is 422 (the globs match the full name)"
 mcp_patch_repo "$REMOTE" '{"mcp_server_deny":["io.github.acme-tools"]}' || true
 bare_deny="$MCP_STATUS"
 stored_deny=$(repo_field mcp_server_deny || true)
-if [ "$bare_deny" = "400" ] && { [ -z "$stored_deny" ] || [ "$stored_deny" = "[]" ]; }; then
+if [ "$bare_deny" = "422" ] && { [ -z "$stored_deny" ] || [ "$stored_deny" = "[]" ]; }; then
   pass
 else
-  fail "PATCH mcp_server_deny [io.github.acme-tools] answered ${bare_deny} (want 400); stored '${stored_deny}'"
+  fail "PATCH mcp_server_deny [io.github.acme-tools] answered ${bare_deny} (want 422); stored '${stored_deny}'"
 fi
 
 begin_test "mcp_server_deny (case-insensitive, * crosses /) wins over an approval"

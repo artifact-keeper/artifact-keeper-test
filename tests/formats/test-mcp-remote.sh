@@ -16,15 +16,13 @@
 #     so a new upstream version flows after a sync without a new approval
 #   - mcp_auto_approve_namespaces ["io.github.ak-fixture-other/*"] admits
 #     that namespace and not io.github.ak-fixture/*; a bare namespace entry is
-#     400 (the globs match the full server name)
+#     422 (the globs match the full server name)
 #   - mcp_server_deny wins over an approval (404 mcp_rejected for the admin)
 #   - upstream deleted version hidden, deprecated listed with its message.
 #     The first sync asks include_deleted=true (proven in
-#     test-mcp-upstream-sync-cursor.sh and test-mcp-mirror-sync.sh); in
-#     allowlist mode an approval ingests the name from upstream's
-#     /servers/{name}/versions, which omits deleted versions, so charlie
-#     2.1.0 may be stored deleted or not at all: include_deleted=true answers
-#     200 deleted or the plain 404, never an active entry
+#     test-mcp-upstream-sync-cursor.sh and test-mcp-mirror-sync.sh), so a
+#     version already deleted upstream is recorded and stored deleted:
+#     include_deleted=true answers 200 with status deleted
 #   - the npm-backed entry is unresolvable (its package is in no backing repo)
 #   - the oci-floating entry is never served unpinned; `hide` hides it
 #   - reads never call upstream; a second sync without changes fetches no
@@ -374,14 +372,14 @@ else
   fail "new upstream version of an approved name did not flow (sync answered ${SYNC_STATUS})"
 fi
 
-begin_test "${AUTO_APPROVE_KEY}: a bare namespace is 400 (the globs match the full name)"
+begin_test "${AUTO_APPROVE_KEY}: a bare namespace is 422 (the globs match the full name)"
 mcp_patch_repo "$REMOTE" "$(jq -cn --arg k "$AUTO_APPROVE_KEY" --arg g "$NS_OTHER" '{($k):[$g]}')" || true
 bare_status="$MCP_STATUS"
 echoed_globs=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${REMOTE}" | jq -c --arg k "$AUTO_APPROVE_KEY" '.[$k] // []')
-if [ "$bare_status" = "400" ] && [ "$echoed_globs" = "[]" ]; then
+if [ "$bare_status" = "422" ] && [ "$echoed_globs" = "[]" ]; then
   pass
 else
-  fail "PATCH ${AUTO_APPROVE_KEY}=[${NS_OTHER}] answered ${bare_status} (want 400); stored ${echoed_globs}"
+  fail "PATCH ${AUTO_APPROVE_KEY}=[${NS_OTHER}] answered ${bare_status} (want 422); stored ${echoed_globs}"
 fi
 
 begin_test "Namespace auto-approve ${NS_OTHER}/* admits that namespace and not ${NS}/*"
@@ -424,8 +422,8 @@ if wait_until "bravo 1.0.0 and charlie 2.0.0 served" "$SYNC_WAIT_SECS" served_ha
     fail "deleted charlie 2.1.0 visible: listed=${in_list} exact=${plain}"
   elif [ "$c_latest" != "2.0.0" ]; then
     fail "charlie latest is '${c_latest}', expected 2.0.0 (deleted versions are never latest)"
-  elif [ "$widened" != "404:" ] && [ "$widened" != "200:deleted" ]; then
-    fail "include_deleted=true on charlie 2.1.0 answered ${widened}, expected 200 status deleted or 404"
+  elif [ "$widened" != "200:deleted" ]; then
+    fail "include_deleted=true on charlie 2.1.0 answered ${widened}, expected 200 status deleted (a version deleted upstream before the first sync is recorded)"
   else
     pass
   fi
