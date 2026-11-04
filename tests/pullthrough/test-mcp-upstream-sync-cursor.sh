@@ -5,22 +5,27 @@
 # The mock upstream caps every page at 3 entries whatever limit Artifact
 # Keeper asks for, over the 14 fixture entries (8 names) in
 # tests/fixtures/mcp/upstream/servers. The request log proves:
-#   - the first sync walks every page: ceil(14/3) = 5 list requests, each
-#     page after the first carrying the previous page's nextCursor, with
-#     include_deleted forwarded (or updated_since, which implies it) so
-#     upstream deletions are seen
+#   - the first sync walks every page: 5 list requests, each page after the
+#     first carrying the previous page's nextCursor. The first pass has no
+#     watermark: it lists `?limit=100` (docs "Sync"), which upstream answers
+#     without deleted entries; the expected cursors are computed for the
+#     query the backend actually sent (include_deleted=true or not)
 #   - a second sync without upstream changes is one updated_since request
-#     and no version document fetch (no amplification)
-#   - a changed entry (bumped updatedAt, new description) is the only entry
-#     the next sync picks up, and its curation row carries the new summary
+#     (updated_since implies include_deleted, so deletions are seen from
+#     then on) and no version document fetch (no amplification)
+#   - a changed entry (bumped updatedAt, new description on the latest
+#     version) is the only entry the next sync picks up, and its catalog
+#     item (GET /api/v1/repositories/{key}/mcp/catalog) carries the new
+#     summary
 #   - an upstream status change to deleted mirrors: the version leaves the
 #     listing, its exact read is 404 and include_deleted=true shows it deleted
 #
 # Gates: mcp_require_registry mcp_registry_proxy; mcp_create_proxy_repo
 # (older backends refuse Remote mcp repos -> mcp_registry_proxy exemption);
-# then the behaviour probe: after POST /api/v1/curation/repos/{key}/sync a
-# backend that ships the Remote asks the mock for /servers or records
-# curation rows. Neither -> mcp_skip_later_phase mcp_registry_proxy.
+# then the route and behaviour probe: POST /api/v1/repositories/{key}/mcp/sync
+# answering the router's 404/405, or a sync after which the mock saw no
+# /servers request and the catalog lists no row -> mcp_skip_later_phase
+# mcp_registry_proxy.
 #
 # Requires: curl, jq, python3, MOCK_UPSTREAM_HOSTNAME.
 
@@ -38,11 +43,7 @@ require_cmd python3
 mcp_require_registry mcp_registry_proxy
 mcp_require_dialback
 
-# --- Contract names not pinned by the docs yet (guesses) -------------------
-# Manual sync trigger (task brief; phase23 stream A reuses the curation route).
-CURATION_SYNC_PATH="/api/v1/curation/repos/%s/sync"
-CURATION_LIST_PATH="/api/v1/curation/packages"
-CURATION_NAME_LEVEL_VERSION="*"
+# Sync and catalog: the management API helpers in mcp-helpers.sh.
 PROBE_WINDOW_SECS="${MCP_REMOTE_PROBE_SECS:-45}"
 SYNC_WAIT_SECS="${MCP_REMOTE_SYNC_SECS:-90}"
 
@@ -76,19 +77,17 @@ served_has() {
   served_pairs "$1" "${3:-admin}" | grep -qxF "$2"
 }
 
+# cur_load: the Remote's catalog (a CatalogItem array) into CUR_ROWS.
 cur_load() {
-  curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
-    "${BASE_URL}${CURATION_LIST_PATH}?staging_repo_id=${REMOTE_ID}&limit=500" -o "$CUR_ROWS" 2>/dev/null || echo '[]' > "$CUR_ROWS"
-  jq -e 'type == "array"' "$CUR_ROWS" >/dev/null 2>&1 || echo '[]' > "$CUR_ROWS"
+  mcp_catalog_load "$REMOTE" "$CUR_ROWS"
 }
 
 cur_row() {
-  jq -c --arg n "$1" --arg v "$CURATION_NAME_LEVEL_VERSION" \
-    '[.[] | select(.package_name == $n)] | ((map(select(.version == $v))[0]) // .[0]) // empty' "$CUR_ROWS" 2>/dev/null || true
+  mcp_catalog_item "$CUR_ROWS" "$1"
 }
 
 cur_names() {
-  jq -r '[.[].package_name] | unique | .[]' "$CUR_ROWS" 2>/dev/null || true
+  jq -r '[.[].name] | unique | .[]' "$CUR_ROWS" 2>/dev/null || true
 }
 
 cur_has_names() {
@@ -106,8 +105,7 @@ cur_approve() {
   local id
   id=$(cur_row "$1" | jq -r '.id // empty')
   [ -n "$id" ] || return 1
-  mcp_req POST "${BASE_URL}/api/v1/curation/packages/${id}/approve" admin -H "Content-Type: application/json" -d '{}'
-  [ "${MCP_STATUS:0:1}" = "2" ]
+  mcp_catalog_decide "$REMOTE" "$id" approve
 }
 
 log_lines() {
@@ -128,10 +126,8 @@ version_requests() {
 }
 
 remote_sync() {
-  # shellcheck disable=SC2059
-  mcp_req POST "${BASE_URL}$(printf "$CURATION_SYNC_PATH" "$REMOTE")" admin -H "Content-Type: application/json" -d '{}'
-  SYNC_STATUS="$MCP_STATUS"
-  sleep 1
+  mcp_remote_sync "$REMOTE" admin || true
+  SYNC_STATUS="$MCP_SYNC_STATUS"
   wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null || true
 }
 
@@ -143,12 +139,13 @@ print(q.get(sys.argv[2], [""])[-1])
 ' "$1" "$2"
 }
 
-# expected_cursors: the nextCursor values the mock hands out walking the
-# whole catalog at PAGE_SIZE (include_deleted), in order.
+# expected_cursors EXTRA_QUERY: the nextCursor values the mock hands out
+# walking the whole catalog at PAGE_SIZE with EXTRA_QUERY
+# ("&include_deleted=true" or ""), in order.
 expected_cursors() {
   local cursor="" url
   while :; do
-    url="${MCP_MOCK_LOCAL_URL}/v0.1/servers?limit=100&include_deleted=true"
+    url="${MCP_MOCK_LOCAL_URL}/v0.1/servers?limit=100${1}"
     [ -n "$cursor" ] && url="${url}&cursor=${cursor}"
     cursor=$(curl -s --max-time 10 "$url" | jq -r '.metadata.nextCursor // empty')
     [ -n "$cursor" ] || break
@@ -175,11 +172,16 @@ fi
 echo "$PAGE_SIZE" > "${MCP_MOCK_STATE_DIR}/page-size"
 LOG="${MCP_MOCK_STATE_DIR}/request-log.txt"
 FIXTURE_COUNT=$(find "${MCP_MOCK_STATE_DIR}/servers" -name '*.json' | wc -l | tr -d ' ')
+LIVE_COUNT=$(jq -r 'select((._meta["io.modelcontextprotocol.registry/official"].status // "active") != "deleted") | .server.name' \
+  "${MCP_MOCK_STATE_DIR}"/servers/*.json | wc -l | tr -d ' ')
 FIXTURE_NAMES=$(jq -r '.server.name' "${MCP_MOCK_STATE_DIR}"/servers/*.json | sort -u | wc -l | tr -d ' ')
-EXPECTED_PAGES=$(( (FIXTURE_COUNT + PAGE_SIZE - 1) / PAGE_SIZE ))
-mapfile -t EXPECTED_CURSORS < <(expected_cursors)
-if [ "$FIXTURE_COUNT" != "14" ] || [ "${#EXPECTED_CURSORS[@]}" != "$(( EXPECTED_PAGES - 1 ))" ]; then
-  infra_fail "fixture catalog drifted: ${FIXTURE_COUNT} entries, ${#EXPECTED_CURSORS[@]} cursors at page size ${PAGE_SIZE}"
+PAGES_ALL=$(( (FIXTURE_COUNT + PAGE_SIZE - 1) / PAGE_SIZE ))
+PAGES_LIVE=$(( (LIVE_COUNT + PAGE_SIZE - 1) / PAGE_SIZE ))
+mapfile -t CURSORS_ALL < <(expected_cursors "&include_deleted=true")
+mapfile -t CURSORS_LIVE < <(expected_cursors "")
+if [ "$FIXTURE_COUNT" != "14" ] || [ "$LIVE_COUNT" != "13" ] \
+  || [ "${#CURSORS_ALL[@]}" != "$(( PAGES_ALL - 1 ))" ] || [ "${#CURSORS_LIVE[@]}" != "$(( PAGES_LIVE - 1 ))" ]; then
+  infra_fail "fixture catalog drifted: ${FIXTURE_COUNT} entries (${LIVE_COUNT} not deleted), ${#CURSORS_ALL[@]}/${#CURSORS_LIVE[@]} cursors at page size ${PAGE_SIZE}"
   end_suite
 fi
 # Reading the mock to precompute cursors logged requests: start the log over.
@@ -197,11 +199,13 @@ _probe_contacted() {
   [ "$(jq 'length' "$CUR_ROWS" 2>/dev/null || echo 0)" -gt 0 ]
 }
 FIRST_SYNC_START=$(log_lines)
-# shellcheck disable=SC2059
-mcp_req POST "${BASE_URL}$(printf "$CURATION_SYNC_PATH" "$REMOTE")" admin -H "Content-Type: application/json" -d '{}'
-SYNC_STATUS="$MCP_STATUS"
+mcp_remote_sync "$REMOTE" admin || true
+SYNC_STATUS="$MCP_SYNC_STATUS"
+if ! mcp_remote_mounted; then
+  mcp_skip_later_phase mcp_registry_proxy "POST /api/v1/repositories/${REMOTE}/mcp/sync on a Remote mcp repository answered ${SYNC_STATUS}: the Remote management API is not mounted"
+fi
 if ! wait_until "the Remote syncs from the mock" "$PROBE_WINDOW_SECS" _probe_contacted; then
-  mcp_skip_later_phase mcp_registry_proxy "Remote ${REMOTE} over the mock upstream: POST $(printf "$CURATION_SYNC_PATH" "$REMOTE") answered ${SYNC_STATUS}, the mock saw no /servers request and GET ${CURATION_LIST_PATH}?staging_repo_id=<remote> listed no rows within ${PROBE_WINDOW_SECS}s"
+  mcp_skip_later_phase mcp_registry_proxy "Remote ${REMOTE} over the mock upstream: POST /api/v1/repositories/${REMOTE}/mcp/sync answered ${SYNC_STATUS}, the mock saw no /servers request and GET /api/v1/repositories/${REMOTE}/mcp/catalog listed no rows within ${PROBE_WINDOW_SECS}s"
 fi
 wait_until "every fixture name recorded" "$SYNC_WAIT_SECS" cur_has_names "$FIXTURE_NAMES" || true
 wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null || true
@@ -211,12 +215,22 @@ wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null ||
 # ---------------------------------------------------------------------------
 
 FIRST=$(requests_since "$FIRST_SYNC_START" | list_requests)
-
-begin_test "First sync walks every page (${EXPECTED_PAGES} list requests at page size ${PAGE_SIZE})"
-# A creation-time sync plus the manual one may both have run: count the
-# pages of one complete walk (the first request without a cursor up to the
-# last cursor) rather than all requests.
+# A creation-time sync plus the manual one may both have run: take one
+# complete walk (the first request without a cursor up to the last cursor)
+# rather than all requests.
 walk=$(printf '%s\n' "$FIRST" | awk '/cursor=/{print; next} {if (seen) exit; seen=1; print}')
+first_path=$(printf '%s\n' "$walk" | head -1 | awk '{print $3}')
+if [ "$(query_param "${first_path:-/}" include_deleted)" = "true" ] || [ -n "$(query_param "${first_path:-/}" updated_since)" ]; then
+  EXPECTED_PAGES="$PAGES_ALL"
+  EXPECTED_CURSORS=("${CURSORS_ALL[@]}")
+  WALK_KIND="with deleted entries"
+else
+  EXPECTED_PAGES="$PAGES_LIVE"
+  EXPECTED_CURSORS=("${CURSORS_LIVE[@]}")
+  WALK_KIND="without deleted entries (no watermark yet)"
+fi
+
+begin_test "First sync walks every page (${EXPECTED_PAGES} list requests at page size ${PAGE_SIZE}, ${WALK_KIND})"
 pages=$(printf '%s\n' "$walk" | grep -c . || true)
 if [ "$pages" = "$EXPECTED_PAGES" ]; then
   pass
@@ -238,26 +252,12 @@ else
 got:      ${got[*]}"
 fi
 
-begin_test "Sync asks for deleted entries too (include_deleted=true or updated_since)"
-missing=0
-while read -r _ts _m path; do
-  [ -n "${path:-}" ] || continue
-  if [ "$(query_param "$path" include_deleted)" != "true" ] && [ -z "$(query_param "$path" updated_since)" ]; then
-    missing=$(( missing + 1 ))
-  fi
-done <<< "$walk"
-if [ "$missing" = "0" ]; then
-  pass
-else
-  fail "${missing} page request(s) would miss upstream deletions" "$walk"
-fi
-
-begin_test "Every upstream name has a curation row after the first sync"
+begin_test "Every upstream name has a catalog row after the first sync"
 cur_load
 if [ "$(cur_names | wc -l | tr -d ' ')" = "$FIXTURE_NAMES" ]; then
   pass
 else
-  fail "curation rows for $(cur_names | wc -l | tr -d ' ') of ${FIXTURE_NAMES} names" "$(cur_names)"
+  fail "catalog rows for $(cur_names | wc -l | tr -d ' ') of ${FIXTURE_NAMES} names" "$(cur_names)"
 fi
 
 # Approve alpha so its versions are ingested (deleted-status mirroring below
@@ -289,9 +289,12 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "A changed entry (bumped updatedAt) is the only entry the next sync picks up"
-NEW_DESC="Alpha fixture server, revised ${RUN_ID}"
+# bravo 1.0.0 is bravo's upstream latest, whose title and description the
+# catalog summary caches.
+NEW_DESC="Bravo fixture server, revised ${RUN_ID}"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-fixture_set "io.github.ak-fixture__bravo@0.9.0.json" \
+# shellcheck disable=SC2016 # jq variables, not shell
+fixture_set "io.github.ak-fixture__bravo@1.0.0.json" \
   '.server.description = $d | ._meta["io.modelcontextprotocol.registry/official"].updatedAt = $u' \
   --arg d "$NEW_DESC" --arg u "$NOW"
 start=$(log_lines)
@@ -307,12 +310,12 @@ picked=$(curl -s --max-time 10 "${MCP_MOCK_LOCAL_URL}/v0.1/servers?updated_since
   | jq -r '[.servers[] | "\(.server.name)@\(.server.version)"] | join(",")')
 if [ "$n_lists" != "1" ] || [ -z "$since_val" ]; then
   fail "expected one updated_since page, got ${n_lists}" "$third"
-elif [ "$picked" != "${NS}/bravo@0.9.0" ]; then
-  fail "the sync's updated_since (${since_val}) selects '${picked}', expected only ${NS}/bravo@0.9.0"
+elif [ "$picked" != "${NS}/bravo@1.0.0" ]; then
+  fail "the sync's updated_since (${since_val}) selects '${picked}', expected only ${NS}/bravo@1.0.0"
 elif [ -n "$others" ]; then
   fail "the sync fetched version documents of unchanged names" "$others"
-elif ! wait_until "bravo's curation row carries the new summary" 30 cur_row_mentions "${NS}/bravo" "$NEW_DESC"; then
-  fail "bravo's curation row does not reflect the changed upstream entry" "$(cur_row "${NS}/bravo" | head -c 600)"
+elif ! wait_until "bravo's catalog item carries the new summary" 30 cur_row_mentions "${NS}/bravo" "$NEW_DESC"; then
+  fail "bravo's catalog item does not reflect the changed upstream entry" "$(cur_row "${NS}/bravo" | head -c 600)"
 else
   pass
 fi
@@ -323,6 +326,7 @@ fi
 
 begin_test "An upstream status change to deleted mirrors on the next sync"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# shellcheck disable=SC2016 # jq variables, not shell
 fixture_set "io.github.ak-fixture__alpha@1.0.0.json" \
   '._meta["io.modelcontextprotocol.registry/official"].status = "deleted" | ._meta["io.modelcontextprotocol.registry/official"].updatedAt = $u' \
   --arg u "$NOW"
