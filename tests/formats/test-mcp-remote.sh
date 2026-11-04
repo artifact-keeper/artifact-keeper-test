@@ -359,7 +359,7 @@ else
 fi
 
 begin_test "${AUTO_APPROVE_KEY}: a bare namespace is 400 (the globs match the full name)"
-mcp_patch_repo "$REMOTE" "$(jq -cn --arg k "$AUTO_APPROVE_KEY" --arg g "$NS_OTHER" '{($k):[$g]}')"
+mcp_patch_repo "$REMOTE" "$(jq -cn --arg k "$AUTO_APPROVE_KEY" --arg g "$NS_OTHER" '{($k):[$g]}')" || true
 bare_status="$MCP_STATUS"
 echoed_globs=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${REMOTE}" | jq -c --arg k "$AUTO_APPROVE_KEY" '.[$k] // []')
 if [ "$bare_status" = "400" ] && [ "$echoed_globs" = "[]" ]; then

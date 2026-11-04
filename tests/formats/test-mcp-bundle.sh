@@ -266,7 +266,7 @@ else
   admin_why=$(mcp_check_problem 404 mcp_backing_artifact_blocked) || true
   mcp_req GET "$(bundle_url)" admin
   dl_why=$(mcp_check_plain_404) || true
-  mcp_release "$BUNDLE_ID"
+  mcp_release "$BUNDLE_ID" || true
   release_status="$MCP_STATUS"
   mcp_get "$REPO" "$(mcp_version_path "$NAME" "$VER")" admin
   restored="$MCP_STATUS"

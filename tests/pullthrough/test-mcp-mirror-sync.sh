@@ -164,7 +164,7 @@ if ! mcp_create_proxy_repo "$REMOTE" remote "$MCP_MOCK_BASE_URL"; then
 fi
 REMOTE_ID=$(mcp_repo_id "$REMOTE")
 [ -n "$REMOTE_ID" ] || fail_fatal "Remote ${REMOTE} has no id"
-mcp_patch_repo "$REMOTE" "$(jq -cn --arg k "$MIRROR_KEY" --arg v "$MIRROR_VALUE" '{($k):$v}')"
+mcp_patch_repo "$REMOTE" "$(jq -cn --arg k "$MIRROR_KEY" --arg v "$MIRROR_VALUE" '{($k):$v}')" || true
 PATCH_STATUS="$MCP_STATUS"
 echoed=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${REMOTE}" | jq -r --arg k "$MIRROR_KEY" '.[$k] // empty')
 pass

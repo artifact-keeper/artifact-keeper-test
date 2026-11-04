@@ -158,8 +158,8 @@ else
 fi
 
 begin_test "mcp-publisher validate: valid document exits 0, bad document lists the issue"
-install_mcp_publisher
-rc=$?
+rc=0
+install_mcp_publisher || rc=$?
 if [ "$rc" != "0" ]; then
   skip "mcp-publisher unavailable: ${MCP_PUBLISHER_ERROR}"
 else
@@ -172,12 +172,12 @@ else
   mcp_render_fixture "${CORPUS}/valid/minimal-remote.json" "${WORK_DIR}/pubgood/server.json" "SLUG=${SLUG}-pub"
   cp "${WORK_DIR}/bad.json" "${WORK_DIR}/pubbad/server.json"
   cd "${WORK_DIR}/pubgood" || fail_fatal "cd pubgood"
-  mcp_publisher "$PUB_HOME" validate
-  good_rc=$?
+  good_rc=0
+  mcp_publisher "$PUB_HOME" validate || good_rc=$?
   good_out="$MCP_PUBLISHER_OUT"
   cd "${WORK_DIR}/pubbad" || fail_fatal "cd pubbad"
-  mcp_publisher "$PUB_HOME" validate
-  bad_rc=$?
+  bad_rc=0
+  mcp_publisher "$PUB_HOME" validate || bad_rc=$?
   bad_out="$MCP_PUBLISHER_OUT"
   cd "$OLDPWD_SUITE" || true
   if [ "$good_rc" != "0" ]; then

@@ -155,8 +155,8 @@ fi
 
 PUBLISHER_OK=false
 begin_test "Install mcp-publisher ${MCP_PUBLISHER_VERSION}"
-install_mcp_publisher
-rc=$?
+rc=0
+install_mcp_publisher || rc=$?
 if [ "$rc" = "0" ]; then
   PUBLISHER_OK=true
   pass
