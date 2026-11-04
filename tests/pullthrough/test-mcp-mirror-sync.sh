@@ -8,12 +8,20 @@
 # /v0.1. Ingested documents are write-once: when the upstream changes the
 # content of an already ingested, approved name@version (same version,
 # different description) the approval of that version is revoked (hold
-# content_drift, curation row back to pending/review) and audited
-# MCP_SERVER_CONTENT_DRIFT.
+# content_drift, a name@version catalog row in `review` with contentDrift)
+# and audited MCP_SERVER_CONTENT_DRIFT; the stored document is kept.
+#
+# Sync, catalog and decisions go through the Remote management API
+# (/api/v1/repositories/{key}/mcp/{sync,catalog}, docs/mcp-registry.md
+# "Management API"). The first pass has no watermark and lists the upstream
+# without include_deleted, so a version already deleted upstream before the
+# first sync is never seen; deleted-status mirroring is proven on a version
+# deleted after it was ingested.
 #
 # Gates: mcp_require_registry mcp_mirror; mcp_create_proxy_repo (older
-# backends refuse Remote mcp repos -> mcp_registry_proxy exemption); then a
-# BEHAVIOUR probe. Settings are echoed with defaults by the Phase 2/3
+# backends refuse Remote mcp repos -> mcp_registry_proxy exemption); the
+# management sync route (router 404/405 -> mcp_skip_later_phase mcp_mirror);
+# then a BEHAVIOUR probe. Settings are echoed with defaults by the Phase 2/3
 # scaffold before the behaviour ships, so the probe is not the echo: with
 # mcp_remote_mode=mirror and a sync, a backend that ships mirror mode stores
 # the unapproved upstream versions as artifacts of the Remote (or records an
@@ -36,12 +44,9 @@ require_cmd python3
 mcp_require_registry mcp_mirror
 mcp_require_dialback
 
-# --- Contract names (docs "Repository settings"; the rest are guesses) -----
-MIRROR_KEY="mcp_remote_mode"          # docs: allowlist | mirror
+# --- Contract (docs/mcp-registry.md "Repository settings", "Sync") ---------
+MIRROR_KEY="mcp_remote_mode"          # allowlist | mirror
 MIRROR_VALUE="mirror"
-CURATION_SYNC_PATH="/api/v1/curation/repos/%s/sync"   # guess (stream A)
-CURATION_LIST_PATH="/api/v1/curation/packages"
-CURATION_NAME_LEVEL_VERSION="*"                         # guess (phase23 brief)
 DRIFT_AUDIT_ACTION="MCP_SERVER_CONTENT_DRIFT"           # docs/audit-events.md
 MIRROR_AUDIT_ACTION="MCP_MIRROR_SYNCED"                 # docs/audit-events.md
 DRIFT_HOLD="content_drift"                              # formats/mcp.rs HoldKind
@@ -77,32 +82,34 @@ served_has() {
   served_pairs "$1" "${3:-admin}" | grep -qxF "$2"
 }
 
+# cur_load: the Remote's catalog (a CatalogItem array) into CUR_ROWS.
 cur_load() {
-  curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
-    "${BASE_URL}${CURATION_LIST_PATH}?staging_repo_id=${REMOTE_ID}&limit=500" -o "$CUR_ROWS" 2>/dev/null || echo '[]' > "$CUR_ROWS"
-  jq -e 'type == "array"' "$CUR_ROWS" >/dev/null 2>&1 || echo '[]' > "$CUR_ROWS"
+  mcp_catalog_load "$REMOTE" "$CUR_ROWS"
 }
 
-# cur_statuses NAME: every status of NAME's rows (name-level and pins).
+# cur_statuses NAME: "*=<name status>" then "<version>=<status>[+drift]"
+# for each name@version row (pins and drift re-queues) of NAME.
 cur_statuses() {
-  jq -r --arg n "$1" '[.[] | select(.package_name == $n) | "\(.version)=\(.status)"] | join(" ")' "$CUR_ROWS" 2>/dev/null || true
+  jq -r --arg n "$1" 'map(select(.name == $n))[0] // {}
+    | (["*=\(.status)"] + [(.pins // [])[] | "\(.version)=\(.status)\(if .contentDrift then "+drift" else "" end)"]) | join(" ")' \
+    "$CUR_ROWS" 2>/dev/null || true
 }
 
+# cur_approve NAME: POST .../mcp/catalog/{id}/approve on NAME's row.
 cur_approve() {
   cur_load
   local id
-  id=$(jq -r --arg n "$1" --arg v "$CURATION_NAME_LEVEL_VERSION" \
-    '[.[] | select(.package_name == $n)] | ((map(select(.version == $v))[0]) // .[0]) | .id // empty' "$CUR_ROWS")
+  id=$(jq -r --arg n "$1" 'map(select(.name == $n))[0].id // empty' "$CUR_ROWS")
   [ -n "$id" ] || return 1
-  mcp_req POST "${BASE_URL}/api/v1/curation/packages/${id}/approve" admin -H "Content-Type: application/json" -d '{}'
-  [ "${MCP_STATUS:0:1}" = "2" ]
+  mcp_catalog_decide "$REMOTE" "$id" approve
 }
 
+# remote_sync: one synchronous pass (POST .../mcp/sync). SYNC_SUMMARY is
+# the pass's SyncSummary.
 remote_sync() {
-  # shellcheck disable=SC2059
-  mcp_req POST "${BASE_URL}$(printf "$CURATION_SYNC_PATH" "$REMOTE")" admin -H "Content-Type: application/json" -d '{}'
-  SYNC_STATUS="$MCP_STATUS"
-  sleep 1
+  mcp_remote_sync "$REMOTE" admin || true
+  SYNC_STATUS="$MCP_SYNC_STATUS"
+  SYNC_SUMMARY=$(mcp_json '.summary // {}' | jq -c . 2>/dev/null || echo '{}')
   wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null || true
 }
 
@@ -114,10 +121,11 @@ artifact_paths() {
 }
 
 # expected_paths: servers/{name}/{version}/server.json for every fixture
-# entry the mock serves with include_deleted (status is mirrored, so deleted
-# versions are stored too).
+# entry that is not deleted upstream (the first pass has no updated_since
+# watermark and does not ask for deleted entries).
 expected_paths() {
-  jq -r '"servers/\(.server.name)/\(.server.version)/server.json"' "${MCP_MOCK_STATE_DIR}"/servers/*.json | sort
+  jq -r 'select((._meta["io.modelcontextprotocol.registry/official"].status // "active") != "deleted")
+    | "servers/\(.server.name)/\(.server.version)/server.json"' "${MCP_MOCK_STATE_DIR}"/servers/*.json | sort
 }
 
 has_all_artifacts() {
@@ -161,7 +169,10 @@ PATCH_STATUS="$MCP_STATUS"
 echoed=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${REMOTE}" | jq -r --arg k "$MIRROR_KEY" '.[$k] // empty')
 pass
 
-remote_sync "$REMOTE"
+remote_sync
+if ! mcp_remote_mounted; then
+  mcp_skip_later_phase mcp_mirror "POST /api/v1/repositories/${REMOTE}/mcp/sync on a Remote mcp repository answered ${SYNC_STATUS}: the Remote management API is not mounted"
+fi
 if ! wait_until "mirror sync stores upstream versions" "$PROBE_WINDOW_SECS" mirror_probe; then
   mcp_skip_later_phase mcp_mirror "Remote ${REMOTE} with ${MIRROR_KEY}=${MIRROR_VALUE} (PATCH ${PATCH_STATUS}, echoed '${echoed}'), sync answered ${SYNC_STATUS}: no artifact in /api/v1/repositories/${REMOTE}/artifacts and no ${MIRROR_AUDIT_ACTION} audit event within ${PROBE_WINDOW_SECS}s"
 fi
@@ -195,30 +206,44 @@ else
   pass
 fi
 
-begin_test "Upstream status is mirrored (deprecated listed, deleted hidden) once approved"
+begin_test "Upstream status is mirrored (deprecated listed, a later upstream delete hidden) once approved"
 cur_approve "${NS}/bravo" && cur_approve "${NS}/charlie"
-if wait_until "bravo 1.0.0 served" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS}/bravo@1.0.0" anon; then
+if wait_until "bravo 1.0.0 and charlie 2.0.0 served" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS}/bravo@1.0.0" anon \
+  && served_has "$REMOTE" "${NS}/charlie@2.0.0" anon; then
   mcp_get "$REMOTE" "$(mcp_version_path "${NS}/bravo" 1.0.0)" anon
   b_status=$(mcp_json '._meta["io.modelcontextprotocol.registry/official"].status')
-  mcp_get "$REMOTE" "$(mcp_version_path "${NS}/charlie" 2.1.0)?include_deleted=true" anon
-  c_status=$(mcp_json '._meta["io.modelcontextprotocol.registry/official"].status')
-  c_listed=$(served_pairs "$REMOTE" anon | grep -cxF "${NS}/charlie@2.1.0" || true)
-  if [ "$b_status" = "deprecated" ] && [ "$c_status" = "deleted" ] && [ "$c_listed" = "0" ]; then
+  cf="${MCP_MOCK_STATE_DIR}/servers/io.github.ak-fixture__charlie@2.0.0.json"
+  jq --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '._meta["io.modelcontextprotocol.registry/official"].status = "deleted" | ._meta["io.modelcontextprotocol.registry/official"].updatedAt = $u' \
+    "$cf" > "${cf}.tmp" && mv "${cf}.tmp" "$cf"
+  remote_sync
+  _charlie_hidden() {
+    ! served_pairs "$REMOTE" anon | grep -qxF "${NS}/charlie@2.0.0"
+  }
+  wait_until "charlie 2.0.0 leaves the listing" "$SYNC_WAIT_SECS" _charlie_hidden || true
+  c_listed=$(served_pairs "$REMOTE" anon | grep -cxF "${NS}/charlie@2.0.0" || true)
+  mcp_get "$REMOTE" "$(mcp_version_path "${NS}/charlie" 2.0.0)?include_deleted=true" anon
+  c_status="${MCP_STATUS}:$(mcp_json '._meta["io.modelcontextprotocol.registry/official"].status')"
+  if [ "$b_status" = "deprecated" ] && [ "$c_status" = "200:deleted" ] && [ "$c_listed" = "0" ]; then
     pass
   else
-    fail "bravo 1.0.0 status '${b_status}' (want deprecated), charlie 2.1.0 include_deleted status '${c_status}' (want deleted), listed ${c_listed}"
+    fail "bravo 1.0.0 status '${b_status}' (want deprecated), charlie 2.0.0 include_deleted '${c_status}' (want 200:deleted), listed ${c_listed} (sync ${SYNC_STATUS} ${SYNC_SUMMARY})"
   fi
 else
-  fail "approved bravo not served"
+  fail "approved bravo/charlie not served"
 fi
 
 begin_test "Approve alpha: 1.1.0 is served from the mirrored artifact"
 if cur_approve "${NS}/alpha" && wait_until "alpha 1.1.0 served" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS}/alpha@1.1.0" anon; then
   BEFORE_SHA=$(stored_sha)
-  if [ -n "$BEFORE_SHA" ]; then
-    pass
-  else
+  mcp_get "$REMOTE" "$(mcp_version_path "${NS}/alpha" 1.1.0)" anon
+  src=$(mcp_json '._meta["com.artifactkeeper.registry/source"] | "\(.origin)|\(.kind)|\(.upstreamUrl)"')
+  if [ -z "$BEFORE_SHA" ]; then
     fail_fatal "no stored artifact for alpha 1.1.0 (GET /api/v1/repositories/${REMOTE}/artifacts/servers/${NS}/alpha/1.1.0/server.json)"
+  elif [ "$src" != "mirror|upstream|${MCP_MOCK_BASE_URL}" ]; then
+    fail "mirrored alpha 1.1.0 source block origin|kind|upstreamUrl is '${src}', expected 'mirror|upstream|${MCP_MOCK_BASE_URL}'"
+  else
+    pass
   fi
 else
   fail_fatal "approved alpha 1.1.0 never served (approve answered ${MCP_STATUS})"
@@ -229,7 +254,8 @@ DRIFT_DESC="Alpha fixture server (changed upstream ${RUN_ID})"
 f="${MCP_MOCK_STATE_DIR}/servers/io.github.ak-fixture__alpha@1.1.0.json"
 jq --arg d "$DRIFT_DESC" --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '.server.description = $d | ._meta["io.modelcontextprotocol.registry/official"].updatedAt = $u' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
-remote_sync "$REMOTE"
+remote_sync
+DRIFT_SUMMARY="$SYNC_SUMMARY"
 _alpha_hidden() {
   mcp_get "$REMOTE" "$(mcp_version_path "${NS}/alpha" 1.1.0)" anon
   [ "$MCP_STATUS" = "404" ]
@@ -252,7 +278,7 @@ if wait_until "alpha 1.1.0 hidden after drift" "$SYNC_WAIT_SECS" _alpha_hidden; 
     fi
   fi
 else
-  fail "alpha 1.1.0 still served after its upstream content changed (sync answered ${SYNC_STATUS})"
+  fail "alpha 1.1.0 still served after its upstream content changed (sync answered ${SYNC_STATUS} ${DRIFT_SUMMARY})"
 fi
 
 begin_test "The drifted version's stored document was not overwritten"
@@ -267,18 +293,21 @@ else
   pass
 fi
 
-begin_test "Curation for the drifted version is back to pending/review; other versions still served"
+begin_test "The drifted version is re-queued (catalog pin 1.1.0 in review with contentDrift); other versions still served"
 cur_load
 statuses=$(cur_statuses "${NS}/alpha")
 alpha_other=$(served_pairs "$REMOTE" anon | grep -c "^${NS}/alpha@1.0.0$" || true)
-if printf '%s' "$statuses" | grep -qE '(1\.1\.0|\*)=(pending|review)'; then
-  if [ "$alpha_other" = "1" ]; then
-    pass
-  else
-    fail "revoking 1.1.0 also hid alpha 1.0.0 (statuses: ${statuses})"
-  fi
+drifted=$(printf '%s' "$DRIFT_SUMMARY" | jq -r '.drifted // 0' 2>/dev/null || echo 0)
+if ! printf '%s' "$statuses" | grep -qE '(^| )1\.1\.0=review\+drift( |$)'; then
+  fail "no name@version row 1.1.0=review with contentDrift for alpha after drift: ${statuses}"
+elif ! printf '%s' "$statuses" | grep -qE '^\*=approved( |$)'; then
+  fail "the drift re-queue changed the name-level decision: ${statuses}"
+elif [ "$alpha_other" != "1" ]; then
+  fail "revoking 1.1.0 also hid alpha 1.0.0 (statuses: ${statuses})"
+elif [ "$drifted" -lt 1 ] 2>/dev/null; then
+  fail "the drift sync's summary reports drifted=${drifted}: ${DRIFT_SUMMARY}"
 else
-  fail "no pending/review curation row for alpha after drift: ${statuses}"
+  pass
 fi
 
 begin_test "Content drift is audited ${DRIFT_AUDIT_ACTION}"
