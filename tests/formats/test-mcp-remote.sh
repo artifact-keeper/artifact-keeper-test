@@ -18,7 +18,13 @@
 #     that namespace and not io.github.ak-fixture/*; a bare namespace entry is
 #     400 (the globs match the full server name)
 #   - mcp_server_deny wins over an approval (404 mcp_rejected for the admin)
-#   - upstream deleted version hidden, deprecated listed with its message
+#   - upstream deleted version hidden, deprecated listed with its message.
+#     The first sync asks include_deleted=true (proven in
+#     test-mcp-upstream-sync-cursor.sh and test-mcp-mirror-sync.sh); in
+#     allowlist mode an approval ingests the name from upstream's
+#     /servers/{name}/versions, which omits deleted versions, so charlie
+#     2.1.0 may be stored deleted or not at all: include_deleted=true answers
+#     200 deleted or the plain 404, never an active entry
 #   - the npm-backed entry is unresolvable (its package is in no backing repo)
 #   - the oci-floating entry is never served unpinned; `hide` hides it
 #   - reads never call upstream; a second sync without changes fetches no
@@ -27,7 +33,7 @@
 #     origin remote, kind upstream, upstreamUrl = the Remote's upstream_url,
 #     upstreamVerified false (the mock is neither the official registry nor
 #     an Artifact Keeper)
-#   - publish to the Remote -> 405 mcp_read_only
+#   - publish and status changes on the Remote -> 405 mcp_read_only
 #   - upstream 503: the listing keeps answering from what was synced
 #     (assumption: 503 mcp_gate_unavailable is reserved for a gate that
 #     cannot be EVALUATED, issue 4.4; an upstream outage is not a gate
@@ -39,7 +45,9 @@
 # sees no request for shared while the Virtual is read), a remote-only
 # approved server resolves through the Virtual (its source block names the
 # member and adds virtualRepository), a cursor walk at limit=3 is complete and
-# non-overlapping, publish -> 405 mcp_read_only.
+# non-overlapping, a malformed cursor is 400 mcp_invalid_query (the hosted
+# answer), publish and status changes -> 405 mcp_read_only, POST /validate
+# -> 501 mcp_not_implemented.
 #
 # Public leg (optional): AK_TEST_MCP_PUBLIC_UPSTREAM=1 also proxies
 # registry.modelcontextprotocol.io and checks deny by default there.
@@ -122,7 +130,7 @@ served_lacks_name() {
 
 # cur_load [KEY]: the Remote's catalog (a CatalogItem array) into CUR_ROWS.
 cur_load() {
-  mcp_catalog_load "${1:-$REMOTE}" "$CUR_ROWS"
+  mcp_catalog_load "${1:-$REMOTE}" "$CUR_ROWS" || true
 }
 
 # cur_field NAME FIELD: FIELD of NAME's catalog item (id, status, ...).
@@ -389,7 +397,7 @@ else
 fi
 
 begin_test "Upstream deprecated version is listed with its message; deleted version is hidden"
-cur_approve "${NS}/bravo" && cur_approve "${NS}/charlie"
+cur_approve "${NS}/bravo" || true; cur_approve "${NS}/charlie" || true
 if wait_until "bravo 1.0.0 and charlie 2.0.0 served" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS}/bravo@1.0.0" anon \
   && served_has "$REMOTE" "${NS}/charlie@2.0.0" anon; then
   mcp_get "$REMOTE" "$(mcp_version_path "${NS}/bravo" 1.0.0)" anon
@@ -418,7 +426,7 @@ else
 fi
 
 begin_test "mcp_server_deny wins over an approval"
-cur_approve "${NS}/delta"
+cur_approve "${NS}/delta" || true
 if wait_until "delta 1.10.0 served" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS}/delta@1.10.0" anon; then
   if mcp_patch_repo "$REMOTE" "$(jq -cn --arg g "${NS}/del*" '{mcp_server_deny:[$g]}')"; then
     if wait_until "delta hidden" 30 served_lacks_name "$REMOTE" "${NS}/delta" anon; then
@@ -444,7 +452,7 @@ else
 fi
 
 begin_test "Upstream npm-backed entry with its package in no backing repo is unresolvable and hidden"
-cur_approve "${NS}/npm-backed"
+cur_approve "${NS}/npm-backed" || true
 remote_sync "$REMOTE"
 if wait_until "npm-backed ingested" "$SYNC_WAIT_SECS" detail_not_pending "$REMOTE" "${NS}/npm-backed" 1.0.0; then
   err=$(admin_detail_error "$REMOTE" "${NS}/npm-backed" 1.0.0)
@@ -458,7 +466,7 @@ else
 fi
 
 begin_test "Upstream OCI entry on a floating tag is never served unpinned; hide hides it"
-cur_approve "${NS}/oci-floating"
+cur_approve "${NS}/oci-floating" || true
 remote_sync "$REMOTE"
 if wait_until "oci-floating ingested" "$SYNC_WAIT_SECS" detail_not_pending "$REMOTE" "${NS}/oci-floating" 1.0.0; then
   mcp_get "$REMOTE" "$(mcp_version_path "${NS}/oci-floating" 1.0.0)" admin
@@ -516,18 +524,19 @@ else
     "$(tail -n 20 "${MCP_MOCK_STATE_DIR}/request-log.txt")"
 fi
 
-begin_test "Publish to a Remote is 405 and never reaches upstream"
+begin_test "Publish and status changes on a Remote are 405 mcp_read_only and never reach upstream"
 mcp_server_json "${NS}/alpha" 9.9.9 "" "$(mcp_remote_json "https://alpha.mcp.example.invalid/mcp")" > "${WORK_DIR}/remote-publish.json"
 before=$(mcp_mock_count)
 mcp_publish "$REMOTE" "${WORK_DIR}/remote-publish.json"
-if why=$(mcp_check_problem 405 mcp_read_only); then
-  if [ "$(mcp_mock_count)" = "$before" ]; then
-    pass
-  else
-    fail "publish to the Remote was forwarded upstream"
-  fi
+pub_why=$(mcp_check_problem 405 mcp_read_only) || true
+mcp_patch_status "$REMOTE" "${NS}/alpha" 1.2.0 deprecated "release-gate"
+status_why=$(mcp_check_problem 405 mcp_read_only) || true
+if [ -n "$pub_why" ] || [ -n "$status_why" ]; then
+  fail "write on the Remote: publish ${pub_why:-ok}; status PATCH ${status_why:-ok}"
+elif [ "$(mcp_mock_count)" != "$before" ]; then
+  fail "a write to the Remote was forwarded upstream"
 else
-  fail "$why"
+  pass
 fi
 
 begin_test "Upstream outage: the Remote keeps serving what it synced"
@@ -556,7 +565,7 @@ mcp_publish "$LOCAL" "${WORK_DIR}/shared.json"
 if [ "$MCP_STATUS" != "200" ]; then
   fail_fatal "publish shared@9.0.0 to ${LOCAL}" "HTTP ${MCP_STATUS}: $(mcp_snip)"
 fi
-cur_approve "${NS}/shared"
+cur_approve "${NS}/shared" || true
 if wait_until "Remote serves shared 1.1.0" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS}/shared@1.1.0" anon; then
   pass
 else
@@ -629,18 +638,38 @@ else
   pass
 fi
 
-begin_test "Publish to a Virtual is 405"
+begin_test "A malformed Virtual cursor is 400 mcp_invalid_query, as on a hosted repository"
+mcp_get "$VIRTUAL" "servers?cursor=not-a-cursor%21%21" anon
+if why=$(mcp_check_problem 400 mcp_invalid_query); then
+  pass
+else
+  fail "malformed Virtual cursor: ${why}"
+fi
+
+begin_test "Publish and status changes on a Virtual are 405 mcp_read_only"
 mcp_server_json "${NS}/virtual-write-${RUN_ID}" 1.0.0 "" "$(mcp_remote_json "https://v.example.invalid/mcp")" > "${WORK_DIR}/virtual-publish.json"
 mcp_publish "$VIRTUAL" "${WORK_DIR}/virtual-publish.json"
-if why=$(mcp_check_problem 405 mcp_read_only); then
-  mcp_get "$LOCAL" "$(mcp_version_path "${NS}/virtual-write-${RUN_ID}" 1.0.0)" admin
-  if [ "$MCP_STATUS" = "404" ]; then
-    pass
-  else
-    fail "publish to the Virtual landed in a member (HTTP ${MCP_STATUS})"
-  fi
+pub_why=$(mcp_check_problem 405 mcp_read_only) || true
+mcp_patch_status "$VIRTUAL" "${NS}/shared" 9.0.0 deprecated "release-gate"
+status_why=$(mcp_check_problem 405 mcp_read_only) || true
+mcp_get "$LOCAL" "$(mcp_version_path "${NS}/virtual-write-${RUN_ID}" 1.0.0)" admin
+landed="$MCP_STATUS"
+mcp_get "$LOCAL" "$(mcp_version_path "${NS}/shared" 9.0.0)" anon
+shared_status=$(mcp_json '._meta["io.modelcontextprotocol.registry/official"].status // empty')
+if [ -n "$pub_why" ] || [ -n "$status_why" ]; then
+  fail "write on the Virtual: publish ${pub_why:-ok}; status PATCH ${status_why:-ok}"
+elif [ "$landed" != "404" ] || [ "$shared_status" != "active" ]; then
+  fail "a Virtual write reached a member: published version HTTP ${landed}, shared 9.0.0 status '${shared_status}'"
 else
-  fail "$why"
+  pass
+fi
+
+begin_test "POST /validate on a Virtual is 501 mcp_not_implemented"
+mcp_req POST "$(mcp_base "$VIRTUAL")/validate" anon -H "Content-Type: application/json" --data-binary "@${WORK_DIR}/virtual-publish.json"
+if why=$(mcp_check_problem 501 mcp_not_implemented); then
+  pass
+else
+  fail "Virtual validate: ${why}"
 fi
 
 # ---------------------------------------------------------------------------
