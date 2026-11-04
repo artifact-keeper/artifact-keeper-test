@@ -22,7 +22,8 @@
 #   - /v0 alias bodies identical to /v0.1
 #   - listing: version text order, versions/latest, version=latest, cursor
 #     paging, limit default/clamp/400s, search length and case, updated_since
-#     with include_deleted=false, garbage cursor
+#     with include_deleted=false, a malformed updated_since or include_deleted,
+#     garbage cursor (every malformed query parameter is 400 mcp_invalid_query)
 #   - encoded and literal-slash server names
 #   - 409 on republish of identical bytes, stored document unchanged
 #   - status: deprecated with statusMessage, deleted hidden from list and
@@ -365,11 +366,15 @@ else
   fail "paging: ${why:-pages=${pages} seen=${seen}}" "$(mcp_snip)"
 fi
 
-begin_test "limit=0, -1 and abc are 400 problem+json"
+# docs/mcp-registry.md: a malformed query parameter is 400 mcp_invalid_query
+# (it was mcp_invalid_server_json in early Phase 1 builds).
+QUERY_ERROR="mcp_invalid_query"
+
+begin_test "limit=0, -1 and abc are 400 ${QUERY_ERROR}"
 why=""
 for l in 0 -1 abc; do
   mcp_get "$LIST_KEY" "servers?limit=${l}" anon
-  r=$(mcp_check_problem 400 "") || why="${why} limit=${l}: ${r};"
+  r=$(mcp_check_problem 400 "$QUERY_ERROR") || why="${why} limit=${l}: ${r};"
 done
 if [ -z "$why" ]; then pass; else fail "limit refusals:${why}"; fi
 
@@ -386,9 +391,9 @@ else
   fail "search=lp HTTP ${s1} (${r}); search=LPH HTTP ${MCP_STATUS} names '${got}' count ${cnt}" "$(mcp_snip)"
 fi
 
-begin_test "updated_since with include_deleted=false is 400"
+begin_test "updated_since with include_deleted=false is 400 ${QUERY_ERROR}"
 mcp_get "$LIST_KEY" "servers?updated_since=2020-01-01T00:00:00Z&include_deleted=false" anon
-if r=$(mcp_check_problem 400 ""); then
+if r=$(mcp_check_problem 400 "$QUERY_ERROR"); then
   mcp_get "$LIST_KEY" "servers?updated_since=2020-01-01T00:00:00Z" anon
   if [ "$MCP_STATUS" = "200" ] && [ "$(mcp_json '.metadata.count')" = "4" ]; then
     pass
@@ -399,9 +404,17 @@ else
   fail "$r"
 fi
 
-begin_test "garbage cursor is 400"
+begin_test "A malformed updated_since or include_deleted is 400 ${QUERY_ERROR}"
+why=""
+for q in "updated_since=yesterday" "include_deleted=maybe"; do
+  mcp_get "$LIST_KEY" "servers?${q}" anon
+  r=$(mcp_check_problem 400 "$QUERY_ERROR") || why="${why} ${q}: ${r};"
+done
+if [ -z "$why" ]; then pass; else fail "query refusals:${why}"; fi
+
+begin_test "garbage cursor is 400 ${QUERY_ERROR}"
 mcp_get "$LIST_KEY" "servers?cursor=not-a-cursor%21%21" anon
-if r=$(mcp_check_problem 400 ""); then pass; else fail "$r"; fi
+if r=$(mcp_check_problem 400 "$QUERY_ERROR"); then pass; else fail "$r"; fi
 
 begin_test "limit defaults to 30 and clamps at 100 (101 versions)"
 if ! mcp_create_repo "$BIG_KEY"; then
@@ -622,8 +635,8 @@ mcp_req OPTIONS "$(mcp_base "$MCP_KEY")/servers" anon -H "Origin: https://vscode
   -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization"
 o_status="$MCP_STATUS"
 o_acao=$(mcp_header access-control-allow-origin)
-o_meth=$(mcp_header access-control-allow-methods | tr 'A-Z' 'a-z')
-o_hdrs=$(mcp_header access-control-allow-headers | tr 'A-Z' 'a-z')
+o_meth=$(mcp_header access-control-allow-methods | tr '[:upper:]' '[:lower:]')
+o_hdrs=$(mcp_header access-control-allow-headers | tr '[:upper:]' '[:lower:]')
 if [ "$g_acao" = "*" ] && [ -z "$g_acac" ] && [ "${o_status:0:1}" = "2" ] && [ "$o_acao" = "*" ] \
    && [[ "$o_meth" == *get* ]] && [[ "$o_hdrs" == *authorization* ]] && [[ "$o_hdrs" == *content-type* ]]; then
   pass
