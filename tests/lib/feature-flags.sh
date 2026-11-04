@@ -173,6 +173,24 @@ AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN virtual_nested_members"
 # _feature_min_version. Gates tests/formats/test-maven-prefixes.sh.
 AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN maven_prefixes_no_nesting"
 
+# MCP Registry (artifact-keeper#5253), MAIN-only. Every token carries the
+# version floor main reports while the format is in development (1.11.3, see
+# _feature_min_version), which keeps older lines out. The floor cannot tell
+# main from release/1.11.x (1.11.11), so each suite also probes the backend
+# and stands down through skip_suite plus an mcp_* _CAPABILITY_EXEMPTIONS row
+# when the probe proves the capability absent (tests/lib/mcp-helpers.sh).
+#   mcp_registry           Phase 1: hosted registry, own-repos, holds as 404
+#   mcp_registry_proxy     Phase 2: Remote (deny by default), Virtual, curation
+#   mcp_validate           Phase 2: POST /v0.1/validate (mcp-publisher validate)
+#   mcp_lint               Phase 2: McpLintScanner findings
+#   mcp_capabilities       Phase 2: capability ingest + opt-in remote probe
+#   mcp_holds_route        Phase 2: GET /v0.1/x/com.artifactkeeper/holds
+#   mcp_tombstone          Phase 2: a purged name@version never comes back
+#   mcp_mirror             Phase 3: mirror mode (updated_since sync)
+#   mcp_bundles            Phase 3: MCPB upload/download, mcpb under own-repos
+#   mcp_namespace_grants   Phase 3: mcp_require_namespace_grant
+AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN mcp_registry mcp_registry_proxy mcp_validate mcp_lint mcp_capabilities mcp_holds_route mcp_tombstone mcp_mirror mcp_bundles mcp_namespace_grants"
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------

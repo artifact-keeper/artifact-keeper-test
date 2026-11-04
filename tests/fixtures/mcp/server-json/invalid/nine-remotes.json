@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ak-e2e/__SLUG__",
+  "description": "Release-gate fixture server",
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://r0.mcp.example.invalid/mcp"
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://r1.mcp.example.invalid/mcp"
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://r2.mcp.example.invalid/mcp"
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://r3.mcp.example.invalid/mcp"
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://r4.mcp.example.invalid/mcp"
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://r5.mcp.example.invalid/mcp"
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://r6.mcp.example.invalid/mcp"
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://r7.mcp.example.invalid/mcp"
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://r8.mcp.example.invalid/mcp"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ak-e2e/__SLUG__",
+  "description": "Release-gate fixture server",
+  "version": "1.0.0",
+  "title": "Fixture Server",
+  "websiteUrl": "https://example.invalid/docs",
+  "repository": {
+    "url": "https://github.com/ak-e2e/fixture",
+    "source": "github",
+    "id": "123",
+    "subfolder": "servers/fixture"
+  },
+  "icons": [
+    {
+      "src": "https://example.invalid/icon.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "48x48"
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.example.invalid/mcp"
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tool": "release-gate",
+      "build": {
+        "id": "42"
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+      "publishedAt": "2026-10-06T00:00:00Z",
+      "status": "active",
+      "updatedAt": "2026-10-06T00:00:00Z"
+    }
+  },
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "description": "Shared name, upstream copy",
+    "name": "io.github.ak-fixture/shared",
+    "remotes": [
+      {
+        "type": "streamable-http",
+        "url": "https://shared.mcp.example.invalid/mcp"
+      }
+    ],
+    "version": "1.1.0"
+  }
+}

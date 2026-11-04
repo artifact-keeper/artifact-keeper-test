@@ -1,0 +1,278 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ak-e2e/__SLUG__",
+  "description": "Release-gate fixture server",
+  "version": "1.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@ak-e2e/fixture",
+      "version": "1.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "V0",
+          "description": "v"
+        },
+        {
+          "name": "V1",
+          "description": "v"
+        },
+        {
+          "name": "V2",
+          "description": "v"
+        },
+        {
+          "name": "V3",
+          "description": "v"
+        },
+        {
+          "name": "V4",
+          "description": "v"
+        },
+        {
+          "name": "V5",
+          "description": "v"
+        },
+        {
+          "name": "V6",
+          "description": "v"
+        },
+        {
+          "name": "V7",
+          "description": "v"
+        },
+        {
+          "name": "V8",
+          "description": "v"
+        },
+        {
+          "name": "V9",
+          "description": "v"
+        },
+        {
+          "name": "V10",
+          "description": "v"
+        },
+        {
+          "name": "V11",
+          "description": "v"
+        },
+        {
+          "name": "V12",
+          "description": "v"
+        },
+        {
+          "name": "V13",
+          "description": "v"
+        },
+        {
+          "name": "V14",
+          "description": "v"
+        },
+        {
+          "name": "V15",
+          "description": "v"
+        },
+        {
+          "name": "V16",
+          "description": "v"
+        },
+        {
+          "name": "V17",
+          "description": "v"
+        },
+        {
+          "name": "V18",
+          "description": "v"
+        },
+        {
+          "name": "V19",
+          "description": "v"
+        },
+        {
+          "name": "V20",
+          "description": "v"
+        },
+        {
+          "name": "V21",
+          "description": "v"
+        },
+        {
+          "name": "V22",
+          "description": "v"
+        },
+        {
+          "name": "V23",
+          "description": "v"
+        },
+        {
+          "name": "V24",
+          "description": "v"
+        },
+        {
+          "name": "V25",
+          "description": "v"
+        },
+        {
+          "name": "V26",
+          "description": "v"
+        },
+        {
+          "name": "V27",
+          "description": "v"
+        },
+        {
+          "name": "V28",
+          "description": "v"
+        },
+        {
+          "name": "V29",
+          "description": "v"
+        },
+        {
+          "name": "V30",
+          "description": "v"
+        },
+        {
+          "name": "V31",
+          "description": "v"
+        },
+        {
+          "name": "V32",
+          "description": "v"
+        },
+        {
+          "name": "V33",
+          "description": "v"
+        },
+        {
+          "name": "V34",
+          "description": "v"
+        },
+        {
+          "name": "V35",
+          "description": "v"
+        },
+        {
+          "name": "V36",
+          "description": "v"
+        },
+        {
+          "name": "V37",
+          "description": "v"
+        },
+        {
+          "name": "V38",
+          "description": "v"
+        },
+        {
+          "name": "V39",
+          "description": "v"
+        },
+        {
+          "name": "V40",
+          "description": "v"
+        },
+        {
+          "name": "V41",
+          "description": "v"
+        },
+        {
+          "name": "V42",
+          "description": "v"
+        },
+        {
+          "name": "V43",
+          "description": "v"
+        },
+        {
+          "name": "V44",
+          "description": "v"
+        },
+        {
+          "name": "V45",
+          "description": "v"
+        },
+        {
+          "name": "V46",
+          "description": "v"
+        },
+        {
+          "name": "V47",
+          "description": "v"
+        },
+        {
+          "name": "V48",
+          "description": "v"
+        },
+        {
+          "name": "V49",
+          "description": "v"
+        },
+        {
+          "name": "V50",
+          "description": "v"
+        },
+        {
+          "name": "V51",
+          "description": "v"
+        },
+        {
+          "name": "V52",
+          "description": "v"
+        },
+        {
+          "name": "V53",
+          "description": "v"
+        },
+        {
+          "name": "V54",
+          "description": "v"
+        },
+        {
+          "name": "V55",
+          "description": "v"
+        },
+        {
+          "name": "V56",
+          "description": "v"
+        },
+        {
+          "name": "V57",
+          "description": "v"
+        },
+        {
+          "name": "V58",
+          "description": "v"
+        },
+        {
+          "name": "V59",
+          "description": "v"
+        },
+        {
+          "name": "V60",
+          "description": "v"
+        },
+        {
+          "name": "V61",
+          "description": "v"
+        },
+        {
+          "name": "V62",
+          "description": "v"
+        },
+        {
+          "name": "V63",
+          "description": "v"
+        },
+        {
+          "name": "V64",
+          "description": "v"
+        }
+      ]
+    }
+  ]
+}
