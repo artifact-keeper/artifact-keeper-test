@@ -63,6 +63,16 @@ BUNDLE="${WORK_DIR}/${BUNDLE_FILE}"
 BUNDLE_OTHER="${WORK_DIR}/other-${BUNDLE_FILE}"
 BUNDLE_V9="${WORK_DIR}/v9-${BUNDLE_FILE}"
 
+# same_route URL_A URL_B: both name the same route. {serverName} may be
+# URL-encoded or carry a literal slash (docs "Routes"), and the backend serves
+# the literal form in downloadUrl and the packageEntry identifier.
+same_route() {
+  local a b
+  a=$(mcp_url_path "$1" | sed 's#%2[Ff]#/#g')
+  b=$(mcp_url_path "$2" | sed 's#%2[Ff]#/#g')
+  [ "$a" = "$b" ]
+}
+
 # bundle_url [VERSION] [FILE] [NAME]
 bundle_url() {
   printf '%s/%s/%s/%s' "$(mcp_base "$REPO")" "$(mcp_version_path "${3:-$NAME}" "${1:-$VER}")" "$BUNDLE_TAIL" "${2:-$BUNDLE_FILE}"
@@ -145,7 +155,7 @@ if [ "$UPLOAD_STATUS" != "201" ]; then
   fail_fatal "bundle upload answered ${UPLOAD_STATUS}" "$(head -c 400 "$UPLOAD_BODY")"
 elif [ "$up" != "$want" ]; then
   fail "upload answer file|fileSha256|signature.state|packageEntry.registryType|packageEntry.fileSha256|manifest.version is '${up}', expected '${want}'"
-elif [ -z "$BUNDLE_ID" ] || [ "$(mcp_url_path "$DOWNLOAD_URL")" != "$(mcp_url_path "$(bundle_url)")" ]; then
+elif [ -z "$BUNDLE_ID" ] || ! same_route "$DOWNLOAD_URL" "$(bundle_url)"; then
   fail "upload answer artifactId '${BUNDLE_ID}' / downloadUrl '${DOWNLOAD_URL}' (want the bundle route)"
 else
   pass
@@ -195,7 +205,7 @@ elif [ "$MCP_STATUS" != "200" ] || [ -z "$entry" ]; then
   fail "no mcpb entry on the served version (HTTP ${MCP_STATUS}): $(mcp_snip)"
 elif [ "$got_sha" != "$BUNDLE_SHA" ]; then
   fail "fileSha256 ${got_sha} != sha256 of the uploaded bytes ${BUNDLE_SHA}"
-elif [ "$(mcp_url_path "${IDENT%%\?*}")" != "$(mcp_url_path "$(bundle_url)")" ]; then
+elif ! same_route "${IDENT%%\?*}" "$(bundle_url)"; then
   fail "mcpb identifier '${IDENT}' is not the bundle's Artifact Keeper URL"
 else
   pass
