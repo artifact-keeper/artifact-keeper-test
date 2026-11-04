@@ -20,17 +20,18 @@
 #
 # Later phases, gated on behaviour (the settings are echoed by the scaffold
 # even before enforcement lands, so an echo proves nothing):
-#   - mcp_server_deny (Phase 2): a denied name is refused on publish and
-#     hidden on serve. Probe: publish a denied name; 200 means the deny list
-#     is not enforced here and those tests record a plain skip.
+#   - mcp_server_deny (Phase 2): a denied name is refused on publish (403
+#     mcp_server_denied) and hidden on serve. Probe: publish a denied name;
+#     200 means the deny list is not enforced here and those tests record a
+#     plain skip.
 #   - mcp_require_namespace_grant (Phase 3): plain repository write is not
-#     enough, a grant whose conditions carry mcp_namespaces is. Probe: a
-#     write-grant user publishes with the setting on; 200 means enforcement
-#     is absent and those tests record a plain skip.
-#   Guessed shapes (not yet documented): the grant body is AK's existing
-#   POST /api/v1/permissions with conditions {"mcp_namespaces": [prefix]};
-#   a refused publish is 403 problem+json (error code not asserted: the docs
-#   name none for either control yet).
+#     enough (403 mcp_namespace_not_granted), a permission rule whose
+#     conditions carry mcp_namespaces is (docs "Namespace grants"; the rule
+#     is updated with PUT /api/v1/permissions/{id}, whose body is the full
+#     create body). A pattern without `/` means that namespace's servers
+#     (com.acme = com.acme/*), so it covers neither com.acme.team/x nor
+#     another namespace. Probe: a write-grant user publishes with the setting
+#     on; 200 means enforcement is absent and those tests record a plain skip.
 
 # shellcheck source=../lib/common.sh disable=SC1091
 source "$(dirname "$0")/../lib/common.sh"
@@ -228,7 +229,7 @@ fi
 if [ -n "$DENY_DEFER" ]; then
   skip "mcp_server_deny not enforced by this backend (${DENY_DEFER}); Phase 2 capability"
 else
-  expect_problem 403 "" "publish of a denied name"
+  expect_problem 403 mcp_server_denied "publish of a denied name"
 fi
 
 begin_test "mcp_server_deny: an earlier version of a denied name is hidden from readers"
@@ -256,6 +257,7 @@ if mcp_require_feature mcp_namespace_grants; then
     && mcp_make_user "mcpns-g-${RUN_ID}" > "${WORK_DIR}/tok-g" \
     && mcp_grant "$MCP_USER_ID" "$GRANT_KEY" '["read","write"]'; then
     G_TOK=$(cat "${WORK_DIR}/tok-g")
+    G_USER_ID="$MCP_USER_ID"
     G_PERM_ID=$(mcp_json '.id // empty')
     if mcp_patch_repo "$GRANT_KEY" '{"mcp_require_namespace_grant":true}'; then
       echoed=$(repo_field "$GRANT_KEY" '.mcp_require_namespace_grant')
@@ -282,7 +284,7 @@ else
     GRANT_DEFER="with mcp_require_namespace_grant=true a plain write grant published ${ACME}/plain-write with 200"
     skip "mcp_require_namespace_grant not enforced by this backend (${GRANT_DEFER}); Phase 3 capability"
   else
-    expect_problem 403 "" "publish with plain write under mcp_require_namespace_grant"
+    expect_problem 403 mcp_namespace_not_granted "publish with plain write under mcp_require_namespace_grant"
   fi
 fi
 
@@ -290,27 +292,36 @@ begin_test "Namespace grants: a grant conditioned on mcp_namespaces [${ACME}] ad
 if [ -n "$GRANT_DEFER" ]; then
   skip "mcp_require_namespace_grant not testable here (${GRANT_DEFER}); Phase 3 capability"
 else
-  # Guessed body: the existing permission rule with a Phase 3 condition.
-  body=$(jq -cn --arg a "$ACME" '{actions:["read","write"],conditions:{mcp_namespaces:[$a]}}')
+  # PUT takes the full create body (CreatePermissionRequest).
+  body=$(jq -cn --arg u "$G_USER_ID" --arg r "$(mcp_repo_id "$GRANT_KEY")" --arg a "$ACME" \
+    '{principal_type:"user",principal_id:$u,target_type:"repository",target_id:$r,
+      actions:["read","write"],conditions:{mcp_namespaces:[$a]}}')
   mcp_req PUT "${BASE_URL}/api/v1/permissions/${G_PERM_ID}" admin -H "Content-Type: application/json" -d "$body"
   if [ "${MCP_STATUS:0:1}" != "2" ]; then
     fail "PUT /api/v1/permissions/{id} with conditions.mcp_namespaces: HTTP ${MCP_STATUS}: $(mcp_snip)"
   else
-    mcp_publish "$GRANT_KEY" "$(remote_doc "${ACME}.team/granted")" "$G_TOK"
+    mcp_publish "$GRANT_KEY" "$(remote_doc "${ACME}/granted")" "$G_TOK"
     if [ "$MCP_STATUS" = "200" ]; then
       pass
     else
-      fail "namespace-conditioned grant publish of ${ACME}.team/granted: HTTP ${MCP_STATUS}: $(mcp_snip)"
+      fail "namespace-conditioned grant publish of ${ACME}/granted: HTTP ${MCP_STATUS}: $(mcp_snip)"
     fi
   fi
 fi
 
-begin_test "Namespace grants: the conditioned grant does not cover another namespace (403)"
+begin_test "Namespace grants: [${ACME}] covers neither a sub-namespace nor another namespace (403)"
 if [ -n "$GRANT_DEFER" ]; then
   skip "mcp_require_namespace_grant not testable here (${GRANT_DEFER}); Phase 3 capability"
 else
+  mcp_publish "$GRANT_KEY" "$(remote_doc "${ACME}.team/x")" "$G_TOK"
+  sub_why=$(mcp_check_problem 403 mcp_namespace_not_granted) || true
   mcp_publish "$GRANT_KEY" "$(remote_doc "org.elsewhere-${RUN_ID}/x")" "$G_TOK"
-  expect_problem 403 "" "namespace-conditioned grant publishing outside its namespace"
+  other_why=$(mcp_check_problem 403 mcp_namespace_not_granted) || true
+  if [ -z "$sub_why" ] && [ -z "$other_why" ]; then
+    pass
+  else
+    fail "namespace-conditioned grant outside its namespace: sub-namespace ${ACME}.team/x: ${sub_why:-ok}; org.elsewhere: ${other_why:-ok}"
+  fi
 fi
 
 end_suite
