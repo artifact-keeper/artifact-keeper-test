@@ -50,6 +50,7 @@ PYPI_KEY="sec-anonwrite-pypi-${RUN_ID}"
 NPM_KEY="sec-anonwrite-npm-${RUN_ID}"
 GENERIC_KEY="sec-anonwrite-generic-${RUN_ID}"
 REMOTE_KEY="sec-anonwrite-remote-${RUN_ID}"
+MCP_KEY="sec-anonwrite-mcp-${RUN_ID}"
 
 # Distinctive so a grep for them in the anonymous projection cannot match
 # anything else in the response.
@@ -58,7 +59,7 @@ UPSTREAM_PASS="anonleak-pass-${RUN_ID}"
 
 cleanup_repos() {
   local key
-  for key in "$PYPI_KEY" "$NPM_KEY" "$GENERIC_KEY" "$REMOTE_KEY"; do
+  for key in "$PYPI_KEY" "$NPM_KEY" "$GENERIC_KEY" "$REMOTE_KEY" "$MCP_KEY"; do
     curl -s -o /dev/null "${CURL_TIMEOUT_ARGS[@]}" -X DELETE \
       -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${key}" >/dev/null 2>&1 || true
   done
@@ -138,6 +139,56 @@ assert_anonymous_401 "generic upload" PUT \
   "/api/v1/generic/${GENERIC_KEY}/anon-write/1.0.0/payload.bin" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "anonymous-write-probe"
+
+# ---------------------------------------------------------------------------
+# MCP registry write routes (artifact-keeper#5253): publish and both status
+# PATCHes need repository write. A backend without the mcp format answers the
+# create with "400 Invalid format: mcp"; only these rows are skipped then.
+# ---------------------------------------------------------------------------
+
+begin_test "Create a public MCP registry repository"
+MCP_AVAILABLE=false
+mcp_status=$(curl -s -o "${WORK_DIR}/mcp-create.json" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+  -d "{\"key\":\"${MCP_KEY}\",\"name\":\"${MCP_KEY}\",\"format\":\"mcp\",\"repo_type\":\"local\",\"is_public\":true}" \
+  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || mcp_status="000"
+if [ "${mcp_status:0:1}" = "2" ]; then
+  MCP_AVAILABLE=true
+  pass
+elif [ "$mcp_status" = "400" ] && grep -q 'Invalid format: mcp' "${WORK_DIR}/mcp-create.json" 2>/dev/null; then
+  skip "repository format 'mcp' is not known to this backend (400 Invalid format: mcp)"
+else
+  fail "could not create the MCP repository (HTTP ${mcp_status})" \
+    "Response: $(head -c 400 "${WORK_DIR}/mcp-create.json" 2>/dev/null)"
+fi
+
+MCP_ENC="com.anonwrite-${RUN_ID}%2Fprobe"
+MCP_DOC="{\"name\":\"com.anonwrite-${RUN_ID}/probe\",\"description\":\"anonymous write probe\",\"version\":\"1.0.0\",\"remotes\":[{\"type\":\"streamable-http\",\"url\":\"https://mcp.example.invalid/mcp\"}]}"
+for mcp_api in v0.1 v0; do
+  begin_test "Anonymous MCP publish (/${mcp_api}/publish) to a public repository is refused"
+  if $MCP_AVAILABLE; then
+    assert_anonymous_401 "mcp publish" POST "/mcp/${MCP_KEY}/${mcp_api}/publish" \
+      -H "Content-Type: application/json" -d "$MCP_DOC"
+  else
+    skip "MCP registry format not available on this backend"
+  fi
+
+  begin_test "Anonymous MCP version status PATCH (/${mcp_api}) is refused"
+  if $MCP_AVAILABLE; then
+    assert_anonymous_401 "mcp version status" PATCH "/mcp/${MCP_KEY}/${mcp_api}/servers/${MCP_ENC}/versions/1.0.0/status" \
+      -H "Content-Type: application/json" -d '{"status":"deleted"}'
+  else
+    skip "MCP registry format not available on this backend"
+  fi
+
+  begin_test "Anonymous MCP all-versions status PATCH (/${mcp_api}) is refused"
+  if $MCP_AVAILABLE; then
+    assert_anonymous_401 "mcp server status" PATCH "/mcp/${MCP_KEY}/${mcp_api}/servers/${MCP_ENC}/status" \
+      -H "Content-Type: application/json" -d '{"status":"deleted"}'
+  else
+    skip "MCP registry format not available on this backend"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Anonymous read projection must not carry upstream credentials

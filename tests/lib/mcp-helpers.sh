@@ -527,7 +527,9 @@ mcp_release() {
 # ---------------------------------------------------------------------------
 
 # mcp_make_user NAME: create a user (password MCP_USER_PASS) and echo its
-# token. Sets MCP_USER_ID.
+# token. Sets MCP_USER_ID and registers the user's deletion, so call it in
+# the current shell with stdout redirected (mcp_make_user u > "$WORK_DIR/tok"),
+# never as TOKEN=$(mcp_make_user u): a subshell loses both.
 MCP_USER_PASS="${MCP_USER_PASS:-McpGate!2026secure}"
 mcp_make_user() {
   local name="$1"
