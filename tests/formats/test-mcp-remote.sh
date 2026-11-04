@@ -10,8 +10,8 @@
 # entries are browsable through the catalog API and the web UI only.
 #
 # Mock leg (tests/lib/mock-mcp-upstream.py over tests/fixtures/mcp/upstream):
-#   - deny by default: nothing listed; an exact read is the plain 404 for
-#     anonymous and 404 mcp_pending_review for the admin
+#   - deny by default: nothing listed, nothing ingested; an exact read is
+#     the plain unknown-name 404 for anonymous and the admin alike
 #   - approve one name -> served with its versions; approval is name-level,
 #     so a new upstream version flows after a sync without a new approval
 #   - mcp_auto_approve_namespaces ["io.github.ak-fixture-other/*"] admits
@@ -314,23 +314,27 @@ else
   fail "$why"
 fi
 
-begin_test "Unapproved exact read and latest: admin gets 404 mcp_pending_review, no upstream URL"
+# Under mcp_remote_mode=allowlist with approval_required (the defaults) the
+# sync ingests approved names only ("Sync", step 2), so an unapproved name
+# has a catalog row and no stored version. The hold table in "What a Remote
+# serves" applies to stored rows; with nothing stored, a repository holder
+# gets the same unknown-name 404 as anyone else (no reason body, no upstream
+# URL).
+begin_test "Unapproved exact read and latest: nothing is ingested, so the admin also gets the unknown-name 404"
 mcp_get "$REMOTE" "$(mcp_version_path "${NS}/alpha" 1.1.0)" admin
-if why=$(mcp_check_problem 404 mcp_pending_review); then
-  if [ "$(mcp_json '.name')" != "${NS}/alpha" ] || [ "$(mcp_json '.version')" != "1.1.0" ]; then
-    fail "reason body must name the held name/version: $(mcp_snip)"
-  elif grep -q "${MCP_MOCK_PORT}" "$MCP_BODY"; then
-    fail "reason body discloses the upstream URL: $(mcp_snip)"
+if why=$(mcp_check_plain_404); then
+  if grep -q "${MCP_MOCK_PORT}" "$MCP_BODY"; then
+    fail "404 body discloses the upstream URL: $(mcp_snip)"
   else
-    mcp_get "$REMOTE" "servers/$(mcp_encode_name "${NS}/alpha")/versions/latest" anon
+    mcp_get "$REMOTE" "servers/$(mcp_encode_name "${NS}/alpha")/versions/latest" admin
     if why=$(mcp_check_plain_404); then
       pass
     else
-      fail "anonymous latest of an unapproved name: ${why}"
+      fail "admin latest of an unapproved name: ${why}"
     fi
   fi
 else
-  fail "$why"
+  fail "admin exact read of an unapproved, never-ingested name: ${why}"
 fi
 
 begin_test "Approve one name: it is served with its upstream versions"
