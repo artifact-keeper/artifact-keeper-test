@@ -1715,6 +1715,15 @@ _CAPABILITY_EXEMPTIONS=(
   # platform: no WASM plugin fixture loaded against the gate backend
   "wasm_plugin_fixture|plugin list is empty; no plugin loaded against this backend deploy|211"
   "wasm_plugin_fixture|no plugin list endpoint responded; backend deploy may not include the plugin overlay|211"
+  # formats: the agentplugins repository format (artifact-keeper#5251) is not
+  # in this candidate. tests/formats/test-agentplugins*.sh create their
+  # repository first and reach skip_suite only when the backend itself answers
+  # `400 Invalid format: agentplugins`, which a backend that ships the format
+  # cannot return, so this row cannot hide a broken Agent Plugins handler.
+  # A version floor cannot gate these suites: main reports crate version
+  # 1.11.3 while release/1.11.x reports 1.11.11. Delete this row once every
+  # line the gate runs against ships the format.
+  "agentplugins_format|repository format 'agentplugins' is not known to this backend (POST /api/v1/repositories: 400 Invalid format: agentplugins); Agent Plugins format not shipped|211"
   # mesh: run-now sync trigger endpoint not shipped (sync worker, TODO #78.4)
   "mesh_run_now|sync run-now endpoint not shipped (HTTP 404)|211"
   # webhooks: the forced-failure injection is not scoped to this test's own
