@@ -3,10 +3,13 @@
 # (artifact-keeper#5253 Phase 2, issue 3.3, 3.4, 4.4 and 8).
 #
 #   - a lookalike of an approved namespace (io.github.acrne-tools vs
-#     io.github.acme-tools, "rn" for "m") is flagged for review at ingest and
-#     never served
-#   - approval needs an instance administrator: a user holding write on the
-#     Remote gets 403 from approve and bulk-approve
+#     io.github.acme-tools, "rn" for "m") is flagged for review at ingest
+#     (catalog item status review, flags.typosquat.similarTo) and never served
+#   - decisions need repository administration: a user holding read and
+#     write on the Remote gets 403 from the catalog approve and bulk-approve
+#     (POST /api/v1/repositories/{key}/mcp/catalog/{id}/approve,
+#     .../catalog/bulk-approve) and from the generic curation approve
+#     (POST /api/v1/curation/packages/{id}/approve, instance administrators)
 #   - unapproved entries never appear on /v0.1 for any caller, admin
 #     included (list, search, versions, exact, include_deleted): browsing them
 #     is UI-only
@@ -17,8 +20,9 @@
 #
 # Gates: mcp_require_registry mcp_registry_proxy; mcp_create_proxy_repo
 # (older backends refuse Remote mcp repos -> mcp_registry_proxy exemption);
-# then the behaviour probe (sync reaches the mock or records curation rows,
-# else mcp_skip_later_phase mcp_registry_proxy).
+# then the route and behaviour probe (POST .../mcp/sync answering the
+# router's 404/405, or a sync that neither reaches the mock nor records a
+# catalog row -> mcp_skip_later_phase mcp_registry_proxy).
 #
 # Requires: curl, jq, python3, MOCK_UPSTREAM_HOSTNAME.
 
@@ -36,13 +40,8 @@ require_cmd python3
 mcp_require_registry mcp_registry_proxy
 mcp_require_dialback
 
-# --- Contract names not pinned by the docs yet (guesses) -------------------
-CURATION_SYNC_PATH="/api/v1/curation/repos/%s/sync"   # task brief / stream A
-CURATION_LIST_PATH="/api/v1/curation/packages"
-CURATION_NAME_LEVEL_VERSION="*"                         # phase23 brief
-# Typosquat flag: the row goes to `review` (issue 3.4 "flags route to
-# review"); a flag in the row metadata naming it is accepted too.
-TYPOSQUAT_FLAG_RE='typosquat|lookalike|confusable|similar'
+# --- Contract (docs/mcp-registry.md "Remote repositories") ------------------
+# Sync, catalog and decisions: the management API helpers in mcp-helpers.sh.
 # Repository-administrator grant (permission actions on the repository).
 REPO_ADMIN_ACTIONS='["read","write","delete","admin"]'
 PROBE_WINDOW_SECS="${MCP_REMOTE_PROBE_SECS:-45}"
@@ -79,15 +78,13 @@ served_has() {
   served_pairs "$1" "${3:-admin}" | grep -qxF "$2"
 }
 
+# cur_load: the Remote's catalog (a CatalogItem array) into CUR_ROWS.
 cur_load() {
-  curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
-    "${BASE_URL}${CURATION_LIST_PATH}?staging_repo_id=${REMOTE_ID}&limit=500" -o "$CUR_ROWS" 2>/dev/null || echo '[]' > "$CUR_ROWS"
-  jq -e 'type == "array"' "$CUR_ROWS" >/dev/null 2>&1 || echo '[]' > "$CUR_ROWS"
+  mcp_catalog_load "$REMOTE" "$CUR_ROWS"
 }
 
 cur_row() {
-  jq -c --arg n "$1" --arg v "$CURATION_NAME_LEVEL_VERSION" \
-    '[.[] | select(.package_name == $n)] | ((map(select(.version == $v))[0]) // .[0]) // empty' "$CUR_ROWS" 2>/dev/null || true
+  mcp_catalog_item "$CUR_ROWS" "$1"
 }
 
 cur_has() {
@@ -95,7 +92,7 @@ cur_has() {
   [ -n "$(cur_row "$1")" ]
 }
 
-# cur_approve NAME [AUTH]
+# cur_approve NAME [AUTH]: POST .../mcp/catalog/{id}/approve.
 cur_approve() {
   cur_load
   local id
@@ -104,15 +101,12 @@ cur_approve() {
     MCP_STATUS="no-row"
     return 1
   fi
-  mcp_req POST "${BASE_URL}/api/v1/curation/packages/${id}/approve" "${2:-admin}" -H "Content-Type: application/json" -d '{}'
-  [ "${MCP_STATUS:0:1}" = "2" ]
+  mcp_catalog_decide "$REMOTE" "$id" approve "${2:-admin}"
 }
 
 remote_sync() {
-  # shellcheck disable=SC2059
-  mcp_req POST "${BASE_URL}$(printf "$CURATION_SYNC_PATH" "$REMOTE")" admin -H "Content-Type: application/json" -d '{}'
-  SYNC_STATUS="$MCP_STATUS"
-  sleep 1
+  mcp_remote_sync "$REMOTE" admin || true
+  SYNC_STATUS="$MCP_SYNC_STATUS"
   wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null || true
 }
 
@@ -158,13 +152,14 @@ _probe_contacted() {
   cur_load
   [ "$(jq 'length' "$CUR_ROWS" 2>/dev/null || echo 0)" -gt 0 ]
 }
-# shellcheck disable=SC2059
-mcp_req POST "${BASE_URL}$(printf "$CURATION_SYNC_PATH" "$REMOTE")" admin -H "Content-Type: application/json" -d '{}'
-SYNC_STATUS="$MCP_STATUS"
-if ! wait_until "the Remote syncs from the mock" "$PROBE_WINDOW_SECS" _probe_contacted; then
-  mcp_skip_later_phase mcp_registry_proxy "Remote ${REMOTE} over the mock upstream: POST $(printf "$CURATION_SYNC_PATH" "$REMOTE") answered ${SYNC_STATUS}, the mock saw no /servers request and GET ${CURATION_LIST_PATH}?staging_repo_id=<remote> listed no rows within ${PROBE_WINDOW_SECS}s"
+remote_sync
+if ! mcp_remote_mounted; then
+  mcp_skip_later_phase mcp_registry_proxy "POST /api/v1/repositories/${REMOTE}/mcp/sync on a Remote mcp repository answered ${SYNC_STATUS}: the Remote management API is not mounted"
 fi
-wait_until "curation rows for the seed" "$SYNC_WAIT_SECS" cur_has "$PENDING" || true
+if ! wait_until "the Remote syncs from the mock" "$PROBE_WINDOW_SECS" _probe_contacted; then
+  mcp_skip_later_phase mcp_registry_proxy "Remote ${REMOTE} over the mock upstream: POST /api/v1/repositories/${REMOTE}/mcp/sync answered ${SYNC_STATUS}, the mock saw no /servers request and GET /api/v1/repositories/${REMOTE}/mcp/catalog listed no rows within ${PROBE_WINDOW_SECS}s"
+fi
+wait_until "catalog rows for the seed" "$SYNC_WAIT_SECS" cur_has "$PENDING" || true
 
 begin_test "Setup: a write-grant user and a repository-admin user on the Remote"
 mcp_make_user "mcp-cur-writer-${RUN_ID}" > "${WORK_DIR}/writer.tok" || true
@@ -196,36 +191,37 @@ fi
 
 begin_test "A lookalike namespace (${LOOKALIKE}) is flagged for review at ingest"
 seed_entry "${MCP_MOCK_STATE_DIR}/servers" "$LOOKALIKE" 1.0.0 "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-remote_sync "$REMOTE"
-if wait_until "a curation row for ${LOOKALIKE}" "$SYNC_WAIT_SECS" cur_has "$LOOKALIKE"; then
+remote_sync
+if wait_until "a catalog row for ${LOOKALIKE}" "$SYNC_WAIT_SECS" cur_has "$LOOKALIKE"; then
   row=$(cur_row "$LOOKALIKE")
   status=$(printf '%s' "$row" | jq -r '.status')
-  if [ "$status" = "review" ] || printf '%s' "$row" | jq -r '.metadata // {} | tostring' | grep -qiE "$TYPOSQUAT_FLAG_RE"; then
-    if [ "$status" = "approved" ]; then
-      fail "the lookalike was approved: ${row}"
-    else
-      pass
-    fi
+  similar=$(printf '%s' "$row" | jq -r '.flags.typosquat.similarTo // empty')
+  if [ "$status" != "review" ]; then
+    fail "lookalike not routed to review (status '${status}')" "$row"
+  elif [ "$similar" != "$GOOD" ]; then
+    fail "lookalike flags.typosquat.similarTo is '${similar}', expected ${GOOD}" "$row"
   else
-    fail "lookalike not flagged (status '${status}')" "$row"
+    pass
   fi
 else
-  fail "no curation row for ${LOOKALIKE} after sync (sync answered ${SYNC_STATUS})"
+  fail "no catalog row for ${LOOKALIKE} after sync (sync answered ${SYNC_STATUS})"
 fi
 
-begin_test "Approval needs an instance administrator: a write-grant user gets 403"
+begin_test "Decisions need repository administration: a read+write user gets 403"
 cur_approve "$LOOKALIKE" "$WRITER_TOKEN"
 approve_status="$MCP_STATUS"
 lookalike_id=$(cur_row "$LOOKALIKE" | jq -r '.id // empty')
-mcp_req POST "${BASE_URL}/api/v1/curation/packages/bulk-approve" "$WRITER_TOKEN" -H "Content-Type: application/json" \
-  -d "$(jq -cn --arg id "$lookalike_id" '{ids:[$id],reason:"release-gate non-admin bulk approve"}')"
+mcp_req POST "$(mcp_mgmt_url "$REMOTE" catalog/bulk-approve)" "$WRITER_TOKEN" -H "Content-Type: application/json" \
+  -d '{"pattern":"io.github.acrne-tools/*","includeReview":true,"reason":"release-gate non-admin bulk approve"}'
 bulk_status="$MCP_STATUS"
+mcp_req POST "${BASE_URL}/api/v1/curation/packages/${lookalike_id}/approve" "$WRITER_TOKEN" -H "Content-Type: application/json" -d '{}'
+generic_status="$MCP_STATUS"
 cur_load
 after=$(cur_row "$LOOKALIKE" | jq -r '.status')
-if [ "$approve_status" = "403" ] && [ "$bulk_status" = "403" ] && [ "$after" != "approved" ]; then
+if [ "$approve_status" = "403" ] && [ "$bulk_status" = "403" ] && [ "$generic_status" = "403" ] && [ "$after" = "review" ]; then
   pass
 else
-  fail "non-admin approve ${approve_status}, bulk-approve ${bulk_status} (both want 403); row status now '${after}'"
+  fail "read+write user: catalog approve ${approve_status}, catalog bulk-approve ${bulk_status}, generic curation approve ${generic_status} (all want 403); row status now '${after}'"
 fi
 
 begin_test "Unapproved entries never appear on /v0.1, for anonymous, a reader or the admin"
