@@ -183,6 +183,8 @@ The backend refuses outbound URLs to private addresses (SSRF protection). Some s
 
 **Webhook suite (`tests/webhooks/`).** Each delivery test starts `tests/lib/mock-webhook-receiver.py` on the runner (bound to `0.0.0.0`) and registers `http://<receiver host>:<port>/hook` with the backend.
 
+The signing suites (`test-webhook-hmac-signature`, `-hmac-tamper`, `-replay-window`, `-rotation-overlap`) also need `AK_WEBHOOK_SECRET_KEY` on the backend. `scripts/create-test-namespace.sh` generates a test-only key for each namespace; on any other deployment set one with `openssl rand -base64 32`. Without it a create fails: under `RELEASE_GATE=1` that fails the suite, elsewhere the suite skips and prints the response.
+
 - Set `WEBHOOK_RECEIVER_HOST` to an address of the runner that the backend can reach. The release gate sets it to the runner pod IP. When it is unset, `webhook_receiver_host` in `tests/lib/common.sh` uses the runner's primary non-loopback IPv4 address and logs which one it picked. `127.0.0.1` never works: the backend rejects loopback (`Webhook URL IP '127.0.0.1' is not allowed`), and a backend pod could not reach the runner's loopback anyway.
 - That address must pass the backend's private-IP policy. With `AK_SSRF_ALLOW_PRIVATE_CIDRS` set (as in `helm/values-test-full.yaml`), the address has to be inside one of the CIDRs. For a run from a cluster node, add the node's `/32`. With no CIDR list, the backend needs `WEBHOOK_ALLOW_PRIVATE_IPS=1` (as in `helm/values-test.yaml`).
 - The receiver ports (18000-19000) must be reachable from the backend pod, so open them in any host firewall.
