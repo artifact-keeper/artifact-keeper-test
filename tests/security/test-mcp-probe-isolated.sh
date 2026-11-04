@@ -61,7 +61,12 @@ PROBE_WAIT_SECS="${MCP_PROBE_WAIT_SECS:-180}"
 REPO="mcp-probe-${RUN_ID}"
 NS="io.github.ak-probe-${RUN_ID}"
 PUB_HEADER="X-Publisher-Token"
-PUB_SECRET="pub-secret-${RUN_ID}"
+# The canary must not read as a credential: the registry lint blocks a
+# high-entropy literal in a header value (secret_literal), and a RUN_ID-
+# derived token crossed that threshold on some runs. Whitespace rules out
+# looks_like_random_secret (backend services/mcp_lint.rs) whatever the digits,
+# and the full RUN_ID keeps it unique for the leak check below.
+PUB_SECRET="ak canary header ${RUN_ID}"
 REACHABLE="${AK_TEST_MCP_PROBE_REACHABLE:-0}"
 
 # ---------------------------------------------------------------------------
