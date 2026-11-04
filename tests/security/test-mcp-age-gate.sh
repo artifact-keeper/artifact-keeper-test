@@ -9,13 +9,15 @@
 # through AK already", but proxy-cached objects never get an `artifacts` row
 # (#1278/#1280: they live in proxy_cache_artifacts), and the own-repos lookup
 # reads `artifacts`, so a real pull-through still answers 422
-# mcp_package_not_found. Phase 2's async resolver ("mcp_package_not_found on
-# a Remote backing repo becomes a fill", 202 + hold resolving) is what makes
-# this reachable. The suite therefore runs the documented flow:
+# mcp_package_not_found. Phase 2 (docs/mcp-registry.md "Packages in a Remote
+# backing repository") finds the package in the Remote's proxy cache and
+# pins its cache path and sha256, or fills it (202, hold resolving) when it
+# is not cached yet. The suite therefore runs the documented flow:
 #
 #   1. a mock npm upstream (tests/lib/mock-upstream.py) serves
 #      @ak-age/echo-<run>@1.0.0 (the zero-dependency echo server)
-#   2. an npm Remote over it; the tarball is pulled through AK (cached now)
+#   2. an npm Remote over it; the tarball is pulled through AK (now in the
+#      Remote's proxy cache, which has no `artifacts` row)
 #   3. a Local mcp repository maps npm to that Remote and publishes a server
 #      naming the package: 200, served
 #   4. the Remote's age gate is turned on (7 days, upstream_publish_time):
@@ -106,13 +108,10 @@ tarball_url=$(jq -r --arg v "$VER" '.versions[$v].dist.tarball // empty' "${WORK
 [ -n "$tarball_url" ] || tarball_url="${BASE_URL}/npm/${NPM_REMOTE}/${PKG}/-/${TGZ_NAME}"
 code=$(curl -s -o "${WORK_DIR}/pulled.tgz" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -H "$(format_auth_header)" \
   "${BASE_URL}$(mcp_url_path "$tarball_url")" 2>/dev/null) || code="000"
-_cached() {
-  [ -n "$(mcp_artifact_id "$NPM_REMOTE" "${SHORT}-${VER}\\.tgz$")" ]
-}
+# A pull-through lands in the Remote's proxy cache, not as an artifact row,
+# so there is nothing to poll for: the publish below finds the cache entry.
 if [ "$code" != "200" ] || ! cmp -s "${WORK_DIR}/pulled.tgz" "$TGZ"; then
   fail_fatal "pull-through of ${PKG}@${VER} answered ${code} (or different bytes)" "$(head -n 5 "${NPM_STATE}/request-log.txt" 2>/dev/null)"
-elif ! wait_until "the tarball is cached in ${NPM_REMOTE}" 30 _cached; then
-  fail_fatal "pulled tarball never appeared as an artifact of ${NPM_REMOTE}"
 else
   pass
 fi
