@@ -416,7 +416,7 @@ begin_test "GET /api/v1/mcp/pending-summary counts this Remote's queue; anonymou
 want_q=$(jq -r '"\([.[] | select(.status == "pending")] | length)|\([.[] | select(.status == "review")] | length)|\([.[] | .pins[]? | select(.status == "pending" or .status == "review")] | length)"' "$CUR_ROWS")
 mcp_req GET "${BASE_URL}/api/v1/mcp/pending-summary" admin
 q_status="$MCP_STATUS"
-got_q=$(jq -r --arg k "$REMOTE" '[.repositories[]? | select(.key == $k)][0] // {} | "\(.pending)|\(.review)|\(.drifted)"' "$MCP_BODY" 2>/dev/null)
+got_q=$(jq -r --arg k "$REMOTE" '[.repositories[]? | select(.key == $k)][0] // {} | "\(.pending)|\(.review)|\(.drifted)"' "$MCP_BODY" 2>/dev/null || true)
 q_total=$(mcp_json '(.total == (.pending + .review + .drifted)) and (.pending >= 0)')
 mcp_req GET "${BASE_URL}/api/v1/mcp/pending-summary" anon
 anon_q="$MCP_STATUS"
@@ -538,7 +538,7 @@ fi
 begin_test "mcp_server_deny: a bare namespace is 400 (the globs match the full name)"
 mcp_patch_repo "$REMOTE" '{"mcp_server_deny":["io.github.acme-tools"]}' || true
 bare_deny="$MCP_STATUS"
-stored_deny=$(repo_field mcp_server_deny)
+stored_deny=$(repo_field mcp_server_deny || true)
 if [ "$bare_deny" = "400" ] && { [ -z "$stored_deny" ] || [ "$stored_deny" = "[]" ]; }; then
   pass
 else
