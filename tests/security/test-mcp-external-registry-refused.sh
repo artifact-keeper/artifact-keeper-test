@@ -8,9 +8,11 @@
 #     `detail` line naming packages[0]: a registryBaseUrl of a public
 #     registry, of an attacker host, or of another AK npm repository than the
 #     mapped one; a registryType with no mcp_package_repos mapping (pypi);
-#     mcpb (no backing repository in this release); an OCI entry when there
-#     is no `oci` mapping. Nothing is contacted to decide (publish is a
-#     database lookup).
+#     an OCI entry when there is no `oci` mapping. An mcpb entry without
+#     registryBaseUrl is resolved by its fileSha256 against uploaded bundles
+#     and the mcpb mapping, so one matching nothing is 422
+#     mcp_package_not_found (docs "MCPB bundles"). Nothing is contacted to
+#     decide (publish is a database lookup).
 #   - an `open` repository stores the same documents verbatim and labels
 #     them _meta["com.artifactkeeper.registry/source"].packagePolicy "open".
 #   - switching a repository open -> own-repos does not resolve what was
@@ -97,15 +99,19 @@ fi
 # own-repos refusals and their open twins
 # ---------------------------------------------------------------------------
 
-# own-repos fixture -> what the open repository must store verbatim.
-CASES=(npm-external-registry npm-evil-registry npm-other-ak-repo pypi-unmapped mcpb-bundle oci-foreign-host)
-for c in "${CASES[@]}"; do
+# own-repos fixture[:expected error, default mcp_external_registry] -> what
+# the open repository must store verbatim.
+CASES=(npm-external-registry npm-evil-registry npm-other-ak-repo pypi-unmapped mcpb-bundle:mcp_package_not_found oci-foreign-host)
+for spec in "${CASES[@]}"; do
+  c="${spec%%:*}"
+  want_err="mcp_external_registry"
+  [ "$spec" = "$c" ] || want_err="${spec#*:}"
   out="${WORK_DIR}/${c}.json"
   mcp_render_fixture "${OWN_DIR}/${c}.json" "$out" SLUG="ext-${c}-${RUN_ID}" AK_BASE="$BASE_URL" NPM_PKG="$NPM_PKG"
 
-  begin_test "own-repos refuses ${c}: 422 mcp_external_registry naming packages[0]"
+  begin_test "own-repos refuses ${c}: 422 ${want_err} naming packages[0]"
   mcp_publish "$OWN_KEY" "$out"
-  if why=$(mcp_check_problem 422 mcp_external_registry); then
+  if why=$(mcp_check_problem 422 "$want_err"); then
     if mcp_json '.detail' | grep -q '^packages\[0\]'; then
       pass
     else
@@ -140,7 +146,8 @@ mcp_publish "$OWN_KEY" "${WORK_DIR}/real-other.json"
 if why=$(mcp_check_problem 422 mcp_external_registry) && mcp_json '.detail' | grep -q '^packages\[0\]'; then
   pass
 else
-  fail "another real AK npm repository: ${why:-detail '$(mcp_json '.detail')' does not name packages[0]}"
+  [ -n "$why" ] || why="detail \"$(mcp_json '.detail')\" does not name packages[0]"
+  fail "another real AK npm repository: ${why}"
 fi
 
 begin_test "Control: own-repos accepts the mapped npm repository and serves its coordinates"
