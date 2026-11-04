@@ -151,7 +151,9 @@ start_recorder() {
 }
 
 rec_count() {
-  grep -c . "${1}/log.jsonl" 2>/dev/null || echo 0
+  local _n
+  _n=$(grep -c . "${1}/log.jsonl" 2>/dev/null) || true
+  echo "${_n:-0}"
 }
 
 # publish_remote NAME VERSION URL: publish a remotes-only server whose remote

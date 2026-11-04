@@ -169,11 +169,15 @@ remote_sync() {
 }
 
 mock_list_requests() {
-  grep -cE ' GET /v0(\.1)?/servers(\?|$)' "${MCP_MOCK_STATE_DIR}/request-log.txt" 2>/dev/null || echo 0
+  local _n
+  _n=$(grep -cE ' GET /v0(\.1)?/servers(\?|$)' "${MCP_MOCK_STATE_DIR}/request-log.txt" 2>/dev/null) || true
+  echo "${_n:-0}"
 }
 
 mock_requests_matching() {
-  grep -cE "$1" "${MCP_MOCK_STATE_DIR}/request-log.txt" 2>/dev/null || echo 0
+  local _n
+  _n=$(grep -cE "$1" "${MCP_MOCK_STATE_DIR}/request-log.txt" 2>/dev/null) || true
+  echo "${_n:-0}"
 }
 
 # fixture_write NAME VERSION STATUS UPDATED_AT DESCRIPTION: (re)write one
