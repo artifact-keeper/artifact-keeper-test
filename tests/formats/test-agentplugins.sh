@@ -30,8 +30,10 @@
 # Then: 409 on re-publish, byte and checksum equality on download, every index
 # document asserted with jq, a second version and latest selection,
 # {name}/index.json, removal through the REST artifact delete and the index
-# falling back to the older version. The `ak agent plugins` steps run only
-# when an `ak` with that command group is on PATH (or AK_BIN names one).
+# falling back to the older version, and a plugin whose newest version is
+# Cursor only staying in claude-marketplace.json at its newest Claude
+# version. The `ak agent plugins` steps run only when an `ak` with that
+# command group is on PATH (or AK_BIN names one).
 #
 # Capability gate: a backend without the format answers repository creation
 # with `400 Invalid format: agentplugins`. That is the candidate saying the
@@ -461,6 +463,63 @@ _status=$(ap_get "$_del_path" "${WORK_DIR}/deleted.zip")
 if assert_eq "$_status" "404" "GET of the deleted version returned HTTP ${_status}, expected 404"; then
   pass
 fi
+
+# ---------------------------------------------------------------------------
+# Per-document latest: a newest version that drops a harness
+# ---------------------------------------------------------------------------
+#
+# mixed 1.0.0 is Claude layout, mixed 2.0.0 is Cursor only. Each document
+# picks its latest among the versions it may list, so Claude Code keeps
+# seeing 1.0.0 while Cursor and the unified index move to 2.0.0.
+
+MIXED_SLUG="mixed"
+MIXED_V1_ZIP="${WORK_DIR}/${MIXED_SLUG}-1.0.0.zip"
+MIXED_V2_ZIP="${WORK_DIR}/${MIXED_SLUG}-2.0.0.zip"
+
+begin_test "Build the mixed fixtures (1.0.0 Claude layout, 2.0.0 Cursor only)"
+_mdir="${WORK_DIR}/src-${MIXED_SLUG}-1.0.0"
+mkdir -p "${_mdir}/.claude-plugin"
+printf '{"name":"%s","version":"1.0.0","description":"Claude layout"}\n' "$MIXED_SLUG" > "${_mdir}/.claude-plugin/plugin.json"
+write_skill "$_mdir" "mixed"
+zip_dir "$_mdir" "$MIXED_V1_ZIP"
+_mdir="${WORK_DIR}/src-${MIXED_SLUG}-2.0.0"
+mkdir -p "${_mdir}/.cursor-plugin"
+printf '{"name":"%s","version":"2.0.0","description":"Cursor only"}\n' "$MIXED_SLUG" > "${_mdir}/.cursor-plugin/plugin.json"
+write_skill "$_mdir" "mixed"
+zip_dir "$_mdir" "$MIXED_V2_ZIP"
+if [ -s "$MIXED_V1_ZIP" ] && [ -s "$MIXED_V2_ZIP" ]; then
+  pass
+else
+  fail "could not build the mixed zips"
+fi
+
+publish_and_check "$MIXED_SLUG" "1.0.0" "$MIXED_V1_ZIP" "claude" || true
+publish_and_check "$MIXED_SLUG" "2.0.0" "$MIXED_V2_ZIP" "cursor" || true
+
+# mixed_entry DOC: "<version> <sha256>" of the mixed entry in DOC, or
+# "<HTTP status>" / "absent".
+mixed_entry() {
+  local doc="$1" out="${WORK_DIR}/mixed-${1}" status
+  status=$(ap_get "$doc" "$out")
+  if [ "$status" != "200" ]; then
+    echo "<HTTP ${status}>"
+    return
+  fi
+  jq -r --arg n "$MIXED_SLUG" \
+    '[.plugins[] | select(.name == $n) | "\(.version) \(.source.sha256)"] | if length == 0 then "absent" else join(" | ") end' \
+    "$out" 2>/dev/null || echo "unparseable"
+}
+
+for _expect in "claude-marketplace.json|1.0.0|${MIXED_V1_ZIP}" \
+               "cursor-marketplace.json|2.0.0|${MIXED_V2_ZIP}" \
+               "marketplace.json|2.0.0|${MIXED_V2_ZIP}"; do
+  IFS='|' read -r _doc _ver _zip <<< "$_expect"
+  begin_test "${_doc} lists ${MIXED_SLUG} at ${_ver}, its newest version that document may list"
+  _got=$(mixed_entry "$_doc")
+  if assert_eq "$_got" "${_ver} $(sha_of "$_zip")" "${_doc} ${MIXED_SLUG} entry is '${_got}', expected '${_ver} <sha256 of ${MIXED_SLUG}-${_ver}.zip>'"; then
+    pass
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Optional: the ak CLI (ak agent plugins publish --dry-run / install --path)

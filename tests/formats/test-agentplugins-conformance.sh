@@ -24,6 +24,10 @@
 #   5. Index documents carry an ETag, answer If-None-Match with 304 and are
 #      Cache-Control: no-cache; token-route responses are private, no-store,
 #      and a bogus path token is 401.
+#   6. A deleted version can only come back with identical bytes (different
+#      bytes 409, an empty body 400), SemVer build metadata is refused, a
+#      generic REST upload is neither indexed nor served natively, and a
+#      rename onto the reserved key `t` is refused.
 #
 # AK_EXTERNAL_URL is not asserted (it depends on the deployment), so archive
 # URLs are compared by path only and downloaded from BASE_URL.
@@ -485,6 +489,113 @@ if [ "$PRIV_PUBLISHED" = true ]; then
   esac
 else
   fail "needs the private publish"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Lifecycle: immutability after delete, native rows only, reserved key
+# ---------------------------------------------------------------------------
+
+LIFE="hello"
+LIFE_VERSION="1.0.0"
+LIFE_PATH="${LIFE}/${LIFE_VERSION}/${LIFE}-${LIFE_VERSION}.zip"
+LIFE_ZIP=$(build_zip "life" "$LIFE" "$LIFE_VERSION")
+# Same manifest, one extra file: a different archive for the same version.
+LIFE_OTHER="${WORK_DIR}/life-other.zip"
+cp "$LIFE_ZIP" "$LIFE_OTHER"
+mkdir -p "${WORK_DIR}/src-life-extra"
+echo "different bytes" > "${WORK_DIR}/src-life-extra/EXTRA.md"
+(cd "${WORK_DIR}/src-life-extra" && zip -qX "$LIFE_OTHER" EXTRA.md)
+
+# life_versions: the comma-separated versions hello/index.json lists, or
+# "<HTTP status>" when the document is not served.
+life_versions() {
+  local out="${WORK_DIR}/life-index.json" status
+  status=$(curl -s -o "$out" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -H "$(format_auth_header)" \
+    "${BASE_URL}/agentplugins/${REPO_KEY}/${LIFE}/index.json" 2>/dev/null) || status="000"
+  if [ "$status" = "200" ]; then
+    jq -r '[.versions[].version] | join(",")' "$out" 2>/dev/null
+  else
+    echo "<HTTP ${status}>"
+  fi
+}
+
+begin_test "Publish ${LIFE} ${LIFE_VERSION} and delete it through the REST artifacts API"
+ap_put "$REPO_KEY" "$LIFE_ZIP" "$LIFE_PATH"
+LIFE_DELETED=false
+if [ "$PUT_STATUS" != "201" ]; then
+  fail "publish returned HTTP ${PUT_STATUS}, expected 201" "${PUT_BODY:0:300}"
+else
+  DEL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${LIFE_PATH}" 2>/dev/null) || DEL_STATUS="000"
+  if [ "$DEL_STATUS" -ge 200 ] 2>/dev/null && [ "$DEL_STATUS" -lt 300 ] 2>/dev/null; then
+    LIFE_DELETED=true
+    pass
+  else
+    fail "REST delete returned HTTP ${DEL_STATUS}"
+  fi
+fi
+
+begin_test "Empty-body PUT to a deleted version is refused with 400"
+EMPTY_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  -X PUT -H "$(format_auth_header)" -H "Content-Type: application/zip" --data-binary "" \
+  "${BASE_URL}/agentplugins/${REPO_KEY}/${LIFE_PATH}" 2>/dev/null) || EMPTY_STATUS="000"
+if [ "$LIFE_DELETED" != true ]; then
+  fail "needs the deleted version"
+elif assert_eq "$EMPTY_STATUS" "400" "empty-body PUT returned HTTP ${EMPTY_STATUS}, expected 400"; then
+  pass
+fi
+
+begin_test "Re-publishing a deleted version with different bytes is refused with 409"
+ap_put "$REPO_KEY" "$LIFE_OTHER" "$LIFE_PATH"
+if [ "$LIFE_DELETED" != true ]; then
+  fail "needs the deleted version"
+elif assert_eq "$PUT_STATUS" "409" "re-publish with different bytes returned HTTP ${PUT_STATUS}, expected 409 (a version is immutable even after delete)"; then
+  pass
+fi
+
+begin_test "Re-publishing a deleted version with identical bytes restores it (201) and re-indexes it"
+ap_put "$REPO_KEY" "$LIFE_ZIP" "$LIFE_PATH"
+if [ "$LIFE_DELETED" != true ]; then
+  fail "needs the deleted version"
+elif assert_eq "$PUT_STATUS" "201" "re-publish with identical bytes returned HTTP ${PUT_STATUS}, expected 201: ${PUT_BODY:0:300}" && \
+     assert_eq "$(life_versions)" "$LIFE_VERSION" "${LIFE}/index.json lists [$(life_versions)] after the restore, expected [${LIFE_VERSION}]"; then
+  pass
+fi
+
+BUILD_ZIP=$(build_zip "neg-build" "$LIFE" "")
+expect_400 "SemVer build metadata (1.0.0+hotfix)" "$BUILD_ZIP" "${LIFE}/1.0.0+hotfix/${LIFE}-1.0.0+hotfix.zip"
+
+begin_test "A generic REST upload into the repository is stored but not indexed or served"
+GEN_PATH="${LIFE}/9.0.0/${LIFE}-9.0.0.zip"
+GEN_ZIP=$(build_zip "generic-9" "$LIFE" "9.0.0")
+# Push replication delivers through this route, so it stays open; only rows a
+# native publish wrote may reach an index or the download route.
+GEN_STATUS=$(curl -s -o "${WORK_DIR}/gen.json" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  -X PUT -H "$(auth_header)" -H "Content-Type: application/zip" --data-binary "@${GEN_ZIP}" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${GEN_PATH}" 2>/dev/null) || GEN_STATUS="000"
+GEN_DL=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -H "$(format_auth_header)" \
+  "${BASE_URL}/agentplugins/${REPO_KEY}/${GEN_PATH}" 2>/dev/null) || GEN_DL="000"
+GEN_VERSIONS=$(life_versions)
+if assert_eq "$GEN_STATUS" "201" "generic REST PUT returned HTTP ${GEN_STATUS}, expected 201: $(head -c 300 "${WORK_DIR}/gen.json" 2>/dev/null)" && \
+   assert_eq "$GEN_VERSIONS" "$LIFE_VERSION" "${LIFE}/index.json lists [${GEN_VERSIONS}], expected only [${LIFE_VERSION}] (9.0.0 came from a generic upload)" && \
+   assert_eq "$GEN_DL" "404" "native GET of the generic upload returned HTTP ${GEN_DL}, expected 404"; then
+  pass
+fi
+
+begin_test "Renaming an agentplugins repository to 't' is refused with 400 and the key is kept"
+RENAME_STATUS=$(curl -s -o "${WORK_DIR}/rename.json" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  -X PATCH -H "$(auth_header)" -H "Content-Type: application/json" -d '{"key":"t"}' \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}" 2>/dev/null) || RENAME_STATUS="000"
+KEPT_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/repositories/${REPO_KEY}" 2>/dev/null) || KEPT_STATUS="000"
+if [ "$RENAME_STATUS" -ge 200 ] 2>/dev/null && [ "$RENAME_STATUS" -lt 300 ] 2>/dev/null; then
+  # Put it back so the rest of the suite and the exit cleanup still work.
+  curl -s -o /dev/null "${CURL_TIMEOUT_ARGS[@]}" -X PATCH -H "$(auth_header)" -H "Content-Type: application/json" \
+    -d "{\"key\":\"${REPO_KEY}\"}" "${BASE_URL}/api/v1/repositories/t" 2>/dev/null || true
+fi
+if assert_eq "$RENAME_STATUS" "400" "PATCH key=t returned HTTP ${RENAME_STATUS}, expected 400: $(head -c 300 "${WORK_DIR}/rename.json" 2>/dev/null)" && \
+   assert_eq "$KEPT_STATUS" "200" "GET of the original key returned HTTP ${KEPT_STATUS} after the refused rename"; then
+  pass
 fi
 
 # ---------------------------------------------------------------------------
