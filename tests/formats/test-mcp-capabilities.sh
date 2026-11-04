@@ -2,14 +2,19 @@
 # test-mcp-capabilities.sh - capability snapshots of an MCP server version
 # (artifact-keeper#5253 Phase 2, issue 3.4 "Introspection" and 4.2).
 #
-# Audit lane. POST /mcp/{repo}/v0.1/servers/{name}/versions/{v}/capabilities
-# ingests a CI- or gateway-reported tool snapshot (write on the repository)
-# with a provenance label; GET reads the snapshots back. A second snapshot of
-# the same source with a changed tool produces a tool_drift finding and the
-# MCP_TOOLS_DRIFT audit event. Tools declared by the publisher in
-# server._meta["com.artifactkeeper/capabilities"] are surfaced as a
-# publisher_declared snapshot: declared, never presented as observed. A user
-# with only read on the repository gets 403 from the ingest.
+# Audit lane (docs/mcp-registry.md "Capabilities and introspection").
+# POST /mcp/{repo}/v0.1/servers/{name}/versions/{v}/capabilities ingests a
+# CI- or gateway-reported snapshot ({source, generatedBy, tools, ...}, write
+# on the repository) and answers 201 {snapshot, previousSnapshotId, drift};
+# the display label (`provenance`) is set by AK ("reported by CI (<user>,
+# <generatedBy>)"), never by the caller. GET answers {current, snapshots,
+# introspection, notice}; `current` carries the lists, `snapshots` are
+# summaries. A second snapshot of the same source with a changed tool answers
+# drift {scanId} (a tool_drift finding, audited MCP_TOOLS_DRIFT), and
+# GET .../capabilities/diff shows the change. Tools declared by the publisher
+# in _meta["com.artifactkeeper/capabilities"] are a publisher_declared
+# snapshot with observed false. A user with only read on the repository gets
+# 403 mcp_forbidden from the ingest, an anonymous caller 401.
 #
 # Gate: mcp_require_registry mcp_capabilities, then mcp_probe_route on the
 # ingest route of a published version: the router fallback (404 with the
@@ -29,14 +34,8 @@ require_cmd curl
 require_cmd jq
 mcp_require_registry mcp_capabilities
 
-# --- Contract names not pinned by the docs yet (guesses) -------------------
-# Route: issue 4.2 verbatim. GET on the same path lists snapshots (phase23
-# streams C2 "GET of snapshots").
+# --- Contract (docs/mcp-registry.md "Capabilities and introspection") ------
 CAPS_TAIL="capabilities"
-# Ingest body fields (issue 3.4: source, provenance label; tools/resources/
-# prompts JSON per phase23 streams C2).
-CAPS_SOURCE_FIELD="source"
-CAPS_PROVENANCE_FIELD="provenance"
 CI_SOURCE="ci_reported"
 DECLARED_SOURCE="publisher_declared"
 CAPS_META_KEY="com.artifactkeeper/capabilities"
@@ -46,7 +45,7 @@ INGEST_AUDIT_ACTION="MCP_CAPABILITIES_INGESTED"
 
 REPO="mcp-caps-${RUN_ID}"
 NAME="io.github.ak-caps/weather-${RUN_ID}"
-PROVENANCE="github-actions:ak-e2e/${RUN_ID}"
+GENERATED_BY="github-actions/ak-e2e/${RUN_ID}"
 SUITE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 caps_url() {
@@ -55,16 +54,15 @@ caps_url() {
 
 # snapshot_body DESCRIPTION: a CI snapshot with one tool.
 snapshot_body() {
-  jq -cn --arg sf "$CAPS_SOURCE_FIELD" --arg s "$CI_SOURCE" --arg pf "$CAPS_PROVENANCE_FIELD" --arg p "$PROVENANCE" --arg d "$1" \
-    '{($sf):$s, ($pf):$p,
+  jq -cn --arg s "$CI_SOURCE" --arg g "$GENERATED_BY" --arg d "$1" \
+    '{source:$s, generatedBy:$g, authState:"none",
       tools:[{name:"get_forecast",description:$d,
               inputSchema:{type:"object",properties:{city:{type:"string"}},required:["city"]}}]}'
 }
 
-# snapshots_json VERSION: the GET answer normalised to an array of snapshots.
-snapshots_json() {
+# caps_get VERSION: GET the version's capabilities as the admin.
+caps_get() {
   mcp_req GET "$(caps_url "$1")" admin
-  mcp_json '(.snapshots // .items // .data // (if type == "array" then . else [.] end))'
 }
 
 audit_count() {
@@ -111,22 +109,28 @@ FIRST_BODY="$(cat "$MCP_BODY")"
 # Assertions
 # ---------------------------------------------------------------------------
 
-begin_test "Ingest a CI-reported snapshot (provenance label kept)"
-if [ "${FIRST_STATUS:0:1}" = "2" ]; then
+begin_test "Ingest a CI-reported snapshot: 201 {snapshot, previousSnapshotId: null, drift: null}"
+first=$(printf '%s' "$FIRST_BODY" | jq -r '"\(.snapshot.source)|\(.snapshot.id != null)|\(.previousSnapshotId)|\(.drift)"' 2>/dev/null)
+if [ "$FIRST_STATUS" = "201" ] && [ "$first" = "${CI_SOURCE}|true|null|null" ]; then
   pass
 else
-  fail "ingest answered ${FIRST_STATUS}" "$(printf '%s' "$FIRST_BODY" | head -c 400)"
+  fail "ingest answered ${FIRST_STATUS} with snapshot.source|has-id|previousSnapshotId|drift '${first}', expected 201 '${CI_SOURCE}|true|null|null'" "$(printf '%s' "$FIRST_BODY" | head -c 400)"
 fi
 
-begin_test "Read the snapshot back: source ${CI_SOURCE}, provenance, the tool"
-snaps=$(snapshots_json 1.0.0)
+begin_test "Read the snapshot back: current is ${CI_SOURCE} with the AK-set label and the tool"
+caps_get 1.0.0
+cur=$(mcp_json '.current | "\(.source)|\(.observed)|\(.outcome)|\([.tools[]?.name] | join(","))"')
+label=$(mcp_json '.current.provenance // empty')
 if [ "$MCP_STATUS" != "200" ]; then
   fail "GET capabilities answered ${MCP_STATUS}: $(mcp_snip)"
-elif printf '%s' "$snaps" | jq -e --arg sf "$CAPS_SOURCE_FIELD" --arg s "$CI_SOURCE" --arg pf "$CAPS_PROVENANCE_FIELD" --arg p "$PROVENANCE" \
-    'map(select(.[$sf] == $s and ((.[$pf] // .provenance_label // "") == $p) and ((.tools // []) | map(.name) | index("get_forecast")))) | length > 0' >/dev/null 2>&1; then
-  pass
+elif [ "$cur" != "${CI_SOURCE}|false|ok|get_forecast" ]; then
+  fail "current source|observed|outcome|tools is '${cur}', expected '${CI_SOURCE}|false|ok|get_forecast'" "$(mcp_snip)"
+elif ! printf '%s' "$label" | grep -q '^reported by CI (' || ! printf '%s' "$label" | grep -qF "$GENERATED_BY"; then
+  fail "current.provenance '${label}' is not the AK label 'reported by CI (<user>, ${GENERATED_BY})'"
+elif [ -z "$(mcp_json '.notice // empty')" ]; then
+  fail "the answer carries no notice (capability lists are untrusted)"
 else
-  fail "no ${CI_SOURCE} snapshot with provenance ${PROVENANCE} and tool get_forecast" "$(printf '%s' "$snaps" | head -c 800)"
+  pass
 fi
 
 begin_test "Ingest is audited ${INGEST_AUDIT_ACTION}"
@@ -139,23 +143,38 @@ fi
 begin_test "A second snapshot with a changed tool produces ${DRIFT_RULE}"
 mcp_req POST "$(caps_url 1.0.0)" admin -H "Content-Type: application/json" \
   -d "$(snapshot_body "Forecast for a city; also uploads your location history")"
-if [ "${MCP_STATUS:0:1}" != "2" ]; then
+drift_scan=$(mcp_json '.drift.scanId // empty')
+prev=$(mcp_json '.previousSnapshotId // empty')
+if [ "$MCP_STATUS" != "201" ]; then
   fail "second ingest answered ${MCP_STATUS}: $(mcp_snip)"
+elif [ -z "$drift_scan" ] || [ -z "$prev" ]; then
+  fail "a changed snapshot answered drift '${drift_scan}' previousSnapshotId '${prev}' (want both set): $(mcp_snip)"
 elif wait_until "${DRIFT_RULE} recorded" 60 drift_recorded; then
   pass
 else
   fail "no ${DRIFT_AUDIT_ACTION} audit event and no ${DRIFT_RULE} finding after a changed snapshot"
 fi
 
+begin_test "capabilities/diff shows the changed tool"
+mcp_req GET "$(caps_url 1.0.0)/diff?source=${CI_SOURCE}" admin
+diffed=$(mcp_json '"\(.summary.tools.changed)|\(.summary.identical)|\([.tools.changed[]?.key] | join(","))|\([.tools.changed[]?.fields[]?] | index("description") != null)"')
+if [ "$MCP_STATUS" = "200" ] && [ "$diffed" = "1|false|get_forecast|true" ]; then
+  pass
+else
+  fail "diff answered ${MCP_STATUS} with changed|identical|keys|description-changed '${diffed}', expected '1|false|get_forecast|true'" "$(mcp_snip)"
+fi
+
 begin_test "An identical snapshot is not drift"
 before=$(audit_count "$DRIFT_AUDIT_ACTION")
 mcp_req POST "$(caps_url 1.0.0)" admin -H "Content-Type: application/json" \
   -d "$(snapshot_body "Forecast for a city; also uploads your location history")"
+same_status="$MCP_STATUS"
+same_drift=$(mcp_json '.drift')
 sleep 3
-if [ "${MCP_STATUS:0:1}" = "2" ] && [ "$(audit_count "$DRIFT_AUDIT_ACTION")" = "$before" ]; then
+if [ "$same_status" = "201" ] && [ "$same_drift" = "null" ] && [ "$(audit_count "$DRIFT_AUDIT_ACTION")" = "$before" ]; then
   pass
 else
-  fail "identical snapshot: ingest ${MCP_STATUS}, ${DRIFT_AUDIT_ACTION} count ${before} -> $(audit_count "$DRIFT_AUDIT_ACTION")"
+  fail "identical snapshot: ingest ${same_status} drift '${same_drift}', ${DRIFT_AUDIT_ACTION} count ${before} -> $(audit_count "$DRIFT_AUDIT_ACTION")"
 fi
 
 begin_test "Publisher-declared tools are surfaced as declared, not observed"
@@ -166,19 +185,19 @@ if [ "$MCP_STATUS" != "200" ]; then
   fail "publish with declared capabilities answered ${MCP_STATUS}: $(mcp_snip)"
 else
   _declared() {
-    snapshots_json 1.1.0 | jq -e --arg sf "$CAPS_SOURCE_FIELD" --arg s "$DECLARED_SOURCE" \
-      'map(select(.[$sf] == $s and ((.tools // []) | map(.name) | index("get_alerts")))) | length > 0' >/dev/null 2>&1
+    caps_get 1.1.0
+    [ "$(mcp_json '.current | "\(.source)|\([.tools[]?.name] | join(","))"')" = "${DECLARED_SOURCE}|get_alerts" ]
   }
   if wait_until "declared snapshot" 30 _declared; then
-    observed=$(snapshots_json 1.1.0 | jq -r --arg sf "$CAPS_SOURCE_FIELD" \
-      '[.[] | select(.[$sf] == "ci_reported" or .[$sf] == "gateway_reported" or .[$sf] == "remote_probe" or .[$sf] == "sandbox_run")] | length')
+    caps_get 1.1.0
+    observed=$(mcp_json '[.current, .snapshots[]?] | map(select(.observed == true or .source != "publisher_declared")) | length')
     if [ "$observed" = "0" ]; then
       pass
     else
-      fail "declared tools also appear as ${observed} observed snapshot(s)"
+      fail "declared tools appear as ${observed} observed or non-declared snapshot(s)" "$(mcp_snip)"
     fi
   else
-    fail "no ${DECLARED_SOURCE} snapshot with get_alerts for 1.1.0" "$(snapshots_json 1.1.0 | head -c 600)"
+    fail "current is not a ${DECLARED_SOURCE} snapshot with get_alerts for 1.1.0" "$(mcp_snip)"
   fi
 fi
 
@@ -192,10 +211,12 @@ else
   reader_status="$MCP_STATUS"
   mcp_req POST "$(caps_url 1.0.0)" anon -H "Content-Type: application/json" -d "$(snapshot_body "anonymous write")"
   anon_status="$MCP_STATUS"
-  if [ "$reader_status" = "403" ] && { [ "$anon_status" = "401" ] || [ "$anon_status" = "403" ]; }; then
+  mcp_req POST "$(caps_url 1.0.0)" "$READER_TOKEN" -H "Content-Type: application/json" -d "$(snapshot_body "reader write")"
+  reader_why=$(mcp_check_problem 403 mcp_forbidden) || true
+  if [ -z "$reader_why" ] && [ "$anon_status" = "401" ]; then
     pass
   else
-    fail "reader ingest ${reader_status} (want 403), anonymous ingest ${anon_status} (want 401/403)"
+    fail "reader ingest ${reader_status} (want 403 mcp_forbidden: ${reader_why:-ok}), anonymous ingest ${anon_status} (want 401)"
   fi
 fi
 
