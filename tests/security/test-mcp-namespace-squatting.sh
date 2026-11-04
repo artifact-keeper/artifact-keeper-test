@@ -32,6 +32,13 @@
 #     (com.acme = com.acme/*), so it covers neither com.acme.team/x nor
 #     another namespace. Probe: a write-grant user publishes with the setting
 #     on; 200 means enforcement is absent and those tests record a plain skip.
+#     The condition is accepted only on an MCP repository target (another
+#     target is 400). A `{claim}` pattern needs conditions.mcp_namespace_issuer
+#     (400 without it, and 400 for an issuer without mcp_namespaces); its
+#     claims come only from a CI session of that issuer, so a user credential
+#     matches nothing (403). A conditioned rule grants nothing outside the MCP
+#     gate: a namespace-scoped publisher of a private registry can publish
+#     there but needs a separate read rule to read it.
 
 # shellcheck source=../lib/common.sh disable=SC1091
 source "$(dirname "$0")/../lib/common.sh"
@@ -79,6 +86,23 @@ publish_expect() {
   else
     expect_problem "$3" "${4:-}" "publish ${2} to ${1}"
   fi
+}
+
+# perm_post USER_ID REPO_KEY ACTIONS_JSON CONDITIONS_JSON: POST
+# /api/v1/permissions; MCP_STATUS, PERM_ID (the new rule's id, "" if none).
+perm_post() {
+  local repo_id
+  repo_id=$(mcp_repo_id "$2")
+  mcp_req POST "${BASE_URL}/api/v1/permissions" admin -H "Content-Type: application/json" \
+    -d "$(jq -cn --arg u "$1" --arg r "$repo_id" --argjson a "$3" --argjson c "$4" \
+      '{principal_type:"user",principal_id:$u,target_type:"repository",target_id:$r,actions:$a,conditions:$c}')"
+  PERM_ID=$(mcp_json '.id // empty')
+}
+
+# perm_delete_on_exit ID
+perm_delete_on_exit() {
+  [ -n "$1" ] || return 0
+  add_exit_handler "curl -s -o /dev/null --max-time 30 -X DELETE -H \"\$(auth_header)\" \"${BASE_URL}/api/v1/permissions/$1\" || true"
 }
 
 repo_field() {
@@ -321,6 +345,135 @@ else
     pass
   else
     fail "namespace-conditioned grant outside its namespace: sub-namespace ${ACME}.team/x: ${sub_why:-ok}; org.elsewhere: ${other_why:-ok}"
+  fi
+fi
+
+ISSUER="https://token.actions.githubusercontent.com"
+NPM_TARGET="sec-mcpns-npm-${RUN_ID}"
+begin_test "Namespace grants: conditions.mcp_namespaces on a non-MCP repository is 400"
+if [ -n "$GRANT_DEFER" ]; then
+  skip "mcp_require_namespace_grant not testable here (${GRANT_DEFER}); Phase 3 capability"
+elif ! create_local_repo "$NPM_TARGET" npm; then
+  fail "could not create the npm repository for the target check"
+else
+  mcp_delete_repo_on_exit "$NPM_TARGET"
+  perm_post "$G_USER_ID" "$NPM_TARGET" '["read","write"]' "$(jq -cn --arg a "$ACME" '{mcp_namespaces:[$a]}')"
+  perm_delete_on_exit "$PERM_ID"
+  if [ "$MCP_STATUS" = "400" ]; then
+    pass
+  else
+    fail "a namespace condition on an npm repository answered ${MCP_STATUS}, want 400: $(mcp_snip)"
+  fi
+fi
+
+begin_test "Namespace grants: a {claim} pattern needs mcp_namespace_issuer (400 without it or without patterns)"
+if [ -n "$GRANT_DEFER" ]; then
+  skip "mcp_require_namespace_grant not testable here (${GRANT_DEFER}); Phase 3 capability"
+else
+  perm_post "$G_USER_ID" "$GRANT_KEY" '["read","write"]' '{"mcp_namespaces":["io.github.{repository_owner}/*"]}'
+  perm_delete_on_exit "$PERM_ID"
+  no_issuer="$MCP_STATUS"
+  perm_post "$G_USER_ID" "$GRANT_KEY" '["read","write"]' "$(jq -cn --arg i "$ISSUER" '{mcp_namespace_issuer:$i}')"
+  perm_delete_on_exit "$PERM_ID"
+  no_patterns="$MCP_STATUS"
+  # A rule per principal and target: the issuer-bound rule goes to a user
+  # with no rule on the repository yet.
+  bound="no-user"
+  CLAIM_PERM_ID=""
+  C_TOK=""
+  if mcp_make_user "mcpns-c-${RUN_ID}" > "${WORK_DIR}/tok-c"; then
+    C_TOK=$(cat "${WORK_DIR}/tok-c")
+    perm_post "$MCP_USER_ID" "$GRANT_KEY" '["read","write"]' \
+      "$(jq -cn --arg i "$ISSUER" '{mcp_namespaces:["io.github.{repository_owner}/*"],mcp_namespace_issuer:$i}')"
+    perm_delete_on_exit "$PERM_ID"
+    bound="$MCP_STATUS"
+    CLAIM_PERM_ID="$PERM_ID"
+  fi
+  if [ "$no_issuer|$no_patterns|${bound:0:1}" = "400|400|2" ] && [ -n "$CLAIM_PERM_ID" ]; then
+    pass
+  else
+    fail "claim pattern without an issuer ${no_issuer}, issuer without patterns ${no_patterns} (want 400 both), issuer-bound claim pattern ${bound} (want 2xx with an id)"
+  fi
+fi
+
+begin_test "Namespace grants: an issuer-bound claim pattern matches nothing for a user credential (403)"
+if [ -n "$GRANT_DEFER" ]; then
+  skip "mcp_require_namespace_grant not testable here (${GRANT_DEFER}); Phase 3 capability"
+elif [ -z "${CLAIM_PERM_ID:-}" ] || [ -z "${C_TOK:-}" ]; then
+  fail "no issuer-bound claim rule to test (see the previous test)"
+else
+  mcp_publish "$GRANT_KEY" "$(remote_doc "io.github.mcpns-c-${RUN_ID}/claimed")" "$C_TOK"
+  expect_problem 403 mcp_namespace_not_granted "a user credential under an io.github.{repository_owner}/* rule"
+fi
+
+PRIV_NS_KEY="sec-mcpns-priv-${RUN_ID}"
+P_TOK=""
+begin_test "Namespace grants: a namespace-only publisher can publish to a private registry but not read it"
+if [ -n "$GRANT_DEFER" ]; then
+  skip "mcp_require_namespace_grant not testable here (${GRANT_DEFER}); Phase 3 capability"
+elif ! mcp_create_repo "$PRIV_NS_KEY" '{}' false || ! mcp_make_user "mcpns-p-${RUN_ID}" > "${WORK_DIR}/tok-p"; then
+  fail "private-registry fixtures failed: ${MCP_CREATE_ERROR:-} $(mcp_snip)"
+else
+  P_TOK=$(cat "${WORK_DIR}/tok-p")
+  PUB_USER_ID="$MCP_USER_ID"
+  perm_post "$PUB_USER_ID" "$PRIV_NS_KEY" '["read","write"]' "$(jq -cn --arg a "$ACME" '{mcp_namespaces:[$a]}')"
+  rule_status="$MCP_STATUS"
+  mcp_publish "$PRIV_NS_KEY" "$(remote_doc "${ACME}/private")" "$P_TOK"
+  pub_status="$MCP_STATUS"
+  mcp_get "$PRIV_NS_KEY" "$(mcp_version_path "${ACME}/private" 1.0.0)" "$P_TOK"
+  read_why=$(mcp_check_plain_404) || true
+  mcp_req GET "${BASE_URL}/api/v1/repositories/${PRIV_NS_KEY}/artifacts" "$P_TOK"
+  generic_status="$MCP_STATUS"
+  generic_lists=0
+  grep -qF "${ACME}/private" "$MCP_BODY" 2>/dev/null && generic_lists=1
+  if [ "${rule_status:0:1}" != "2" ]; then
+    fail "the namespace rule on the private registry answered ${rule_status}: $(mcp_snip)"
+  elif [ "$pub_status" != "200" ]; then
+    fail "publish of ${ACME}/private under the namespace rule answered ${pub_status}, want 200 (the /mcp write check counts the rule)"
+  elif [ -n "$read_why" ]; then
+    fail "the namespace rule granted a read of the private registry (want the plain 404): ${read_why}"
+  elif [ "${generic_status:0:1}" = "2" ] && [ "$generic_lists" = "1" ]; then
+    fail "the namespace rule granted the generic artifact API: HTTP ${generic_status} lists ${ACME}/private"
+  else
+    pass
+  fi
+fi
+
+begin_test "Namespace grants: a separate read rule (through a group) lets the namespace-scoped publisher read the private registry"
+# One rule per principal and target, so the separate, unconditioned read
+# rule is the publisher's group's.
+READ_GROUP_ID=""
+group_rule=""
+if [ -z "$GRANT_DEFER" ] && [ -n "$P_TOK" ]; then
+  mcp_req POST "${BASE_URL}/api/v1/groups" admin -H "Content-Type: application/json" \
+    -d "$(jq -cn --arg n "mcpns-readers-${RUN_ID}" '{name:$n,description:"release-gate MCP readers"}')"
+  READ_GROUP_ID=$(mcp_json '.id // empty')
+  if [ -n "$READ_GROUP_ID" ]; then
+    add_exit_handler "curl -s -o /dev/null --max-time 30 -X DELETE -H \"\$(auth_header)\" \"${BASE_URL}/api/v1/groups/${READ_GROUP_ID}\" || true"
+    if add_group_members "$READ_GROUP_ID" "mcpns-p-${RUN_ID}" >/dev/null 2>&1; then
+      mcp_req POST "${BASE_URL}/api/v1/permissions" admin -H "Content-Type: application/json" \
+        -d "$(jq -cn --arg g "$READ_GROUP_ID" --arg r "$(mcp_repo_id "$PRIV_NS_KEY")" \
+          '{principal_type:"group",principal_id:$g,target_type:"repository",target_id:$r,actions:["read"]}')"
+      group_rule="$MCP_STATUS"
+    else
+      group_rule="member-add-failed"
+    fi
+  fi
+fi
+if [ -n "$GRANT_DEFER" ]; then
+  skip "mcp_require_namespace_grant not testable here (${GRANT_DEFER}); Phase 3 capability"
+elif [ -z "$P_TOK" ]; then
+  fail "no namespace-scoped publisher (see the previous test)"
+elif [ -z "$READ_GROUP_ID" ]; then
+  fail "group creation answered ${MCP_STATUS}: $(mcp_snip)"
+elif [ "${group_rule:0:1}" != "2" ]; then
+  fail "the readers group's read rule could not be set up (${group_rule}): $(mcp_snip)"
+else
+  mcp_get "$PRIV_NS_KEY" "$(mcp_version_path "${ACME}/private" 1.0.0)" "$P_TOK"
+  if [ "$MCP_STATUS" = "200" ] && [ "$(mcp_json '.server.name')" = "${ACME}/private" ]; then
+    pass
+  else
+    fail "read with the separate read rule answered ${MCP_STATUS}: $(mcp_snip)"
   fi
 fi
 
