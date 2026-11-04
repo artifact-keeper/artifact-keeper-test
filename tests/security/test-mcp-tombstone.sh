@@ -122,6 +122,8 @@ if [ "$MCP_STATUS" = "200" ] && mcp_probe_route DELETE "$(mcp_base "$REPO")/$(mc
   DELETE_MOUNTED=1
 fi
 DELETE_PROBE="DELETE .../versions/9.9.9 answered ${MCP_STATUS}"
+# The soft delete answers 200 with the served entry, status deleted.
+DELETE_ANSWER="${MCP_STATUS}:$(mcp_json '._meta["io.modelcontextprotocol.registry/official"].status // empty')"
 
 begin_test "Tombstone: republish different bytes after the purge is still 409 mcp_version_exists"
 if ! mcp_require_feature mcp_tombstone; then
@@ -142,7 +144,9 @@ begin_test "DELETE .../versions/{version}: soft delete, include_deleted shows it
 if [ "$DELETE_MOUNTED" != "1" ]; then
   skip "${LATER_PREFIX} (probe: ${DELETE_PROBE} with the router fallback); capability mcp_tombstone (Phase 3 DELETE)"
 else
-  # The probe already deleted 9.9.9.
+  # The probe already deleted 9.9.9; a second DELETE is 400 (already deleted).
+  mcp_req DELETE "$(mcp_base "$REPO")/$(mcp_version_path "$NAME" 9.9.9)" admin
+  again="$MCP_STATUS"
   mcp_get "$REPO" "$(mcp_version_path "$NAME" 9.9.9)" anon
   plain=$(mcp_check_plain_404) && plain=ok
   mcp_get "$REPO" "$(mcp_version_path "$NAME" 9.9.9)?include_deleted=true" anon
@@ -150,7 +154,11 @@ else
   doc 9.9.9 "$REMOTE_B" "Replacement after DELETE" "${WORK_DIR}/throwaway-b.json"
   mcp_publish "$REPO" "${WORK_DIR}/throwaway-b.json"
   repub=$(mcp_check_problem 409 mcp_version_exists) && repub=ok
-  if [ "$plain" != "ok" ]; then
+  if [ "$DELETE_ANSWER" != "200:deleted" ]; then
+    fail "DELETE answered ${DELETE_ANSWER}, want 200 with the served entry in status deleted"
+  elif [ "$again" != "400" ]; then
+    fail "a second DELETE of the deleted version answered ${again}, want 400"
+  elif [ "$plain" != "ok" ]; then
     fail "deleted version still served: ${plain}"
   elif [ "$widened" != "200:deleted" ]; then
     fail "include_deleted=true answered ${widened}, want 200 status deleted"
