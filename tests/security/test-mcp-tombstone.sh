@@ -16,7 +16,10 @@
 #   mcp_version_exists; purge it from the trash.
 #   mcp_tombstone (gated): republish different bytes after the purge -> 409.
 #   Phase 3 DELETE route (gated): soft delete, include_deleted shows it
-#   deleted, republish -> 409.
+#   deleted, republish -> 409; the server health roll-up
+#   (GET /api/v1/repositories/{key}/mcp/servers/{name}/versions/{v}/health)
+#   of the soft-deleted version is 404 unless include_deleted=true (anything
+#   but true/false there is 400).
 #
 # Gates. The suite runs on mcp_registry. The two later-phase parts skip per
 # test (the suite has Phase 1 passes, so this is not an all-skipped suite):
@@ -164,6 +167,28 @@ else
     fail "include_deleted=true answered ${widened}, want 200 status deleted"
   elif [ "$repub" != "ok" ]; then
     fail "republish after DELETE: ${repub}"
+  else
+    pass
+  fi
+fi
+
+begin_test "Health of a soft-deleted version is 404 unless include_deleted=true"
+if [ "$DELETE_MOUNTED" != "1" ]; then
+  skip "${LATER_PREFIX} (probe: ${DELETE_PROBE} with the router fallback); capability mcp_tombstone (Phase 3 DELETE)"
+else
+  HEALTH_URL="${BASE_URL}/api/v1/repositories/${REPO}/mcp/$(mcp_version_path "$NAME" 9.9.9)/health"
+  mcp_req GET "$HEALTH_URL" admin
+  plain_h="$MCP_STATUS"
+  mcp_req GET "${HEALTH_URL}?include_deleted=true" admin
+  wide_h="${MCP_STATUS}:$(mcp_json '"\(.name)@\(.version)"')"
+  mcp_req GET "${HEALTH_URL}?include_deleted=maybe" admin
+  bad_h="$MCP_STATUS"
+  if [ "$plain_h" != "404" ]; then
+    fail "health of the soft-deleted ${NAME}@9.9.9 answered ${plain_h}, want 404"
+  elif [ "$wide_h" != "200:${NAME}@9.9.9" ]; then
+    fail "health with include_deleted=true answered '${wide_h}', want 200 for ${NAME}@9.9.9"
+  elif [ "$bad_h" != "400" ]; then
+    fail "health with include_deleted=maybe answered ${bad_h}, want 400"
   else
     pass
   fi
