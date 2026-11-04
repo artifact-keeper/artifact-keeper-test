@@ -16,6 +16,9 @@
 #     skip_suite + the mcp_registry_proxy exemption), mcp_probe_route
 #   - request helpers that capture status, body and headers (mcp_req,
 #     mcp_publish, mcp_get, mcp_patch_status) and problem+json assertions
+#   - the Remote management API (/api/v1/repositories/{key}/mcp/...):
+#     mcp_mgmt_url, mcp_remote_sync, mcp_remote_mounted, mcp_catalog_load,
+#     mcp_catalog_item, mcp_catalog_decide
 #   - backing packages: mcp_create_backing_repos, mcp_publish_echo_package
 #     (zero-dependency npm package from tests/fixtures/mcp/echo-server),
 #     mcp_artifact_id, mcp_quarantine / mcp_release
@@ -369,6 +372,85 @@ mcp_probe_route() {
     404) [ "$(cat "$MCP_BODY")" = "$MCP_NOT_FOUND_BODY" ] && return 1 ;;
   esac
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# Remote MCP management API (docs/mcp-registry.md "Management API"):
+# /api/v1/repositories/{key}/mcp/{catalog,sync}. Remote MCP repositories
+# only; any other key answers 404. Errors are the API's {"code","message"}.
+# ---------------------------------------------------------------------------
+
+# mcp_mgmt_url KEY [TAIL]: ${BASE_URL}/api/v1/repositories/KEY/mcp[/TAIL]
+mcp_mgmt_url() {
+  printf '%s/api/v1/repositories/%s/mcp%s' "$BASE_URL" "$1" "${2:+/$2}"
+}
+
+# mcp_remote_sync KEY [AUTH]: POST .../mcp/sync, which runs one pass
+# synchronously and answers 200 {repository, summary: SyncSummary}, 409 while
+# another pass runs, 502 when the first upstream page is unreadable. Sets
+# MCP_STATUS / MCP_BODY and MCP_SYNC_STATUS. A backend without the management
+# API answers the router's 404 for a Remote (mcp_remote_mounted).
+mcp_remote_sync() {
+  local _try
+  for _try in 1 2 3 4 5; do
+    mcp_req POST "$(mcp_mgmt_url "$1" sync)" "${2:-admin}"
+    [ "$MCP_STATUS" = "409" ] || break
+    sleep 2
+  done
+  MCP_SYNC_STATUS="$MCP_STATUS"
+  [ "$MCP_STATUS" = "200" ]
+}
+
+# mcp_remote_mounted: 0 unless the last management call answered as an
+# unmounted route would (404 or 405 on a key that is a Remote MCP repository).
+mcp_remote_mounted() {
+  case "$MCP_STATUS" in
+    404|405|000) return 1 ;;
+  esac
+  return 0
+}
+
+# mcp_catalog_load KEY OUT [AUTH] [QUERY]: walk GET .../mcp/catalog (limit
+# 200, every page) and write the CatalogItem objects to OUT as one JSON
+# array. QUERY is extra query text ("status=review&"). Returns 1 (OUT = [])
+# when a page is not 200; MCP_STATUS is that page's status.
+mcp_catalog_load() {
+  local key="$1" out="$2" auth="${3:-admin}" query="${4:-}" cursor="" url pages=0 acc
+  acc="${out}.acc"
+  echo '[]' > "$acc"
+  while :; do
+    url="$(mcp_mgmt_url "$key" catalog)?${query}limit=200"
+    [ -n "$cursor" ] && url="${url}&cursor=$(jq -rn --arg c "$cursor" '$c|@uri')"
+    mcp_req GET "$url" "$auth"
+    if [ "$MCP_STATUS" != "200" ] || ! jq -e '.items | type == "array"' "$MCP_BODY" >/dev/null 2>&1; then
+      echo '[]' > "$out"
+      rm -f "$acc"
+      return 1
+    fi
+    jq -s '.[0] + .[1].items' "$acc" "$MCP_BODY" > "${acc}.tmp" && mv "${acc}.tmp" "$acc"
+    cursor=$(mcp_json '.nextCursor // empty')
+    pages=$(( pages + 1 ))
+    if [ -z "$cursor" ] || [ "$pages" -ge 50 ]; then
+      break
+    fi
+  done
+  mv "$acc" "$out"
+}
+
+# mcp_catalog_item FILE NAME: the CatalogItem of NAME in a loaded catalog
+# ("" when absent).
+mcp_catalog_item() {
+  jq -c --arg n "$2" 'map(select(.name == $n))[0] // empty' "$1" 2>/dev/null || true
+}
+
+# mcp_catalog_decide KEY ID DECISION [AUTH] [REASON]: POST
+# .../catalog/{id}/{approve|block|reopen} {reason}; 200 DecisionResult
+# {item, ingestError}. An approval ingests the name before it answers.
+mcp_catalog_decide() {
+  mcp_req POST "$(mcp_mgmt_url "$1" "catalog/$2/$3")" "${4:-admin}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -cn --arg r "${5:-release-gate ${3}}" '{reason:$r}')"
+  [ "$MCP_STATUS" = "200" ]
 }
 
 # ---------------------------------------------------------------------------

@@ -4,25 +4,30 @@
 #
 # A Remote `mcp` repository is "an allowlist that happens to be populated
 # from the public registry, not a mirror of it": a sync pages the upstream
-# /v0.1/servers, records one curation row per server name in
-# /api/v1/curation/packages (staging_repo_id = the Remote), and /v0.1 serves
-# ONLY approved names whose versions pass the gates. Unapproved entries are
-# browsable in the web UI only.
+# /v0.1/servers, records one catalog row per server name (read through the
+# management API, GET /api/v1/repositories/{key}/mcp/catalog), and /v0.1
+# serves ONLY approved names whose versions pass the gates. Unapproved
+# entries are browsable through the catalog API and the web UI only.
 #
 # Mock leg (tests/lib/mock-mcp-upstream.py over tests/fixtures/mcp/upstream):
 #   - deny by default: nothing listed; an exact read is the plain 404 for
 #     anonymous and 404 mcp_pending_review for the admin
 #   - approve one name -> served with its versions; approval is name-level,
 #     so a new upstream version flows after a sync without a new approval
-#   - mcp_auto_approve_namespaces admits io.github.ak-fixture-other/* and not
-#     io.github.ak-fixture/*
+#   - mcp_auto_approve_namespaces ["io.github.ak-fixture-other/*"] admits
+#     that namespace and not io.github.ak-fixture/*; a bare namespace entry is
+#     400 (the globs match the full server name)
 #   - mcp_server_deny wins over an approval (404 mcp_rejected for the admin)
 #   - upstream deleted version hidden, deprecated listed with its message
 #   - the npm-backed entry is unresolvable (its package is in no backing repo)
 #   - the oci-floating entry is never served unpinned; `hide` hides it
 #   - reads never call upstream; a second sync without changes fetches no
 #     version document again
-#   - publish to the Remote -> 405
+#   - an ingested version's _meta["com.artifactkeeper.registry/source"] says
+#     origin remote, kind upstream, upstreamUrl = the Remote's upstream_url,
+#     upstreamVerified false (the mock is neither the official registry nor
+#     an Artifact Keeper)
+#   - publish to the Remote -> 405 mcp_read_only
 #   - upstream 503: the listing keeps answering from what was synced
 #     (assumption: 503 mcp_gate_unavailable is reserved for a gate that
 #     cannot be EVALUATED, issue 4.4; an upstream outage is not a gate
@@ -32,18 +37,20 @@
 # @9.0.0 plus the Remote as members: merged listing de-duplicated, hosted
 # shadows remote on a name collision (shared shows only 9.0.0 and the mock
 # sees no request for shared while the Virtual is read), a remote-only
-# approved server resolves through the Virtual, a cursor walk at limit=3 is
-# complete and non-overlapping, publish -> 405.
+# approved server resolves through the Virtual (its source block names the
+# member and adds virtualRepository), a cursor walk at limit=3 is complete and
+# non-overlapping, publish -> 405 mcp_read_only.
 #
 # Public leg (optional): AK_TEST_MCP_PUBLIC_UPSTREAM=1 also proxies
 # registry.modelcontextprotocol.io and checks deny by default there.
 #
 # Capability gates, in order: mcp_require_registry mcp_registry_proxy (flag
 # layer); mcp_create_proxy_repo (older backends refuse Remote mcp repos with
-# the Phase 1 400 -> mcp_registry_proxy exemption); then a BEHAVIOUR probe:
-# after POST /api/v1/curation/repos/{key}/sync, a backend that ships the
-# Remote either asks the mock for /servers or records curation rows. Neither
-# within the probe window -> mcp_skip_later_phase mcp_registry_proxy.
+# the Phase 1 400 -> mcp_registry_proxy exemption); then a route and
+# BEHAVIOUR probe: POST /api/v1/repositories/{key}/mcp/sync answering the
+# router's 404/405 (management API not mounted), or a sync after which the
+# mock saw no /servers request and the catalog lists no row within the probe
+# window -> mcp_skip_later_phase mcp_registry_proxy.
 #
 # Requires: curl, jq, python3, MOCK_UPSTREAM_HOSTNAME (dial-back address).
 
@@ -61,16 +68,10 @@ require_cmd python3
 mcp_require_registry mcp_registry_proxy
 mcp_require_dialback
 
-# --- Contract names that are not pinned by the docs yet (guesses) ----------
-# Manual sync trigger: the existing curation route (task brief; phase23
-# stream A "reuse /api/v1/curation/repos/:repo_key/sync").
-CURATION_SYNC_PATH="/api/v1/curation/repos/%s/sync"
-# Curation listing (handlers/curation.rs PackageListQuery): staging_repo_id.
-CURATION_LIST_PATH="/api/v1/curation/packages"
-# Name-level decision rows carry this version (phase23 brief decision 1).
-CURATION_NAME_LEVEL_VERSION="*"
-# Namespace globs approved on sync (docs "Repository settings", replaces the
-# issue 3.3 spelling `auto_approve_namespaces`).
+# --- Contract (docs/mcp-registry.md "Remote repositories") ------------------
+# Sync, catalog and decisions go through the management API helpers in
+# mcp-helpers.sh (mcp_remote_sync, mcp_catalog_load, mcp_catalog_decide).
+# Globs over the FULL server name approved on sync ("Repository settings").
 AUTO_APPROVE_KEY="mcp_auto_approve_namespaces"
 # How long the behaviour probe waits for the first sync to reach the mock.
 PROBE_WINDOW_SECS="${MCP_REMOTE_PROBE_SECS:-45}"
@@ -119,49 +120,43 @@ served_lacks_name() {
   ! printf '%s\n' "$p" | grep -q "^${2}@"
 }
 
-# cur_load REPO_ID: the curation rows of the Remote into CUR_ROWS.
+# cur_load [KEY]: the Remote's catalog (a CatalogItem array) into CUR_ROWS.
 cur_load() {
-  curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
-    "${BASE_URL}${CURATION_LIST_PATH}?staging_repo_id=${1}&limit=500" -o "$CUR_ROWS" 2>/dev/null || echo '[]' > "$CUR_ROWS"
-  jq -e 'type == "array"' "$CUR_ROWS" >/dev/null 2>&1 || echo '[]' > "$CUR_ROWS"
+  mcp_catalog_load "${1:-$REMOTE}" "$CUR_ROWS"
 }
 
-# cur_field NAME FIELD: FIELD of the name-level row for NAME (or its first row).
+# cur_field NAME FIELD: FIELD of NAME's catalog item (id, status, ...).
 cur_field() {
-  jq -r --arg n "$1" --arg f "$2" --arg v "$CURATION_NAME_LEVEL_VERSION" \
-    '[.[] | select(.package_name == $n)] | ((map(select(.version == $v))[0]) // .[0]) | .[$f] // empty' \
-    "$CUR_ROWS" 2>/dev/null || true
+  jq -r --arg n "$1" --arg f "$2" \
+    'map(select(.name == $n))[0] | .[$f] // empty' "$CUR_ROWS" 2>/dev/null || true
 }
 
 cur_has_all_names() {
-  cur_load "$REMOTE_ID"
+  cur_load
   local n
   for n in "${FIXTURE_NAMES[@]}"; do
     [ -n "$(cur_field "$n" id)" ] || return 1
   done
 }
 
-# cur_approve NAME [AUTH]: POST .../packages/{id}/approve.
+# cur_approve NAME [AUTH]: POST .../mcp/catalog/{id}/approve (the approval
+# ingests the name before it answers).
 cur_approve() {
-  cur_load "$REMOTE_ID"
+  cur_load
   local id
   id=$(cur_field "$1" id)
   if [ -z "$id" ]; then
     MCP_STATUS="no-row"
     return 1
   fi
-  mcp_req POST "${BASE_URL}/api/v1/curation/packages/${id}/approve" "${2:-admin}" \
-    -H "Content-Type: application/json" -d '{}'
-  [ "${MCP_STATUS:0:1}" = "2" ]
+  mcp_catalog_decide "$REMOTE" "$id" approve "${2:-admin}"
 }
 
-# remote_sync KEY: trigger a sync and wait until the mock has been quiet for
-# 3 s (the sync may run in the background).
+# remote_sync KEY: one synchronous sync pass (POST .../mcp/sync), then wait
+# until the mock has been quiet for 3 s.
 remote_sync() {
-  # shellcheck disable=SC2059 # the format string is a constant above
-  mcp_req POST "${BASE_URL}$(printf "$CURATION_SYNC_PATH" "$1")" admin -H "Content-Type: application/json" -d '{}'
-  SYNC_STATUS="$MCP_STATUS"
-  sleep 1
+  mcp_remote_sync "$1" admin || true
+  SYNC_STATUS="$MCP_SYNC_STATUS"
   wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null || true
 }
 
@@ -226,14 +221,16 @@ pass
 
 _probe_contacted() {
   [ "$(mock_list_requests)" -gt 0 ] && return 0
-  cur_load "$REMOTE_ID"
+  cur_load
   [ "$(jq 'length' "$CUR_ROWS" 2>/dev/null || echo 0)" -gt 0 ]
 }
-# shellcheck disable=SC2059
-mcp_req POST "${BASE_URL}$(printf "$CURATION_SYNC_PATH" "$REMOTE")" admin -H "Content-Type: application/json" -d '{}'
-SYNC_STATUS="$MCP_STATUS"
+mcp_remote_sync "$REMOTE" admin || true
+SYNC_STATUS="$MCP_SYNC_STATUS"
+if ! mcp_remote_mounted; then
+  mcp_skip_later_phase mcp_registry_proxy "POST /api/v1/repositories/${REMOTE}/mcp/sync on a Remote mcp repository answered ${SYNC_STATUS}: the Remote management API is not mounted"
+fi
 if ! wait_until "the Remote syncs from the mock" "$PROBE_WINDOW_SECS" _probe_contacted; then
-  mcp_skip_later_phase mcp_registry_proxy "Remote ${REMOTE} over the mock upstream: POST $(printf "$CURATION_SYNC_PATH" "$REMOTE") answered ${SYNC_STATUS}, the mock saw no /servers request and GET ${CURATION_LIST_PATH}?staging_repo_id=<remote> listed no rows within ${PROBE_WINDOW_SECS}s"
+  mcp_skip_later_phase mcp_registry_proxy "Remote ${REMOTE} over the mock upstream: POST /api/v1/repositories/${REMOTE}/mcp/sync answered ${SYNC_STATUS}, the mock saw no /servers request and GET /api/v1/repositories/${REMOTE}/mcp/catalog listed no rows within ${PROBE_WINDOW_SECS}s"
 fi
 wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null || true
 
@@ -251,7 +248,7 @@ fi
 # Mock leg
 # ---------------------------------------------------------------------------
 
-begin_test "Sync records one curation row per upstream server name, none approved"
+begin_test "Sync records one catalog row per upstream server name, none approved"
 if wait_until "a curation row for every fixture name" "$SYNC_WAIT_SECS" cur_has_all_names; then
   bad=""
   for n in "${FIXTURE_NAMES[@]}"; do
@@ -267,7 +264,7 @@ if wait_until "a curation row for every fixture name" "$SYNC_WAIT_SECS" cur_has_
     fail "default posture approval_required must leave every row pending/review:${bad}"
   fi
 else
-  fail "curation rows missing after sync" "$(jq -c '[.[] | {package_name, version, status}]' "$CUR_ROWS" 2>/dev/null | head -c 800)"
+  fail "catalog rows missing after sync (sync answered ${SYNC_STATUS})" "$(jq -c '[.[] | {name, status}]' "$CUR_ROWS" 2>/dev/null | head -c 800)"
 fi
 
 begin_test "Default posture is approval_required (echoed)"
@@ -331,10 +328,14 @@ if cur_approve "${NS}/alpha"; then
     mcp_get "$REMOTE" "servers/$(mcp_encode_name "${NS}/alpha")/versions/latest" anon
     latest=$(mcp_json '.server.version')
     status=$(mcp_json '._meta["io.modelcontextprotocol.registry/official"].status')
-    if [ "$latest" = "1.1.0" ] && [ "$status" = "active" ]; then
-      pass
-    else
+    src=$(mcp_json '._meta["com.artifactkeeper.registry/source"] | "\(.repository)|\(.origin)|\(.kind)|\(.upstreamUrl)|\(.upstreamVerified)"')
+    want_src="${REMOTE}|remote|upstream|${MCP_MOCK_BASE_URL}|false"
+    if [ "$latest" != "1.1.0" ] || [ "$status" != "active" ]; then
       fail "alpha latest=${latest} status=${status}, expected 1.1.0 active: $(mcp_snip)"
+    elif [ "$src" != "$want_src" ]; then
+      fail "ingested alpha source block repository|origin|kind|upstreamUrl|upstreamVerified is '${src}', expected '${want_src}'"
+    else
+      pass
     fi
   else
     fail "approved alpha not served" "$(served_pairs "$REMOTE" anon | head -20)"
@@ -357,12 +358,22 @@ else
   fail "new upstream version of an approved name did not flow (sync answered ${SYNC_STATUS})"
 fi
 
-begin_test "Namespace auto-approve admits ${NS_OTHER}/* and not ${NS}/*"
-if mcp_patch_repo "$REMOTE" "$(jq -cn --arg k "$AUTO_APPROVE_KEY" --arg g "$NS_OTHER" '{($k):[$g]}')"; then
+begin_test "${AUTO_APPROVE_KEY}: a bare namespace is 400 (the globs match the full name)"
+mcp_patch_repo "$REMOTE" "$(jq -cn --arg k "$AUTO_APPROVE_KEY" --arg g "$NS_OTHER" '{($k):[$g]}')"
+bare_status="$MCP_STATUS"
+echoed_globs=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${REMOTE}" | jq -c --arg k "$AUTO_APPROVE_KEY" '.[$k] // []')
+if [ "$bare_status" = "400" ] && [ "$echoed_globs" = "[]" ]; then
+  pass
+else
+  fail "PATCH ${AUTO_APPROVE_KEY}=[${NS_OTHER}] answered ${bare_status} (want 400); stored ${echoed_globs}"
+fi
+
+begin_test "Namespace auto-approve ${NS_OTHER}/* admits that namespace and not ${NS}/*"
+if mcp_patch_repo "$REMOTE" "$(jq -cn --arg k "$AUTO_APPROVE_KEY" --arg g "${NS_OTHER}/*" '{($k):[$g]}')"; then
   remote_sync "$REMOTE"
   if wait_until "${NS_OTHER}/echo served" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS_OTHER}/echo@1.1.0" anon; then
     leaked=$(served_pairs "$REMOTE" anon | grep -E "^${NS//./\\.}/(bravo|charlie|delta|shared|npm-backed|oci-floating)@" || true)
-    cur_load "$REMOTE_ID"
+    cur_load
     if [ -n "$leaked" ]; then
       fail "a glob for ${NS_OTHER} approved names in ${NS}" "$leaked"
     elif [ "$(cur_field "${NS}/bravo" status)" = "approved" ]; then
@@ -509,7 +520,7 @@ begin_test "Publish to a Remote is 405 and never reaches upstream"
 mcp_server_json "${NS}/alpha" 9.9.9 "" "$(mcp_remote_json "https://alpha.mcp.example.invalid/mcp")" > "${WORK_DIR}/remote-publish.json"
 before=$(mcp_mock_count)
 mcp_publish "$REMOTE" "${WORK_DIR}/remote-publish.json"
-if why=$(mcp_check_problem 405 ""); then
+if why=$(mcp_check_problem 405 mcp_read_only); then
   if [ "$(mcp_mock_count)" = "$before" ]; then
     pass
   else
@@ -579,11 +590,14 @@ fi
 begin_test "A remote-only approved server resolves through the Virtual"
 mcp_get "$VIRTUAL" "$(mcp_version_path "${NS}/alpha" 1.2.0)" anon
 st="$MCP_STATUS"
+vsrc=$(mcp_json '._meta["com.artifactkeeper.registry/source"] | "\(.repository)|\(.virtualRepository)|\(.origin)"')
 mcp_get "$VIRTUAL" "servers/$(mcp_encode_name "${NS}/alpha")/versions/latest" anon
-if [ "$st" = "200" ] && [ "$(mcp_json '.server.version')" = "1.2.0" ]; then
-  pass
-else
+if [ "$st" != "200" ] || [ "$(mcp_json '.server.version')" != "1.2.0" ]; then
   fail "alpha through the Virtual: exact ${st}, latest '$(mcp_json '.server.version')'"
+elif [ "$vsrc" != "${REMOTE}|${VIRTUAL}|remote" ]; then
+  fail "Virtual entry source block repository|virtualRepository|origin is '${vsrc}', expected '${REMOTE}|${VIRTUAL}|remote'"
+else
+  pass
 fi
 
 begin_test "Virtual listing is de-duplicated and equals hosted union first, then remote names not hosted"
@@ -618,7 +632,7 @@ fi
 begin_test "Publish to a Virtual is 405"
 mcp_server_json "${NS}/virtual-write-${RUN_ID}" 1.0.0 "" "$(mcp_remote_json "https://v.example.invalid/mcp")" > "${WORK_DIR}/virtual-publish.json"
 mcp_publish "$VIRTUAL" "${WORK_DIR}/virtual-publish.json"
-if why=$(mcp_check_problem 405 ""); then
+if why=$(mcp_check_problem 405 mcp_read_only); then
   mcp_get "$LOCAL" "$(mcp_version_path "${NS}/virtual-write-${RUN_ID}" 1.0.0)" admin
   if [ "$MCP_STATUS" = "404" ]; then
     pass
@@ -639,20 +653,19 @@ if [ "${AK_TEST_MCP_PUBLIC_UPSTREAM:-0}" != "1" ]; then
 else
   PUBLIC="mcp-remote-public-${RUN_ID}"
   if mcp_create_proxy_repo "$PUBLIC" remote "https://registry.modelcontextprotocol.io"; then
-    public_id=$(mcp_repo_id "$PUBLIC")
     remote_sync "$PUBLIC"
     _public_rows() {
-      curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
-        "${BASE_URL}${CURATION_LIST_PATH}?staging_repo_id=${public_id}&limit=5" | jq -e 'length > 0' >/dev/null
+      mcp_req GET "$(mcp_mgmt_url "$PUBLIC" catalog)?limit=5" admin
+      [ "$(mcp_json '.items | length')" -gt 0 ] 2>/dev/null
     }
-    if wait_until "public curation rows" 180 _public_rows; then
+    if wait_until "public catalog rows" 180 _public_rows; then
       if [ -z "$(served_pairs "$PUBLIC" anon 10)" ]; then
         pass
       else
         fail "the public Remote serves unapproved entries"
       fi
     else
-      fail "no curation rows from the public registry within 180s (sync answered ${SYNC_STATUS})"
+      fail "no catalog rows from the public registry within 180s (sync answered ${SYNC_STATUS})"
     fi
   else
     fail "create public Remote: ${MCP_CREATE_ERROR}"
