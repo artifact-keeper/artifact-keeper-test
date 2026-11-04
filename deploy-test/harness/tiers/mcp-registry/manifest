@@ -1,0 +1,50 @@
+# DTF tier manifest: mcp-registry  (artifact-keeper#5253)
+# Profile-set: filesystem / single + client.mcp (a node:22 container on the
+# slot network that reaches the backend as http://backend:8080).
+#
+# THE FEATURE: the `mcp` repository format, an MCP Registry (API v0.1) that
+# serves server.json documents whose packages are pinned to Artifact Keeper
+# repositories (mcp_package_policy=own-repos, the default).
+#
+# WHAT THE CORPUS ALREADY COVERS (tests/formats/test-mcp*.sh,
+# tests/security/test-mcp-*.sh): the API surface, the validation corpus, the
+# hold matrix, namespace policy. This tier adds what those scripts cannot see
+# from the runner: a real client on the deployment's own network. The pinned
+# mcp-publisher publishes from inside client-mcp, and the same container
+# resolves the server the way an agent host does (version document ->
+# packages[0] -> the advertised registryBaseUrl), installs it with a real
+# `npm install` from the Artifact Keeper npm repository and launches it over
+# stdio (tests/lib/mcp-stdio-client.py, copied in).
+#
+# THE GATES
+#   (FIX)      publish via mcp-publisher answers 200 and the version reads
+#              back with registryBaseUrl rewritten to /npm/<backing repo>;
+#              the client container resolves, installs and runs the echo
+#              server (tools/list has `echo`, tools/call echoes the marker);
+#              with the backing tarball quarantined an anonymous read of the
+#              exact version is byte-identical (body and stable headers) to
+#              an unknown name's 404, the holder gets
+#              mcp_backing_artifact_blocked, and the release restores 200;
+#              own-repos refuses a package on registry.npmjs.org (422
+#              mcp_external_registry) and an absent package (422
+#              mcp_package_not_found), storing nothing.
+#   (CONTROL)  the npm package the server pins installs from the npm
+#              repository directly (the backing repository itself is sound).
+#   (N/A)      on a backend without the format (/api/v1/formats has no `mcp`
+#              AND repository creation answers `400 Invalid format: mcp`) the
+#              suite records one NOT APPLICABLE skip and exits 0 (the #396
+#              applicability carve-out in tests/lib/common.sh); on a
+#              release/X.Y.x tests ref without this manifest run.sh reports
+#              NOT ON THIS LINE (exit 12). Any other failure is red.
+#
+# RATE_LIMIT_ENABLED=false: admin login, token mint, repo setup, two
+# publishes and a few dozen reads back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS is not set: no Remote and no mock upstream (the
+# Phase 1 backend refuses Remote/Virtual mcp repositories); add it together
+# with an upstreams.mock-mcp profile when the proxy phase lands.
+# Network: install_mcp_publisher downloads the pinned release from GitHub on
+# the runner (cached under ~/.cache/ak-e2e) unless MCP_PUBLISHER_BIN points
+# at a binary; that is why this tier runs in dtf-advisory.
+PROFILES="storage.filesystem client.mcp"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

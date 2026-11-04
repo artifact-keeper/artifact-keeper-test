@@ -3848,11 +3848,15 @@ jobs:
   #              authenticated DB pull (TRIVY_USERNAME/TRIVY_PASSWORD)
   #              plus the org DB mirror; once it holds green across a
   #              few releases, promote it into the required matrix.
-  #   heavy-topology (migration, native-client, format-conformance):
+  #   heavy-topology (migration, native-client, format-conformance,
+  #                   mcp-registry):
   #     reason:  external upstreams (Nexus JVM boot, fedora/apt/docker
-  #              client image pulls) dominate runtime and flake-rate on
+  #              client image pulls, the pinned mcp-publisher download
+  #              from GitHub) dominate runtime and flake-rate on
   #              the shared dind pool; these have never run under ARC
-  #              load (deploy-test/ARCHITECTURE.md section 7).
+  #              load (deploy-test/ARCHITECTURE.md section 7). mcp-registry
+  #              is new (artifact-keeper#5253); promote it after it holds
+  #              green on two candidates.
   #   scanning (inline-scan-fail-open-2954, inline-scan-proxy-pypi-2954,
   #             scan-verdict-dbversion):
   #     reason:  scan-on-proxy over a real https://pypi.org Remote plus the
@@ -3890,7 +3894,7 @@ jobs:
           - group: supply-chain
             tiers: supply-chain
           - group: heavy-topology
-            tiers: migration native-client format-conformance
+            tiers: migration native-client format-conformance mcp-registry
           - group: scanning
             tiers: inline-scan-fail-open-2954 inline-scan-proxy-pypi-2954 scan-verdict-dbversion
           - group: external-clients

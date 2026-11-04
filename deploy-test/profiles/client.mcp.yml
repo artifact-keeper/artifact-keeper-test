@@ -1,0 +1,35 @@
+# =============================================================================
+# profiles/client.mcp.yml - client dimension = mcp (an MCP agent host's side)
+# =============================================================================
+# Adds a Node.js container that joins the DTF network and targets the backend
+# BY SERVICE NAME (http://backend:8080). The mcp-registry tier and the
+# format-conformance mcp plugin `docker exec` into it to:
+#   * run the REAL mcp-publisher (the pinned release binary, checksummed on
+#     the runner by tests/lib/mcp-helpers.sh install_mcp_publisher and copied
+#     in with `docker cp`) against /mcp/<repo>,
+#   * resolve a server from the registry the way an agent host does (read the
+#     version document, take packages[0], follow its registryBaseUrl),
+#   * `npm install` the pinned package from the Artifact Keeper npm repository
+#     the registry advertises, and
+#   * launch it over stdio with tests/lib/mcp-stdio-client.py (copied in).
+#
+# node:22 (not node:22-slim): the full Debian image carries python3, which
+# the stdlib-only stdio client needs, plus curl and bash for the hooks. Both
+# amd64 and arm64 manifests are published, so it runs natively on either.
+#
+# The container only needs to be up so the oracle can exec into it; it runs
+# `sleep infinity` and declares no healthcheck, so compose `up --wait` treats
+# it ready once running (same discipline as client.npm.yml). It waits on
+# backend health via depends_on.
+#
+# Required vars (exported by run.sh): DTF_SLOT (container-name namespacing).
+# =============================================================================
+services:
+  client-mcp:
+    image: node:22
+    container_name: ak-dtf${DTF_SLOT}-client-mcp
+    command: ["sleep", "infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]
