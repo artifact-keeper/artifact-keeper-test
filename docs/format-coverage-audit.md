@@ -82,6 +82,11 @@ that format.
 | test-incus.sh                            | curl PUT/GET                                                           | no            | yes         | yes      |
 | test-jetbrains.sh                        | curl PUT/GET                                                           | no            | yes         | yes      |
 | test-maven.sh                            | curl PUT/GET against `/maven/{key}/...` Maven 2 layout, SHA256 round-trip | no         | yes         | yes      |
+| test-mcp.sh                              | hosted mcp repo (own-repos) over a backing npm repo: curl and real `mcp-publisher` publish/status, `/v0.1` and `/v0` listing, paging, search, status, 409, 422 refusals, publisher wire replay | yes | yes | yes |
+| test-mcp-backing-quarantine.sh           | quarantine the backing npm tarball and the server.json: version hidden, latest falls back, plain 404 byte-identical for readers, reason body for holders, release restores | no | yes | yes |
+| test-mcp-oci-pin.sh                      | curl OCI push to an AK docker repo, `oci` entry by tag served as `:tag@sha256:`, tag re-push leaves the pin, floating tag 422; optional pull of the served reference | conditional | yes | yes |
+| test-mcp-remote.sh                       | Remote mcp repo over `mock-mcp-upstream.py` (deny by default, approve, namespace bulk approve, deny wins) and Virtual merge/shadowing; stands down until the backend ships Phase 2 | no | yes | yes |
+| test-mcp-run-server.sh                   | publish the echo MCP server to AK npm, resolve it from the registry, `npm install` from AK, `tools/list`/`tools/call` over stdio; streamable-HTTP remote leg; Inspector CLI lane when `AK_TEST_MCP_INSPECTOR=1` | yes | yes | yes |
 | test-mlmodel.sh                          | curl PUT/GET                                                           | no            | yes         | yes      |
 | test-npm.sh                              | `npm publish` (with curl fallback) and `npm install` against `/npm/{key}/` | yes        | yes         | yes      |
 | test-nuget.sh                            | curl PUT/GET                                                           | no            | yes         | yes      |

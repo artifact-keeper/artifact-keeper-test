@@ -43,6 +43,8 @@ jobs:
             scripts: "test-terraform.sh test-composer.sh test-composer-dist-cache.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
             scripts: "test-generic.sh test-generic-native-client.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-agentplugins.sh test-agentplugins-conformance.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
+          - name: mcp
+            scripts: "test-mcp.sh test-mcp-run-server.sh test-mcp-oci-pin.sh test-mcp-backing-quarantine.sh test-mcp-remote.sh"
     env:
       BASE_URL: ${{ inputs.backend_url }}
       RUN_ID: ${{ inputs.run_id }}
@@ -57,8 +59,26 @@ jobs:
       # pypi.org). On here, off in release-gate.yml where the replayed
       # requests cover the same wire contract without the download.
       AK_TEST_JUPYTERLAB: '1'
+      # test-mcp-run-server.sh: also drive the server through the MCP
+      # Inspector CLI (npx, pinned, fetched from npmjs on every run). On here,
+      # off in release-gate.yml where mcp-stdio-client.py covers the same
+      # tools/list and tools/call without the download.
+      AK_TEST_MCP_INSPECTOR: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve runner pod address for backend dial-back
+        # The mcp batch hosts mock MCP servers on the runner (a streamable-HTTP
+        # remote, a mock of the official registry) and asserts what the
+        # backend does or does not dial. Same derivation as release-gate.yml.
+        if: matrix.batch.name == 'mcp' && (inputs.batch == 'all' || inputs.batch == matrix.batch.name)
+        run: |
+          POD_IP="${POD_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
+          if ! echo "$POD_IP" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || echo "$POD_IP" | grep -Eq '^127\.'; then
+            echo "ERROR: could not determine a non-loopback runner pod IPv4 (got '${POD_IP}')" >&2
+            exit 1
+          fi
+          echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
 
       - name: Run ${{ matrix.batch.name }} tests
         if: inputs.batch == 'all' || inputs.batch == matrix.batch.name

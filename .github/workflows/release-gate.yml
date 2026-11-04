@@ -1332,6 +1332,8 @@ jobs:
             scripts: "test-terraform.sh test-composer.sh test-composer-dist-cache.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
             scripts: "test-generic.sh test-generic-native-client.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-agentplugins.sh test-agentplugins-conformance.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
+          - name: mcp
+            scripts: "test-mcp.sh test-mcp-run-server.sh test-mcp-oci-pin.sh test-mcp-backing-quarantine.sh test-mcp-remote.sh"
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
@@ -1441,6 +1443,15 @@ jobs:
               # Helm is needed for test-helm.sh
               if ! command -v helm &>/dev/null; then
                 curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              fi
+              ;;
+            mcp)
+              # test-mcp-run-server.sh installs the echo MCP server with npm
+              # and launches it with node; mcp-publisher is fetched (pinned and
+              # checksummed) by the scripts themselves.
+              if ! command -v npm &>/dev/null; then
+                curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - > /dev/null 2>&1
+                sudo apt-get install -y -qq nodejs > /dev/null
               fi
               ;;
             system-packages)
