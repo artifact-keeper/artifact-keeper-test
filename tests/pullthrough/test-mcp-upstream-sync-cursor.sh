@@ -7,9 +7,12 @@
 # tests/fixtures/mcp/upstream/servers. The request log proves:
 #   - the first sync walks every page: 5 list requests, each page after the
 #     first carrying the previous page's nextCursor. The first pass has no
-#     watermark: it lists `?limit=100` (docs "Sync"), which upstream answers
-#     without deleted entries; the expected cursors are computed for the
-#     query the backend actually sent (include_deleted=true or not)
+#     watermark, so it asks `?limit=100&include_deleted=true` (docs "Sync"):
+#     a version already deleted upstream (charlie 2.1.0) is recorded too and
+#     shows up in its name's catalog item `versions`
+#   - the catalog item's `summary` carries the risk inputs of the name's
+#     latest non-deleted upstream document (transports, registryTypes,
+#     secretsCount, packagesCount, remotesCount), also for unapproved names
 #   - a second sync without upstream changes is one updated_since request
 #     (updated_since implies include_deleted, so deletions are seen from
 #     then on) and no version document fetch (no amplification)
@@ -79,7 +82,7 @@ served_has() {
 
 # cur_load: the Remote's catalog (a CatalogItem array) into CUR_ROWS.
 cur_load() {
-  mcp_catalog_load "$REMOTE" "$CUR_ROWS"
+  mcp_catalog_load "$REMOTE" "$CUR_ROWS" || true
 }
 
 cur_row() {
@@ -141,7 +144,7 @@ print(q.get(sys.argv[2], [""])[-1])
 
 # expected_cursors EXTRA_QUERY: the nextCursor values the mock hands out
 # walking the whole catalog at PAGE_SIZE with EXTRA_QUERY
-# ("&include_deleted=true" or ""), in order.
+# ("&include_deleted=true", what the first pass asks), in order.
 expected_cursors() {
   local cursor="" url
   while :; do
@@ -176,12 +179,10 @@ LIVE_COUNT=$(jq -r 'select((._meta["io.modelcontextprotocol.registry/official"].
   "${MCP_MOCK_STATE_DIR}"/servers/*.json | wc -l | tr -d ' ')
 FIXTURE_NAMES=$(jq -r '.server.name' "${MCP_MOCK_STATE_DIR}"/servers/*.json | sort -u | wc -l | tr -d ' ')
 PAGES_ALL=$(( (FIXTURE_COUNT + PAGE_SIZE - 1) / PAGE_SIZE ))
-PAGES_LIVE=$(( (LIVE_COUNT + PAGE_SIZE - 1) / PAGE_SIZE ))
 mapfile -t CURSORS_ALL < <(expected_cursors "&include_deleted=true")
-mapfile -t CURSORS_LIVE < <(expected_cursors "")
 if [ "$FIXTURE_COUNT" != "14" ] || [ "$LIVE_COUNT" != "13" ] \
-  || [ "${#CURSORS_ALL[@]}" != "$(( PAGES_ALL - 1 ))" ] || [ "${#CURSORS_LIVE[@]}" != "$(( PAGES_LIVE - 1 ))" ]; then
-  infra_fail "fixture catalog drifted: ${FIXTURE_COUNT} entries (${LIVE_COUNT} not deleted), ${#CURSORS_ALL[@]}/${#CURSORS_LIVE[@]} cursors at page size ${PAGE_SIZE}"
+  || [ "${#CURSORS_ALL[@]}" != "$(( PAGES_ALL - 1 ))" ]; then
+  infra_fail "fixture catalog drifted: ${FIXTURE_COUNT} entries (${LIVE_COUNT} not deleted), ${#CURSORS_ALL[@]} cursors at page size ${PAGE_SIZE}"
   end_suite
 fi
 # Reading the mock to precompute cursors logged requests: start the log over.
@@ -220,22 +221,20 @@ FIRST=$(requests_since "$FIRST_SYNC_START" | list_requests)
 # rather than all requests.
 walk=$(printf '%s\n' "$FIRST" | awk '/cursor=/{print; next} {if (seen) exit; seen=1; print}')
 first_path=$(printf '%s\n' "$walk" | head -1 | awk '{print $3}')
-if [ "$(query_param "${first_path:-/}" include_deleted)" = "true" ] || [ -n "$(query_param "${first_path:-/}" updated_since)" ]; then
-  EXPECTED_PAGES="$PAGES_ALL"
-  EXPECTED_CURSORS=("${CURSORS_ALL[@]}")
-  WALK_KIND="with deleted entries"
-else
-  EXPECTED_PAGES="$PAGES_LIVE"
-  EXPECTED_CURSORS=("${CURSORS_LIVE[@]}")
-  WALK_KIND="without deleted entries (no watermark yet)"
-fi
 
-begin_test "First sync walks every page (${EXPECTED_PAGES} list requests at page size ${PAGE_SIZE}, ${WALK_KIND})"
-pages=$(printf '%s\n' "$walk" | grep -c . || true)
-if [ "$pages" = "$EXPECTED_PAGES" ]; then
+begin_test "The first sync (no watermark) asks for deleted entries: include_deleted=true, no updated_since"
+if [ "$(query_param "${first_path:-/}" include_deleted)" = "true" ] && [ -z "$(query_param "${first_path:-/}" updated_since)" ]; then
   pass
 else
-  fail "one sync made ${pages} list request(s), expected ${EXPECTED_PAGES}" "$FIRST"
+  fail "the first list request was '${first_path}', expected ?limit=100&include_deleted=true without updated_since" "$FIRST"
+fi
+
+begin_test "First sync walks every page (${PAGES_ALL} list requests at page size ${PAGE_SIZE}, deleted entries included)"
+pages=$(printf '%s\n' "$walk" | grep -c . || true)
+if [ "$pages" = "$PAGES_ALL" ]; then
+  pass
+else
+  fail "one sync made ${pages} list request(s), expected ${PAGES_ALL}" "$FIRST"
 fi
 
 begin_test "Each page after the first carries the previous page's nextCursor"
@@ -245,10 +244,10 @@ while read -r _ts _m path; do
   c=$(query_param "$path" cursor)
   [ -n "$c" ] && got+=("$c")
 done <<< "$walk"
-if [ "${got[*]}" = "${EXPECTED_CURSORS[*]}" ]; then
+if [ "${got[*]}" = "${CURSORS_ALL[*]}" ]; then
   pass
 else
-  fail "cursor sequence differs" "expected: ${EXPECTED_CURSORS[*]}
+  fail "cursor sequence differs" "expected: ${CURSORS_ALL[*]}
 got:      ${got[*]}"
 fi
 
@@ -258,6 +257,33 @@ if [ "$(cur_names | wc -l | tr -d ' ')" = "$FIXTURE_NAMES" ]; then
   pass
 else
   fail "catalog rows for $(cur_names | wc -l | tr -d ' ') of ${FIXTURE_NAMES} names" "$(cur_names)"
+fi
+
+begin_test "A version already deleted upstream is recorded by the first sync (charlie 2.1.0 in versions, not latest)"
+charlie=$(cur_row "${NS}/charlie")
+c_versions=$(printf '%s' "$charlie" | jq -r '(.versions // []) | join(",")' 2>/dev/null)
+c_latest=$(printf '%s' "$charlie" | jq -r '.latestVersion // empty' 2>/dev/null)
+if [ -z "$charlie" ]; then
+  fail "no catalog item for ${NS}/charlie"
+elif ! printf ',%s,' "$c_versions" | grep -qF ',2.1.0,' || ! printf ',%s,' "$c_versions" | grep -qF ',2.0.0,'; then
+  fail "charlie's catalog versions are '${c_versions}', expected 2.1.0 (deleted upstream) and 2.0.0" "$charlie"
+elif [ "$c_latest" != "2.0.0" ]; then
+  fail "charlie's latestVersion is '${c_latest}', expected 2.0.0 (a deleted version is never latest)"
+else
+  pass
+fi
+
+begin_test "Catalog items carry the risk summary of the latest upstream document, approved or not"
+# server_risk_summary of the fixtures: npm-backed has one stdio npm package,
+# alpha one streamable-http remote; no fixture marks anything isSecret.
+want_npm='{"packagesCount":1,"registryTypes":["npm"],"remotesCount":0,"secretsCount":0,"transports":["stdio"]}'
+want_alpha='{"packagesCount":0,"registryTypes":[],"remotesCount":1,"secretsCount":0,"transports":["streamable-http"]}'
+got_npm=$(cur_row "${NS}/npm-backed" | jq -cS '.summary | if type == "object" then del(.lint) else . end' 2>/dev/null)
+got_alpha=$(cur_row "${NS}/alpha" | jq -cS '.summary | if type == "object" then del(.lint) else . end' 2>/dev/null)
+if [ "$got_npm" = "$want_npm" ] && [ "$got_alpha" = "$want_alpha" ]; then
+  pass
+else
+  fail "catalog summary: npm-backed '${got_npm}' (want ${want_npm}), alpha '${got_alpha}' (want ${want_alpha})"
 fi
 
 # Approve alpha so its versions are ingested (deleted-status mirroring below

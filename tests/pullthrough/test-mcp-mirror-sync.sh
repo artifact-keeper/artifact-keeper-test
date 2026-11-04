@@ -13,10 +13,14 @@
 #
 # Sync, catalog and decisions go through the Remote management API
 # (/api/v1/repositories/{key}/mcp/{sync,catalog}, docs/mcp-registry.md
-# "Management API"). The first pass has no watermark and lists the upstream
-# without include_deleted, so a version already deleted upstream before the
-# first sync is never seen; deleted-status mirroring is proven on a version
-# deleted after it was ingested.
+# "Management API"). The first pass has no watermark and asks the upstream
+# for include_deleted=true, so a version already deleted upstream before the
+# first sync (charlie 2.1.0) is stored too, with status deleted, served only
+# to include_deleted=true reads; deleted-status mirroring is also proven on a
+# version deleted after it was ingested.
+#
+# The Remote's upstream_url carries userinfo (e2e:<secret>@): the source
+# block's upstreamUrl and the MCP_MIRROR_SYNCED audit never show it.
 #
 # Gates: mcp_require_registry mcp_mirror; mcp_create_proxy_repo (older
 # backends refuse Remote mcp repos -> mcp_registry_proxy exemption); the
@@ -55,6 +59,8 @@ SYNC_WAIT_SECS="${MCP_REMOTE_SYNC_SECS:-90}"
 
 NS="io.github.ak-fixture"
 REMOTE="mcp-mirror-${RUN_ID}"
+# Userinfo in the upstream URL: must never be served or audited.
+UPSTREAM_SECRET="mirror-secret-${RUN_ID}"
 CUR_ROWS="${WORK_DIR}/curation.json"
 SUITE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -84,7 +90,7 @@ served_has() {
 
 # cur_load: the Remote's catalog (a CatalogItem array) into CUR_ROWS.
 cur_load() {
-  mcp_catalog_load "$REMOTE" "$CUR_ROWS"
+  mcp_catalog_load "$REMOTE" "$CUR_ROWS" || true
 }
 
 # cur_statuses NAME: "*=<name status>" then "<version>=<status>[+drift]"
@@ -121,11 +127,9 @@ artifact_paths() {
 }
 
 # expected_paths: servers/{name}/{version}/server.json for every fixture
-# entry that is not deleted upstream (the first pass has no updated_since
-# watermark and does not ask for deleted entries).
+# entry, deleted ones included (the first pass asks include_deleted=true).
 expected_paths() {
-  jq -r 'select((._meta["io.modelcontextprotocol.registry/official"].status // "active") != "deleted")
-    | "servers/\(.server.name)/\(.server.version)/server.json"' "${MCP_MOCK_STATE_DIR}"/servers/*.json | sort
+  jq -r '"servers/\(.server.name)/\(.server.version)/server.json"' "${MCP_MOCK_STATE_DIR}"/servers/*.json | sort
 }
 
 has_all_artifacts() {
@@ -159,8 +163,14 @@ if ! start_mock_mcp_upstream "${WORK_DIR}/mcp-upstream"; then
   infra_fail "mock-mcp-upstream did not start" "$(head -c 400 "${WORK_DIR}/mock-mcp-upstream.err" 2>/dev/null)"
   end_suite
 fi
-if ! mcp_create_proxy_repo "$REMOTE" remote "$MCP_MOCK_BASE_URL"; then
-  fail_fatal "create Remote mcp repository" "$MCP_CREATE_ERROR"
+USERINFO_URL="${MCP_MOCK_BASE_URL/:\/\//://e2e:${UPSTREAM_SECRET}@}"
+USERINFO_CREATE=""
+if ! mcp_create_proxy_repo "$REMOTE" remote "$USERINFO_URL"; then
+  # Keep the mirror assertions running; the userinfo test reports this.
+  USERINFO_CREATE="$MCP_CREATE_ERROR"
+  if ! mcp_create_proxy_repo "$REMOTE" remote "$MCP_MOCK_BASE_URL"; then
+    fail_fatal "create Remote mcp repository" "$MCP_CREATE_ERROR"
+  fi
 fi
 REMOTE_ID=$(mcp_repo_id "$REMOTE")
 [ -n "$REMOTE_ID" ] || fail_fatal "Remote ${REMOTE} has no id"
@@ -207,7 +217,7 @@ else
 fi
 
 begin_test "Upstream status is mirrored (deprecated listed, a later upstream delete hidden) once approved"
-cur_approve "${NS}/bravo" && cur_approve "${NS}/charlie"
+cur_approve "${NS}/bravo" || true; cur_approve "${NS}/charlie" || true
 if wait_until "bravo 1.0.0 and charlie 2.0.0 served" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS}/bravo@1.0.0" anon \
   && served_has "$REMOTE" "${NS}/charlie@2.0.0" anon; then
   mcp_get "$REMOTE" "$(mcp_version_path "${NS}/bravo" 1.0.0)" anon
@@ -233,20 +243,51 @@ else
   fail "approved bravo/charlie not served"
 fi
 
+begin_test "A version deleted upstream before the first sync is stored deleted: off the listing, include_deleted=true only"
+# charlie was approved above; 2.1.0 was already deleted upstream when the
+# Remote first synced.
+mcp_get "$REMOTE" "$(mcp_version_path "${NS}/charlie" 2.1.0)" anon
+c21_plain=$(mcp_check_plain_404) && c21_plain=ok
+mcp_get "$REMOTE" "$(mcp_version_path "${NS}/charlie" 2.1.0)?include_deleted=true" anon
+c21="${MCP_STATUS}:$(mcp_json '._meta["io.modelcontextprotocol.registry/official"].status // empty')"
+c21_listed=$(served_pairs "$REMOTE" anon | grep -cxF "${NS}/charlie@2.1.0" || true)
+if [ "$c21" != "200:deleted" ]; then
+  fail "charlie 2.1.0 with include_deleted=true answered '${c21}', want 200:deleted (the first pass must ask include_deleted=true)"
+elif [ "$c21_plain" != "ok" ] || [ "$c21_listed" != "0" ]; then
+  fail "charlie 2.1.0 (deleted upstream) is served to a plain read: exact ${c21_plain}, listed ${c21_listed}"
+else
+  pass
+fi
+
 begin_test "Approve alpha: 1.1.0 is served from the mirrored artifact"
 if cur_approve "${NS}/alpha" && wait_until "alpha 1.1.0 served" "$SYNC_WAIT_SECS" served_has "$REMOTE" "${NS}/alpha@1.1.0" anon; then
   BEFORE_SHA=$(stored_sha)
   mcp_get "$REMOTE" "$(mcp_version_path "${NS}/alpha" 1.1.0)" anon
-  src=$(mcp_json '._meta["com.artifactkeeper.registry/source"] | "\(.origin)|\(.kind)|\(.upstreamUrl)"')
+  ALPHA_BODY="${WORK_DIR}/alpha-1.1.0.json"
+  cp "$MCP_BODY" "$ALPHA_BODY"
+  src=$(mcp_json '._meta["com.artifactkeeper.registry/source"] | "\(.origin)|\(.kind)|\(.upstreamUrl | sub("/$"; ""))|\(.upstreamVerified)"')
   if [ -z "$BEFORE_SHA" ]; then
     fail_fatal "no stored artifact for alpha 1.1.0 (GET /api/v1/repositories/${REMOTE}/artifacts/servers/${NS}/alpha/1.1.0/server.json)"
-  elif [ "$src" != "mirror|upstream|${MCP_MOCK_BASE_URL}" ]; then
-    fail "mirrored alpha 1.1.0 source block origin|kind|upstreamUrl is '${src}', expected 'mirror|upstream|${MCP_MOCK_BASE_URL}'"
+  elif [ "$src" != "mirror|upstream|${MCP_MOCK_BASE_URL}|false" ]; then
+    fail "mirrored alpha 1.1.0 source block origin|kind|upstreamUrl|upstreamVerified is '${src}', expected 'mirror|upstream|${MCP_MOCK_BASE_URL}|false'"
   else
     pass
   fi
 else
   fail_fatal "approved alpha 1.1.0 never served (approve answered ${MCP_STATUS})"
+fi
+
+begin_test "Upstream userinfo is never served or audited"
+mirror_audit=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
+  "${BASE_URL}/api/v1/admin/audit?action=${MIRROR_AUDIT_ACTION}&from=${SUITE_START_ISO}&per_page=200" 2>/dev/null || true)
+if [ -n "$USERINFO_CREATE" ]; then
+  fail "a Remote with userinfo in upstream_url (${USERINFO_URL//${UPSTREAM_SECRET}/<secret>}) could not be created: ${USERINFO_CREATE}"
+elif grep -qF "$UPSTREAM_SECRET" "$ALPHA_BODY" 2>/dev/null; then
+  fail "the served entry carries the upstream userinfo: $(head -c 400 "$ALPHA_BODY" | sed "s/${UPSTREAM_SECRET}/<secret>/g")"
+elif printf '%s' "$mirror_audit" | grep -qF "$UPSTREAM_SECRET"; then
+  fail "a ${MIRROR_AUDIT_ACTION} audit event carries the upstream userinfo"
+else
+  pass
 fi
 
 begin_test "Content drift on an approved version revokes its approval"
