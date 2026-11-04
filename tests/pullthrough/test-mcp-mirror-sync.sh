@@ -123,17 +123,17 @@ remote_sync() {
 artifact_paths() {
   curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
     "${BASE_URL}/api/v1/repositories/${REMOTE}/artifacts?per_page=500" 2>/dev/null \
-    | jq -r '(.items // .artifacts // .data // .)[]? | .path // empty' 2>/dev/null | sort
+    | jq -r '(.items // .artifacts // .data // .)[]? | .path // empty' 2>/dev/null | LC_ALL=C sort
 }
 
 # expected_paths: servers/{name}/{version}/server.json for every fixture
 # entry, deleted ones included (the first pass asks include_deleted=true).
 expected_paths() {
-  jq -r '"servers/\(.server.name)/\(.server.version)/server.json"' "${MCP_MOCK_STATE_DIR}"/servers/*.json | sort
+  jq -r '"servers/\(.server.name)/\(.server.version)/server.json"' "${MCP_MOCK_STATE_DIR}"/servers/*.json | LC_ALL=C sort
 }
 
 has_all_artifacts() {
-  [ -z "$(comm -23 <(expected_paths) <(artifact_paths))" ]
+  [ -z "$(LC_ALL=C comm -23 <(expected_paths) <(artifact_paths))" ]
 }
 
 audit_count() {
@@ -163,14 +163,12 @@ if ! start_mock_mcp_upstream "${WORK_DIR}/mcp-upstream"; then
   infra_fail "mock-mcp-upstream did not start" "$(head -c 400 "${WORK_DIR}/mock-mcp-upstream.err" 2>/dev/null)"
   end_suite
 fi
-USERINFO_URL="${MCP_MOCK_BASE_URL/:\/\//://e2e:${UPSTREAM_SECRET}@}"
-USERINFO_CREATE=""
-if ! mcp_create_proxy_repo "$REMOTE" remote "$USERINFO_URL"; then
-  # Keep the mirror assertions running; the userinfo test reports this.
-  USERINFO_CREATE="$MCP_CREATE_ERROR"
-  if ! mcp_create_proxy_repo "$REMOTE" remote "$MCP_MOCK_BASE_URL"; then
-    fail_fatal "create Remote mcp repository" "$MCP_CREATE_ERROR"
-  fi
+# The mirror Remote is public (the anonymous reads below are the point), so
+# it carries no upstream credentials: the backend refuses a public Remote
+# with credentials (400 PUBLIC_REMOTE_UPSTREAM_CREDENTIALS). The userinfo
+# test uses its own private Remote.
+if ! mcp_create_proxy_repo "$REMOTE" remote "$MCP_MOCK_BASE_URL"; then
+  fail_fatal "create Remote mcp repository" "$MCP_CREATE_ERROR"
 fi
 REMOTE_ID=$(mcp_repo_id "$REMOTE")
 [ -n "$REMOTE_ID" ] || fail_fatal "Remote ${REMOTE} has no id"
@@ -202,7 +200,7 @@ begin_test "Every upstream version becomes an artifact of the Remote"
 if wait_until "all fixture versions stored" "$SYNC_WAIT_SECS" has_all_artifacts; then
   pass
 else
-  fail "versions missing from the Remote's artifacts" "$(comm -23 <(expected_paths) <(artifact_paths))"
+  fail "versions missing from the Remote's artifacts" "$(LC_ALL=C comm -23 <(expected_paths) <(artifact_paths))"
 fi
 
 begin_test "Mirror mode still serves curated: nothing listed before an approval"
@@ -278,12 +276,34 @@ else
 fi
 
 begin_test "Upstream userinfo is never served or audited"
+# A private Remote (is_public false, as the credential guard requires) whose
+# upstream_url carries userinfo, in mirror mode with allow_with_gates so the
+# fixture versions are served to the admin without a curation step.
+USERINFO_REMOTE="mcp-mirror-ui-${RUN_ID}"
+USERINFO_URL="${MCP_MOCK_BASE_URL/:\/\//://e2e:${UPSTREAM_SECRET}@}"
+UI_BODY="${WORK_DIR}/userinfo-alpha-1.1.0.json"
+ui_why=""
+if ! mcp_create_proxy_repo "$USERINFO_REMOTE" remote "$USERINFO_URL" \
+    "$(jq -cn --arg k "$MIRROR_KEY" --arg v "$MIRROR_VALUE" '{is_public:false, mcp_remote_posture:"allow_with_gates", ($k):$v}')"; then
+  ui_why="a private Remote with userinfo in upstream_url (${USERINFO_URL//${UPSTREAM_SECRET}/<secret>}) could not be created: ${MCP_CREATE_ERROR//${UPSTREAM_SECRET}/<secret>}"
+else
+  mcp_remote_sync "$USERINFO_REMOTE" admin || true
+  _ui_alpha_served() {
+    mcp_get "$USERINFO_REMOTE" "$(mcp_version_path "${NS}/alpha" 1.1.0)" admin
+    [ "$MCP_STATUS" = "200" ]
+  }
+  if wait_until "alpha 1.1.0 served by ${USERINFO_REMOTE}" "$SYNC_WAIT_SECS" _ui_alpha_served; then
+    cp "$MCP_BODY" "$UI_BODY"
+  else
+    ui_why="alpha 1.1.0 was not served by the userinfo Remote (HTTP ${MCP_STATUS}, sync ${MCP_SYNC_STATUS:-?}): $(mcp_snip | sed "s/${UPSTREAM_SECRET}/<secret>/g")"
+  fi
+fi
 mirror_audit=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
   "${BASE_URL}/api/v1/admin/audit?action=${MIRROR_AUDIT_ACTION}&from=${SUITE_START_ISO}&per_page=200" 2>/dev/null || true)
-if [ -n "$USERINFO_CREATE" ]; then
-  fail "a Remote with userinfo in upstream_url (${USERINFO_URL//${UPSTREAM_SECRET}/<secret>}) could not be created: ${USERINFO_CREATE}"
-elif grep -qF "$UPSTREAM_SECRET" "$ALPHA_BODY" 2>/dev/null; then
-  fail "the served entry carries the upstream userinfo: $(head -c 400 "$ALPHA_BODY" | sed "s/${UPSTREAM_SECRET}/<secret>/g")"
+if [ -n "$ui_why" ]; then
+  fail "$ui_why"
+elif grep -qF "$UPSTREAM_SECRET" "$UI_BODY" 2>/dev/null; then
+  fail "the served entry carries the upstream userinfo: $(head -c 400 "$UI_BODY" | sed "s/${UPSTREAM_SECRET}/<secret>/g")"
 elif printf '%s' "$mirror_audit" | grep -qF "$UPSTREAM_SECRET"; then
   fail "a ${MIRROR_AUDIT_ACTION} audit event carries the upstream userinfo"
 else
