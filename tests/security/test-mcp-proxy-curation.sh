@@ -6,17 +6,40 @@
 #     io.github.acme-tools, "rn" for "m") is flagged for review at ingest
 #     (catalog item status review, flags.typosquat.similarTo) and never served
 #   - decisions need repository administration: a user holding read and
-#     write on the Remote gets 403 from the catalog approve and bulk-approve
+#     write on the Remote gets 403 from the catalog approve, bulk-approve,
+#     bulk-block and bulk-decide
 #     (POST /api/v1/repositories/{key}/mcp/catalog/{id}/approve,
-#     .../catalog/bulk-approve) and from the generic curation approve
-#     (POST /api/v1/curation/packages/{id}/approve, instance administrators)
+#     .../catalog/bulk-{approve,block,decide}) and from the generic curation
+#     approve (POST /api/v1/curation/packages/{id}/approve, instance
+#     administrators)
 #   - unapproved entries never appear on /v0.1 for any caller, admin
 #     included (list, search, versions, exact, include_deleted): browsing them
 #     is UI-only
+#   - mcp_caller_is_repo_admin / mcp_caller_can_lock on the repository
+#     response match the caller (instance admin true/true, repository admin
+#     true/false, writer and reader false/false)
+#   - catalog views: requests for approval are recorded per requester
+#     (approvalRequests.requesters, administrators only); a holder (read
+#     grant) sees decisions without other users (evaluatedBy null,
+#     approvalRequests {count}); a plain reader of the public Remote sees no
+#     flags, denied, evaluationReason or summary.lint. summary carries the
+#     risk inputs of the upstream document
+#   - GET /api/v1/mcp/pending-summary counts this Remote's queue (401
+#     anonymous)
 #   - mcp_remote_posture_locked: a repository administrator cannot relax the
-#     posture an instance administrator locked
-#   - mcp_server_deny (case-insensitive glob, `*` crosses `/`) wins over an
-#     approval
+#     posture an instance administrator locked, change
+#     mcp_auto_approve_namespaces, or bulk-approve with a namespace-spanning
+#     pattern (403, dry runs included); naming the namespace and bulk blocks
+#     stay allowed, and the instance administrator is not restricted
+#   - bulk patterns are full-name globs: a bare namespace is 422, a malformed
+#     pattern 400; dryRun answers the complete BulkResult
+#     {approved, blocked, names, skippedDenied, skippedReview, dryRun} and
+#     writes nothing; bulk-block blocks the matches
+#   - mcp_server_deny (case-insensitive glob, `*` crosses `/`; a bare
+#     namespace is 400) wins over an approval, and bulk approvals skip denied
+#     names (skippedDenied)
+#   - bulk-decide by ids answers {action, decided, unchanged, skippedDenied,
+#     notFound}; no ids or more than 500 is 400, another action 422
 #
 # Gates: mcp_require_registry mcp_registry_proxy; mcp_create_proxy_repo
 # (older backends refuse Remote mcp repos -> mcp_registry_proxy exemption);
@@ -80,7 +103,7 @@ served_has() {
 
 # cur_load: the Remote's catalog (a CatalogItem array) into CUR_ROWS.
 cur_load() {
-  mcp_catalog_load "$REMOTE" "$CUR_ROWS"
+  mcp_catalog_load "$REMOTE" "$CUR_ROWS" || true
 }
 
 cur_row() {
@@ -108,6 +131,39 @@ remote_sync() {
   mcp_remote_sync "$REMOTE" admin || true
   SYNC_STATUS="$MCP_SYNC_STATUS"
   wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null || true
+}
+
+# bulk ROUTE AUTH JSON: POST .../mcp/catalog/ROUTE (bulk-approve,
+# bulk-block, bulk-decide).
+bulk() {
+  mcp_req POST "$(mcp_mgmt_url "$REMOTE" "catalog/$1")" "$2" -H "Content-Type: application/json" -d "$3"
+}
+
+# bulk_result: the last BulkResult, names sorted, as compact JSON.
+bulk_result() {
+  jq -cS '{approved, blocked, names: ((.names // []) | sort), skippedDenied, skippedReview, dryRun}' "$MCP_BODY" 2>/dev/null || true
+}
+
+# want_bulk APPROVED BLOCKED NAMES_JSON SKIPPED_DENIED SKIPPED_REVIEW DRY_RUN
+want_bulk() {
+  jq -cnS --argjson a "$1" --argjson b "$2" --argjson n "$3" --argjson d "$4" --argjson r "$5" --argjson dry "$6" \
+    '{approved:$a, blocked:$b, names:($n | sort), skippedDenied:$d, skippedReview:$r, dryRun:$dry}'
+}
+
+# decide_result: the last BulkDecideResult, id lists sorted.
+decide_result() {
+  jq -cS '{action, decided: ((.decided // []) | sort), unchanged: ((.unchanged // []) | sort),
+           skippedDenied: ((.skippedDenied // []) | sort), notFound: ((.notFound // []) | sort)}' "$MCP_BODY" 2>/dev/null || true
+}
+
+# want_decide ACTION DECIDED UNCHANGED SKIPPED_DENIED NOT_FOUND (JSON arrays)
+want_decide() {
+  jq -cnS --arg a "$1" --argjson d "$2" --argjson u "$3" --argjson s "$4" --argjson n "$5" \
+    '{action:$a, decided:($d|sort), unchanged:($u|sort), skippedDenied:($s|sort), notFound:($n|sort)}'
+}
+
+cur_status() {
+  cur_row "$1" | jq -r '.status // empty'
 }
 
 seed_entry() {
@@ -208,20 +264,25 @@ else
 fi
 
 begin_test "Decisions need repository administration: a read+write user gets 403"
-cur_approve "$LOOKALIKE" "$WRITER_TOKEN"
+cur_approve "$LOOKALIKE" "$WRITER_TOKEN" || true
 approve_status="$MCP_STATUS"
 lookalike_id=$(cur_row "$LOOKALIKE" | jq -r '.id // empty')
 mcp_req POST "$(mcp_mgmt_url "$REMOTE" catalog/bulk-approve)" "$WRITER_TOKEN" -H "Content-Type: application/json" \
   -d '{"pattern":"io.github.acrne-tools/*","includeReview":true,"reason":"release-gate non-admin bulk approve"}'
 bulk_status="$MCP_STATUS"
+bulk bulk-block "$WRITER_TOKEN" '{"pattern":"io.github.acrne-tools/*","reason":"release-gate non-admin bulk block"}'
+bulk_block_status="$MCP_STATUS"
+bulk bulk-decide "$WRITER_TOKEN" "$(jq -cn --arg i "$lookalike_id" '{ids:[$i],action:"approve"}')"
+bulk_decide_status="$MCP_STATUS"
 mcp_req POST "${BASE_URL}/api/v1/curation/packages/${lookalike_id}/approve" "$WRITER_TOKEN" -H "Content-Type: application/json" -d '{}'
 generic_status="$MCP_STATUS"
 cur_load
 after=$(cur_row "$LOOKALIKE" | jq -r '.status')
-if [ "$approve_status" = "403" ] && [ "$bulk_status" = "403" ] && [ "$generic_status" = "403" ] && [ "$after" = "review" ]; then
+if [ "$approve_status" = "403" ] && [ "$bulk_status" = "403" ] && [ "$bulk_block_status" = "403" ] \
+  && [ "$bulk_decide_status" = "403" ] && [ "$generic_status" = "403" ] && [ "$after" = "review" ]; then
   pass
 else
-  fail "read+write user: catalog approve ${approve_status}, catalog bulk-approve ${bulk_status}, generic curation approve ${generic_status} (all want 403); row status now '${after}'"
+  fail "read+write user: catalog approve ${approve_status}, bulk-approve ${bulk_status}, bulk-block ${bulk_block_status}, bulk-decide ${bulk_decide_status}, generic curation approve ${generic_status} (all want 403); row status now '${after}'"
 fi
 
 begin_test "Unapproved entries never appear on /v0.1, for anonymous, a reader or the admin"
@@ -252,12 +313,133 @@ else
   fail "unapproved entries reachable on /v0.1:${leaks}"
 fi
 
+# ---------------------------------------------------------------------------
+# Who sees what
+# ---------------------------------------------------------------------------
+
+begin_test "Setup: a plain reader (no grant) of the public Remote"
+mcp_make_user "mcp-cur-reader-${RUN_ID}" > "${WORK_DIR}/reader.tok" || true
+READER_TOKEN=$(cat "${WORK_DIR}/reader.tok" 2>/dev/null)
+if [ -n "$READER_TOKEN" ]; then
+  pass
+else
+  fail_fatal "could not create the reader user"
+fi
+
+begin_test "mcp_caller_is_repo_admin and mcp_caller_can_lock answer for the caller"
+caller_flags() {
+  mcp_req GET "${BASE_URL}/api/v1/repositories/${REMOTE}" "$1"
+  mcp_json '"\(.mcp_caller_is_repo_admin)|\(.mcp_caller_can_lock)"'
+}
+f_admin=$(caller_flags admin)
+f_writer=$(caller_flags "$WRITER_TOKEN")
+f_reader=$(caller_flags "$READER_TOKEN")
+f_repoadmin=$(caller_flags "$REPOADMIN_TOKEN")
+want_repoadmin="true|false"
+[ "$REPOADMIN_GRANTED" = "1" ] || want_repoadmin="false|false"
+if [ "$f_admin" = "true|true" ] && [ "$f_writer" = "false|false" ] && [ "$f_reader" = "false|false" ] \
+  && [ "$f_repoadmin" = "$want_repoadmin" ]; then
+  pass
+else
+  fail "is_repo_admin|can_lock: admin '${f_admin}' (want true|true), repository admin '${f_repoadmin}' (want ${want_repoadmin}), writer '${f_writer}' and reader '${f_reader}' (want false|false)"
+fi
+
+begin_test "Requests for approval are recorded per requester; administrators see who asked"
+cur_load
+PENDING_ID=$(cur_row "$PENDING" | jq -r '.id // empty')
+GOOD_ID=$(cur_row "$GOOD" | jq -r '.id // empty')
+LOOKALIKE_ID=$(cur_row "$LOOKALIKE" | jq -r '.id // empty')
+NOTE1="needed for release-gate ${RUN_ID}"
+NOTE2="still needed for release-gate ${RUN_ID}"
+ask() {
+  mcp_req POST "$(mcp_mgmt_url "$REMOTE" "catalog/${PENDING_ID}/request-approval")" "$1" -H "Content-Type: application/json" -d "$2"
+  printf '%s' "$MCP_STATUS"
+}
+a1=$(ask "$WRITER_TOKEN" "$(jq -cn --arg n "$NOTE1" '{note:$n}')")
+a2=$(ask "$WRITER_TOKEN" "$(jq -cn --arg n "$NOTE2" '{note:$n}')")
+a3=$(ask "$READER_TOKEN" '{}')
+cur_load
+requests=$(cur_row "$PENDING" | jq -c '.approvalRequests // {}')
+got=$(printf '%s' "$requests" | jq -r --arg w "$WRITER_ID" '"\(.count)|\(.requesters | length)|\(.requesters[$w].note)"' 2>/dev/null)
+if [ "$a1|$a2|$a3" != "200|200|200" ]; then
+  fail "request-approval answered ${a1}, ${a2} (writer) and ${a3} (reader), want 200 each"
+elif [ "$got" != "2|2|${NOTE2}" ]; then
+  fail "admin view of approvalRequests count|requesters|writer note is '${got}', want '2|2|${NOTE2}' (asking again replaces only the caller's note)" "$requests"
+else
+  pass
+fi
+
+begin_test "Catalog views: a holder sees decisions without other users; a plain reader sees upstream facts only"
+H_ROWS="${WORK_DIR}/catalog-holder.json"
+R_ROWS="${WORK_DIR}/catalog-reader.json"
+mcp_catalog_load "$REMOTE" "$H_ROWS" "$WRITER_TOKEN" || true
+h_status="$MCP_STATUS"
+mcp_catalog_load "$REMOTE" "$R_ROWS" "$READER_TOKEN" || true
+r_status="$MCP_STATUS"
+item() { mcp_catalog_item "$1" "$2"; }
+admin_by=$(cur_row "$GOOD" | jq -r '.evaluatedBy // empty')
+h_good=$(item "$H_ROWS" "$GOOD" | jq -c '{evaluatedBy, hasReason: (.evaluationReason != null)}')
+h_req=$(item "$H_ROWS" "$PENDING" | jq -c '.approvalRequests')
+h_flag=$(item "$H_ROWS" "$LOOKALIKE" | jq -r '.flags.typosquat.similarTo // empty')
+r_good=$(item "$R_ROWS" "$GOOD" | jq -c '{evaluatedBy, evaluationReason, pins: [.pins[]? | {evaluationReason, contentDrift}] | unique}')
+r_req=$(item "$R_ROWS" "$PENDING" | jq -c '.approvalRequests')
+r_flags=$(item "$R_ROWS" "$LOOKALIKE" | jq -c '.flags')
+r_leaks=$(jq -c '[.[] | select(has("denied") or (.summary.lint != null) or ([.ingested[]?.unresolved[]?] | length > 0)) | .name]' "$R_ROWS" 2>/dev/null)
+if [ "$h_status" != "200" ] || [ "$r_status" != "200" ]; then
+  fail "catalog for the holder answered ${h_status}, for the plain reader ${r_status} (want 200: the Remote is public)"
+elif [ -z "$admin_by" ]; then
+  fail "the administrator's view of ${GOOD} has no evaluatedBy" "$(cur_row "$GOOD")"
+elif [ "$h_good" != '{"evaluatedBy":null,"hasReason":true}' ] || [ "$h_req" != '{"count":2}' ] || [ "$h_flag" != "$GOOD" ]; then
+  fail "holder view: ${GOOD} ${h_good} (want evaluatedBy null, a reason), ${PENDING} approvalRequests ${h_req} (want {\"count\":2}), ${LOOKALIKE} similarTo '${h_flag}'"
+elif [ "$r_good" != '{"evaluatedBy":null,"evaluationReason":null,"pins":[]}' ] && [ "$r_good" != '{"evaluatedBy":null,"evaluationReason":null,"pins":[{"contentDrift":null,"evaluationReason":null}]}' ]; then
+  fail "plain reader view of ${GOOD} discloses decision detail: ${r_good}"
+elif [ "$r_req" != '{"count":2}' ] || [ "$r_flags" != "{}" ] || [ "$r_leaks" != "[]" ]; then
+  fail "plain reader view: approvalRequests ${r_req} (want {\"count\":2}), ${LOOKALIKE} flags ${r_flags} (want {}), items with denied/summary.lint/unresolved: ${r_leaks}"
+else
+  pass
+fi
+
+begin_test "Catalog summary carries the upstream document's risk inputs"
+want_sum='{"packagesCount":0,"registryTypes":[],"remotesCount":1,"secretsCount":0,"transports":["streamable-http"]}'
+s_good=$(cur_row "$GOOD" | jq -cS '.summary | if type == "object" then del(.lint) else . end')
+s_pending=$(cur_row "$PENDING" | jq -cS '.summary | if type == "object" then del(.lint) else . end')
+s_lint=$(cur_row "$GOOD" | jq -c '.summary.lint // {} | keys')
+if [ "$s_good" != "$want_sum" ] || [ "$s_pending" != "$want_sum" ]; then
+  fail "summary of ${GOOD} '${s_good}', of ${PENDING} '${s_pending}', want ${want_sum}"
+elif [ "$s_lint" != "[]" ] && [ "$s_lint" != '["block","review","version","warn"]' ]; then
+  fail "summary.lint of the ingested ${GOOD} has keys ${s_lint}, want {version, block, review, warn}"
+else
+  pass
+fi
+
+begin_test "GET /api/v1/mcp/pending-summary counts this Remote's queue; anonymous is 401"
+want_q=$(jq -r '"\([.[] | select(.status == "pending")] | length)|\([.[] | select(.status == "review")] | length)|\([.[] | .pins[]? | select(.status == "pending" or .status == "review")] | length)"' "$CUR_ROWS")
+mcp_req GET "${BASE_URL}/api/v1/mcp/pending-summary" admin
+q_status="$MCP_STATUS"
+got_q=$(jq -r --arg k "$REMOTE" '[.repositories[]? | select(.key == $k)][0] // {} | "\(.pending)|\(.review)|\(.drifted)"' "$MCP_BODY" 2>/dev/null)
+q_total=$(mcp_json '(.total == (.pending + .review + .drifted)) and (.pending >= 0)')
+mcp_req GET "${BASE_URL}/api/v1/mcp/pending-summary" anon
+anon_q="$MCP_STATUS"
+if [ "$q_status" != "200" ]; then
+  fail "pending-summary answered ${q_status}: $(mcp_snip)"
+elif [ "$got_q" != "$want_q" ]; then
+  fail "pending-summary for ${REMOTE} pending|review|drifted is '${got_q}', the catalog says '${want_q}'"
+elif [ "$q_total" != "true" ]; then
+  fail "pending-summary total is not pending + review + drifted"
+elif [ "$anon_q" != "401" ]; then
+  fail "anonymous pending-summary answered ${anon_q}, want 401"
+else
+  pass
+fi
+
+LOCK_SET=0
 begin_test "An instance-locked posture cannot be relaxed by a repository administrator"
 if [ "$REPOADMIN_GRANTED" != "1" ]; then
   skip "the backend refused the repository-admin grant ${REPO_ADMIN_ACTIONS} (HTTP ${MCP_STATUS}); no repository administrator to test the lock with"
 elif ! mcp_patch_repo "$REMOTE" '{"mcp_remote_posture_locked":true}'; then
   fail "instance admin could not set mcp_remote_posture_locked (HTTP ${MCP_STATUS}): $(mcp_snip)"
 else
+  LOCK_SET=1
   # Discriminator: the repository admin can change an unlocked setting.
   patch_as "$REPOADMIN_TOKEN" '{"mcp_oci_floating_tag_policy":"pin"}'
   unlocked_status="$MCP_STATUS"
@@ -276,6 +458,91 @@ else
       fail "repo admin: relax ${relax_status}, unlock ${unlock_status} (want 403/403); posture '${posture}', locked '${locked}'"
     fi
   fi
+fi
+
+begin_test "Under the posture lock only an instance administrator bulk-approves across namespaces"
+if [ "$REPOADMIN_GRANTED" != "1" ] || [ "$LOCK_SET" != "1" ]; then
+  skip "no repository administrator (grant ${REPOADMIN_GRANTED}) or no posture lock (${LOCK_SET}) to test with"
+else
+  bulk bulk-approve "$REPOADMIN_TOKEN" '{"pattern":"*","dryRun":true}'
+  ra_star="$MCP_STATUS"
+  bulk bulk-approve "$REPOADMIN_TOKEN" '{"pattern":"io.github.*/*","dryRun":true}'
+  ra_span="$MCP_STATUS"
+  bulk bulk-approve "$REPOADMIN_TOKEN" '{"pattern":"io.github.acme-tools/*","dryRun":true}'
+  ra_named="$MCP_STATUS:$(mcp_json '.dryRun')"
+  bulk bulk-block "$REPOADMIN_TOKEN" '{"pattern":"*","dryRun":true}'
+  ra_block="$MCP_STATUS"
+  bulk bulk-approve admin '{"pattern":"*","dryRun":true}'
+  ia_star="$MCP_STATUS"
+  patch_as "$REPOADMIN_TOKEN" '{"mcp_auto_approve_namespaces":["io.github.acme-tools/*"]}'
+  ra_auto="$MCP_STATUS"
+  if [ "$ra_star|$ra_span|$ra_named|$ra_block|$ia_star|$ra_auto" = "403|403|200:true|200|200|403" ]; then
+    pass
+  else
+    fail "posture lock: repository admin bulk-approve '*' ${ra_star}, 'io.github.*/*' ${ra_span} (want 403), named namespace ${ra_named} (want 200:true), bulk-block '*' ${ra_block} (want 200); instance admin '*' ${ia_star} (want 200); repository admin PATCH mcp_auto_approve_namespaces ${ra_auto} (want 403)"
+  fi
+fi
+
+begin_test "Bulk patterns are full-name globs: a bare namespace is 422, a malformed pattern 400"
+bulk bulk-approve admin '{"pattern":"io.github.acme-tools","dryRun":true}'
+p_bare_a="$MCP_STATUS"
+bulk bulk-block admin '{"pattern":"io.github.acme-tools","dryRun":true}'
+p_bare_b="$MCP_STATUS"
+bulk bulk-approve admin '{"pattern":"not a pattern!","dryRun":true}'
+p_bad="$MCP_STATUS"
+if [ "$p_bare_a|$p_bare_b|$p_bad" = "422|422|400" ]; then
+  pass
+else
+  fail "bulk-approve bare namespace ${p_bare_a}, bulk-block bare namespace ${p_bare_b} (want 422), malformed pattern ${p_bad} (want 400)"
+fi
+
+begin_test "bulk-approve dryRun answers the complete BulkResult and writes nothing"
+bulk bulk-approve admin '{"pattern":"io.github.acme-tools/*","dryRun":true,"reason":"release-gate dry run"}'
+dry_a="$MCP_STATUS:$(bulk_result)"
+want_a="200:$(want_bulk 1 0 "[\"${PENDING}\"]" 0 0 true)"
+bulk bulk-approve admin '{"pattern":"io.github.acrne-tools/*","dryRun":true}'
+dry_r="$MCP_STATUS:$(bulk_result)"
+want_r="200:$(want_bulk 0 0 '[]' 0 1 true)"
+cur_load
+if [ "$dry_a" != "$want_a" ]; then
+  fail "dry-run bulk-approve io.github.acme-tools/* answered '${dry_a}', want '${want_a}'"
+elif [ "$dry_r" != "$want_r" ]; then
+  fail "dry-run bulk-approve of the flagged lookalike without includeReview answered '${dry_r}', want '${want_r}' (skippedReview)"
+elif [ "$(cur_status "$PENDING")" != "pending" ] || [ "$(cur_status "$LOOKALIKE")" != "review" ]; then
+  fail "a dry run changed a row: ${PENDING} '$(cur_status "$PENDING")', ${LOOKALIKE} '$(cur_status "$LOOKALIKE")'"
+else
+  pass
+fi
+
+begin_test "bulk-block: a dry run changes nothing, the real call blocks the match"
+bulk bulk-block admin '{"pattern":"io.github.acrne-tools/*","dryRun":true}'
+dry_b="$MCP_STATUS:$(bulk_result)"
+cur_load
+after_dry=$(cur_status "$LOOKALIKE")
+bulk bulk-block admin '{"pattern":"io.github.acrne-tools/*","reason":"release-gate bulk block"}'
+real_b="$MCP_STATUS:$(bulk_result)"
+cur_load
+after_real=$(cur_status "$LOOKALIKE")
+mcp_get "$REMOTE" "$(mcp_version_path "$LOOKALIKE" 1.0.0)" anon
+lookalike_plain=$(mcp_check_plain_404) && lookalike_plain=ok
+if [ "$dry_b" != "200:$(want_bulk 0 1 "[\"${LOOKALIKE}\"]" 0 0 true)" ] || [ "$after_dry" != "review" ]; then
+  fail "dry-run bulk-block answered '${dry_b}', row now '${after_dry}' (want blocked 1, names [${LOOKALIKE}], dryRun true; row still review)"
+elif [ "$real_b" != "200:$(want_bulk 0 1 "[\"${LOOKALIKE}\"]" 0 0 false)" ] || [ "$after_real" != "blocked" ]; then
+  fail "bulk-block answered '${real_b}', row now '${after_real}' (want blocked 1, dryRun false; row blocked)"
+elif [ "$lookalike_plain" != "ok" ]; then
+  fail "the blocked lookalike is served: ${lookalike_plain}"
+else
+  pass
+fi
+
+begin_test "mcp_server_deny: a bare namespace is 400 (the globs match the full name)"
+mcp_patch_repo "$REMOTE" '{"mcp_server_deny":["io.github.acme-tools"]}' || true
+bare_deny="$MCP_STATUS"
+stored_deny=$(repo_field mcp_server_deny)
+if [ "$bare_deny" = "400" ] && { [ -z "$stored_deny" ] || [ "$stored_deny" = "[]" ]; }; then
+  pass
+else
+  fail "PATCH mcp_server_deny [io.github.acme-tools] answered ${bare_deny} (want 400); stored '${stored_deny}'"
 fi
 
 begin_test "mcp_server_deny (case-insensitive, * crosses /) wins over an approval"
@@ -302,6 +569,50 @@ if mcp_patch_repo "$REMOTE" '{"mcp_server_deny":["IO.GITHUB.ACME-*"]}'; then
   fi
 else
   fail "PATCH mcp_server_deny answered ${MCP_STATUS}: $(mcp_snip)"
+fi
+
+begin_test "A bulk approval skips denied names (skippedDenied)"
+bulk bulk-approve admin '{"pattern":"io.github.acme-tools/*","dryRun":true}'
+got_d="$MCP_STATUS:$(bulk_result)"
+want_d="200:$(want_bulk 0 0 '[]' 1 0 true)"
+if [ "$got_d" = "$want_d" ]; then
+  pass
+else
+  fail "dry-run bulk-approve over the denied ${PENDING} answered '${got_d}', want '${want_d}'"
+fi
+
+begin_test "bulk-decide by ids: decided, unchanged, skippedDenied, notFound"
+UNKNOWN_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+bulk bulk-decide admin "$(jq -cn --arg p "$PENDING_ID" --arg g "$GOOD_ID" --arg u "$UNKNOWN_ID" '{ids:[$p,$g,$u],action:"approve",reason:"release-gate bulk decide"}')"
+dec_a="$MCP_STATUS:$(decide_result)"
+want_a="200:$(want_decide approve '[]' "[\"${GOOD_ID}\"]" "[\"${PENDING_ID}\"]" "[\"${UNKNOWN_ID}\"]")"
+bulk bulk-decide admin "$(jq -cn --arg g "$GOOD_ID" --arg l "$LOOKALIKE_ID" '{ids:[$g,$l],action:"block"}')"
+dec_b="$MCP_STATUS:$(decide_result)"
+want_b="200:$(want_decide block "[\"${GOOD_ID}\"]" "[\"${LOOKALIKE_ID}\"]" '[]' '[]')"
+cur_load
+good_after=$(cur_status "$GOOD")
+if [ -z "$PENDING_ID" ] || [ -z "$GOOD_ID" ] || [ -z "$LOOKALIKE_ID" ]; then
+  fail "catalog ids missing: pending '${PENDING_ID}', good '${GOOD_ID}', lookalike '${LOOKALIKE_ID}'"
+elif [ "$dec_a" != "$want_a" ]; then
+  fail "bulk-decide approve answered '${dec_a}', want '${want_a}'"
+elif [ "$dec_b" != "$want_b" ] || [ "$good_after" != "blocked" ]; then
+  fail "bulk-decide block answered '${dec_b}' (want '${want_b}'); ${GOOD} is now '${good_after}'"
+else
+  pass
+fi
+
+begin_test "bulk-decide refuses no ids or more than 500 (400) and another action (422)"
+bulk bulk-decide admin '{"ids":[],"action":"approve"}'
+none="$MCP_STATUS"
+many=$(python3 -c 'import json, uuid; print(json.dumps({"ids": [str(uuid.uuid4()) for _ in range(501)], "action": "block"}))')
+bulk bulk-decide admin "$many"
+over="$MCP_STATUS"
+bulk bulk-decide admin "$(jq -cn --arg g "$GOOD_ID" '{ids:[$g],action:"reopen"}')"
+other="$MCP_STATUS"
+if [ "$none|$over|$other" = "400|400|422" ]; then
+  pass
+else
+  fail "bulk-decide with no ids ${none}, 501 ids ${over} (want 400), action reopen ${other} (want 422)"
 fi
 
 end_suite
