@@ -1325,13 +1325,13 @@ jobs:
           - name: rust-go-swift
             scripts: "test-cargo.sh test-cargo-remote.sh test-go.sh test-swift.sh test-pub.sh"
           - name: system-packages
-            scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-opkg.sh"
+            scripts: "test-debian.sh test-rpm.sh test-alpine.sh test-alpine-apkindex-parity.sh test-opkg.sh"
           - name: containers
             scripts: "test-oci.sh test-oci-remote.sh test-docker-native-client.sh test-helm.sh test-incus.sh test-streaming-blob-fallback.sh"
           - name: misc-native
             scripts: "test-terraform.sh test-composer.sh test-composer-dist-cache.sh test-hex.sh test-rubygems.sh test-nuget.sh test-cocoapods.sh test-cran.sh"
           - name: generic-protocol
-            scripts: "test-generic.sh test-generic-native-client.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-agentplugins.sh test-agentplugins-conformance.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
+            scripts: "test-generic.sh test-generic-native-client.sh test-generic-upload-native-parity.sh test-gitlfs.sh test-protobuf.sh test-bazel.sh test-conan.sh test-conan-auth.sh test-conan-recipes.sh test-conan-packages.sh test-conan-search.sh test-conan-revisions.sh test-conan-remote.sh test-conan-errors.sh test-conan-stress.sh test-ansible.sh test-p2.sh test-jetbrains.sh test-agentplugins.sh test-agentplugins-conformance.sh test-vagrant.sh test-wasm.sh test-puppet.sh test-chef.sh"
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
@@ -1447,6 +1447,18 @@ jobs:
               # ar (from binutils) for Debian package assembly
               if ! command -v ar &>/dev/null; then
                 sudo apt-get update -qq && sudo apt-get install -y -qq binutils > /dev/null
+              fi
+              # python3 parses APKINDEX stanzas in test-alpine-apkindex-parity.sh
+              # (the apk client it runs is apk.static, fetched by the script).
+              if ! command -v python3 &>/dev/null; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq python3 > /dev/null
+              fi
+              ;;
+            generic-protocol)
+              # python3 builds the .deb and parses Packages stanzas in
+              # test-generic-upload-native-parity.sh.
+              if ! command -v python3 &>/dev/null; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq python3 > /dev/null
               fi
               ;;
           esac
