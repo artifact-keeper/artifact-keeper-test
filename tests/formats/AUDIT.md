@@ -72,7 +72,7 @@ Legend:
 | helm | W | W | test-helm.sh, test-helm-conformance.sh | curl PUT chart tarball; no `helm push` (chart-museum-style) |
 | debian | W | W | test-debian.sh, test-debian-xz-proxy.sh | curl multipart; no real `dput` or `reprepro` |
 | rpm | W | W | test-rpm.sh | curl PUT .rpm; no `rpmbuild` push |
-| alpine | W | W | test-alpine.sh | curl PUT .apk; no `abuild` |
+| alpine | W | W | test-alpine.sh, test-alpine-apkindex-parity.sh | curl PUT .apk; no `abuild`. The parity suite uploads real upstream packages on the native and generic routes, compares each APKINDEX stanza with upstream's and resolves with a real `apk` (apk.static, `--simulate` and `fetch`) |
 | opkg | W | W | test-opkg.sh | curl; no opkg push tool exists upstream |
 | conan | W | W | test-conan*.sh (9 files) | curl; no `conan upload` to v2 endpoint |
 | conda | W | W | test-conda.sh, test-conda-native-conformance.sh | curl PUT; no `conda` or `anaconda-client` |
