@@ -68,6 +68,8 @@ Each of the 38 package format handlers gets an E2E test that creates a repositor
 │ Generic/Protocol │ generic, gitlfs, protobuf, bazel, conan,        │
 │                  │ ansible, p2, jetbrains, agentplugins, vagrant,   │
 │                  │ wasm, puppet, chef                               │
+│ MCP Registry     │ mcp (hosted, own-repos, run the server, OCI pin, │
+│                  │ backing holds, Remote/Virtual)                   │
 └──────────────────┴──────────────────────────────────────────────────┘
 ```
 

@@ -1,0 +1,21 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+      "publishedAt": "2026-10-04T00:00:00Z",
+      "status": "deleted",
+      "updatedAt": "2026-10-04T00:00:00Z"
+    }
+  },
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "description": "Charlie fixture server",
+    "name": "io.github.ak-fixture/charlie",
+    "remotes": [
+      {
+        "type": "streamable-http",
+        "url": "https://charlie.mcp.example.invalid/mcp"
+      }
+    ],
+    "version": "2.1.0"
+  }
+}

@@ -474,6 +474,15 @@ _feature_min_version() {
     # in the 1.11.0 dev window, as for virtual_nested_members.
     # Gates tests/formats/test-maven-prefixes.sh.
     "maven_prefixes_no_nesting")      echo "1.10.0" ;;
+    # MCP Registry (artifact-keeper#5253). The floor is the version main
+    # reports while the format is in development; it keeps lines older than
+    # main out. It cannot keep release/1.11.x (1.11.11) out, so the suites
+    # also probe the backend (tests/lib/mcp-helpers.sh) and stand down through
+    # the mcp_registry_format / mcp_registry_proxy / mcp_registry_later_phase
+    # rows of _CAPABILITY_EXEMPTIONS when the probe proves the capability is
+    # absent. Phase 2/3 tokens share the floor for the same reason; raise a
+    # floor here if a capability ships on a line whose version says otherwise.
+    "mcp_registry"|"mcp_registry_proxy"|"mcp_validate"|"mcp_lint"|"mcp_capabilities"|"mcp_holds_route"|"mcp_tombstone"|"mcp_mirror"|"mcp_bundles"|"mcp_namespace_grants") echo "1.11.3" ;;
     *) return 1 ;;
   esac
 }
@@ -1724,6 +1733,23 @@ _CAPABILITY_EXEMPTIONS=(
   # 1.11.3 while release/1.11.x reports 1.11.11. Delete this row once every
   # line the gate runs against ships the format.
   "agentplugins_format|repository format 'agentplugins' is not known to this backend (POST /api/v1/repositories: 400 Invalid format: agentplugins); Agent Plugins format not shipped|211"
+  # formats/security/pullthrough: the MCP Registry (artifact-keeper#5253).
+  # tests/lib/mcp-helpers.sh reaches these only after probing the backend:
+  #   mcp_registry_format       repository creation answered
+  #                             `400 Invalid format: mcp` (no MCP format);
+  #   mcp_registry_proxy        a Remote/Virtual mcp repository was refused with
+  #                             the Phase 1 "Local and Staging repositories in
+  #                             this release" message;
+  #   mcp_registry_later_phase  a Phase 2/3 route answered with the router
+  #                             fallback (unknown route) or a Phase 2/3 setting
+  #                             was ignored, on a backend that otherwise
+  #                             serves the registry (mcp_skip_later_phase).
+  # A backend that ships the capability cannot produce those answers, so the
+  # rows cannot hide a broken handler. Delete each row once every line the
+  # gate runs against ships its phase.
+  "mcp_registry_format|repository format 'mcp' is not known to this backend (POST /api/v1/repositories: 400 Invalid format: mcp); MCP Registry format not shipped|211"
+  "mcp_registry_proxy|MCP Remote/Virtual repositories are refused by this backend (POST /api/v1/repositories: 400 MCP registries support Local and Staging repositories in this release); MCP Registry proxy not shipped|211"
+  "mcp_registry_later_phase|MCP Registry later-phase capability not shipped by this backend (probe:|211"
   # mesh: run-now sync trigger endpoint not shipped (sync worker, TODO #78.4)
   "mesh_run_now|sync run-now endpoint not shipped (HTTP 404)|211"
   # webhooks: the forced-failure injection is not scoped to this test's own

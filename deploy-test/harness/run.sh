@@ -573,7 +573,8 @@ case "$CMD" in
              image-inspect-repository-scope oci-scan-proxy-unclassifiable \
              upstream-ip-literal-refused sso-idp-user-agent-and-status \
              npm-version-route-dist-tags gcs-error-url-redaction \
-             pypi-age-gate-substitute-scanned; do
+             pypi-age-gate-substitute-scanned \
+             mcp-registry; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

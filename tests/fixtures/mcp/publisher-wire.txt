@@ -1,0 +1,11 @@
+# Requests mcp-publisher 1.8.7 sends, recorded against a logging stand-in
+# with token.json {"method":"none","registry":"<root>"} (root = /mcp/<repo>).
+# Columns: command, method, path below <root>, whether Authorization is sent.
+# tests/formats/test-mcp.sh replays these with curl, so a publisher bump that
+# changes its wire fails at this pin instead of somewhere in the gate.
+# Note the publisher uses the /v0 alias, not /v0.1.
+validate	POST	/v0/validate	no
+publish	POST	/v0/publish	yes
+status	GET	/v0/servers/{enc}/versions/{version}?include_deleted=true	yes
+status	PATCH	/v0/servers/{enc}/versions/{version}/status	yes
+status --all-versions	GET	/v0/servers/{enc}/versions?include_deleted=true	yes

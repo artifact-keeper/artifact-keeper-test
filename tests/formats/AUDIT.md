@@ -48,6 +48,7 @@ we open the script and grep for the format-native CLI:
 | generic | `curl` (no native client) | covered by `test-generic-native-client.sh` |
 | cargo | `cargo publish` | covered by `test-cargo.sh` (real cargo CLI) |
 | **rubygems** | `gem push/fetch` | **added by this PR** (`test-rubygems-native-client.sh`) |
+| mcp | `mcp-publisher publish/status`, `npm install` + `node` (runs the resolved server over stdio) | covered by `test-mcp.sh` (pinned, checksummed `mcp-publisher`) and `test-mcp-run-server.sh` (resolve from the registry, install from AK npm, `tools/list` + `tools/call`) |
 
 ## Coverage table
 
@@ -99,6 +100,7 @@ Legend:
 | vagrant | W | W | test-vagrant.sh | curl; no `vagrant cloud publish` |
 | gradle | W | W | test-gradle-conformance.sh | aliased to Maven handler; tested via Maven |
 | sbt | W | W | test-sbt.sh, test-sbt-conformance.sh | sbt-launch.jar publish would need JVM + sbt install |
+| mcp | N | N | test-mcp.sh, test-mcp-run-server.sh, test-mcp-oci-pin.sh, test-mcp-backing-quarantine.sh, test-mcp-remote.sh, test-mcp-conformance.sh | push = real `mcp-publisher publish`; pull = resolve `/v0.1/.../versions/latest`, `npm install --registry <served registryBaseUrl>`, launch over stdio / streamable HTTP with `tests/lib/mcp-stdio-client.py`; Inspector CLI lane in format-tests.yml only |
 
 ## Scope of this PR (artifact-keeper-test#48)
 

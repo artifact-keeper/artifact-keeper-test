@@ -1,0 +1,24 @@
+# Under mcp_package_policy=own-repos every case is 422 with the named error.
+# Placeholders: __SLUG__ __AK_BASE__ __NPM_PKG__ (a package published to the
+# mapped npm repository at 1.0.0) __OCI_REF__ (<ak-host>/<oci-repo>/<image>).
+# oci-foreign-host: a Local or Staging OCI backing repository holds only what
+# was pushed to this instance, so an image named on another host is
+# mcp_external_registry whatever its path (docs "Package policy").
+# mcpb-bundle: an mcpb entry without registryBaseUrl is resolved by its
+# fileSha256 (a bundle uploaded for the version, else the mcpb mapping);
+# no match is mcp_package_not_found (docs "MCPB bundles").
+# file	expected_status	expected_error
+npm-external-registry.json	422	mcp_external_registry
+npm-evil-registry.json	422	mcp_external_registry
+npm-other-ak-repo.json	422	mcp_external_registry
+pypi-unmapped.json	422	mcp_external_registry
+mcpb-bundle.json	422	mcp_package_not_found
+oci-foreign-host.json	422	mcp_external_registry
+npm-not-found.json	422	mcp_package_not_found
+npm-version-not-found.json	422	mcp_package_not_found
+npm-unpinned.json	422	mcp_package_version_unpinned
+oci-latest.json	422	mcp_oci_floating_tag
+oci-tagless.json	422	mcp_oci_floating_tag
+oci-legacy-version.json	422	mcp_oci_legacy_fields
+oci-legacy-registry-base.json	422	mcp_oci_legacy_fields
+oci-legacy-sha.json	422	mcp_oci_legacy_fields

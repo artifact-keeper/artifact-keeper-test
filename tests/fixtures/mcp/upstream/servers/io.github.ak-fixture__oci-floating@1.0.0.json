@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+      "publishedAt": "2026-10-01T00:00:00Z",
+      "status": "active",
+      "updatedAt": "2026-10-01T00:00:00Z"
+    }
+  },
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "description": "Upstream server whose OCI image floats on latest",
+    "name": "io.github.ak-fixture/oci-floating",
+    "packages": [
+      {
+        "identifier": "ghcr.io/ak-fixture/oci-floating:latest",
+        "registryType": "oci",
+        "transport": {
+          "type": "stdio"
+        }
+      }
+    ],
+    "version": "1.0.0"
+  }
+}
