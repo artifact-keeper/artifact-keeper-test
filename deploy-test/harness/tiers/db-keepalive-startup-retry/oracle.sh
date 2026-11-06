@@ -41,9 +41,13 @@ ctr_ip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{
 
 # pg_sessions PEER_IP -> one keepalive timer per established 5432 session from
 # PEER_IP, in seconds (ss in a throwaway container in the Postgres netns).
-pg_sessions() {
+# With a second argument it parses that saved snapshot instead of sampling.
+ss_snapshot() {
   docker run --rm --net "container:${DB_CONTAINER}" "$NETSHOOT_IMAGE" \
-    ss -Htno state established '( sport = :5432 )' 2>/dev/null \
+    ss -Htno state established '( sport = :5432 )' 2>/dev/null
+}
+pg_sessions() {
+  { if [ -n "${2:-}" ]; then cat "$2"; else ss_snapshot; fi; } \
     | python3 -c '
 import re, sys
 peer = sys.argv[1]
@@ -62,15 +66,28 @@ for line in sys.stdin:
 
 # all_timers PEER_IP OP LIMIT -> 0 when there is at least one session and every
 # timer satisfies OP (le|ge) LIMIT seconds.
+# Each attempt asserts on ONE snapshot, saved to ${WORK}/ss.txt and
+# ${WORK}/timers.txt so a failure prints what was asserted. A session that is
+# opening or closing can show no keepalive timer, so up to 5 snapshots are
+# tried; a misconfigured timer (2 h vs 15 s) fails every one of them.
 all_timers() {
-  local list
-  list="$(pg_sessions "$1")"
-  [ -n "$list" ] || return 1
+  local try
+  for try in 1 2 3 4 5; do
+    ss_snapshot > "${WORK}/ss.txt"
+    pg_sessions "$1" "${WORK}/ss.txt" | tr '\n' ' ' > "${WORK}/timers.txt"
+    timers_ok "$2" "$3" "$(cat "${WORK}/timers.txt")" && return 0
+    sleep 1
+  done
+  return 1
+}
+timers_ok() {
+  local list="$3"
+  [ -n "${list// /}" ] || return 1
   python3 -c '
 import sys
 op, lim, vals = sys.argv[1], float(sys.argv[2]), sys.argv[3].split()
 ok = all(v != "none" and (float(v) <= lim if op == "le" else float(v) >= lim) for v in vals)
-sys.exit(0 if ok else 1)' "$2" "$3" "$list"
+sys.exit(0 if ok else 1)' "$1" "$2" "$list"
 }
 
 health_code() { curl -s --max-time 5 -o /dev/null -w '%{http_code}' "${BASE_URL}/health" 2>/dev/null || echo 000; }
@@ -112,8 +129,8 @@ pass
 # --- keepalives -------------------------------------------------------------
 docker run --rm --net "container:${DB_CONTAINER}" "$NETSHOOT_IMAGE" \
   ss -Htno state established '( sport = :5432 )' > "${WORK}/ss.txt" 2>&1
-B_TIMERS="$(pg_sessions "$B_IP" | tr '\n' ' ')"
-N_TIMERS="$(pg_sessions "$N_IP" | tr '\n' ' ')"
+B_TIMERS="$(pg_sessions "$B_IP" "${WORK}/ss.txt" | tr '\n' ' ')"
+N_TIMERS="$(pg_sessions "$N_IP" "${WORK}/ss.txt" | tr '\n' ' ')"
 
 begin_test "control: both backends hold established Postgres sessions that carry a keepalive timer"
 if [ -n "${B_TIMERS// /}" ] && [ -n "${N_TIMERS// /}" ] \
@@ -127,14 +144,14 @@ begin_test "FIX #4549: every Postgres session of the default backend has tcp_kee
 if all_timers "$B_IP" le 15; then
   pass
 else
-  fail "backend(${B_IP}) keepalive timers in seconds: [${B_TIMERS}]" "$(cat "${WORK}/ss.txt")"
+  fail "backend(${B_IP}) keepalive timers in seconds: [$(cat "${WORK}/timers.txt")]" "$(cat "${WORK}/ss.txt")"
 fi
 
 begin_test "control: DATABASE_TCP_KEEPALIVES=false leaves the server default (every timer >= 60 min)"
 if all_timers "$N_IP" ge 3600; then
   pass
 else
-  fail "nokeep(${N_IP}) keepalive timers in seconds: [${N_TIMERS}]" "$(cat "${WORK}/ss.txt")"
+  fail "nokeep(${N_IP}) keepalive timers in seconds: [$(cat "${WORK}/timers.txt")]" "$(cat "${WORK}/ss.txt")"
 fi
 
 # --- startup connect retry --------------------------------------------------
@@ -214,7 +231,7 @@ ncode="$(docker exec "$NOKEEP_CTR" curl -s --max-time 10 -o /dev/null -w '%{http
 if [ "$ncode" = "200" ] && all_timers "$N_IP" ge 3600; then
   pass
 else
-  fail "nokeep /health=${ncode}; timers: [$(pg_sessions "$N_IP" | tr '\n' ' ')]"
+  fail "nokeep /health=${ncode}; timers: [$(cat "${WORK}/timers.txt" 2>/dev/null)]" "$(cat "${WORK}/ss.txt" 2>/dev/null)"
 fi
 
 end_suite
