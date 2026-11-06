@@ -17,8 +17,10 @@
 #              vulnerable baseline the request reaches the handler (2xx/404/500,
 #              never 403) = the authz bypass. 403 == GREEN, anything else == RED.
 #   (CONTROL)  admin on the same route -> NOT 403 (authz passes);
-#              non-admin read GET /:id/connections -> 200 (not over-restricted);
-#              anon on a mutating route -> 401.
+#              non-admin read GET /:id/connections -> 403 and admin -> 200
+#              (artifact-keeper#5427 made the peer reads admin-only too);
+#              non-admin GET /api/v1/peers -> 200, the peer heartbeat route
+#              (not over-restricted); anon on a mutating route -> 401.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"
@@ -127,17 +129,39 @@ control_admin "/:id/connections/:target/unreachable" POST "$UNREACH_URL" ""
 control_admin "/:id/chunks/:artifact_id"             PUT  "$CHUNK_URL"   "$CHUNK_BODY"
 
 # ---------------------------------------------------------------------------
-# (CONTROL) non-admin READ GET /:id/connections -> 200. The fix gates only the
-#           9 mutating handlers; the read list must stay non-admin readable
-#           (proves the boundary isn't a blanket admin-only on /peers).
+# (BOUNDARY) non-admin READ GET /:id/connections -> 403. artifact-keeper#5427
+#            (GHSA-f7qf follow-up) put require_admin() on the peer and transfer
+#            reads as well; before it this list was readable by any user.
+# (CONTROL)  admin GET /:id/connections -> 200 (empty list for a fresh id).
+# (CONTROL)  non-admin GET /api/v1/peers -> 200. A remote peer's heartbeat
+#            calls this route with a usually non-admin key, so it must stay
+#            open (it lists no peer to a non-admin). This proves the boundary
+#            isn't a blanket admin-only on /peers.
 # ---------------------------------------------------------------------------
-begin_test "CONTROL: non-admin GET /:id/connections -> 200 (read not over-restricted by the fix)"
+begin_test "BOUNDARY: non-admin GET /:id/connections -> 403 (peer reads are admin-only, #5427)"
 GET_CODE="$(http_code GET "${BASE_URL}/api/v1/peers/${PEER_ID}/connections" "$NONADMIN_HDR")"
-if [ "$GET_CODE" = "200" ]; then
+if [ "$GET_CODE" = "403" ]; then
   pass
 else
-  fail "non-admin GET /:id/connections returned ${GET_CODE}, expected 200 (the read list must remain non-admin accessible)" \
+  fail "non-admin GET /:id/connections returned ${GET_CODE}, expected 403 (peer reads require an admin since #5427)" \
        "code=${GET_CODE}"
+fi
+
+begin_test "CONTROL: admin GET /:id/connections -> 200"
+ADMIN_GET_CODE="$(http_code GET "${BASE_URL}/api/v1/peers/${PEER_ID}/connections" "$ADMIN_HDR")"
+if [ "$ADMIN_GET_CODE" = "200" ]; then
+  pass
+else
+  fail "admin GET /:id/connections returned ${ADMIN_GET_CODE}, expected 200" "code=${ADMIN_GET_CODE}"
+fi
+
+begin_test "CONTROL: non-admin GET /api/v1/peers -> 200 (heartbeat route not over-restricted)"
+LIST_CODE="$(http_code GET "${BASE_URL}/api/v1/peers" "$NONADMIN_HDR")"
+if [ "$LIST_CODE" = "200" ]; then
+  pass
+else
+  fail "non-admin GET /api/v1/peers returned ${LIST_CODE}, expected 200 (peer heartbeats call it with a non-admin key)" \
+       "code=${LIST_CODE}"
 fi
 
 # ---------------------------------------------------------------------------
