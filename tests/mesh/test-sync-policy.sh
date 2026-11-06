@@ -2,7 +2,8 @@
 # test-sync-policy.sh - Mesh sync policy E2E test
 #
 # Verifies that sync policies can be created, listed, updated,
-# and deleted. Tests both push and pull sync modes.
+# and deleted. Tests the push and mirror sync modes, and that `pull` (never
+# implemented) is refused with 400 (artifact-keeper#5293).
 #
 # Requires: MAIN_URL, PEER1_URL
 
@@ -66,16 +67,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Create pull sync policy
+# Create mirror sync policy
 # ---------------------------------------------------------------------------
 
-begin_test "Create pull sync policy"
-PULL_POLICY="{\"name\":\"pull-from-peer1-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"pull\",\"enabled\":true}"
-if resp=$(api_post "/api/v1/sync-policies" "$PULL_POLICY"); then
-  PULL_POLICY_ID=$(echo "$resp" | jq -r '.id // empty' 2>/dev/null || true)
+begin_test "Create mirror sync policy"
+MIRROR_POLICY="{\"name\":\"mirror-to-peer1-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"mirror\",\"enabled\":true}"
+if resp=$(api_post "/api/v1/sync-policies" "$MIRROR_POLICY"); then
+  MIRROR_POLICY_ID=$(echo "$resp" | jq -r '.id // empty' 2>/dev/null || true)
   pass
 else
-  fail "POST /api/v1/sync-policies failed for pull policy"
+  fail "POST /api/v1/sync-policies failed for mirror policy"
+fi
+
+# ---------------------------------------------------------------------------
+# A pull sync policy is refused: pull never replicated (artifact-keeper#5293)
+# ---------------------------------------------------------------------------
+
+begin_test "Pull sync policy is refused with 400"
+PULL_POLICY="{\"name\":\"pull-from-peer1-${RUN_ID}\",\"repo_selector\":{\"match_pattern\":\"${REPO_KEY}\"},\"peer_selector\":{\"all\":true},\"replication_mode\":\"pull\",\"enabled\":true}"
+PULL_CODE=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X POST \
+  -H "$(auth_header)" -H "Content-Type: application/json" \
+  -d "$PULL_POLICY" "${BASE_URL}/api/v1/sync-policies" || echo 000)
+if [ "$PULL_CODE" = "400" ]; then
+  pass
+else
+  fail "POST /api/v1/sync-policies with replication_mode pull returned ${PULL_CODE}, expected 400"
 fi
 
 # ---------------------------------------------------------------------------
@@ -85,7 +101,8 @@ fi
 begin_test "List sync policies"
 if resp=$(api_get "/api/v1/sync-policies"); then
   if assert_contains "$resp" "push-to-peer1" "policy list should contain push policy" && \
-     assert_contains "$resp" "pull-from-peer1" "policy list should contain pull policy"; then
+     assert_contains "$resp" "mirror-to-peer1" "policy list should contain mirror policy" && \
+     assert_not_contains "$resp" "pull-from-peer1-${RUN_ID}" "policy list must not contain the refused pull policy"; then
     pass
   fi
 else
@@ -109,23 +126,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Delete pull sync policy
+# Delete mirror sync policy
 # ---------------------------------------------------------------------------
 
-begin_test "Delete pull sync policy"
-if [ -n "$PULL_POLICY_ID" ]; then
-  if api_delete "/api/v1/sync-policies/${PULL_POLICY_ID}" > /dev/null 2>&1; then
+begin_test "Delete mirror sync policy"
+if [ -n "$MIRROR_POLICY_ID" ]; then
+  if api_delete "/api/v1/sync-policies/${MIRROR_POLICY_ID}" > /dev/null 2>&1; then
     # Verify it's gone
-    if ! api_get "/api/v1/sync-policies/${PULL_POLICY_ID}" > /dev/null 2>&1; then
+    if ! api_get "/api/v1/sync-policies/${MIRROR_POLICY_ID}" > /dev/null 2>&1; then
       pass
     else
       fail "policy still exists after delete"
     fi
   else
-    fail "DELETE /api/v1/sync-policies/${PULL_POLICY_ID} failed"
+    fail "DELETE /api/v1/sync-policies/${MIRROR_POLICY_ID} failed"
   fi
 else
-  skip "no pull policy ID available"
+  skip "no mirror policy ID available"
 fi
 
 end_suite
