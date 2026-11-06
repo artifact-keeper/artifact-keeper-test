@@ -9,8 +9,10 @@
 # connection state: init a transfer session, mark a peer unreachable, or write
 # chunk-availability rows. The fix adds `auth.require_admin()?` to the 9
 # mutating handlers so a non-admin is refused with 403 BEFORE the handler body
-# runs. The paired read GETs (e.g. GET /:id/connections) stay non-admin
-# readable — the fix must not over-restrict them.
+# runs. artifact-keeper#5427 later made the peer and transfer reads admin-only
+# too (e.g. GET /:id/connections -> 403 for a non-admin). GET /api/v1/peers
+# stays 200 for a non-admin, since a remote peer's heartbeat calls it with a
+# usually non-admin key.
 #
 # Oracle (discriminating, RELEASE_GATE=1):
 #   BOUNDARY  a non-admin token on POST /:id/transfer/init,
@@ -20,7 +22,8 @@
 #             the bypass. 403 (authz denied) is distinguished from 404/500
 #             (handler reached) — that distinction is the whole tier.
 #   CONTROL   admin on the same route -> passes authz (200/404/500, not 403);
-#             a non-admin read GET /:id/connections -> 200 (not over-restricted);
+#             a non-admin read GET /:id/connections -> 403 and an admin -> 200
+#             (#5427); a non-admin GET /api/v1/peers -> 200 (not over-restricted);
 #             anon on a mutating route -> 401 (auth_middleware still guards).
 #   NOTE      ids are freshly-minted UUIDs (no peer need exist): the authz check
 #             fires ahead of the handler body, so existence is irrelevant to the
