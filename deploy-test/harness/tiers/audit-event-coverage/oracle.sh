@@ -104,9 +104,19 @@ KEEP_IDS=()
 expect_one() {
   local action="$1" rtype="$2" rid="$3" actor="$4" pred="${5:-true}"
   local ids n total row user ip details
-  ids="$(audit_row_ids "$action" "$rtype" "$rid")"
-  n="$(printf '%s' "$ids" | grep -c . || true)"
-  total="$(api_total "$action" "$rid")"
+  # The backend writes audit rows asynchronously after the response, so poll
+  # (up to ~15s) while a row is still missing. More than one row fails at once.
+  local tries=0
+  while :; do
+    ids="$(audit_row_ids "$action" "$rtype" "$rid")"
+    n="$(printf '%s' "$ids" | grep -c . || true)"
+    total="$(api_total "$action" "$rid")"
+    if [ "$n" = "0" ] || [ "$total" = "0" ]; then
+      tries=$((tries + 1))
+      [ "$tries" -lt 30 ] && { sleep 0.5; continue; }
+    fi
+    break
+  done
   if [ "$n" != "1" ] || [ "$total" != "1" ]; then
     fail "${action} rows for ${rtype} ${rid}: db=${n} api=${total} (want 1/1)" \
       "$(db "SELECT action, resource_type FROM audit_log WHERE resource_id='${rid}'")"
