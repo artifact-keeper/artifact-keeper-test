@@ -110,12 +110,12 @@ cur_approve() {
   mcp_catalog_decide "$REMOTE" "$id" approve
 }
 
-# remote_sync: one synchronous pass (POST .../mcp/sync). SYNC_SUMMARY is
-# the pass's SyncSummary.
+# remote_sync: one pass (POST .../mcp/sync, waited for by mcp_remote_sync).
+# SYNC_SUMMARY is the pass's SyncSummary.
 remote_sync() {
   mcp_remote_sync "$REMOTE" admin || true
   SYNC_STATUS="$MCP_SYNC_STATUS"
-  SYNC_SUMMARY=$(mcp_json '.summary // {}' | jq -c . 2>/dev/null || echo '{}')
+  SYNC_SUMMARY="$MCP_SYNC_SUMMARY"
   wait_for_counter_stable "${MCP_MOCK_STATE_DIR}/request-count" 60 3 >/dev/null || true
 }
 

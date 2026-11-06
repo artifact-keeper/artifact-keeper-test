@@ -158,8 +158,8 @@ cur_approve() {
   mcp_catalog_decide "$REMOTE" "$id" approve "${2:-admin}"
 }
 
-# remote_sync KEY: one synchronous sync pass (POST .../mcp/sync), then wait
-# until the mock has been quiet for 3 s.
+# remote_sync KEY: one sync pass (POST .../mcp/sync, waited for by
+# mcp_remote_sync), then wait until the mock has been quiet for 3 s.
 remote_sync() {
   mcp_remote_sync "$1" admin || true
   SYNC_STATUS="$MCP_SYNC_STATUS"
@@ -688,7 +688,9 @@ if [ "${AK_TEST_MCP_PUBLIC_UPSTREAM:-0}" != "1" ]; then
 else
   PUBLIC="mcp-remote-public-${RUN_ID}"
   if mcp_create_proxy_repo "$PUBLIC" remote "https://registry.modelcontextprotocol.io"; then
-    remote_sync "$PUBLIC"
+    # A pass of the public registry runs for minutes; the rows below only
+    # need it started.
+    MCP_SYNC_NO_WAIT=1 remote_sync "$PUBLIC"
     _public_rows() {
       mcp_req GET "$(mcp_mgmt_url "$PUBLIC" catalog)?limit=5" admin
       [ "$(mcp_json '.items | length')" -gt 0 ] 2>/dev/null

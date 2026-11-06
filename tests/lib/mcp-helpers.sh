@@ -385,20 +385,68 @@ mcp_mgmt_url() {
   printf '%s/api/v1/repositories/%s/mcp%s' "$BASE_URL" "$1" "${2:+/$2}"
 }
 
-# mcp_remote_sync KEY [AUTH]: POST .../mcp/sync, which runs one pass
-# synchronously and answers 200 {repository, summary: SyncSummary}, 409 while
-# another pass runs, 502 when the first upstream page is unreadable. Sets
-# MCP_STATUS / MCP_BODY and MCP_SYNC_STATUS. A backend without the management
-# API answers the router's 404 for a Remote (mcp_remote_mounted).
+# mcp_remote_sync KEY [AUTH]: run one sync pass and wait for it to end.
+# POST .../mcp/sync starts the pass in the background and answers
+# 202 {repository, status: "running", statusUrl} (artifact-keeper#5404/#5405);
+# 409 while another pass runs or scheduled upstream jobs are paused (retried a
+# few times). The helper then polls GET .../mcp/sync until the pass started
+# after the trigger has ended: `running` is false, `lastStartedAt` differs from
+# its value before the POST and `lastFinishedAt` is no earlier. The pass's
+# outcome is the stored state: an unreadable first upstream page is
+# `lastError`, not a 502. A backend from before #5405 still answers 200
+# {repository, summary} for a pass that ran inline, which is accepted as is.
+#
+# Sets MCP_SYNC_STATUS (the POST's status, or "timeout"), MCP_SYNC_SUMMARY
+# (the pass's SyncSummary as compact JSON, "{}" when there is none) and
+# MCP_SYNC_STATE (the final GET .../mcp/sync body, "{}" on the legacy path).
+# MCP_STATUS / MCP_BODY are the last request's. Returns 0 once the pass ended.
+# A backend without the management API answers the router's 404 for a Remote
+# (mcp_remote_mounted). MCP_SYNC_TIMEOUT_SECS (default 300) bounds the wait;
+# on timeout the last state is printed to stderr. MCP_SYNC_NO_WAIT=1 returns
+# right after the 202, for a pass that is not meant to finish (a public
+# registry).
 mcp_remote_sync() {
-  local _try
+  local key="$1" auth="${2:-admin}" _try before deadline
+  # shellcheck disable=SC2016 # $before is a jq variable
+  local done_filter='def secs: if type == "string" then sub("\\.[0-9]+"; "") | fromdateiso8601 else null end;
+    .running == false
+    and (.lastStartedAt // "") != "" and .lastStartedAt != $before
+    and (.lastFinishedAt | secs) != null
+    and (.lastFinishedAt | secs) >= (.lastStartedAt | secs)'
+  MCP_SYNC_SUMMARY='{}'
+  MCP_SYNC_STATE='{}'
+  mcp_req GET "$(mcp_mgmt_url "$key" sync)" "$auth"
+  before=$(mcp_json '.lastStartedAt // ""')
   for _try in 1 2 3 4 5; do
-    mcp_req POST "$(mcp_mgmt_url "$1" sync)" "${2:-admin}"
+    mcp_req POST "$(mcp_mgmt_url "$key" sync)" "$auth"
     [ "$MCP_STATUS" = "409" ] || break
     sleep 2
   done
   MCP_SYNC_STATUS="$MCP_STATUS"
-  [ "$MCP_STATUS" = "200" ]
+  case "$MCP_STATUS" in
+    200)
+      MCP_SYNC_SUMMARY=$(mcp_json '.summary // {}' | jq -c . 2>/dev/null || echo '{}')
+      return 0
+      ;;
+    202) [ "${MCP_SYNC_NO_WAIT:-0}" = "1" ] && return 0 ;;
+    *) return 1 ;;
+  esac
+  deadline=$(( $(date +%s) + ${MCP_SYNC_TIMEOUT_SECS:-300} ))
+  while :; do
+    mcp_req GET "$(mcp_mgmt_url "$key" sync)" "$auth"
+    if [ "$MCP_STATUS" = "200" ] \
+      && jq -e --arg before "$before" "$done_filter" "$MCP_BODY" >/dev/null 2>&1; then
+      MCP_SYNC_STATE=$(jq -c . "$MCP_BODY" 2>/dev/null || echo '{}')
+      MCP_SYNC_SUMMARY=$(mcp_json '.lastSummary // {}' | jq -c . 2>/dev/null || echo '{}')
+      return 0
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "mcp_remote_sync: the pass of ${key} did not end within ${MCP_SYNC_TIMEOUT_SECS:-300}s (GET .../mcp/sync ${MCP_STATUS}): $(mcp_snip)" >&2
+      MCP_SYNC_STATUS="timeout"
+      return 1
+    fi
+    sleep 1
+  done
 }
 
 # mcp_remote_mounted: 0 unless the last management call answered as an
