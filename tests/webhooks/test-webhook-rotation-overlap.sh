@@ -55,7 +55,7 @@ command -v openssl >/dev/null 2>&1 || miss="${miss} openssl"
 command -v python3  >/dev/null 2>&1 || miss="${miss} python3"
 command -v jq       >/dev/null 2>&1 || miss="${miss} jq"
 if [ -n "$miss" ]; then
-  skip "missing tools:${miss}"
+  require_or_fail "missing tools:${miss}"
   end_suite
 fi
 pass
@@ -103,16 +103,20 @@ else
     --arg url "$WEBHOOK_RECEIVER_URL" \
     --arg secret "$INITIAL_SECRET" \
     '{name: $name, url: $url, secret: $secret, events: ["artifact_uploaded"], enabled: true}')
-  if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
-    WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
+  if api_post_capture "/api/v1/webhooks" "$PAYLOAD"; then
+    WEBHOOK_ID=$(echo "$API_BODY" | jq -r '.id // empty')
     if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then
-      fail "create returned no id"
+      fail "create returned no id (HTTP ${API_STATUS})" "response body: ${API_BODY:0:1000}"
     else
       pass
     fi
   else
     SUITE_BLOCKED=true
-    skip "webhook create rejected (URL '${WEBHOOK_RECEIVER_URL}' likely blocked by SSRF allow-list)"
+    # The body says why. "webhook secret signing is not enabled on this
+    # deployment" means the backend has no AK_WEBHOOK_SECRET_KEY
+    # (artifact-keeper#5196); an SSRF rejection names the URL instead.
+    require_or_fail "webhook create with a secret rejected: HTTP ${API_STATUS} for URL '${WEBHOOK_RECEIVER_URL}'" \
+      "response body: ${API_BODY:0:1000}"
   fi
 fi
 
@@ -129,7 +133,8 @@ begin_test "POST /rotate-secret returns new secret + previous_secret_expires_at"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
-  if rot_resp=$(api_post "/api/v1/webhooks/${WEBHOOK_ID}/rotate-secret" "" 2>/dev/null); then
+  if api_post_capture "/api/v1/webhooks/${WEBHOOK_ID}/rotate-secret" ""; then
+    rot_resp="$API_BODY"
     NEW_SECRET=$(echo "$rot_resp" | jq -r '.secret // empty')
     PREV_EXPIRES_AT=$(echo "$rot_resp" | jq -r '.previous_secret_expires_at // empty')
     if [ -z "$NEW_SECRET" ] || [ "$NEW_SECRET" = "null" ]; then
@@ -141,7 +146,8 @@ else
     fi
   else
     SUITE_BLOCKED=true
-    skip "/rotate-secret endpoint unavailable"
+    require_or_fail "POST /api/v1/webhooks/${WEBHOOK_ID}/rotate-secret failed: HTTP ${API_STATUS}" \
+      "response body: ${API_BODY:0:1000}"
   fi
 fi
 
@@ -161,7 +167,7 @@ else
   # Reset the receiver counter + log so we read fresh entries.
   curl -sf --max-time 2 "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/__reset" >/dev/null 2>&1 || true
 
-  if api_post "/api/v1/webhooks/${WEBHOOK_ID}/test" "" >/dev/null 2>&1; then
+  if api_post_capture "/api/v1/webhooks/${WEBHOOK_ID}/test" ""; then
     seen=0
     for _ in $(seq 1 20); do
       seen=$(curl -sf --max-time 2 "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/__count" 2>/dev/null || echo 0)
@@ -186,7 +192,8 @@ else
       fail "no POST recorded after /test during overlap"
     fi
   else
-    skip "/test endpoint unavailable"
+    require_or_fail "POST /api/v1/webhooks/${WEBHOOK_ID}/test failed: HTTP ${API_STATUS}" \
+      "response body: ${API_BODY:0:1000}"
   fi
 fi
 
