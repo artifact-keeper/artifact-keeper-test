@@ -532,6 +532,93 @@ else
   echo "        CONTRACT_EXEMPT in $(basename "${BASH_SOURCE[0]}")."
 fi
 
+echo ""
+echo "8. require_or_fail + api_post_capture (artifact-keeper#5196)"
+
+# The webhook signing suites skipped their central step (create a webhook with
+# a secret) on every release candidate because the gate deployed no
+# AK_WEBHOOK_SECRET_KEY. Their pre-flight steps still passed, so the zero-pass
+# floor in end_suite never tripped, and the skip text blamed the SSRF
+# allow-list because api_post threw the response body away. These cases pin
+# both halves of the fix: the precondition step reds the gate, and the real
+# status and body reach the log in and out of the gate.
+
+POST_STUB_PORT=45881
+cat > "${WORK}/post-stub.py" <<'PYEOF'
+import http.server, socketserver, sys, json
+PORT = int(sys.argv[1])
+
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length') or 0)
+        if n:
+            self.rfile.read(n)
+        if self.path == '/ok':
+            code, body = 201, {"id": "selftest-id"}
+        else:
+            code, body = 400, {"code": "VALIDATION_ERROR",
+                               "message": "webhook secret signing is not enabled on this deployment"}
+        raw = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+class S(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+S(("127.0.0.1", PORT), H).serve_forever()
+PYEOF
+python3 "${WORK}/post-stub.py" "$POST_STUB_PORT" >/dev/null 2>&1 &
+STUB_PID=$!
+for _ in $(seq 1 40); do
+  (exec 3<>"/dev/tcp/127.0.0.1/${POST_STUB_PORT}") 2>/dev/null && break
+  sleep 0.25
+done
+
+# Shaped like the signing suites: a pre-flight pass, then the central step.
+# shellcheck disable=SC2016 # expanded by the generated suite, not here
+write_suite "${WORK}/suite-require.sh" "selftest-require" \
+'begin_test "pre-flight"
+pass
+begin_test "central step"
+if api_post_capture "${SELFTEST_POST_PATH}" "{\"a\":1}"; then
+  echo "captured status=${API_STATUS} body=${API_BODY}"
+  pass
+else
+  require_or_fail "create rejected: HTTP ${API_STATUS}" "response body: ${API_BODY}"
+fi'
+
+run_case "gate + rejected central step -> fail with status and body" 1 "${WORK}/suite-require.sh" \
+  "webhook secret signing is not enabled" "SKIP:" \
+  BASE_URL="http://127.0.0.1:${POST_STUB_PORT}" ADMIN_TOKEN=selftest RELEASE_GATE=1 \
+  SELFTEST_POST_PATH=/webhooks
+
+run_case "gate + rejected central step -> message carries HTTP 400" 1 "${WORK}/suite-require.sh" \
+  "FAIL: create rejected: HTTP 400" "SKIP:" \
+  BASE_URL="http://127.0.0.1:${POST_STUB_PORT}" ADMIN_TOKEN=selftest RELEASE_GATE=1 \
+  SELFTEST_POST_PATH=/webhooks
+
+run_case "no gate + rejected central step -> skip, body still printed" 0 "${WORK}/suite-require.sh" \
+  "webhook secret signing is not enabled" "FAIL:" \
+  BASE_URL="http://127.0.0.1:${POST_STUB_PORT}" ADMIN_TOKEN=selftest \
+  SELFTEST_POST_PATH=/webhooks
+
+run_case "2xx -> API_STATUS and API_BODY set, pass" 0 "${WORK}/suite-require.sh" \
+  'captured status=201 body={"id": "selftest-id"}' "FAIL:" \
+  BASE_URL="http://127.0.0.1:${POST_STUB_PORT}" ADMIN_TOKEN=selftest RELEASE_GATE=1 \
+  SELFTEST_POST_PATH=/ok
+
+run_case "no response -> API_STATUS 000" 0 "${WORK}/suite-require.sh" \
+  "SKIP: create rejected: HTTP 000" "FAIL:" \
+  BASE_URL="$DEAD_URL" ADMIN_TOKEN=selftest SELFTEST_POST_PATH=/webhooks
+
+stop_stub
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

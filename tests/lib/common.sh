@@ -1196,6 +1196,50 @@ api_post() {
   fi
 }
 
+# api_post_capture PATH [DATA] [EXTRA_CURL_ARGS...]
+#
+# Same request as api_post, but a non-2xx answer keeps its status and body.
+# api_post uses `curl -sf`, which throws the body away on any >= 400, so a
+# caller can only say "rejected" and has to guess why (artifact-keeper#5196:
+# the webhook signing suites blamed the SSRF allow-list for what was really
+# "webhook secret signing is not enabled on this deployment").
+#
+# Sets two globals instead of printing:
+#   API_STATUS  HTTP status code, or "000" when no response arrived
+#   API_BODY    response body (may be empty)
+# Returns 0 on a 2xx status, 1 otherwise.
+#
+# Call it directly (`if api_post_capture ...; then`), never inside $(...): a
+# command substitution runs in a subshell and the globals would be lost.
+API_STATUS=""
+API_BODY=""
+api_post_capture() {
+  local path="$1"
+  local data="${2:-}"
+  shift; shift 2>/dev/null || true
+  local out
+  if [ -n "$data" ]; then
+    out=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -X POST -w '\n%{http_code}' \
+      -H "$(auth_header)" \
+      -H "Content-Type: application/json" \
+      -d "$data" "$@" "${BASE_URL}${path}" 2>/dev/null) || true
+  else
+    out=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -X POST -w '\n%{http_code}' \
+      -H "$(auth_header)" "$@" "${BASE_URL}${path}" 2>/dev/null) || true
+  fi
+  API_STATUS="${out##*$'\n'}"
+  API_BODY="${out%$'\n'*}"
+  # No newline at all means curl printed nothing, not even the -w status.
+  if [ "$API_BODY" = "$out" ]; then
+    API_BODY=""
+  fi
+  case "$API_STATUS" in
+    2[0-9][0-9]) return 0 ;;
+    [0-9][0-9][0-9]) return 1 ;;
+    *) API_STATUS="000"; return 1 ;;
+  esac
+}
+
 api_put() {
   local path="$1"
   local data="${2:-}"
@@ -1566,6 +1610,38 @@ skip() {
   </testcase>
 "
   echo "  SKIP: ${reason} (${duration}s)"
+}
+
+## require_or_fail REASON [BODY]
+##
+## Stand down from the current test because a precondition the SUITE EXISTS TO
+## EXERCISE could not be established: a skip outside the gate, a FAIL under
+## RELEASE_GATE=1. BODY, if given, goes to fail()'s diagnostic block.
+##
+## Why (artifact-keeper#5196): skip_suite hardens under the gate, but a plain
+## per-test `skip` does not. A suite that skips its central step and then
+## cascades "no webhook id" skips through every later check still records the
+## passes from its pre-flight steps, so end_suite's zero-pass floor never
+## trips and the job goes green having certified nothing it is named for. The
+## four webhook signing suites did exactly that on every release candidate
+## because the gate deployed no AK_WEBHOOK_SECRET_KEY.
+##
+## Use it only at the step whose failure means the suite's own subject went
+## unchecked (creating the signed webhook, firing the delivery, rotating the
+## secret). Do NOT use it for environment-dependent optional sub-checks; those
+## stay plain `skip`, and the downstream "nothing captured" cascades stay
+## `skip` too, since the root cause is already a recorded failure.
+require_or_fail() {
+  local reason="${1:-required precondition not met}"
+  local body="${2:-}"
+  if [ "${RELEASE_GATE:-0}" = "1" ]; then
+    fail "${reason} (RELEASE_GATE=1: this suite's subject cannot be checked, so this is a failure, not a skip)" "$body"
+  else
+    skip "$reason"
+    if [ -n "$body" ]; then
+      printf '    %s\n' "${body//$'\n'/$'\n'    }"
+    fi
+  fi
 }
 
 ## skip_not_applicable REASON
