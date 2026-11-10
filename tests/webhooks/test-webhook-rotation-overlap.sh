@@ -8,15 +8,18 @@
 #
 # Test plan:
 #   1. Create webhook with secret S0.
-#   2. POST /api/v1/webhooks/<id>/rotate-secret. The response carries the
-#      new plaintext secret S1 and the previous_secret_expires_at window.
+#   2. POST /api/v1/webhooks/<id>/rotate-secret. On 1.11.x the response
+#      carries secret_digest and previous_secret_expires_at but never the
+#      new plaintext secret S1 (GHSA-qcmj, artifact-keeper#2818). Returning
+#      S1 once is artifact-keeper#5235, which ships in 1.12.0.
 #   3. Fire /test (or wait for a producer-driven delivery) and capture the
 #      receiver entry.
 #   4. Assert the X-ArtifactKeeper-Signature header has exactly two v1=
 #      tokens.
-#   5. Recompute HMAC(S1, t.body) and HMAC(S0, t.body); both must appear in
-#      the header (in either order; the contract pins current-first but
-#      receivers MUST tolerate either).
+#   5. Recompute HMAC(S0, t.body); exactly one of the two tokens must match
+#      it (in either order; the contract pins current-first but receivers
+#      MUST tolerate either). S1 is not available on 1.11.x, so the
+#      new-secret half of the check is skipped on this branch.
 #
 # Companion backend PR: artifact-keeper#1140.
 #
@@ -121,27 +124,32 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Rotate the secret. The response carries:
-#   { secret: "<new plaintext>", secret_digest: "<hex>",
+# Rotate the secret. On 1.11.x the response carries:
+#   { id: "<uuid>", secret_digest: "<hex>",
 #     previous_secret_expires_at: "<rfc3339>" }
+# The new plaintext secret is deliberately withheld (GHSA-qcmj,
+# artifact-keeper#2818). 1.12.0 returns it once as .secret
+# (artifact-keeper#5235); release/1.11.x asserts the shipped 1.11 form.
 # -------------------------------------------------------------------------
 
-NEW_SECRET=""
+ROTATED=false
+SECRET_DIGEST=""
 PREV_EXPIRES_AT=""
 
-begin_test "POST /rotate-secret returns new secret + previous_secret_expires_at"
+begin_test "POST /rotate-secret returns secret_digest + previous_secret_expires_at"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 else
   if api_post_capture "/api/v1/webhooks/${WEBHOOK_ID}/rotate-secret" ""; then
     rot_resp="$API_BODY"
-    NEW_SECRET=$(echo "$rot_resp" | jq -r '.secret // empty')
+    SECRET_DIGEST=$(echo "$rot_resp" | jq -r '.secret_digest // empty')
     PREV_EXPIRES_AT=$(echo "$rot_resp" | jq -r '.previous_secret_expires_at // empty')
-    if [ -z "$NEW_SECRET" ] || [ "$NEW_SECRET" = "null" ]; then
-      fail "rotate-secret response missing .secret: ${rot_resp:0:200}"
+    if [ -z "$SECRET_DIGEST" ] || [ "$SECRET_DIGEST" = "null" ]; then
+      fail "rotate-secret response missing .secret_digest: ${rot_resp:0:200}"
     elif [ -z "$PREV_EXPIRES_AT" ] || [ "$PREV_EXPIRES_AT" = "null" ]; then
       fail "rotate-secret response missing .previous_secret_expires_at: ${rot_resp:0:200}"
     else
+      ROTATED=true
       pass
     fi
   else
@@ -161,7 +169,7 @@ LATEST_BODY=""
 SIG_HEADER=""
 
 begin_test "Capture a delivery during the overlap window"
-if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$NEW_SECRET" ]; then
+if [ "$SUITE_BLOCKED" = "true" ] || [ "$ROTATED" != "true" ]; then
   skip "rotation not performed"
 else
   # Reset the receiver counter + log so we read fresh entries.
@@ -222,12 +230,14 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Both tokens must validate: one against the new secret, one against the
-# previous (initial) secret. The contract pins current-first, but tests
-# accept either order.
+# Exactly one token must validate against the previous (initial) secret.
+# The contract pins current-first, but tests accept either order. The other
+# token is the new secret's HMAC; 1.11.x never hands the new raw secret back
+# (artifact-keeper#5235 adds that in 1.12.0), so that half is not checked on
+# this branch.
 # -------------------------------------------------------------------------
 
-begin_test "Both v1= tokens validate (one matches new secret, one matches previous)"
+begin_test "One v1= token validates against the previous secret"
 if [ "$SUITE_BLOCKED" = "true" ] || [ "${#V1_TOKENS[@]}" -ne 2 ] || [ -z "$SIG_TS" ]; then
   skip "no token pair to validate"
 else
@@ -236,20 +246,19 @@ else
       | openssl dgst -sha256 -hmac "$1" 2>/dev/null \
       | awk '{print $NF}'
   }
-  expect_new=$(hmac_with "$NEW_SECRET")
   expect_prev=$(hmac_with "$INITIAL_SECRET")
 
-  matched_new=false
-  matched_prev=false
+  matched_prev=0
   for tok in "${V1_TOKENS[@]}"; do
-    [ "$tok" = "$expect_new" ]  && matched_new=true
-    [ "$tok" = "$expect_prev" ] && matched_prev=true
+    [ "$tok" = "$expect_prev" ] && matched_prev=$((matched_prev + 1))
   done
 
-  if [ "$matched_new" = "true" ] && [ "$matched_prev" = "true" ]; then
+  if [ -z "$expect_prev" ]; then
+    fail "openssl produced empty HMAC"
+  elif [ "$matched_prev" -eq 1 ]; then
     pass
   else
-    fail "token validation failed: matched_new=${matched_new} matched_prev=${matched_prev} (tokens: ${V1_TOKENS[*]}, expect_new=${expect_new}, expect_prev=${expect_prev})"
+    fail "expected exactly one token to match the previous secret, matched ${matched_prev} (tokens: ${V1_TOKENS[*]}, expect_prev=${expect_prev})"
   fi
 fi
 
