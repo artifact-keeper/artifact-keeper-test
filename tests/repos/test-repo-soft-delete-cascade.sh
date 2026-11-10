@@ -105,7 +105,8 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "DELETE repo (soft, cascading)"
-DEL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+DEL_BODY="${WORK_DIR}/delete.json"
+DEL_STATUS=$(curl -s -o "$DEL_BODY" -w '%{http_code}' $CURL_TIMEOUT \
   -X DELETE -H "$(auth_header)" \
   "${BASE_URL}/api/v1/repositories/${REPO_KEY}" 2>/dev/null) || DEL_STATUS="000"
 assert_http_2xx "$DEL_STATUS" "DELETE repo returned ${DEL_STATUS}" && pass
@@ -146,6 +147,30 @@ case "$RECREATE_STATUS" in
     ;;
 esac
 
+# Since 1.12.0 (artifact-keeper#4311, #4996) the DELETE answers 202 with a
+# `repository_delete` job. The repository is renamed to `~deleting~<job id>`
+# at once, so its key 404s and can be reused straight away -- promises of the
+# 202 itself, which 6.17.b/c above test BEFORE the job has run. The artifact
+# rows are removed BY THE JOB, a second or two later, so the cascade assertion
+# (6.17.d) waits for the job to reach a terminal status first. 1.11.x answered
+# 200/204 with the rows already gone; that path is unchanged.
+DEL_JOB_STATUS=""
+DEL_JOB_URL=""
+if [ "$DEL_STATUS" = "202" ]; then
+  DEL_JOB_URL=$(jq -r '.status_url // empty' < "$DEL_BODY" 2>/dev/null || true)
+  if [ -z "$DEL_JOB_URL" ]; then
+    DEL_JOB_ID=$(jq -r '.id // empty' < "$DEL_BODY" 2>/dev/null || true)
+    [ -n "$DEL_JOB_ID" ] && DEL_JOB_URL="/api/v1/repository-deletions/${DEL_JOB_ID}"
+  fi
+  DEL_DEADLINE=$(( $(date +%s) + ${REPO_DELETE_TIMEOUT:-120} ))
+  while [ -n "$DEL_JOB_URL" ] && [ "$(date +%s)" -lt "$DEL_DEADLINE" ]; do
+    DEL_JOB_STATUS=$(curl -s $CURL_TIMEOUT -H "$(auth_header)" \
+      "${BASE_URL}${DEL_JOB_URL}" 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
+    case "$DEL_JOB_STATUS" in completed|failed) break ;; esac
+    sleep 1
+  done
+fi
+
 # -------------------------------------------------------------------------
 # 6.17.d: The captured artifact ids must return 404 on /stats. This is
 # the load-bearing cascade signal: a soft-delete that did not cascade
@@ -155,6 +180,8 @@ esac
 begin_test "Artifact ids from old repo return 404 on /stats (cascade)"
 if [ "${#ART_IDS[@]}" -eq 0 ]; then
   skip "no artifact ids captured pre-delete"
+elif [ "$DEL_STATUS" = "202" ] && [ "$DEL_JOB_STATUS" != "completed" ]; then
+  fail "the repository delete job did not complete (status '${DEL_JOB_STATUS:-none}' at ${DEL_JOB_URL:-<no status_url>}); the cascade cannot be judged"
 else
   REMAINING=0
   for aid in "${ART_IDS[@]}"; do
