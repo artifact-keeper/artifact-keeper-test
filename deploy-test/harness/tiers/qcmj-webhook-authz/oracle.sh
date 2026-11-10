@@ -15,13 +15,20 @@
 #     an egress + signing integration.
 #   * rotate-secret leaked the raw signing `secret` in its response body.
 #   The fix requires admin for management verbs (-> 403) and drops the raw secret
-#   from the rotate response (id / secret_digest / expiry only).
+#   from the rotate response (id / secret_digest / expiry only). 1.12.0 (#5235)
+#   returns the new secret once to that admin again, because a receiver cannot
+#   verify after the overlap without it; the admin gate is what keeps it safe.
 #
 # Discriminating gates, ALL must hold (RELEASE_GATE=1):
 #   (A) BOUNDARY  repo-accessible non-admin + seeded non-admin creator: disable /
 #                 rotate / delete -> 403, DB unchanged. Baseline: 2xx + mutated.
 #   (B) CONTROL   admin disable + rotate on a dedicated webhook -> 2xx.
-#   (C) NON-DISCLOSURE  admin rotate 200 body has NO raw `secret`. Baseline: leak.
+#   (C) ONCE-ONLY  admin rotate 200 returns the new `secret` exactly once with
+#                 Cache-Control: no-store (artifact-keeper#5235, 1.12.0); GET,
+#                 LIST (which must return the webhook, and carry no raw
+#                 whsec_ value at all), a repeat 409, a refused non-admin
+#                 rotate, the backend log and audit_log never carry it. (1.6.1-1.11.x dropped the field instead;
+#                 release/1.11.x keeps that assertion.)
 #
 # Signing (rotate-secret) needs AK_WEBHOOK_SECRET_KEY, which the shared compose
 # base does not set. inject_webhook_key() recreates ONLY the backend service on
@@ -214,20 +221,81 @@ else
        "status=${RC} principal=admin verb=disable webhook=${WH_ADMIN}"
 fi
 
-begin_test "NON-DISCLOSURE: admin rotate-secret returns 200 with NO raw 'secret' field (GHSA-qcmj), only id/secret_digest/expiry"
-ROT_BODY="$(admin_json POST "/api/v1/webhooks/${WH_ADMIN}/rotate-secret")"
+begin_test "ONCE-ONLY: admin rotate-secret returns 200 with the new secret exactly once (no-store), and no read, repeat or denied call returns it (#5235, GHSA-qcmj)"
+# 1.12.0 contract (artifact-keeper#5235): the rotate 200 body carries the new
+# raw `secret` once, with Cache-Control: no-store, the same contract create
+# has. GHSA-qcmj's threat was a NON-admin obtaining a key; (A) above holds that
+# gate. What must stay true: GET / LIST expose only `secret_digest`, a repeat
+# rotation inside the overlap window answers 409 without the secret, a refused
+# non-admin rotate carries no secret, and the backend log never prints it.
+ROT_HDRS="$(mktemp "${TMPDIR:-/tmp}/qcmj-rot-hdr-${DTF_SLOT}.XXXXXX")"
+ROT_BODY="$(curl -s $CURL_TIMEOUT -D "$ROT_HDRS" -X POST -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "${BASE_URL}/api/v1/webhooks/${WH_ADMIN}/rotate-secret" 2>/dev/null || true)"
 ROT_ID="$(echo "$ROT_BODY" | jq -r '.id // empty' 2>/dev/null || true)"
 ROT_DIGEST="$(echo "$ROT_BODY" | jq -r '.secret_digest // empty' 2>/dev/null || true)"
-# A present, non-null, string `secret` field is the leak. Absent/null = fixed.
-HAS_SECRET="$(echo "$ROT_BODY" | jq -r 'has("secret") and (.secret != null)' 2>/dev/null || echo "unknown")"
-if [ "$HAS_SECRET" = "false" ] && [ -n "$ROT_ID" ] && [ -n "$ROT_DIGEST" ]; then
-  pass
-elif [ "$HAS_SECRET" = "true" ]; then
-  fail "SECRET DISCLOSURE: admin rotate-secret leaked the raw signing secret in its response body (GHSA-qcmj). It must return only id/secret_digest/expiry." \
-       "response=$(echo "$ROT_BODY" | head -c 400)"
+ROT_SECRET="$(echo "$ROT_BODY" | jq -r 'if (.secret|type)=="string" then .secret else empty end' 2>/dev/null || true)"
+NO_STORE="$(tr -d '\r' <"$ROT_HDRS" | grep -i '^cache-control:' | grep -ci 'no-store' || true)"
+rm -f "$ROT_HDRS"
+ONCE_ERR=""
+[ -n "$ROT_ID" ] && [ -n "$ROT_DIGEST" ] || ONCE_ERR="${ONCE_ERR} rotate body lacks id/secret_digest;"
+if [ "${#ROT_SECRET}" -lt 16 ]; then
+  ONCE_ERR="${ONCE_ERR} rotate body carries no usable new secret (#5235 returns it once);"
 else
-  fail "admin rotate-secret did not return a well-formed 200 body (id/secret_digest expected); could not evaluate disclosure" \
-       "has_secret=${HAS_SECRET} id='${ROT_ID}' digest='${ROT_DIGEST}' response=$(echo "$ROT_BODY" | head -c 400)"
+  [ "${NO_STORE:-0}" -ge 1 ] || ONCE_ERR="${ONCE_ERR} rotate 200 lacks Cache-Control: no-store;"
+  case "$ROT_DIGEST" in *"$ROT_SECRET"*) ONCE_ERR="${ONCE_ERR} secret_digest contains the raw secret;" ;; esac
+  GET_BODY="$(admin_json GET "/api/v1/webhooks/${WH_ADMIN}")"
+  LIST_BODY="$(admin_json GET "/api/v1/webhooks")"
+  # Non-vacuous: GET must be THIS webhook and LIST must contain it, so an empty
+  # or error body cannot pass the no-secret checks below.
+  [ "$(echo "$GET_BODY" | jq -r '.id // empty' 2>/dev/null || true)" = "$WH_ADMIN" ] || \
+    ONCE_ERR="${ONCE_ERR} GET /webhooks/:id did not return webhook ${WH_ADMIN};"
+  echo "$LIST_BODY" | jq -e --arg id "$WH_ADMIN" \
+    '[(.items? // .data? // .webhooks? // (if type=="array" then . else [] end))[]?.id] | index($id) != null' \
+    >/dev/null 2>&1 || ONCE_ERR="${ONCE_ERR} GET /webhooks (list) does not list webhook ${WH_ADMIN};"
+  # Any raw secret, new OR previous: the digest form is `whsec_...XXXX`, so a
+  # `whsec_` followed by 16+ token characters is a raw value.
+  RAW_RE='whsec_[A-Za-z0-9_-]{16,}'
+  case "$GET_BODY" in *"$ROT_SECRET"*) ONCE_ERR="${ONCE_ERR} GET /webhooks/:id returns the new raw secret;" ;; esac
+  case "$LIST_BODY" in *"$ROT_SECRET"*) ONCE_ERR="${ONCE_ERR} GET /webhooks (list) returns the new raw secret;" ;; esac
+  grep -qE "$RAW_RE" <<<"$GET_BODY" && ONCE_ERR="${ONCE_ERR} GET /webhooks/:id returns a raw whsec_ secret;"
+  grep -qE "$RAW_RE" <<<"$LIST_BODY" && ONCE_ERR="${ONCE_ERR} GET /webhooks (list) returns a raw whsec_ secret;"
+  REP_CODE="$(curl -s -o "${TMPDIR:-/tmp}/qcmj-rep-${DTF_SLOT}-$$" -w '%{http_code}' $CURL_TIMEOUT -X POST \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" "${BASE_URL}/api/v1/webhooks/${WH_ADMIN}/rotate-secret" 2>/dev/null || echo 000)"
+  REP_BODY="$(cat "${TMPDIR:-/tmp}/qcmj-rep-${DTF_SLOT}-$$" 2>/dev/null || true)"; rm -f "${TMPDIR:-/tmp}/qcmj-rep-${DTF_SLOT}-$$"
+  [ "$REP_CODE" = "409" ] || ONCE_ERR="${ONCE_ERR} repeat rotate inside the window answered ${REP_CODE}, expected 409;"
+  case "$REP_BODY" in *whsec_*|*"$ROT_SECRET"*) ONCE_ERR="${ONCE_ERR} repeat rotate body carries a secret;" ;; esac
+  NA_BODY="$(curl -s $CURL_TIMEOUT -X POST -H "Authorization: Bearer ${NA_TOKEN}" \
+    "${BASE_URL}/api/v1/webhooks/${WH_ADMIN}/rotate-secret" 2>/dev/null || true)"
+  case "$NA_BODY" in *whsec_*|*"$ROT_SECRET"*) ONCE_ERR="${ONCE_ERR} a refused non-admin rotate body carries a secret;" ;; esac
+  # Capture first, then search: piping `docker logs` into `grep -q` under
+  # pipefail lets a MATCH kill docker logs with SIGPIPE (rc 141), which the `if`
+  # would read as "no leak". An empty capture is unevaluable, not clean.
+  # A failed `docker logs` (container renamed / gone) prints the daemon's error,
+  # which is non-empty and secret-free: treat it as unevaluable, never as clean.
+  LOG_OK=1
+  BACKEND_LOG="$(docker logs "ak-dtf${DTF_SLOT}-backend" 2>&1)" || {
+    LOG_OK=0; ONCE_ERR="${ONCE_ERR} docker logs failed, log leak check unevaluable;"; }
+  if [ "$LOG_OK" = "0" ]; then
+    :
+  elif [ -z "$BACKEND_LOG" ]; then
+    ONCE_ERR="${ONCE_ERR} could not read the backend log (empty capture), so the log leak check is unevaluable;"
+  elif grep -qF -- "$ROT_SECRET" <<<"$BACKEND_LOG"; then
+    ONCE_ERR="${ONCE_ERR} the backend log prints the rotated secret;"
+  fi
+  # The rotation's audit row records THAT it rotated (#4710), never the value.
+  AUDIT_HITS="$(db "SELECT count(*) FROM audit_log WHERE strpos(COALESCE(details::text,''), '${ROT_SECRET}') > 0;")"
+  case "$AUDIT_HITS" in
+    0) ;;
+    ''|*[!0-9]*) ONCE_ERR="${ONCE_ERR} audit_log leak check could not be evaluated (rows=${AUDIT_HITS:-?});" ;;
+    *) ONCE_ERR="${ONCE_ERR} audit_log carries the rotated secret (rows=${AUDIT_HITS});" ;;
+  esac
+fi
+if [ -z "$ONCE_ERR" ]; then
+  pass
+else
+  # Never echo the secret itself into the JUnit body.
+  fail "rotate-secret once-only contract broken:${ONCE_ERR}" \
+       "id='${ROT_ID}' digest='${ROT_DIGEST}' secret_len=${#ROT_SECRET} no_store=${NO_STORE:-0} repeat=${REP_CODE:-n/a}"
 fi
 
 end_suite

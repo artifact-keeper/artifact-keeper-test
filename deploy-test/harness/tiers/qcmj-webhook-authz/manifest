@@ -24,9 +24,12 @@
 #       Baseline: 2xx and the webhook IS mutated (RED).
 #   (B) CONTROL   an admin disable + rotate on a dedicated webhook -> 2xx (proves
 #       management still works; the tier is not a hollow always-403).
-#   (C) NON-DISCLOSURE  the admin rotate-secret 200 body carries id/secret_digest/
-#       expiry but NO raw `secret` field. Baseline: the raw `secret` is present
-#       (RED).
+#   (C) ONCE-ONLY  since 1.12.0 (artifact-keeper#5235) the admin rotate-secret
+#       200 body carries the new raw `secret` once, with Cache-Control: no-store
+#       (a receiver cannot verify after the overlap without it; the admin gate in
+#       (A) is what keeps it safe). GET, LIST, a repeat rotate (409), a refused
+#       non-admin rotate and the backend log must never carry it. On 1.6.1-1.11.x
+#       the field was dropped instead; release/1.11.x keeps that assertion.
 #
 # Webhook signing (and therefore rotate-secret) needs AK_WEBHOOK_SECRET_KEY; the
 # shared compose base does not set it, so this oracle injects the key via a
