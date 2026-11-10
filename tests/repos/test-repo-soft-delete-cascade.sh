@@ -166,7 +166,9 @@ if [ "$DEL_STATUS" = "202" ]; then
   while [ -n "$DEL_JOB_URL" ] && [ "$(date +%s)" -lt "$DEL_DEADLINE" ]; do
     DEL_JOB_STATUS=$(curl -s $CURL_TIMEOUT -H "$(auth_header)" \
       "${BASE_URL}${DEL_JOB_URL}" 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
-    case "$DEL_JOB_STATUS" in completed|failed) break ;; esac
+    # completed_with_errors (artifact-keeper#5655): rows gone, some objects
+    # left for storage GC. Terminal; the row cascade below can be judged.
+    case "$DEL_JOB_STATUS" in completed|completed_with_errors|failed) break ;; esac
     sleep 1
   done
 fi
@@ -180,7 +182,8 @@ fi
 begin_test "Artifact ids from old repo return 404 on /stats (cascade)"
 if [ "${#ART_IDS[@]}" -eq 0 ]; then
   skip "no artifact ids captured pre-delete"
-elif [ "$DEL_STATUS" = "202" ] && [ "$DEL_JOB_STATUS" != "completed" ]; then
+elif [ "$DEL_STATUS" = "202" ] && [ "$DEL_JOB_STATUS" != "completed" ] \
+     && [ "$DEL_JOB_STATUS" != "completed_with_errors" ]; then
   fail "the repository delete job did not complete (status '${DEL_JOB_STATUS:-none}' at ${DEL_JOB_URL:-<no status_url>}); the cascade cannot be judged"
 else
   REMAINING=0
