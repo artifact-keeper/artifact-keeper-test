@@ -3,7 +3,8 @@
 #
 # Validates that the npm endpoints conform to the npm registry protocol:
 # packument structure, dist-tags, scoped packages, abbreviated metadata,
-# search, unpublish, tarball integrity, and correct Content-Type headers.
+# the documented search gap (501), unpublish, tarball integrity, and correct
+# Content-Type headers.
 #
 # Endpoints: ${BASE_URL}/npm/{repo_key}/
 #
@@ -321,32 +322,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Search: GET /-/v1/search?text=query returns results
+# 9. Search: GET /-/v1/search?text=query on a hosted repository answers 501.
+#
+# `npm search` is a known gap on hosted repositories (npm_meta_get in the
+# backend's npm.rs). Implementing it is artifact-keeper#5199. When that lands,
+# this check fails and should be replaced by one that asserts search results.
 # ---------------------------------------------------------------------------
 
-begin_test "Search endpoint returns results"
-if resp=$(curl -sf $CURL_TIMEOUT \
-    -H "$(format_auth_header)" \
-    "${NPM_REGISTRY}/-/v1/search?text=${PKG_NAME}" 2>/dev/null); then
-  # npm search response has { objects: [...] }
-  has_objects=$(echo "$resp" | jq 'has("objects")' 2>/dev/null) || true
-  if [ "$has_objects" = "true" ]; then
+begin_test "Search endpoint answers the documented 501 on a hosted repository"
+search_body="${WORK_DIR}/search-response.json"
+status=$(curl -s -o "$search_body" -w '%{http_code}' $CURL_TIMEOUT \
+  -H "$(format_auth_header)" \
+  "${NPM_REGISTRY}/-/v1/search?text=${PKG_NAME}") || status="000"
+if [ "$status" = "501" ]; then
+  if assert_contains "$(cat "$search_body")" "is not implemented" \
+      "501 body should say the endpoint is not implemented"; then
     pass
-  else
-    # Some registries return results in a different shape
-    if assert_contains "$resp" "$PKG_NAME" "search results should contain package name"; then
-      pass
-    fi
   fi
 else
-  status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-    -H "$(format_auth_header)" \
-    "${NPM_REGISTRY}/-/v1/search?text=${PKG_NAME}") || true
-  if [ "$status" = "404" ]; then
-    skip "search endpoint not implemented"
-  else
-    fail "search returned unexpected error (status ${status})"
-  fi
+  fail "expected 501 for npm search on a hosted repository, got ${status} (see artifact-keeper#5199)"
 fi
 
 # ---------------------------------------------------------------------------

@@ -216,9 +216,10 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Legacy X-Webhook-Signature header presence + value. The legacy form is
-# `sha256=<hex>` over the raw body (no timestamp, secret-only). Removed in
-# v1.3.0 per the deprecation plan; still emitted in v1.2.0.
+# Legacy X-Webhook-Signature header presence + value. The documented legacy
+# form is `sha256=<hex>` over the raw body (no timestamp, secret-only); see
+# the value test below for what 1.11.x actually signs. Removed in v1.3.0 per
+# the deprecation plan; still emitted in v1.2.0.
 # -------------------------------------------------------------------------
 
 LEGACY_SIG_HEADER=""
@@ -239,11 +240,16 @@ else
   fi
 fi
 
-begin_test "Legacy X-Webhook-Signature equals sha256=HMAC(secret, body)"
-if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LEGACY_SIG_HEADER" ] || [ -z "$LATEST_BODY" ]; then
-  skip "no legacy signature or body"
+# The documented legacy value is sha256=HMAC(secret, body), but the backend
+# only emits that from 1.12.0 (artifact-keeper#5234). Every 1.11.x release
+# signs the legacy header over the same "<t>.<body>" bytes as the v1 token,
+# with t taken from the X-ArtifactKeeper-Signature t= field. Fixed in 1.12.0;
+# release/1.11.x asserts the shipped 1.11 form.
+begin_test "Legacy X-Webhook-Signature equals sha256=HMAC(secret, <t>.<body>) (1.11.x form)"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LEGACY_SIG_HEADER" ] || [ -z "$LATEST_BODY" ] || [ -z "$NEW_SIG_TS" ]; then
+  skip "no legacy signature, body, or t= timestamp"
 else
-  expected_hex=$(printf '%s' "$LATEST_BODY" \
+  expected_hex=$(printf '%s.%s' "$NEW_SIG_TS" "$LATEST_BODY" \
     | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" 2>/dev/null \
     | awk '{print $NF}')
   expected="sha256=${expected_hex}"
@@ -252,7 +258,7 @@ else
   elif [ "$LEGACY_SIG_HEADER" = "$expected" ]; then
     pass
   else
-    fail "legacy signature mismatch: header='${LEGACY_SIG_HEADER}' expected='${expected}'"
+    fail "legacy signature mismatch: header='${LEGACY_SIG_HEADER}' expected='${expected}' (signed bytes: '${NEW_SIG_TS}.<body>')"
   fi
 fi
 
