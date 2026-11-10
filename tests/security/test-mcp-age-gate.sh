@@ -19,7 +19,8 @@
 #   2. an npm Remote over it; the tarball is pulled through AK (now in the
 #      Remote's proxy cache, which has no `artifacts` row)
 #   3. a Local mcp repository maps npm to that Remote and publishes a server
-#      naming the package: 200, served
+#      naming the package: 200, served (or 202 resolving, then served, when
+#      the publish lands before the pull-through's cache commit)
 #   4. the Remote's age gate is turned on (7 days, upstream_publish_time):
 #      the cached copy is 0 days old, so the version is held:
 #        - listing and latest omit it for every caller
@@ -67,6 +68,13 @@ NPM_REMOTE="mcp-age-npm-remote-${RUN_ID}"
 SERVER="io.github.ak-age/echo-${RUN_ID}"
 SERVER_DETAIL="$(mcp_version_path "$SERVER" "$VER")"
 
+# The exact read of the version answers 200 (sets MCP_BODY to the served
+# detail): it is no longer held as resolving.
+_resolved_detail() {
+  mcp_get "$MCP_REPO" "$SERVER_DETAIL" anon
+  [ "$MCP_STATUS" = "200" ]
+}
+
 served_has() {
   mcp_get "$1" "servers?limit=100" "${3:-anon}"
   [ "$MCP_STATUS" = "200" ] && mcp_json '.servers[] | "\(.server.name)@\(.server.version)"' | grep -qxF "$2"
@@ -108,8 +116,9 @@ tarball_url=$(jq -r --arg v "$VER" '.versions[$v].dist.tarball // empty' "${WORK
 [ -n "$tarball_url" ] || tarball_url="${BASE_URL}/npm/${NPM_REMOTE}/${PKG}/-/${TGZ_NAME}"
 code=$(curl -s -o "${WORK_DIR}/pulled.tgz" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -H "$(format_auth_header)" \
   "${BASE_URL}$(mcp_url_path "$tarball_url")" 2>/dev/null) || code="000"
-# A pull-through lands in the Remote's proxy cache, not as an artifact row,
-# so there is nothing to poll for: the publish below finds the cache entry.
+# A pull-through lands in the Remote's proxy cache, not as an artifact row.
+# Its catalog row is committed after the client has the last byte, so the
+# publish below may still miss it and answer 202 (filled, then served).
 if [ "$code" != "200" ] || ! cmp -s "${WORK_DIR}/pulled.tgz" "$TGZ"; then
   fail_fatal "pull-through of ${PKG}@${VER} answered ${code} (or different bytes)" "$(head -n 5 "${NPM_STATE}/request-log.txt" 2>/dev/null)"
 else
@@ -128,11 +137,32 @@ fi
 if [ "$MCP_STATUS" != "200" ] && [ "$MCP_STATUS" != "202" ]; then
   fail_fatal "publish naming the pulled-through package answered ${MCP_STATUS}" "$(mcp_snip)"
 fi
-served_base=$(mcp_json '.server.packages[0].registryBaseUrl')
-case "$(mcp_url_path "$served_base")" in
-  "/npm/${NPM_REMOTE}"|"/npm/${NPM_REMOTE}/") pass ;;
-  *) fail "served registryBaseUrl '${served_base}' does not name /npm/${NPM_REMOTE}" ;;
-esac
+# A 202 is the documented fill (docs/mcp-registry.md "Packages in a Remote
+# backing repository"): the pending package is answered as submitted, with no
+# registryBaseUrl, until the resolver pins it. It happens here when the
+# publish lands before the pull-through's proxy cache commit (the streamed
+# tarball reaches the client before the cache writer records its row), so
+# the pinned coordinates are read from the served version once it resolves:
+# within a resolver tick (MCP_RESOLVER_INTERVAL_SECS, 15 s) normally, 120 s
+# leaving room for one retry (30 s backoff) of a fill that fails transiently.
+publish_status="$MCP_STATUS"
+publish_why=""
+if [ "$publish_status" = "202" ]; then
+  if [ "$(mcp_json '.status')" != "resolving" ] || [ "$(mcp_json '.pendingPackages | tostring')" != "[0]" ]; then
+    publish_why="202 publish answer is not status resolving with pendingPackages [0]: $(mcp_snip)"
+  elif ! wait_until "the resolver pins the package" 120 _resolved_detail; then
+    publish_why="202 publish never resolved: detail answered ${MCP_STATUS}: $(mcp_snip)"
+  fi
+fi
+if [ -n "$publish_why" ]; then
+  fail "$publish_why"
+else
+  served_base=$(mcp_json '.server.packages[0].registryBaseUrl')
+  case "$(mcp_url_path "$served_base")" in
+    "/npm/${NPM_REMOTE}"|"/npm/${NPM_REMOTE}/") pass ;;
+    *) fail "served registryBaseUrl '${served_base}' (publish answered ${publish_status}) does not name /npm/${NPM_REMOTE}" ;;
+  esac
+fi
 
 begin_test "Before the age gate: the version is served to anonymous"
 _served_anon() {
