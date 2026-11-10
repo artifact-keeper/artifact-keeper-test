@@ -11,9 +11,11 @@
 # a tombstone that survives the purge; Phase 3 adds DELETE
 # .../versions/{version} (status deleted + tombstone).
 #
-#   Phase 1 (real assertions): delete the server.json through the artifact
-#   API -> hidden; republish different bytes while it is in the trash -> 409
-#   mcp_version_exists; purge it from the trash.
+#   Base assertions: soft-delete the version through the registry route
+#   (DELETE .../versions/{version}; the generic artifact DELETE answers 400 on
+#   an MCP repository since artifact-keeper#5257) -> hidden; republish
+#   different bytes -> 409 mcp_version_exists; purge it with the admin
+#   POST .../versions/{version}/purge (#5368), which trashes the server.json.
 #   mcp_tombstone (gated): republish different bytes after the purge -> 409.
 #   Phase 3 DELETE route (gated): soft delete, include_deleted shows it
 #   deleted, republish -> 409; the server health roll-up
@@ -75,19 +77,23 @@ ART_ID=$(mcp_artifact_id "$REPO" "^$(art_path 1.0.0)$")
 [ -n "$ART_ID" ] || fail_fatal "no artifact row for ${NAME}@1.0.0"
 pass
 
-begin_test "Delete the server.json through the artifact API: the version is hidden"
-mcp_req DELETE "${BASE_URL}/api/v1/repositories/${REPO}/artifacts/$(art_path 1.0.0)" admin
+begin_test "Delete the version through DELETE .../versions/{version}: the version is hidden"
+# The generic artifact DELETE refuses MCP repositories (400, admins included;
+# docs/mcp-registry.md "DELETE .../versions/{version}"): a server version is
+# deleted only through the registry route.
+mcp_req DELETE "$(mcp_base "$REPO")/$(mcp_version_path "$NAME" 1.0.0)" admin
 del_status="$MCP_STATUS"
+del_state=$(mcp_json '._meta["io.modelcontextprotocol.registry/official"].status // empty')
 mcp_get "$REPO" "$(mcp_version_path "$NAME" 1.0.0)" anon
-if [ "${del_status:0:1}" != "2" ]; then
-  fail "artifact DELETE answered ${del_status}: $(mcp_snip)"
+if [ "$del_status" != "200" ] || [ "$del_state" != "deleted" ]; then
+  fail "version DELETE answered ${del_status} status '${del_state}', want 200 with status deleted"
 elif why=$(mcp_check_plain_404); then
   pass
 else
   fail "deleted version still answered: ${why}"
 fi
 
-begin_test "Republish different bytes while the deleted row is in the trash: 409 mcp_version_exists"
+begin_test "Republish different bytes over the soft-deleted version: 409 mcp_version_exists"
 mcp_publish "$REPO" "${WORK_DIR}/b.json"
 if why=$(mcp_check_problem 409 mcp_version_exists); then
   pass
@@ -95,17 +101,13 @@ else
   fail "$why"
 fi
 
-begin_test "Purge the deleted server.json from the trash"
-mcp_req GET "${BASE_URL}/api/v1/admin/trash?repository=${REPO}" admin
-trash_id=$(jq -r --arg p "$(art_path 1.0.0)" '[.items[]? | select(.path == $p)][0].id // empty' "$MCP_BODY" 2>/dev/null)
-if [ -z "$trash_id" ]; then
-  fail_fatal "the deleted server.json is not in the trash listing" "$(mcp_snip)"
-fi
-mcp_req DELETE "${BASE_URL}/api/v1/admin/trash/${trash_id}" admin
-if [ "${MCP_STATUS:0:1}" = "2" ]; then
+begin_test "Purge the soft-deleted version (POST .../versions/{version}/purge)"
+mcp_req POST "$(mcp_base "$REPO")/$(mcp_version_path "$NAME" 1.0.0)/purge" admin
+if [ "$MCP_STATUS" = "200" ] && [ "$(mcp_json '.purged')" = "true" ] \
+  && jq -e --arg p "$(art_path 1.0.0)" '.trashed | index($p) != null' "$MCP_BODY" >/dev/null 2>&1; then
   pass
 else
-  fail_fatal "purge answered ${MCP_STATUS}: $(mcp_snip)"
+  fail_fatal "purge answered ${MCP_STATUS} (want 200, purged true, trashed naming $(art_path 1.0.0))" "$(mcp_snip)"
 fi
 
 # ---------------------------------------------------------------------------

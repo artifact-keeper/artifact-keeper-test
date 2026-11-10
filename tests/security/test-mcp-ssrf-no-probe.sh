@@ -9,11 +9,13 @@
 # (tests/lib/mock-mcp-http-server.py) and the generic byte mock
 # (tests/lib/mock-upstream.py). A server is published whose remotes[].url,
 # a remote URL variable default, websiteUrl, icons[].src and repository.url
-# all point at them; an `open` repository additionally stores an npm
-# registryBaseUrl at the generic mock, and an own-repos publish naming that
-# registryBaseUrl is refused (422) without a lookup. Then every read and
-# write route is exercised as admin and as anonymous. Both mocks must record
-# zero requests.
+# all point at them; an `open` repository additionally accepts an npm
+# registryBaseUrl at the generic mock (the package resolves in the mapped npm
+# repository and is served at its Artifact Keeper coordinates, so the mock URL
+# is replaced, never fetched; artifact-keeper#5452), and an own-repos publish
+# naming that registryBaseUrl is refused (422) without a lookup. Then every
+# read and write route is exercised as admin and as anonymous. Both mocks must
+# record zero requests.
 #
 # Metadata addresses: remotes[] also carries
 # http://169.254.169.254/latest/meta-data/. The official schema allows any
@@ -45,6 +47,7 @@ mcp_require_dialback
 KEY="sec-mcpssrf-${RUN_ID}"
 OPEN_KEY="sec-mcpssrf-open-${RUN_ID}"
 NAME="io.github.ak-e2e/ssrf-${RUN_ID}"
+NPM_PKG="@ak-e2e/ssrf-${RUN_ID}"
 METADATA_URL="http://169.254.169.254/latest/meta-data/"
 
 expect_problem() {
@@ -85,8 +88,20 @@ else
     "Without working counters the zero-request assertion below would be vacuous."
 fi
 
-begin_test "Create own-repos and open MCP repositories"
-if mcp_create_repo "$KEY" && mcp_create_repo "$OPEN_KEY" '{"mcp_package_policy":"open"}'; then
+# `open` accepts foreign coordinates only for a package that resolves in a
+# mapped backing repository (artifact-keeper#5452), so the open repository
+# maps an npm Local holding the package its document names.
+begin_test "Create the backing npm repository and publish the echo package to it"
+if mcp_create_backing_repos "sec-mcpssrf-${RUN_ID}" \
+  && mcp_publish_echo_package "$MCP_NPM_KEY" "$NPM_PKG" 1.0.0 "$NAME"; then
+  pass
+else
+  fail_fatal "backing npm setup failed: HTTP ${MCP_STATUS:-}: $(mcp_snip)"
+fi
+
+begin_test "Create own-repos and open (npm mapped) MCP repositories"
+if mcp_create_repo "$KEY" \
+  && mcp_create_repo "$OPEN_KEY" "$(jq -cn --arg n "$MCP_NPM_KEY" '{mcp_package_policy:"open",mcp_package_repos:{npm:$n}}')"; then
   pass
 else
   fail_fatal "MCP repository creation failed: ${MCP_CREATE_ERROR:-}"
@@ -120,14 +135,15 @@ begin_test "Publish a second version (1.0.1) and an open-repository copy with an
 jq '.version = "1.0.1"' "$DOC" > "${WORK_DIR}/ssrf-101.json"
 mcp_publish "$KEY" "${WORK_DIR}/ssrf-101.json"
 s1="$MCP_STATUS"
-jq --arg gen "$GEN_URL" '.packages = [{registryType:"npm", registryBaseUrl: ($gen + "/npm"),
-  identifier: "@ak-e2e/ssrf", version: "1.0.0", transport: {type: "stdio"}}]' "$DOC" > "${WORK_DIR}/ssrf-open.json"
+jq --arg gen "$GEN_URL" --arg pkg "$NPM_PKG" '.packages = [{registryType:"npm", registryBaseUrl: ($gen + "/npm"),
+  identifier: $pkg, version: "1.0.0", transport: {type: "stdio"}}]' "$DOC" > "${WORK_DIR}/ssrf-open.json"
 mcp_publish "$OPEN_KEY" "${WORK_DIR}/ssrf-open.json"
 s2="$MCP_STATUS"
-if [ "$s1" = "200" ] && [ "$s2" = "200" ]; then
+open_base=$(mcp_json '.server.packages[0].registryBaseUrl')
+if [ "$s1" = "200" ] && [ "$s2" = "200" ] && [ "$(mcp_url_path "$open_base")" = "/npm/${MCP_NPM_KEY}" ]; then
   pass
 else
-  fail "second publishes: own-repos ${s1}, open ${s2}: $(mcp_snip)"
+  fail "second publishes: own-repos ${s1}, open ${s2} (registryBaseUrl '${open_base}', want /npm/${MCP_NPM_KEY}): $(mcp_snip)"
 fi
 
 begin_test "own-repos refuses the mock registryBaseUrl (422) by lookup, not by fetch"

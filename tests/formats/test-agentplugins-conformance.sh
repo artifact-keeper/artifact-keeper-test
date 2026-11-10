@@ -15,8 +15,10 @@
 #      from the path, a `../` entry, a non-SemVer version, a filename that is
 #      not {name}-{version}.zip, and an uppercase slug. None of them may
 #      appear in an index afterwards.
-#   3. A remote agentplugins repository is refused (hosted only), and so is
-#      a repository keyed `t`, which would shadow the token route.
+#   3. A virtual agentplugins repository is refused (400, not supported yet),
+#      a remote one is accepted (artifact-keeper#5289: a Remote proxies
+#      another Artifact Keeper's hosted repository), and a repository keyed
+#      `t`, which would shadow the token route, is refused.
 #   4. A private repository is readable through the token-in-path prefix
 #      /agentplugins/t/{token}/{repo}/..., archive URLs keep that prefix and
 #      download with no Authorization header, and the plain URL without
@@ -53,6 +55,7 @@ require_cmd sha256sum
 REPO_KEY="test-ap-conf-${RUN_ID}"
 PRIVATE_KEY="test-ap-priv-${RUN_ID}"
 REMOTE_KEY="test-ap-remote-${RUN_ID}"
+VIRTUAL_KEY="test-ap-virtual-${RUN_ID}"
 GATE_REASON="repository format 'agentplugins' is not known to this backend (POST /api/v1/repositories: 400 Invalid format: agentplugins); Agent Plugins format not shipped"
 NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
@@ -328,22 +331,37 @@ elif assert_eq "$ALL_NAMES" "$PLUGIN" "marketplace.json lists [${ALL_NAMES}], ex
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Hosted only
+# 3. Repository types: hosted and remote, not virtual (artifact-keeper#5289)
 # ---------------------------------------------------------------------------
 
-begin_test "Creating a remote agentplugins repository is refused with 400"
+begin_test "Creating a virtual agentplugins repository is refused with 400"
+VIRTUAL_OUT="${WORK_DIR}/virtual.json"
+VIRTUAL_STATUS=$(curl -s -o "$VIRTUAL_OUT" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
+  -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+  -d "{\"key\":\"${VIRTUAL_KEY}\",\"name\":\"${VIRTUAL_KEY}\",\"format\":\"agentplugins\",\"repo_type\":\"virtual\",\"is_public\":true}" \
+  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || VIRTUAL_STATUS="000"
+if [ "$VIRTUAL_STATUS" -ge 200 ] 2>/dev/null && [ "$VIRTUAL_STATUS" -lt 300 ] 2>/dev/null; then
+  api_delete "/api/v1/repositories/${VIRTUAL_KEY}" >/dev/null 2>&1 || true
+fi
+if ! assert_eq "$VIRTUAL_STATUS" "400" "virtual repository creation returned HTTP ${VIRTUAL_STATUS}, expected 400"; then
+  echo "    body: $(head -c 300 "$VIRTUAL_OUT" 2>/dev/null)"
+elif ! grep -q 'virtual repositories are not supported yet' "$VIRTUAL_OUT" 2>/dev/null; then
+  fail "virtual refusal does not say virtual repositories are not supported yet: $(head -c 300 "$VIRTUAL_OUT" 2>/dev/null)"
+else
+  pass
+fi
+
+begin_test "Creating a remote agentplugins repository succeeds (2xx)"
 REMOTE_OUT="${WORK_DIR}/remote.json"
 REMOTE_STATUS=$(curl -s -o "$REMOTE_OUT" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
   -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
-  -d "{\"key\":\"${REMOTE_KEY}\",\"name\":\"${REMOTE_KEY}\",\"format\":\"agentplugins\",\"repo_type\":\"remote\",\"upstream_url\":\"https://example.com/marketplace.json\",\"is_public\":true}" \
+  -d "{\"key\":\"${REMOTE_KEY}\",\"name\":\"${REMOTE_KEY}\",\"format\":\"agentplugins\",\"repo_type\":\"remote\",\"upstream_url\":\"https://example.com/agentplugins/plugins\",\"is_public\":true}" \
   "${BASE_URL}/api/v1/repositories" 2>/dev/null) || REMOTE_STATUS="000"
 if [ "$REMOTE_STATUS" -ge 200 ] 2>/dev/null && [ "$REMOTE_STATUS" -lt 300 ] 2>/dev/null; then
   api_delete "/api/v1/repositories/${REMOTE_KEY}" >/dev/null 2>&1 || true
-fi
-if assert_eq "$REMOTE_STATUS" "400" "remote repository creation returned HTTP ${REMOTE_STATUS}, expected 400"; then
   pass
 else
-  echo "    body: $(head -c 300 "$REMOTE_OUT" 2>/dev/null)"
+  fail "remote repository creation returned HTTP ${REMOTE_STATUS}, expected 2xx: $(head -c 300 "$REMOTE_OUT" 2>/dev/null)"
 fi
 
 begin_test "An agentplugins repository keyed 't' is refused with 400 (it would shadow /agentplugins/t/)"
