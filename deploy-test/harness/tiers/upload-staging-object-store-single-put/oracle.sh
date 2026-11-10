@@ -50,9 +50,15 @@ SF=""
 c="$(mk_repo "$R_GEN" generic)"; is_2xx "$c" || SF="${SF} create-generic=${c}"
 c="$(mk_repo "$R_MVN" maven)"; is_2xx "$c" || SF="${SF} create-maven=${c}"
 [ "$(psqlq "SELECT string_agg(DISTINCT storage_backend, ',') FROM repositories WHERE key IN ('${R_GEN}','${R_MVN}')")" = "s3" ] || SF="${SF} not-s3"
-# The scratch volume really is read-only for the backend.
-RO="$(docker exec "$BACKEND_CTR" sh -c 'touch /scratch-ro/probe 2>&1 && echo writable || echo read-only' 2>/dev/null)"
-case "$RO" in *read-only*|"") ;; *) SF="${SF} scratch-writable" ;; esac
+# The scratch volume really is read-only for the backend, and is where the
+# backend stages uploads. Read from the container's mount table and env, not by
+# exec'ing a shell in it: the backend image ships no `sh` (exec fails with
+# "executable file not found", which the old touch probe read as "writable"
+# on every image -- the 1.12.0 gate's scratch-writable INFRA).
+RO="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/scratch-ro"}}{{.RW}}{{end}}{{end}}' "$BACKEND_CTR" 2>/dev/null)"
+[ "$RO" = "false" ] || SF="${SF} scratch-writable(RW=${RO:-unmounted})"
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$BACKEND_CTR" 2>/dev/null \
+  | grep -qx 'AK_UPLOAD_STAGING_DIR=/scratch-ro' || SF="${SF} staging-dir-not-scratch-ro"
 head -c $((40 * MIB)) /dev/urandom > "$W/big.bin"
 cp "$W/big.bin" "$W/big.jar"
 G="com/acme/ussp${SLOT}"; A="big"; V="4.0"

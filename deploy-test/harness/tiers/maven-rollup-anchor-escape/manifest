@@ -22,7 +22,7 @@
 # The loss is SILENT. The Maven read path SYNTHESISES a substitute
 # `maven-metadata.xml` when the stored document is gone, so `GET` keeps
 # answering 200 and the client sees a well-formed document — with the wrong
-# `lastUpdated`, the wrong version list, no plugin `<prefix>` entries and a
+# `lastUpdated`, the wrong version list, no marker comment and a
 # different checksum. Every gate below therefore asserts the SERVED/STORED
 # BYTES are identical to what was published, never merely that a 200 came back.
 #

@@ -92,9 +92,20 @@ sha_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1 || true; }
 # --- fixture builder --------------------------------------------------------
 # A rollup document with markers the synthesised substitute cannot reproduce:
 # a fixed historical `lastUpdated`, a `<version>` the repository does not hold,
-# and a plugin `<prefix>` block. If the stored document is deleted and the read
+# and a per-run XML comment. If the stored document is deleted and the read
 # path answers with its own reconstruction, none of these survive — which is
 # why the gates compare bytes and not status codes.
+#
+# NO `<plugins>` BLOCK. Since artifact-keeper#4981 (#4916) the Maven upload
+# handler treats any `maven-metadata.xml` whose body contains `<plugins` as a
+# group-level plugin-prefix document and publishes it as a normal ARTIFACT
+# (a row in `artifacts`, pushed to peers) instead of a row-less rollup. Such a
+# document is a live artifact: the flat-object sweep never sees it and a
+# repository delete removes it with the repository's other artifacts. A
+# `<plugins>` marker here therefore moves every fixture off the row-less
+# path this tier exists to test (the 1.12.0 gate read that as both sweeps
+# "failing", including on the plain-directory controls). The fixtures must
+# stay artifact-level version indexes, which is what Maven deploys write.
 make_rollup() { # GROUP_ID OUTFILE
   cat > "$2" <<EOT
 <?xml version="1.0" encoding="UTF-8"?>
@@ -110,13 +121,7 @@ make_rollup() { # GROUP_ID OUTFILE
     </versions>
     <lastUpdated>20200101000000</lastUpdated>
   </versioning>
-  <plugins>
-    <plugin>
-      <name>dtf marker ${SUF}</name>
-      <prefix>dtf</prefix>
-      <artifactId>lib</artifactId>
-    </plugin>
-  </plugins>
+  <!-- dtf marker ${SUF} -->
 </metadata>
 EOT
 }
@@ -298,6 +303,29 @@ The un-escaped pattern derived from 'com/ba\\ck/' is 'com/back/', so such an art
 vulnerable image and every boundary gate in this section would pass for the wrong reason."
   end_suite
 }
+# Every fixture rollup must have been stored ROW-LESS: this tier's subject is
+# the attribution-table guards, which never see a document that has an
+# `artifacts` row. If an upload-path change starts giving a fixture
+# `maven-metadata.xml` a row (as #4981 did for any body containing `<plugins`),
+# both sections would go red for a reason that has nothing to do with #3492.
+# Report that as setup drift (INFRA, exit 11), never as the regression.
+assert_rollups_rowless() { # SECTION_LABEL
+  local n
+  n="$(docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
+        "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id = a.repository_id \
+          WHERE r.key IN ('${SWEEP_REPO}','${DOOMED_REPO}','${KEEPER_REPO}') \
+            AND a.path LIKE '%maven-metadata.xml';" \
+        2>/dev/null | tr -d '[:space:]' || echo '?')"
+  [ "$n" = "0" ] && return 0
+  begin_test "setup (${1}): the fixture maven-metadata.xml documents were stored row-less"
+  infra_fail "${n} fixture maven-metadata.xml upload(s) created an artifacts row; the row-less rollup guards this tier \
+tests are not on that document's path any more. Setup drift in the Maven upload path, NOT a #3492 verdict." \
+    "$(docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -c \
+       "SELECT r.key, a.path FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE a.path LIKE '%maven-metadata.xml' ORDER BY 1, 2;" 2>&1 | head -20)"
+  end_suite
+}
+assert_rollups_rowless "section A"
+
 assert_collapsed_siblings_empty "section A" \
   "${ROOT_A}/com/back/" "${ROOT_A}/com/dead/" "${ROOT_A}/com/repair/"
 
@@ -346,7 +374,7 @@ attribution rows=${A1_ROWS} (want 1), object in the store=${A1_OBJ} (want yes), 
 The guard derives its directory-prefix LIKE pattern from the stored key and, without ESCAPE '', reads the literal backslash as \
 Postgres's escape character, so the pattern names 'com/back/lib/' and the live artifact under 'com/ba\\ck/lib/' no longer matches. \
 Note the 200: the Maven read path SYNTHESISES a substitute document, so the loss is silent and the client's published \
-lastUpdated / version list / plugin prefixes are permanently gone." \
+lastUpdated / version list are permanently gone." \
     "gc=$(cat "$GC_OUT" 2>/dev/null)
 served: $(head -c 500 "$GOT" 2>/dev/null)"
 fi
@@ -440,6 +468,7 @@ if [ -n "$B_PRE_MISSING" ]; then
   end_suite
 fi
 
+assert_rollups_rowless "section B"
 assert_collapsed_siblings_empty "section B" \
   "${ROOT_B}/com/cross/" "${ROOT_B}/com/self/" "${ROOT_B}/com/purge/"
 
