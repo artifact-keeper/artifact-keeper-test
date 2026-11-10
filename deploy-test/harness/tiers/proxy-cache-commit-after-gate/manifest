@@ -6,7 +6,7 @@
 #
 # WHAT IT GUARDS: before #5070 a proxied file was committed to the proxy
 # cache before the scan gate ran, so a body the gate withheld under
-# fail_closed as inconclusive (423 scan_pending) stayed in the cache: a
+# fail_closed as inconclusive (423 scan_identity_unestablished; scan_pending before 1.12.0, #5166) stayed in the cache: a
 # catalog row, a listing entry, and later pulls answered from it without
 # going upstream. Now the commit of a fresh fill waits for the gate: an
 # inconclusive body is dropped (no catalog row, no listing entry, the next

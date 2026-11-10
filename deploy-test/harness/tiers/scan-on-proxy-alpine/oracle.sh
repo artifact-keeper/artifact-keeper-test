@@ -151,7 +151,7 @@ fi
 begin_test "FIX #4113: an .apk whose .PKGINFO declares another version, or requested through latest-stable, is withheld (423, no verdict row)"
 pull "${A}/${APK}/${APK_LIAR}"; s1="$ST/$(body_err)"; v1=$(verdict_of "$(golden_sha "alpine/${APK_LIAR}")")
 pull "${A}/${APK}/${APK_LATEST}"; s2="$ST/$(body_err)"; v2=$(verdict_of "$(golden_sha "alpine/${APK_LATEST}")")
-if [ "$s1 $s2" = "423/scan_pending 423/scan_pending" ] && [ -z "$v1$v2" ]; then
+if [ "$s1 $s2" = "423/scan_identity_unestablished 423/scan_identity_unestablished" ] && [ -z "$v1$v2" ]; then
   pass
 else
   fail "liar=${s1} latest-stable=${s2} scan='${SCAN}' verdicts='${v1}' '${v2}'"

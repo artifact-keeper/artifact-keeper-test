@@ -199,7 +199,7 @@ begin_test "control: before any rescan, fail_closed RPM pulls of the install med
 if [ "$RPM_ENFORCED" = 1 ]; then
   pull "${RP}/${ISO}"; s1="$ST/$(body_err)"
   pull "${RP}/${NOTAG}"; s2="$ST/$(body_err)"
-  if [ "$s1 $s2" = "423/scan_pending 423/scan_pending" ] && [ "$(row_count_of "$ISO_D")$(row_count_of "$NT_D")" = "00" ]; then
+  if [ "$s1 $s2" = "423/scan_identity_unestablished 423/scan_identity_unestablished" ] && [ "$(row_count_of "$ISO_D")$(row_count_of "$NT_D")" = "00" ]; then
     pass
   else
     fail "iso=${s1} notag=${s2} rows=$(row_count_of "$ISO_D")/$(row_count_of "$NT_D")"

@@ -197,7 +197,7 @@ fi
 begin_test "FIX #4101: a crate whose Cargo.toml declares another version is withheld under fail_closed (423, no verdict row)"
 pull "${C}/${CR}/${LIAR}"
 d=$(golden_sha "$LIAR")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"

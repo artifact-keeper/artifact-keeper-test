@@ -238,7 +238,7 @@ for id in go-liar gem-liar; do
   begin_test "FIX #4514: a ${S_FMT} row whose archive declares another version is withheld under fail_closed (423, no verdict row)"
   gate_pull "$id"
   d=$(golden_sha "$S_GOLD")
-  if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+  if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
     pass
   else
     fail "status=${ST} scan='${SCAN}' body=$(snippet) verdict='$(verdict_of "$d")'"

@@ -634,17 +634,42 @@ def add_apk(base, branch, pkgname, pkgver, arch="x86_64", origin=None, declared=
     return path
 
 
-# Debian (upstream base http://<self>/debian): a bookworm Release, so the
-# packages are graded on Debian 12. debian-norel has no Release at all.
+# Debian (upstream base http://<self>/debian): a bookworm suite whose Release
+# names its main/binary-amd64 Packages index, so the packages are graded on
+# Debian 12. Since 1.12.0 (#5170, artifact-keeper#5228) a pool file is graded
+# on the release of the suite whose index lists it (the gate fetches the index
+# a cached Release names when no client did), not on a release borrowed from
+# whichever suites are cached; without the index an unmarked package such as
+# dtf-scanclean 1.0-1 is inconclusive. debian-norel has no Release at all.
+DEB_BOOKWORM = [
+    add_deb("debian", "main", "openssl", "3.0.11-1~deb12u2"),
+    add_deb("debian", "main", "dtf-scanclean", "1.0-1"),
+    add_deb("debian", "main", "dtf-scanliar", "2.0-1", declared="1.0-1"),
+]
+add_deb("debian-norel", "main", "dtf-norelease", "1.0-1")
+
+
+def deb_packages_index(base, paths):
+    stanzas = []
+    for path in paths:
+        name, version, arch = path.rsplit("/", 1)[1][: -len(".deb")].split("_")
+        data = FILES[f"{base}/{path}"]
+        stanzas.append(
+            f"Package: {name}\nVersion: {version}\nArchitecture: {arch}\n"
+            f"Maintainer: DTF <dtf@example.invalid>\nFilename: {path}\nSize: {len(data)}\n"
+            f"SHA256: {hashlib.sha256(data).hexdigest()}\nDescription: dtf scan fixture\n"
+        )
+    return "\n".join(stanzas).encode()
+
+
+FILES["debian/dists/bookworm/main/binary-amd64/Packages"] = deb_packages_index("debian", DEB_BOOKWORM)
+_deb_index = FILES["debian/dists/bookworm/main/binary-amd64/Packages"]
 FILES["debian/dists/bookworm/Release"] = (
     "Origin: Debian\nLabel: Debian\nSuite: stable\nVersion: 12.7\nCodename: bookworm\n"
     "Date: Wed, 01 Jan 2020 00:00:00 UTC\nArchitectures: amd64\nComponents: main\n"
-    "Description: dtf scan fixture\n"
+    "Description: dtf scan fixture\nSHA256:\n"
+    f" {hashlib.sha256(_deb_index).hexdigest()} {len(_deb_index)} main/binary-amd64/Packages\n"
 ).encode()
-add_deb("debian", "main", "openssl", "3.0.11-1~deb12u2")
-add_deb("debian", "main", "dtf-scanclean", "1.0-1")
-add_deb("debian", "main", "dtf-scanliar", "2.0-1", declared="1.0-1")
-add_deb("debian-norel", "main", "dtf-norelease", "1.0-1")
 # RPM (upstream base http://<self>/rpm): the yum layout dnf fetches.
 add_rpm("rpm", "openssl-libs", "3.0.7", "17.el9_2", "x86_64", epoch=1,
         sourcerpm="openssl-3.0.7-17.el9_2.src.rpm")

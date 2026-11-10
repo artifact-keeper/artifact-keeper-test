@@ -191,10 +191,35 @@ done
 # ---------------------------------------------------------------------------
 begin_test "FIX #4036/#4094: the conda package Grype cannot catalog is recorded not_cataloged with a reason; repo flagged, grade F"
 row=$(grype_row "$R_CONDA" ".tar.bz2")
-want_r_conda=$(expect_uncataloged "$R_CONDA" "F true")
-wait_until "conda repo score" 30 score_is "$R_CONDA" "$want_r_conda" || true
-sc=$(score_of "$R_CONDA")
-if [ "${row%%|*}" = "not_cataloged" ] && [ -n "${row#*|}" ] && [ "$sc" = "$want_r_conda" ]; then
+# On a grade_status image the conda repository is never `rated`, but which of
+# the other two it is depends on the dependency scanner: when it reads the
+# package's stored conda identity (#4089) it reports `partial` (no PyPI alias
+# for a run-unique name), which docs/security/grade-status.md reads as
+# `incomplete` with the letter of the assessed artifacts; when the scan runs
+# before the native PUT has stored that metadata it reports `not_cataloged`
+# and the repository is `unrated` (artifact-keeper#5692). Both flag
+# has_uncataloged_scan. The repository holds only this package, with no
+# findings, so the only letter `incomplete` can carry is A.
+conda_score_ok() {
+  if has_grade_status "$R_CONDA"; then
+    case "$(conda_status)" in
+      "unrated none true") return 0 ;;
+      "incomplete A true")
+        local dep; dep=$(grype_row "$R_CONDA" ".tar.bz2" dependency)
+        [ "${dep%%|*}" = "partial" ] ;;
+      *) return 1 ;;
+    esac
+    return $?
+  fi
+  score_is "$R_CONDA" "F true"
+}
+conda_status() {
+  api_get "/api/v1/repositories/${R_CONDA}/security" 2>/dev/null \
+    | jq -r '(.score // {}) | "\(.grade_status // "none") \(.grade // "none") \(.has_uncataloged_scan // "none")"' 2>/dev/null || true
+}
+wait_until "conda repo score" 30 conda_score_ok || true
+sc="$(conda_status) dependency=$(grype_row "$R_CONDA" ".tar.bz2" dependency)"
+if [ "${row%%|*}" = "not_cataloged" ] && [ -n "${row#*|}" ] && conda_score_ok; then
   pass
 else
   fail "grype row '${row}', score '${sc}' (pre-fix: complete / grade A)"

@@ -53,7 +53,19 @@ abody(){ cat "$W/api.body" 2>/dev/null || true; }
 # scan of each scan type; one vulnerability per (artifact, advisory = CVE id
 # or title) at the highest severity any of those scans reported; acknowledged
 # only when every row behind it is. Prints "open critical high medium low ack".
+# 1.12.0 (#5153, artifact-keeper#5224): an acknowledgement is a durable
+# decision row, and scan_findings.is_acknowledged is no longer the source of
+# truth; scan_findings_effective (migration 316) is the finding with its
+# decision applied. Read it when the image has it, the raw table otherwise.
+findings_rel(){
+  if [ "$(psqlq "SELECT to_regclass('public.scan_findings_effective') IS NOT NULL")" = "t" ]; then
+    echo scan_findings_effective
+  else
+    echo scan_findings
+  fi
+}
 expected(){
+  local FT; FT="$(findings_rel)"
   psqlq "WITH latest AS (
            SELECT DISTINCT ON (artifact_id, scan_type) id FROM scan_results
            WHERE status='completed' ORDER BY artifact_id, scan_type, completed_at DESC NULLS LAST),
@@ -62,7 +74,7 @@ expected(){
                   max(CASE lower(f.severity) WHEN 'critical' THEN 4 WHEN 'high' THEN 3
                       WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) AS r,
                   bool_and(f.is_acknowledged) AS ack
-           FROM scan_findings f JOIN latest l ON l.id=f.scan_result_id
+           FROM ${FT} f JOIN latest l ON l.id=f.scan_result_id
            JOIN artifacts a ON a.id=f.artifact_id AND NOT a.is_deleted
            GROUP BY 1, 2)
          SELECT count(*) FILTER (WHERE NOT ack)||' '||count(*) FILTER (WHERE NOT ack AND r=4)||' '||
@@ -176,6 +188,7 @@ begin_test "CONTROL: acknowledging a Grype-only ${ACK_CVE} finding is accepted a
 reset_case
 FID="$(psqlq "SELECT id FROM scan_findings WHERE artifact_id='${A}' AND UPPER(cve_id)='${ACK_CVE}' LIMIT 1")"
 before_score="$(j score .total_findings)"
+PRE_OPEN="$E_OPEN"; PRE_MED="$E_MED"; PRE_ACK="$E_ACK"
 code="$(api POST "/api/v1/security/findings/${FID}/acknowledge" '{"reason":"dtf: accepted risk"}')"
 note "acknowledge ${FID} -> ${code}: $(abody | jq -c '{is_acknowledged,acknowledged_reason}' 2>/dev/null)"
 read -r E_OPEN E_CRIT E_HIGH E_MED E_LOW E_ACK <<<"$(expected)"
@@ -183,6 +196,13 @@ note_exp="open=${E_OPEN} critical=${E_CRIT} high=${E_HIGH} medium=${E_MED} low=$
 surfaces
 note "expected after acknowledge: ${note_exp}"
 [ "$code" = "200" ] || fail_g "acknowledge -> ${code}"
+# expected() reads the backend's own acknowledgement state, so on its own it
+# would follow an acknowledge that silently did nothing. Pin the move itself:
+# exactly one medium advisory goes from open to acknowledged.
+eq "expected acknowledged after acknowledge" "$E_ACK" "$((PRE_ACK + 1))"
+eq "expected open after acknowledge" "$E_OPEN" "$((PRE_OPEN - 1))"
+eq "expected medium after acknowledge" "$E_MED" "$((PRE_MED - 1))"
+[ "$PRE_ACK" = "0" ] || fail_g "an advisory was acknowledged before the acknowledge case (${PRE_ACK})"
 eq "trends.open_cves" "$(j trends .open_cves)" "$E_OPEN"
 eq "trends.acknowledged_cves" "$(j trends .acknowledged_cves)" "$E_ACK"
 finish_case "acknowledge"

@@ -196,7 +196,7 @@ fi
 begin_test "FIX #4107: an archive whose pubspec.yaml declares another version is withheld under fail_closed (423, no verdict row)"
 pull "${D}/${PUB}/${PUB_LIAR}"
 d=$(golden_sha "pub/${PUB_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"
@@ -250,7 +250,7 @@ fi
 begin_test "FIX #4108: a .tgz that is not a gzipped tar is withheld under fail_closed (423, no verdict row)"
 pull "${C}/${CON}/${CON_LIAR}"
 d=$(golden_sha "conan/${CON_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"

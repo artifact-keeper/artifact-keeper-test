@@ -218,7 +218,7 @@ fi
 begin_test "FIX #4103: a zip that is not the requested module version is withheld under fail_closed (423, no verdict row)"
 pull "${G}/${GO}/${GO_LIAR}"
 d=$(golden_sha "goproxy/${GO_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"
@@ -276,7 +276,7 @@ fi
 begin_test "FIX #4104: a gem whose gemspec declares another version is withheld under fail_closed (423, no verdict row)"
 pull "${R}/${GEM}/${GEM_LIAR}"
 d=$(golden_sha "rubygems/${GEM_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"
@@ -323,7 +323,7 @@ fi
 begin_test "FIX #4105: a dist whose composer.json names another package is withheld under fail_closed (423, no verdict row)"
 pull "${P}/${CMP}/${CMP_LIAR}"
 d=$(golden_sha "composer/zipball/liarpkg.zip")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"
