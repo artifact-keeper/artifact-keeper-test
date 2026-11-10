@@ -178,19 +178,31 @@ else
   fail "record-only HTTP ${s1} (${m1}), fail-closed HTTP ${s2}, stored '${a3}'"
 fi
 
+# 1.12.0 (#4363, artifact-keeper#4968): an instance administrator's PUT locks the
+# repository's proxy scan policy unless it sends "instance_locked": false, and
+# the audit row lists the lock among the changed fields. The audited row is RO's
+# first instance-admin write (the record_only PUT above): instance_locked false -> true.
 begin_test "FIX #3645: the scan-config change is audited as REPOSITORY_UPDATED with before/after and changed fields; a no-op PUT adds no row"
 n1=$(audit_rows "$RO_ID")
+# The no-op PUT must also leave the stored policy as it was, lock included.
+sec_view() {
+  api_get "/api/v1/repositories/${RO}/security" 2>/dev/null \
+    | jq -c '(.config // .) | {scan_enabled, scan_on_upload, scan_on_proxy, block_on_policy_violation, severity_threshold, proxy_scan_action, instance_locked}' 2>/dev/null || true
+}
+g1=$(sec_view)
 put_security "$RO" '{"scan_enabled":true,"scan_on_proxy":true,"proxy_scan_action":"record_only"}'
 n2=$(audit_rows "$RO_ID")
+g2=$(sec_view)
 row=$(psql_q "SELECT details::text FROM audit_log WHERE action='REPOSITORY_UPDATED' AND resource_id::text='${RO_ID}' AND details ? 'scan_config' ORDER BY created_at DESC LIMIT 1")
 chg=$(jq -c '.scan_config_changed | sort' <<<"$row" 2>/dev/null || true)
 if [ "$n1" = "1" ] && [ "$n2" = "1" ] \
    && [ "$(jq -r '.scan_config.proxy_scan_action' <<<"$row" 2>/dev/null)" = "record_only" ] \
    && [ "$(jq -r '.previous_scan_config.proxy_scan_action' <<<"$row" 2>/dev/null)" = "fail_open" ] \
-   && [ "$chg" = '["proxy_scan_action","scan_enabled","scan_on_proxy"]' ]; then
+   && [ "$chg" = '["instance_locked","proxy_scan_action","scan_enabled","scan_on_proxy"]' ] \
+   && [ -n "$g1" ] && [ "$g1" = "$g2" ] && [ "$(jq -r '.instance_locked' <<<"$g2" 2>/dev/null)" = "true" ]; then
   pass
 else
-  fail "rows before/after no-op: ${n1:-?}/${n2:-?}; changed=${chg:-none}; row=${row:0:300}"
+  fail "rows before/after no-op: ${n1:-?}/${n2:-?}; changed=${chg:-none}; GET before/after no-op: ${g1:-none} / ${g2:-none}; row=${row:0:300}"
 fi
 
 begin_test "FIX #3645: first pull of commons-text-1.9.jar through the record_only Remote is 200 X-AK-Scan: pending"

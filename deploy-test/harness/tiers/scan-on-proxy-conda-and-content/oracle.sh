@@ -249,7 +249,7 @@ fi
 begin_test "#4585: a package whose index.json names another package is withheld 423 under fail_closed and nothing is recorded"
 st="$(cget "/conda/${CR}/noarch/${LIAR}" r_liar)"
 rows="$(psql_q "SELECT count(*) FROM proxy_scan_results WHERE checksum_sha256 = '$(sha_of "$P/$LIAR")'")"
-if [ "$st" = "423" ] && jq -e '.error == "scan_pending"' "$WORK/r_liar" >/dev/null 2>&1 && [ "$rows" = "0" ]; then
+if [ "$st" = "423" ] && jq -e '.error == "scan_identity_unestablished"' "$WORK/r_liar" >/dev/null 2>&1 && [ "$rows" = "0" ]; then
   pass
 else
   fail "identity mismatch not withheld" "HTTP ${st}: $(head -c 200 "$WORK/r_liar" | tr -d '\0'); verdict rows=${rows}"

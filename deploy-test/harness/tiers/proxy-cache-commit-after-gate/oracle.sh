@@ -126,12 +126,12 @@ G="${BASE_URL}/go"
 # ---------------------------------------------------------------------------
 # Inconclusive under fail_closed: 423 and not cached
 # ---------------------------------------------------------------------------
-begin_test "control: a jar whose pom.properties declares another version is withheld under fail_closed (423 scan_pending, no verdict)"
+begin_test "control: a jar whose pom.properties declares another version is withheld under fail_closed (423 scan_identity_unestablished, no verdict)"
 h0=$(file_hits "/maven2/${MVN_LIAR}")
 pull "${M}/${MVN}/${MVN_LIAR}"
 d=$(golden_sha "maven2/${MVN_LIAR}")
 h1=$(file_hits "/maven2/${MVN_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"
@@ -149,18 +149,18 @@ fi
 begin_test "FIX #4514: a re-pull of the withheld Maven jar fetches it from the upstream again and is withheld again (423)"
 pull "${M}/${MVN}/${MVN_LIAR}"
 h2=$(file_hits "/maven2/${MVN_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -n "$h1" ] && [ -n "$h2" ] \
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -n "$h1" ] && [ -n "$h2" ] \
    && [ "$h1" -gt "${h0:-0}" ] && [ "$h2" -gt "$h1" ] 2>/dev/null; then
   pass
 else
   fail "status=${ST} body=$(snippet) upstream jar GETs ${h0:-?} -> ${h1:-?} -> ${h2:-?} (no new GET = answered from the cache)"
 fi
 
-begin_test "control: a .nupkg whose .nuspec declares another version is withheld under fail_closed (423 scan_pending)"
+begin_test "control: a .nupkg whose .nuspec declares another version is withheld under fail_closed (423 scan_identity_unestablished)"
 nh0=$(hits "/nuget/v3-flatcontainer/${NUG_LIAR}")
 pull "${N}/${NUG}/v3/flatcontainer/${NUG_LIAR}"
 nh1=$(hits "/nuget/v3-flatcontainer/${NUG_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet)"
@@ -185,7 +185,7 @@ c=$(cache_rows "$GO" "v2.0.0.zip")
 gh1=$(hits "/goproxy/${GO_LIAR}")
 pull "${G}/${GO}/${GO_LIAR}"; s2="$ST/$(body_err)"
 gh2=$(hits "/goproxy/${GO_LIAR}")
-if [ "$s1" = "423/scan_pending" ] && [ "$s2" = "423/scan_pending" ] && [ "$c" = "0" ] \
+if [ "$s1" = "423/scan_identity_unestablished" ] && [ "$s2" = "423/scan_identity_unestablished" ] && [ "$c" = "0" ] \
    && [ -n "$gh2" ] && [ "$gh1" -gt "${gh0:-0}" ] && [ "$gh2" -gt "$gh1" ] 2>/dev/null; then
   pass
 else

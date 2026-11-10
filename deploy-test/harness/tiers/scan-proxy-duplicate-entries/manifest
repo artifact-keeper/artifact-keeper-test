@@ -8,7 +8,7 @@
 # package archive with two entries at the manifest's path is read one way by
 # that reader and unpacked the other way by the scan extractor (and by some
 # clients), so the gate must not establish an identity for it: under
-# fail_closed it is withheld (423 scan_pending) and nothing is scanned or
+# fail_closed it is withheld (423 scan_identity_unestablished; scan_pending before 1.12.0, #5166) and nothing is scanned or
 # recorded for its digest, the way an unreadable archive is treated. Covered
 # per format: npm (tgz), Maven (jar, second copy as ./META-INF/...), NuGet
 # (nupkg, one raw name twice), Cargo (crate) and conda (tar.bz2).

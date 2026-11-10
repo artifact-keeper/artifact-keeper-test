@@ -178,7 +178,7 @@ fi
 begin_test "FIX #4109: a pod whose podspec declares another version is withheld under fail_closed (423, no verdict row)"
 pull "${CP}/${POD}/${POD_LIAR}"
 d=$(golden_sha "cocoapods/${POD_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"
@@ -217,7 +217,7 @@ fi
 begin_test "FIX #4110: an archive with no Package.swift is withheld under fail_closed (423, no verdict row)"
 pull "${S}/${SW}/${SW_LIAR}"
 d=$(golden_sha "swift/${SW_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"

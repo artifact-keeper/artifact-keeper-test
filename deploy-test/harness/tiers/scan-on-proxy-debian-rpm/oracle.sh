@@ -208,7 +208,7 @@ fi
 begin_test "FIX #4111: a .deb whose control declares another version is withheld under fail_closed (423, no verdict row)"
 pull "${D}/${DEB}/${DEB_LIAR}"
 d=$(golden_sha "debian/${DEB_LIAR}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"
@@ -217,7 +217,7 @@ fi
 begin_test "FIX #4111: a .deb whose release cannot be determined is withheld under fail_closed (423, no verdict row)"
 pull "${D}/${DEB_NR}/${DEB_NOREL}"
 d=$(golden_sha "debian-norel/${DEB_NOREL}")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} scan='${SCAN}' body=$(snippet) verdict='$(verdict_of "$d")'"
@@ -290,7 +290,7 @@ fi
 begin_test "FIX #4112: RPMs whose header disagrees or that carry no dist tag are withheld under fail_closed (423, no verdict row)"
 pull "${R}/${RPM}/${RPM_LIAR}"; s1="$ST/$(body_err)"; v1=$(verdict_of "$(golden_sha "rpm/${RPM_LIAR}")")
 pull "${R}/${RPM}/${RPM_NOTAG}"; s2="$ST/$(body_err)"; v2=$(verdict_of "$(golden_sha "rpm/${RPM_NOTAG}")")
-if [ "$s1 $s2" = "423/scan_pending 423/scan_pending" ] && [ -z "$v1$v2" ]; then
+if [ "$s1 $s2" = "423/scan_identity_unestablished 423/scan_identity_unestablished" ] && [ -z "$v1$v2" ]; then
   pass
 else
   fail "liar=${s1} notag=${s2} verdicts='${v1}' '${v2}'"

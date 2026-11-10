@@ -121,9 +121,9 @@ for c in "${CASES[@]}"; do
     fail "status=${ST} scan='${SCAN}' body=$(snippet)"
   fi
 
-  begin_test "FIX (${label}): a package with two entries at its manifest path is withheld under fail_closed (423 scan_pending)"
+  begin_test "FIX (${label}): a package with two entries at its manifest path is withheld under fail_closed (423 scan_identity_unestablished)"
   pull "${BASE_URL}${prefix}/${dup_c}"
-  if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ]; then
+  if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ]; then
     pass
   else
     fail "status=${ST} scan='${SCAN}' body=$(snippet) (200 clean means the gate graded one copy of the manifest and served the other)"

@@ -219,7 +219,7 @@ fi
 begin_test "FIX #4100: a jar whose pom.properties declares another version is withheld under fail_closed (423, no verdict row)"
 pull "${M}/${MVN}/${LIAR}.jar"
 d=$(golden_sha "maven2/${LIAR}.jar")
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ] && [ -z "$(verdict_of "$d")" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ] && [ -z "$(verdict_of "$d")" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) verdict='$(verdict_of "$d")'"
@@ -311,7 +311,7 @@ fi
 
 begin_test "FIX #4102: a package whose .nuspec declares another version is withheld under fail_closed (423)"
 pull "${N}/${NUG}/v3/flatcontainer/${NL_NUPKG}"
-if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_pending" ]; then
+if [ "$ST" = "423" ] && [ "$(body_err)" = "scan_identity_unestablished" ]; then
   pass
 else
   fail "status=${ST} scan='${SCAN}' body=$(snippet)"
