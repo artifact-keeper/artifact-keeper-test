@@ -13,7 +13,10 @@
 #     and a `Location` header naming the same status URL. The repository is
 #     renamed to `~deleting~<job id>` at once (its key stops resolving); its
 #     rows and objects are removed by the job. The job is terminal at
-#     `completed` or `failed`.
+#     `completed`, `failed` or (artifact-keeper#5655) `completed_with_errors`:
+#     the rows and the repository are gone, but `failed_items` stored objects
+#     could not be deleted and are left for storage GC (`error_summary` names
+#     the count and the first keys).
 #
 # An oracle that asserts anything about rows or objects after a repository
 # delete must wait for the job on 1.12. These helpers leave the 1.11 path
@@ -26,7 +29,9 @@
 #   delete_repository_and_wait BASE_URL TOKEN KEY [TIMEOUT_S]
 #       DELETE the repository, then wait for its job if the answer is 202.
 #       Returns 0 when the delete was accepted (200/204) or its job reached
-#       `completed`; non-zero otherwise. Sets:
+#       `completed`; non-zero otherwise, `completed_with_errors` included
+#       (objects were left behind, which is what a storage oracle checks).
+#       Sets:
 #         REPO_DELETE_CODE    HTTP status of the DELETE
 #         REPO_DELETE_BODY    file holding the DELETE response body
 #         REPO_DELETE_JOB_ID  job id (202 only, else empty)
@@ -41,8 +46,8 @@
 #       (REPO_DELETE_CODE is set to CODE).
 #
 # The timeout defaults to REPO_DELETE_TIMEOUT (120 s). Polling is once per
-# second. A 202 without a job id, a failed job and a timeout all return
-# non-zero with REPO_DELETE_ERROR saying which.
+# second. A 202 without a job id, a failed job, a job completed with errors
+# and a timeout all return non-zero with REPO_DELETE_ERROR saying which.
 # =============================================================================
 
 REPO_DELETE_TIMEOUT="${REPO_DELETE_TIMEOUT:-120}"
@@ -100,6 +105,11 @@ repo_delete_wait() {
           err="$(jq -r '.error_summary // empty' "$poll" 2>/dev/null)"
           REPO_DELETE_JOB_STATUS="failed"
           REPO_DELETE_ERROR="repository delete job ${job} failed in phase '${phase}': ${err:-no error_summary}"
+          return 1 ;;
+        completed_with_errors)
+          err="$(jq -r '.error_summary // empty' "$poll" 2>/dev/null)"
+          REPO_DELETE_JOB_STATUS="completed_with_errors"
+          REPO_DELETE_ERROR="repository delete job ${job} completed with errors ($(jq -r '.failed_items // "?"' "$poll" 2>/dev/null) object delete(s) failed, left for storage GC): ${err:-no error_summary}"
           return 1 ;;
       esac
     fi
