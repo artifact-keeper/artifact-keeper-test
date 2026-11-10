@@ -35,8 +35,19 @@ DB_URL="$(db_url postgres)"
 
 setup_workdir
 W="$WORK_DIR"
-SECRETS="${W}/secrets"
-mkdir -p "$SECRETS"
+# The secrets directory is a BIND-MOUNT SOURCE, so it must be a path the docker
+# DAEMON can see, not just this shell. On the gate's dind pool
+# (ak-docker-runners) the daemon runs in a sidecar that shares only the runner's
+# work volume (/home/runner/_work, which holds RUNNER_TEMP and the checkout),
+# not the runner's /tmp: a mktemp -d under /tmp is mounted as an EMPTY directory
+# and every *_FILE read fails with ENOENT, which reads as a product failure.
+# (1.12.0 candidate run 42767020927: even the deliberately empty file was
+# "No such file or directory".) Put it under RUNNER_TEMP when there is one.
+SF_PARENT="${SF_SECRETS_PARENT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
+mkdir -p "$SF_PARENT" 2>/dev/null || true
+SECRETS="$(mktemp -d "${SF_PARENT%/}/dtf-sf-secrets.XXXXXX" 2>/dev/null || true)"
+[ -n "$SECRETS" ] || { SECRETS="${W}/secrets"; mkdir -p "$SECRETS"; }
+add_exit_handler "rm -rf \"$SECRETS\""
 
 # common.sh may run under `set -e`: every probe below swallows its own failure
 # and the assertion that reads the (possibly empty) value judges it.
@@ -71,6 +82,18 @@ printf '%s\n' "$(db_url sf-no-such-host.invalid)" > "${SECRETS}/database_url_wro
 chmod 755 "$W" "$SECRETS"
 chmod 644 "$SECRETS"/*
 export SF_SECRETS_DIR="$SECRETS"
+
+# mount_visible: prove the daemon sees the files before any leg depends on it,
+# so an unshared bind-mount source is reported as INFRA (exit 11), never as
+# "the backend does not read *_FILE". Uses the already-pulled Postgres image.
+mount_visible(){
+  local img
+  img="$(docker inspect -f '{{.Config.Image}}' "$DB_CONTAINER" 2>/dev/null || true)"
+  [ -n "$img" ] || return 0   # cannot probe; let the legs judge
+  docker run --rm --security-opt label=disable --entrypoint sh \
+    -v "${SECRETS}:/run/secrets/ak:ro" "$img" \
+    -c 'test -s /run/secrets/ak/jwt_secret && test -f /run/secrets/ak/empty' >/dev/null 2>&1
+}
 
 # --- stack control -----------------------------------------------------------
 # recreate_backend <override>: recreate only the backend with
@@ -133,6 +156,12 @@ leaks(){
 }
 
 begin_suite "secrets-file-env"
+
+if ! mount_visible; then
+  begin_test "setup: the docker daemon can see the oracle's secrets directory as a bind-mount source"
+  infra_fail "a container mounting ${SECRETS} at ${MOUNT_DIR} does not see the files the oracle wrote there; the daemon does not share this path (set SF_SECRETS_PARENT to a shared directory). Not a product verdict."
+  end_suite
+fi
 
 # =============================================================================
 # Leg 1: a FRESH instance whose three startup credentials exist only as files.

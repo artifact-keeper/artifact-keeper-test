@@ -222,8 +222,11 @@ variant 0.0.0.0 0.0.0.0 traceidratio abc
 if [ -z "$TOK" ]; then
   fail_g "no admin session after recreating the backend with traceidratio: $(tail -3 "${W}/recreate.log")"
 else
-  line="$(grep -m1 'OpenTelemetry tracing enabled' <<<"$LOGS" | cut -c1-300)"
-  note "startup: ${line}"
+  # Match on the WHOLE line and truncate only what is printed: the line grew
+  # (signals=, log_format=, db_query_spans=, ...) and sampler_ratio is emitted
+  # last, past column 300 since 1.12.0.
+  line="$(grep -m1 'OpenTelemetry tracing enabled' <<<"$LOGS" || true)"
+  note "startup: $(grep -oE 'sampler="?[a-z_]+"?|sampler_ratio=[^ ]+' <<<"$line" | tr '\n' ' ')"
   grep -qE 'sampler="?traceidratio' <<<"$line" || fail_g "the startup line does not report sampler=traceidratio"
   grep -qE 'sampler_ratio=1(\.0)?([^0-9.]|$)' <<<"$line" || fail_g "the startup line does not report the 1.0 fallback ratio"
   for i in 1 2 3; do traced "${MK}ratio${i}" >/dev/null; done

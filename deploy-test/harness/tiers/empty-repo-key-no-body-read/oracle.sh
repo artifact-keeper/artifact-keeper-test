@@ -27,8 +27,11 @@
 #   (CONTROL)  the instrument reports a real upload; no empty-key path answers
 #              an unauthenticated 5xx (the pre-#3444 behaviour #3509 must not
 #              bring back); a real conda token channel still works and a bogus
-#              token there is still refused; an ordinary conda repository and a
-#              non-grantee's write are unaffected.
+#              token there is still refused; an ordinary conda repository is
+#              unaffected; an anonymous write to `t` is challenged (401); a
+#              non-grantee's write to `t` is refused unread with nothing stored
+#              (the unknown-key 404 of #5458/#5538, same status,
+#              headers and body; 1.12.0+, release/1.11.x keeps 401/403).
 #   (BOUNDARY) every probed empty-key prefix answers 401/404 with size_upload
 #              == 0 — the probe set is exactly the prefixes measured to buffer
 #              on the vulnerable image, so no gate is vacuous. RED on
@@ -299,12 +302,56 @@ else
     "public_patch=${PUB_PATCH} public_anon=${PUB_ANON} private_patch=${PRIV_PATCH} private_anon=${PRIV_ANON}"
 fi
 
-begin_test "CONTROL: a non-admin with NO grant on 't' is still refused a write to it"
+begin_test "CONTROL: anonymous POST /conda/t/upload on the PRIVATE repository keyed 't' -> 401 (so a client can prompt), body unread"
+read -r CC UP <<<"$(probe POST "${BASE_URL}/conda/${CONDA_T}/upload" form)"
+if [ "$CC" = "401" ] && [ "${UP:-0}" = "0" ]; then pass; else
+  fail "an anonymous write to the private repository keyed '${CONDA_T}' answered ${CC} after ${UP} bytes, expected 401 with 0: an unauthenticated client must be challenged so it can supply credentials" \
+    "code=${CC} size_upload=${UP}"
+fi
+
+# A refused write to a repository the caller cannot READ answers exactly what an
+# unknown key answers (artifact-keeper#5458 / #5538, 1.12.0,
+# docs/repository-visibility.md): 404 with the same status, headers and body, so
+# a write attempt does not enumerate private keys. This is MAIN's gate and no
+# other DTF tier covers #5538, so 403 is NOT accepted here: a revert must go RED.
+# (release/1.11.x keeps its own copy of this tier.) Either way the body is never
+# read and nothing is written to 't'.
+t_artifacts() {
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
+    "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '${CONDA_T}';" \
+    2>/dev/null | tr -d '[:space:]' || echo "?"
+}
+# norm_headers FILE: the response headers minus the per-request ones, lowercased
+# names, sorted, CR stripped, status line kept.
+norm_headers() {
+  tr -d '\r' <"$1" | grep -v '^$' \
+    | awk 'NR==1{print; next} {i=index($0,":"); if(i){n=tolower(substr($0,1,i-1)); print n substr($0,i)}}' \
+    | grep -viE '^(date|x-correlation-id|x-request-id|traceparent):' | sort
+}
+UNKNOWN_KEY="ebk-nosuch-${SLOT}-${SUF}"
+begin_test "CONTROL: a non-admin with NO grant on 't' is refused a write to it with the unknown-key 404 (#5538: same status, headers, body), body unread, nothing written"
+BEFORE="$(t_artifacts)"
 read -r CC UP <<<"$(probe POST "${BASE_URL}/conda/${CONDA_T}/upload" form \
-  -H "Authorization: Bearer ${OUTSIDER_TOKEN}")"
-if [ "$CC" = "401" ] || [ "$CC" = "403" ]; then pass; else
-  fail "a non-admin holding no grant on the private repository keyed '${CONDA_T}' got ${CC} on POST /conda/${CONDA_T}/upload (expected 401/403). Resolving the key correctly must not also confer a write" \
-    "code=${CC} size_upload=${UP} user=${OUTSIDER}"
+  -D "${WORK}/t.hdr" -H "Authorization: Bearer ${OUTSIDER_TOKEN}")"
+T_BODY="$(cat "${WORK}/body" 2>/dev/null || true)"
+read -r UC _ <<<"$(probe POST "${BASE_URL}/conda/${UNKNOWN_KEY}/upload" form \
+  -D "${WORK}/u.hdr" -H "Authorization: Bearer ${OUTSIDER_TOKEN}")"
+U_BODY="$(cat "${WORK}/body" 2>/dev/null || true)"
+AFTER="$(t_artifacts)"
+T_HDR="$(norm_headers "${WORK}/t.hdr" 2>/dev/null || true)"
+U_HDR="$(norm_headers "${WORK}/u.hdr" 2>/dev/null || true)"
+WHY=""
+[ "$CC" = "404" ] || WHY="answered ${CC}, expected the unknown-key 404 (#5538; a 403 here tells the private key apart from an unknown one);"
+[ "$UC" = "404" ] || WHY="${WHY} the unknown-key control answered ${UC}, expected 404;"
+[ "$T_BODY" = "$U_BODY" ] || WHY="${WHY} the body differs from an unknown key's;"
+if [ -z "$T_HDR" ] || [ "$T_HDR" != "$U_HDR" ]; then
+  WHY="${WHY} the headers differ from an unknown key's (date / x-correlation-id ignored): $(diff <(echo "$T_HDR") <(echo "$U_HDR") | grep '^[<>]' | tr '\n' ' ' | head -c 300);"
+fi
+[ "${UP:-0}" = "0" ] || WHY="${WHY} ${UP} body bytes were read before refusing;"
+[ "$BEFORE" = "$AFTER" ] && [ "$BEFORE" != "?" ] || WHY="${WHY} artifacts in '${CONDA_T}' went ${BEFORE} -> ${AFTER};"
+if [ -z "$WHY" ]; then pass; else
+  fail "a non-admin holding no grant on the private repository keyed '${CONDA_T}' was not refused like an unknown key on POST /conda/${CONDA_T}/upload: ${WHY} Resolving the key correctly must not also confer a write, nor reveal the key" \
+    "code=${CC} size_upload=${UP} unknown_key_code=${UC} body=${T_BODY:0:200} unknown_body=${U_BODY:0:200} artifacts_before=${BEFORE} after=${AFTER} user=${OUTSIDER}"
 fi
 
 # ===========================================================================
