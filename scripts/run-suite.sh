@@ -6,7 +6,9 @@
 #
 # Discovers test scripts by globbing tests/<suite>/**/test-*.sh, applies an
 # optional include filter and/or an exclude list, then runs each script with a
-# timeout. Prints a summary and exits non-zero if any test failed.
+# timeout. Prints a summary and exits non-zero if any test failed. Scenario
+# suites are addressed by alias (scenarios-company-sim -> tests/scenarios/
+# company-sim); see "Suite aliases" below.
 #
 # --filter  <pattern>      keep only scripts whose path contains <pattern>.
 # --exclude <pat[,pat...]> drop scripts whose path contains ANY comma-separated
@@ -15,7 +17,8 @@
 #                          an otherwise-blocking suite so the rest can hard-gate.
 #
 # Environment variables:
-#   TEST_TIMEOUT  - Per-test timeout in seconds (default: 120)
+#   TEST_TIMEOUT  - Per-test timeout in seconds (default: 120; scenario
+#                   suites set their own, e.g. 3600 for scenarios-company-sim)
 #   BASE_URL      - Backend URL passed through to test scripts
 #   RUN_ID        - Run identifier passed through to test scripts
 
@@ -51,13 +54,36 @@ if [ -z "$SUITE" ]; then
   exit 1
 fi
 
-TIMEOUT="${TEST_TIMEOUT:-120}"
+# ---------------------------------------------------------------------------
+# Suite aliases
+# ---------------------------------------------------------------------------
+# A suite name normally IS its directory under tests/. Scenario suites live
+# one level deeper (tests/scenarios/<name>) and are addressed as
+# scenarios-<name>; they also run longer than a single-feature script, so
+# they get a larger default per-script timeout (TEST_TIMEOUT still wins).
+SUITE_PATH="${SUITE}"
+SUITE_TIMEOUT_DEFAULT=120
+case "$SUITE" in
+  scenarios)
+    # tests/scenarios holds whole scenarios, each with its own runtime: run
+    # one by its alias so it gets its timeout, never all of them at 120 s.
+    echo "ERROR: run a scenario by its alias, e.g. --suite scenarios-company-sim"
+    exit 1
+    ;;
+  scenarios-company-sim)
+    # Halcyon Robotics: found the company, then every role in parallel.
+    SUITE_PATH="scenarios/company-sim"
+    SUITE_TIMEOUT_DEFAULT=3600   # founder + roles (role timeout 1800 by default)
+    ;;
+esac
+
+TIMEOUT="${TEST_TIMEOUT:-${SUITE_TIMEOUT_DEFAULT}}"
 
 # ---------------------------------------------------------------------------
 # Discover test scripts
 # ---------------------------------------------------------------------------
 
-SUITE_DIR="${REPO_ROOT}/tests/${SUITE}"
+SUITE_DIR="${REPO_ROOT}/tests/${SUITE_PATH}"
 
 if [ ! -d "$SUITE_DIR" ]; then
   echo "ERROR: suite directory not found: ${SUITE_DIR}"
