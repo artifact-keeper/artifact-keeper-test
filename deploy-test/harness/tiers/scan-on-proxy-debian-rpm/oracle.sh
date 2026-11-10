@@ -3,7 +3,8 @@
 # tiers/scan-on-proxy-debian-rpm/oracle.sh - the scan-on-proxy gate on proxied
 # Debian and RPM packages, Remote and Virtual
 # =============================================================================
-# artifact-keeper 1.12.0: #4111 (Debian), #4112 (RPM), epic #4097.
+# artifact-keeper 1.12.0: #4111 (Debian), #4112 (RPM), epic #4097; #5695 (a
+# Packages index the cached Release does not name decides nothing).
 #
 # run.sh has stood up `storage.filesystem upstreams.mock-scan-formats` and
 # exported BASE_URL, ADMIN_PASS, RUN_ID, DTF_SLOT, TRIVY_PORT (the mock's
@@ -43,6 +44,8 @@ DEB_OFF="sopo-deboff-${SUF}"  # Debian Remote, no scanning (control)
 DEB_NR="sopo-debnr-${SUF}"    # Debian Remote over an upstream with no Release, fail_closed
 DEB_M="sopo-debm-${SUF}"      # Debian Remote member of DEB_V, fail_closed
 DEB_V="sopo-debv-${SUF}"      # Debian Virtual over DEB_M
+DEB_TM="sopo-debtm-${SUF}"    # Debian Remote over a suite whose Release names another index digest, fail_closed (#5695)
+DEB_MA="sopo-debma-${SUF}"    # Debian Remote over a suite whose Release names the served index, fail_closed (#5695 control)
 RPM="sopo-rpm-${SUF}"         # RPM Remote, fail_closed
 RPM_FO="sopo-rpmfo-${SUF}"    # RPM Remote, fail_open
 RPM_OFF="sopo-rpmoff-${SUF}"  # RPM Remote, no scanning (control)
@@ -62,13 +65,17 @@ RPM_REPOMD="${TREE}/repodata/repomd.xml"
 
 cleanup() {
   local k
-  for k in "$DEB_V" "$RPM_V" "$DEB_M" "$RPM_M" "$DEB" "$DEB_FO" "$DEB_RO" "$DEB_OFF" "$DEB_NR" \
+  for k in "$DEB_V" "$RPM_V" "$DEB_M" "$RPM_M" "$DEB" "$DEB_FO" "$DEB_RO" "$DEB_OFF" "$DEB_NR" "$DEB_TM" "$DEB_MA" \
            "$RPM" "$RPM_FO" "$RPM_OFF"; do
     api_delete "/api/v1/repositories/${k}" >/dev/null 2>&1 || true
   done
 }
 add_exit_handler "cleanup"
 
+cache_rows() {
+  psql_q "SELECT count(*) FROM proxy_cache_artifacts p JOIN repositories r ON r.id=p.repository_id
+          WHERE r.key='$1' AND p.path LIKE '%$2'"
+}
 psql_q() { docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc "$1" 2>/dev/null | tr -d '[:space:]'; }
 golden_sha() { curl -s --max-time 10 "${MOCK}/__sha256/$1" || true; }
 hits() { curl -s --max-time 10 "${MOCK}/__hits?prefix=$1" | jq -r '.count // empty' 2>/dev/null; }
@@ -262,6 +269,71 @@ if [ "$ST" = "400" ] && [ "$h1" = "$h2" ]; then
   pass
 else
   fail "status=${ST} body=$(snippet) upstream GETs ${h1:-?} -> ${h2:-?}"
+fi
+
+# ---------------------------------------------------------------------------
+# #5695: a Packages index the cached Release does not vouch for decides nothing
+# ---------------------------------------------------------------------------
+# Both suites carry one unmarked package and a Release naming
+# main/binary-amd64/Packages. In debian-match the named digest is the served
+# index's; in debian-tamper it is not (same size, one byte different). Before
+# the fix the gate cached the fetched index before comparing digests, refused
+# the first pull (423) and then graded every later pull on that index: 200.
+TM_DEB="pool/main/d/dtf-tamperclean/dtf-tamperclean_1.0-1_amd64.deb"
+MA_DEB="pool/main/d/dtf-matchclean/dtf-matchclean_1.0-1_amd64.deb"
+IDX="dists/bookworm/main/binary-amd64/Packages"
+begin_test "Setup (#5695): fail_closed Remotes over debian-tamper and debian-match, and an apt-style Release fetch through each"
+ok=1
+create_repo "$DEB_TM" debian remote "${UP}/debian-tamper" || ok=0
+create_repo "$DEB_MA" debian remote "${UP}/debian-match" || ok=0
+a="$(scan_cfg "$DEB_TM" fail_closed) $(scan_cfg "$DEB_MA" fail_closed)"
+pull "${D}/${DEB_TM}/dists/bookworm/Release"; r1="$ST"
+pull "${D}/${DEB_MA}/dists/bookworm/Release"; r2="$ST"
+if [ "$ok" = 1 ] && [ "$a" = "fail_closed fail_closed" ] && [ "$r1 $r2" = "200 200" ]; then
+  pass
+else
+  fail "ok=${ok} actions='${a}' Release statuses=${r1}/${r2}"
+fi
+
+begin_test "control (#5695): when the Release names the served index's digest, the unmarked package is 200 X-AK-Scan: clean on every pull"
+pull "${D}/${DEB_MA}/${MA_DEB}"; m1="$ST/$SCAN"
+pull "${D}/${DEB_MA}/${MA_DEB}"; m2="$ST/$SCAN"
+pull "${D}/${DEB_MA}/${MA_DEB}"; m3="$ST/$SCAN"
+if [ "$m1 $m2 $m3" = "200/clean 200/clean 200/clean" ] && [ "$BSHA" = "$(golden_sha "debian-match/${MA_DEB}")" ]; then
+  pass
+else
+  fail "pulls=${m1} ${m2} ${m3} (a 423 here means the gate did not link the package to its suite)"
+fi
+
+begin_test "FIX #5695: when the Release names another index digest, the package is withheld 423 on the first, second and third pull, and no verdict is recorded"
+t=""
+for _ in 1 2 3; do pull "${D}/${DEB_TM}/${TM_DEB}"; t="${t} ${ST}/$(body_err)"; done
+d=$(golden_sha "debian-tamper/${TM_DEB}")
+want=" 423/scan_identity_unestablished 423/scan_identity_unestablished 423/scan_identity_unestablished"
+if [ "$t" = "$want" ] && [ -z "$(verdict_of "$d")" ]; then
+  pass
+else
+  fail "pulls:${t} verdict='$(verdict_of "$d")' (pre-fix: 423 then 200 clean, graded on the unvouched index)"
+fi
+
+begin_test "FIX #5695: the unvouched index is not in the Remote's proxy cache"
+c=$(cache_rows "$DEB_TM" "$IDX")
+if [ "$c" = "0" ]; then
+  pass
+else
+  fail "proxy_cache_artifacts rows for ${IDX}: ${c} (pre-fix: the gate committed it before the digest check)"
+fi
+
+begin_test "FIX #5695: a client GET of the unvouched index does not serve its bytes, caches nothing, and the package stays 423"
+pull "${D}/${DEB_TM}/${IDX}"; ist="$ST"; isha="$BSHA"
+served=""
+if [ "$ist" = "200" ] && [ "$isha" = "$(golden_sha "debian-tamper/${IDX}")" ]; then served=y; fi
+c=$(cache_rows "$DEB_TM" "$IDX")
+pull "${D}/${DEB_TM}/${TM_DEB}"; after="${ST}/$(body_err)"
+if [ -z "$served" ] && [ "$ist" != "200" ] && [ "$c" = "0" ] && [ "$after" = "423/scan_identity_unestablished" ]; then
+  pass
+else
+  fail "index GET=${ist} served-unvouched='${served}' cache rows=${c} next package pull=${after}"
 fi
 
 # ---------------------------------------------------------------------------

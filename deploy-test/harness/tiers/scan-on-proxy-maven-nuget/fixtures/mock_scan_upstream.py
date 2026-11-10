@@ -670,6 +670,28 @@ FILES["debian/dists/bookworm/Release"] = (
     "Description: dtf scan fixture\nSHA256:\n"
     f" {hashlib.sha256(_deb_index).hexdigest()} {len(_deb_index)} main/binary-amd64/Packages\n"
 ).encode()
+# debian-tamper and debian-match (artifact-keeper#5695): each a bookworm suite
+# whose Release names one main/binary-amd64 Packages index listing one unmarked
+# package. In debian-match the Release names the served index's real SHA-256;
+# in debian-tamper it names the digest of other bytes, so the served index is
+# one the Release does not vouch for. The packages differ from dtf-scanclean so
+# no digest-keyed verdict is shared between the cases.
+def deb_suite(base, package, release_names_served_index):
+    path = add_deb(base, "main", package, "1.0-1")
+    index = deb_packages_index(base, [path])
+    FILES[f"{base}/dists/bookworm/main/binary-amd64/Packages"] = index
+    # Same size, one byte different: only the digest disagrees.
+    named = index if release_names_served_index else index.replace(b"fixture\n", b"fixturE\n")
+    FILES[f"{base}/dists/bookworm/Release"] = (
+        "Origin: Debian\nLabel: Debian\nSuite: stable\nVersion: 12.7\nCodename: bookworm\n"
+        "Date: Wed, 01 Jan 2020 00:00:00 UTC\nArchitectures: amd64\nComponents: main\n"
+        "Description: dtf scan fixture\nSHA256:\n"
+        f" {hashlib.sha256(named).hexdigest()} {len(named)} main/binary-amd64/Packages\n"
+    ).encode()
+
+
+deb_suite("debian-match", "dtf-matchclean", True)
+deb_suite("debian-tamper", "dtf-tamperclean", False)
 # RPM (upstream base http://<self>/rpm): the yum layout dnf fetches.
 add_rpm("rpm", "openssl-libs", "3.0.7", "17.el9_2", "x86_64", epoch=1,
         sourcerpm="openssl-3.0.7-17.el9_2.src.rpm")
