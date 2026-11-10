@@ -15,9 +15,11 @@
 # publish validation already refuses with 400 before the lint runs, or the
 # lint blocks), and a clean control document with no finding.
 #
-# The repository uses mcp_package_policy=open so packages[] (where
-# environmentVariables and packageArguments live) are stored verbatim without
-# a backing npm package.
+# The repository uses mcp_package_policy=open with npm mapped to a Local npm
+# repository that holds @ak-lint/server@1.0.0. Since artifact-keeper#5452
+# `open` pins packages exactly as own-repos does, so every packages[] entry
+# (where environmentVariables and packageArguments live) must resolve there
+# before the publish reaches the lint.
 #
 # Gate: mcp_require_registry mcp_lint, then the BEHAVIOUR probe: publish a
 # server whose environmentVariables[].default is an AWS-style access key
@@ -166,8 +168,16 @@ expect_rule() {
 # Setup and the behaviour probe
 # ---------------------------------------------------------------------------
 
-begin_test "Setup: open-policy mcp repository"
-if mcp_create_repo "$REPO" '{"mcp_package_policy":"open"}'; then
+begin_test "Setup: npm backing repository holding @ak-lint/server@1.0.0"
+if mcp_create_backing_repos "mcp-lint-${RUN_ID}" \
+  && mcp_publish_echo_package "$MCP_NPM_KEY" "@ak-lint/server" 1.0.0 "${NS}/server"; then
+  pass
+else
+  fail_fatal "backing npm setup failed: HTTP ${MCP_STATUS:-}" "$(mcp_snip)"
+fi
+
+begin_test "Setup: open-policy mcp repository (npm mapped)"
+if mcp_create_repo "$REPO" "$(jq -cn --arg n "$MCP_NPM_KEY" '{mcp_package_policy:"open",mcp_package_repos:{npm:$n}}')"; then
   pass
 else
   fail_fatal "create mcp repository" "$MCP_CREATE_ERROR"

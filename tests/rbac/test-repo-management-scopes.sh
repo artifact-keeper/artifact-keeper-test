@@ -180,13 +180,20 @@ begin_test "delete:repositories token deletes a repository (#3831)"
 if [ -z "${DELETE_REPO_TOKEN:-}" ] || [ "$DELETE_REPO_TOKEN" = "null" ]; then
   fail "could not mint delete:repositories token"
 else
-  status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+  # 1.12.0 answers 202 with a deletion job and a Location of
+  # /api/v1/repository-deletions/{id} instead of deleting in the request
+  # (artifact-keeper#4311).
+  DEL_HEADERS="${WORK_DIR}/repo-delete.headers"
+  status=$(curl -s -o /dev/null -D "$DEL_HEADERS" -w '%{http_code}' $CURL_TIMEOUT \
     -X DELETE -H "Authorization: Bearer ${DELETE_REPO_TOKEN}" \
     "${BASE_URL}/api/v1/repositories/${THROWAWAY_REPO}" 2>/dev/null)
-  if [ "$status" = "200" ] || [ "$status" = "204" ]; then
-    pass
+  location=$(tr -d '\r' < "$DEL_HEADERS" 2>/dev/null | awk 'tolower($1) == "location:" { print $2 }' | tail -n1)
+  if [ "$status" != "202" ]; then
+    fail "expected 202 for repository delete with delete:repositories token, got ${status}"
+  elif [ "${location#/api/v1/repository-deletions/}" = "$location" ]; then
+    fail "expected a Location under /api/v1/repository-deletions/, got '${location}'"
   else
-    fail "expected 200/204 for repository delete with delete:repositories token, got ${status}"
+    pass
   fi
 fi
 

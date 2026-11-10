@@ -56,10 +56,12 @@ STALE_SENTINEL="grype-0.0.1-dtf"
 # (A) the stale-clean discriminator wheel: Grype flags CVE-2019-10906 et al.
 CVE_WHEEL="Jinja2-2.10-py2.py3-none-any.whl"
 CVE_PROJECT="jinja2"
+CVE_PIN="python|jinja2|2.10"
 # (B) the same-version control wheel: also CVE-bearing (GHSA-8q59-q68h-6hv4),
 # so a 200 here proves the cache was HONOURED (a re-scan would have 403'd).
 CTRL_WHEEL="PyYAML-5.3.1-cp38-cp38-win_amd64.whl"
 CTRL_PROJECT="pyyaml"
+CTRL_PIN="python|pyyaml|5.3.1"
 
 # (C) the probe-unknown control wheel: never seeded, so its pull is a FRESH
 # digest that proves the node is provably fail-closed at that moment.
@@ -138,14 +140,19 @@ break_grype_and_restart() {
 # is never reused under fail_closed, so a row without a catalog would be
 # re-scanned whatever its scanner_version and the SAME-VERSION leg would no
 # longer test the version comparison.
-seed_clean_row() { # <digest> <scanner_version>
+# The row also carries the pin the inline gate records for the wheel
+# (`python|<name>|<version>`): since artifact-keeper#5030 a clean verdict
+# recorded with no pin is not reused for an established PyPI request
+# (stored_verdict_pertains), so an unpinned row would be re-scanned before
+# the version comparison is reached.
+seed_clean_row() { # <digest> <scanner_version> <pin_identity>
   docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
-    "INSERT INTO proxy_scan_results (checksum_sha256, scan_type, verdict, scanner_version, components_cataloged)
-       VALUES ('$1','grype','clean','$2',1)
+    "INSERT INTO proxy_scan_results (checksum_sha256, scan_type, verdict, scanner_version, components_cataloged, pin_identity)
+       VALUES ('$1','grype','clean','$2',1,'$3')
      ON CONFLICT (checksum_sha256, scan_type) DO UPDATE
        SET verdict='clean', findings_count=0, critical_count=0, high_count=0,
            medium_count=0, low_count=0, max_severity=NULL, components_cataloged=1,
-           scanner_version='$2', scanned_at=now();" >/dev/null 2>&1
+           scanner_version='$2', pin_identity='$3', scanned_at=now();" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -195,7 +202,7 @@ fi
 #     the live engine differs: the pull re-scans and blocks the CVE wheel.
 # ---------------------------------------------------------------------------
 begin_test "Seed: poisoned stale-clean verdict for ${CVE_WHEEL} at ${STALE_SENTINEL}"
-if seed_clean_row "$DIGEST_CVE" "$STALE_SENTINEL" && [ "$(row_state "$DIGEST_CVE")" = "clean|${STALE_SENTINEL}" ]; then
+if seed_clean_row "$DIGEST_CVE" "$STALE_SENTINEL" "$CVE_PIN" && [ "$(row_state "$DIGEST_CVE")" = "clean|${STALE_SENTINEL}" ]; then
   pass
 else
   fail "could not seed the stale-clean row (state='$(row_state "$DIGEST_CVE")')"
@@ -234,7 +241,7 @@ fi
 #     The control wheel is ALSO CVE-bearing, so a 200 proves no re-scan ran.
 # ---------------------------------------------------------------------------
 begin_test "Seed: clean verdict for ${CTRL_WHEEL} AT the live version ${LIVE_VER}"
-if seed_clean_row "$DIGEST_CTRL" "$LIVE_VER" && [ "$(row_state "$DIGEST_CTRL")" = "clean|${LIVE_VER}" ]; then
+if seed_clean_row "$DIGEST_CTRL" "$LIVE_VER" "$CTRL_PIN" && [ "$(row_state "$DIGEST_CTRL")" = "clean|${LIVE_VER}" ]; then
   pass
 else
   fail "could not seed the same-version clean row (state='$(row_state "$DIGEST_CTRL")')"
@@ -277,7 +284,7 @@ fi
 #   Pre-fix: 200 X-AK-Scan: clean, vulnerable bytes served (RED).
 # ---------------------------------------------------------------------------
 begin_test "Seed: re-seed ${CVE_WHEEL} as clean at ${STALE_SENTINEL} for the probe-unknown leg"
-if seed_clean_row "$DIGEST_CVE" "$STALE_SENTINEL" && [ "$(row_state "$DIGEST_CVE")" = "clean|${STALE_SENTINEL}" ]; then
+if seed_clean_row "$DIGEST_CVE" "$STALE_SENTINEL" "$CVE_PIN" && [ "$(row_state "$DIGEST_CVE")" = "clean|${STALE_SENTINEL}" ]; then
   pass
 else
   fail "could not re-seed the clean row (state='$(row_state "$DIGEST_CVE")')"

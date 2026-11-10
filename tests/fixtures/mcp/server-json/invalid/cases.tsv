@@ -1,3 +1,7 @@
+# These run against the conformance suite's `open` repository, which maps
+# only npm. open-pypi-unmapped and open-oci-unmapped are well-formed, but
+# `open` relaxes nothing but foreign coordinates (artifact-keeper#5452): a
+# registryType with no backing repository is 422 mcp_external_registry.
 # file	expected_status	expected_error
 name-no-slash.json	400	mcp_invalid_server_json
 name-two-slashes.json	400	mcp_invalid_server_json
@@ -36,3 +40,5 @@ nine-remotes.json	400	mcp_invalid_server_json
 sixty-five-env-vars.json	400	mcp_invalid_server_json
 reserved-namespace.json	403	mcp_namespace_reserved
 reserved-anonymous-namespace.json	403	mcp_namespace_reserved
+open-pypi-unmapped.json	422	mcp_external_registry
+open-oci-unmapped.json	422	mcp_external_registry

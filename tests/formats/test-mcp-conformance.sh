@@ -4,9 +4,14 @@
 # Curl-only, audit lane. Drives the whole server.json corpus in
 # tests/fixtures/mcp/server-json through the registry API:
 #
-#   valid/*.json         published into an `open` repository and read back:
-#                        200, served document equal to the submitted one
-#                        (packages verbatim), source packagePolicy open
+#   valid/*.json         published into an `open` repository (npm mapped to
+#                        an npm Local holding @ak-e2e/fixture@1.0.0) and read
+#                        back: 200, served document equal to the submitted
+#                        one except that each package is pinned (since
+#                        artifact-keeper#5452 `open` pins exactly as
+#                        own-repos: registryBaseUrl /npm/<mapped> and
+#                        _meta["com.artifactkeeper/resolved"] are added),
+#                        source packagePolicy open
 #   invalid/cases.tsv    every vector answers its status and error code as
 #                        application/problem+json with Cache-Control:
 #                        no-store, never a 5xx
@@ -62,7 +67,12 @@ fi
 if ! mcp_publish_echo_package "$MCP_NPM_KEY" "$ECHO_PKG" "1.0.0" "${NS}/echo"; then
   fail_fatal "npm publish of ${ECHO_PKG}@1.0.0 returned HTTP ${MCP_STATUS}" "$(mcp_snip)"
 fi
-mcp_create_repo "$OPEN_KEY" '{"mcp_package_policy":"open"}' || fail_fatal "open repository: ${MCP_CREATE_ERROR}"
+# The package the valid/ corpus npm entries name.
+if ! mcp_publish_echo_package "$MCP_NPM_KEY" "@ak-e2e/fixture" "1.0.0" "${NS}/fixture"; then
+  fail_fatal "npm publish of @ak-e2e/fixture@1.0.0 returned HTTP ${MCP_STATUS}" "$(mcp_snip)"
+fi
+mcp_create_repo "$OPEN_KEY" "$(jq -cn --arg n "$MCP_NPM_KEY" '{mcp_package_policy:"open",mcp_package_repos:{npm:$n}}')" \
+  || fail_fatal "open repository: ${MCP_CREATE_ERROR}"
 mcp_create_repo "$OWN_KEY" "$(jq -cn --argjson m "$(mcp_package_repos_json)" '{mcp_package_policy:"own-repos",mcp_package_repos:$m}')" \
   || fail_fatal "own-repos repository: ${MCP_CREATE_ERROR}"
 mcp_create_repo "$WALK_KEY" || fail_fatal "walk repository: ${MCP_CREATE_ERROR}"
@@ -72,9 +82,14 @@ pass
 # valid corpus into an open repository
 # ---------------------------------------------------------------------------
 
+# UNPIN: drop what the pin adds to each served package (registryBaseUrl, which
+# the corpus never submits, and the resolved-pin _meta entry) so the rest of
+# the document can be compared with the submitted one.
+UNPIN='(.packages // empty) |= map(del(.registryBaseUrl, ._meta["com.artifactkeeper/resolved"]) | if ._meta == {} then del(._meta) else . end)'
+
 for f in "${CORPUS}"/valid/*.json; do
   base=$(basename "$f")
-  begin_test "valid/${base}: publish to open and read back verbatim"
+  begin_test "valid/${base}: publish to open and read back (packages pinned, rest verbatim)"
   out="${WORK_DIR}/valid-${base}"
   s=$(slug "$f")
   mcp_render_fixture "$f" "$out" "SLUG=${s}"
@@ -90,8 +105,9 @@ for f in "${CORPUS}"/valid/*.json; do
   why=""
   [ "$MCP_STATUS" = "200" ] || why="${why} read HTTP ${MCP_STATUS};"
   [ "$(jq -S -c '.server' "$MCP_BODY" 2>/dev/null)" = "$pub_server" ] || why="${why} read .server differs from the publish answer;"
-  [ "$(jq -S -c '.' "$out")" = "$pub_server" ] || why="${why} served document differs from the submitted one;"
-  [ "$(jq -S -c '.packages // null' "$out")" = "$(jq -S -c '.server.packages // null' "$MCP_BODY")" ] || why="${why} packages not verbatim;"
+  [ "$(jq -S -c '.' "$out")" = "$(jq -S -c ".server | ${UNPIN}" "$MCP_BODY" 2>/dev/null)" ] || why="${why} served document differs from the submitted one beyond the pin;"
+  unpinned=$(jq -r --arg p "/npm/${MCP_NPM_KEY}" '[.server.packages[]? | select((.registryBaseUrl // "" | sub("^[A-Za-z][A-Za-z0-9+.-]*://[^/]+"; "")) != $p)] | length' "$MCP_BODY" 2>/dev/null)
+  [ "$unpinned" = "0" ] || why="${why} ${unpinned:-?} package(s) not pinned to /npm/${MCP_NPM_KEY};"
   [ "$(mcp_json '._meta["com.artifactkeeper.registry/source"].packagePolicy')" = "open" ] || why="${why} source.packagePolicy='$(mcp_json '._meta["com.artifactkeeper.registry/source"].packagePolicy')';"
   [ "$(mcp_header content-type)" = "application/json" ] || why="${why} content-type='$(mcp_header content-type)';"
   if [ -z "$why" ]; then
@@ -141,11 +157,15 @@ else
   fail "HTTP ${MCP_STATUS}" "$(mcp_snip)"
 fi
 
-begin_test "open: the same npm entry is served verbatim (no registryBaseUrl added)"
+begin_test "open: the same npm entry is pinned to the mapped npm repository"
+# Since artifact-keeper#5452 `open` resolves and pins as own-repos does; with
+# no registryBaseUrl submitted the coordinates are not foreign, so there is no
+# foreign_coordinates_replaced warning.
 mcp_server_json "${NS}/echo-open" "1.0.0" "$(mcp_npm_package_json "$ECHO_PKG" "1.0.0")" > "${WORK_DIR}/open-npm.json"
 mcp_publish "$OPEN_KEY" "${WORK_DIR}/open-npm.json"
-if [ "$MCP_STATUS" = "200" ] && [ "$(jq -S -c .packages "${WORK_DIR}/open-npm.json")" = "$(jq -S -c .server.packages "$MCP_BODY")" ] \
-   && [ -z "$(mcp_json '.server.packages[0].registryBaseUrl // empty')" ]; then
+if [ "$MCP_STATUS" = "200" ] && [ "$(mcp_url_path "$(mcp_json '.server.packages[0].registryBaseUrl // empty')")" = "/npm/${MCP_NPM_KEY}" ] \
+   && [ "$(mcp_json '.server.packages[0]._meta["com.artifactkeeper/resolved"].warnings // [] | length')" = "0" ] \
+   && [ "$(mcp_json '._meta["com.artifactkeeper.registry/source"].packagePolicy')" = "open" ]; then
   pass
 else
   fail "HTTP ${MCP_STATUS}" "$(mcp_snip)"
@@ -206,13 +226,19 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Unknown query parameters are ignored"
+# nextCursor is sealed with a random nonce (artifact-keeper#5433), so two
+# answers for the same page differ there; compare everything else and require
+# a cursor on both.
 mcp_get "$WALK_KEY" "servers?limit=5" anon
-want=$(cat "$MCP_BODY")
+want=$(jq -S -c 'del(.metadata.nextCursor)' "$MCP_BODY" 2>/dev/null)
+want_cur=$(mcp_json '.metadata.nextCursor // empty')
 mcp_get "$WALK_KEY" "servers?limit=5&frobnicate=1&page=9&sort=desc" anon
-if [ "$MCP_STATUS" = "200" ] && [ "$(cat "$MCP_BODY")" = "$want" ]; then
+got=$(jq -S -c 'del(.metadata.nextCursor)' "$MCP_BODY" 2>/dev/null)
+got_cur=$(mcp_json '.metadata.nextCursor // empty')
+if [ "$MCP_STATUS" = "200" ] && [ -n "$want" ] && [ "$got" = "$want" ] && [ -n "$want_cur" ] && [ -n "$got_cur" ]; then
   pass
 else
-  fail "HTTP ${MCP_STATUS}; body differs=$([ "$(cat "$MCP_BODY")" = "$want" ] && echo no || echo yes)" "$(mcp_snip)"
+  fail "HTTP ${MCP_STATUS}; body differs (cursor aside)=$([ "$got" = "$want" ] && echo no || echo yes); nextCursor present: first=$([ -n "$want_cur" ] && echo yes || echo no) second=$([ -n "$got_cur" ] && echo yes || echo no)" "$(mcp_snip)"
 fi
 
 begin_test "Accept: text/html still answers JSON"
