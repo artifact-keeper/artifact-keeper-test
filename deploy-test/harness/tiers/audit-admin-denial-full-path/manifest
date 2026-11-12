@@ -1,0 +1,32 @@
+# DTF tier manifest: audit-admin-denial-full-path
+# (artifact-keeper#5603, fixed by artifact-keeper#5831)
+# Profile-set: filesystem. The refusal and its audit row happen in
+# `admin_middleware`, ahead of any handler or storage I/O, so the storage
+# dimension is irrelevant.
+#
+# THE BUG
+# `admin_middleware` sits on the `/api/v1/admin` nest. When an authenticated
+# non-admin reached an admin-only route it answered 403 and wrote a
+# PERMISSION_DENIED audit row, but it took the path from `request.uri()`,
+# which inside a nest is only what is left after the nest prefix. A refused
+# `GET /api/v1/admin/settings` was recorded with `details.path` = `/settings`,
+# so an auditor reading the row could not tell which surface was probed (and a
+# `/settings` under another nest would look identical). The fix reads the
+# `OriginalUri` extension and records `/api/v1/admin/settings`.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) a non-admin's GET /api/v1/admin/settings and
+#             GET /api/v1/admin/audit answer 403; the admin's GET of the same
+#             routes answers 200; each refusal writes exactly one
+#             PERMISSION_DENIED row for that user (read back through
+#             GET /api/v1/admin/audit?action=PERMISSION_DENIED&resource_id=
+#             <user id>) with details.method GET and
+#             details.reason admin_privileges_required. True on both images.
+#   (FIX #5603) the rows record details.path /api/v1/admin/settings and
+#             /api/v1/admin/audit. RED on main 2bdf0923: /settings and /audit.
+#
+# RATE_LIMIT_ENABLED=false: an admin login, a user create, a user login and a
+# burst of audit polls; the base default (ON) could turn a poll into a 429.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
