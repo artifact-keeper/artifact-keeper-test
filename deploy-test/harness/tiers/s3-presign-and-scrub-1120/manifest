@@ -1,0 +1,58 @@
+# DTF tier manifest: s3-presign-and-scrub-1120
+#   (artifact-keeper#5015, #4985, #5168, #5078; all fixed on main for 1.12.0,
+#   none on the 1.11.x line)
+# Profile-set: S3 (MinIO) with presigned redirect downloads
+# (storage.s3 + storage.s3-presigned, S3_PUBLIC_ENDPOINT=127.0.0.1:${S3_PORT})
+# + upstreams.mock-files (a stdlib-python server on 172.16.<slot>.76 whose
+# files the oracle writes over a control API and which counts every GET per
+# path; here it stands in for a Terraform Provider Registry). Objects are
+# corrupted in MinIO with a transient mc client (l2-s<slot>-mc, removed by
+# name).
+#
+# THE BUGS
+# #5015  A Terraform Remote's network-mirror archive download
+#        (`/terraform/<repo>/<host>/<ns>/<type>/<ver>/download/<os>/<arch>`)
+#        was always streamed through the backend, also on a fresh cache hit
+#        with PRESIGNED_DOWNLOADS_ENABLED + S3_REDIRECT_DOWNLOADS.
+# #4985  Storage scrub bookkeeping: a scrub of an unknown repository key
+#        answered 404 with no audit row; bytes read from a repair donor (and
+#        the verifying re-read) were not counted in bytes_read; findings of a
+#        hard-deleted row were listed forever (plus objects_checked counted
+#        twice when recording a finding failed, and stale cursors of deleted
+#        repositories; see the exemptions in the PR).
+# #5168  The scrub's repair loop read up to five donors without checking
+#        max_bytes, so a run of corrupt donors overshot the budget (plus three
+#        facets not reachable here; see the PR).
+# #5078  reindex-storage and backfill-debian wrote their audit row only when
+#        the handler returned (a timeout or a disconnect left none), and an
+#        unknown key was not audited.
+#
+# THE GATES
+#   (CONTROL) on every image: the first (cold) mirror archive GET is 200 with
+#             the exact archive; a scoped repair=false scrub reports a
+#             same-length corrupted object as corrupt and lists the finding.
+#   (FIX)     #5015 the next GET answers 302 with Location on the public S3
+#                   endpoint, and that URL serves the exact archive; the
+#                   upstream saw one archive GET;
+#             #4985 a scrub of an unknown key is 404 with `started` and
+#                   `failed` STORAGE_SCRUB_RUN audit rows naming the key;
+#                   a repair from a Maven copy reports bytes_read >= 3 x the
+#                   object (target + donor + re-check; pre-fix 1 x); after
+#                   the artifact row of a corrupt finding is hard-deleted
+#                   (psql, as a purge does) the next run no longer lists it;
+#             #5168 target and both Maven donors corrupt, max_bytes = one
+#                   object: the finding says the repair stopped at the byte
+#                   budget, and bytes_read <= 2 x the object;
+#             #5078 a dry-run reindex-storage and backfill-debian each write
+#                   a `started` and a `completed` row with the same run_id,
+#                   the completed row carrying the counts; reindex-storage
+#                   of an unknown key is 404 with `started` + `failed` rows.
+#                   (backfill-debian does not exist on 1.11.13: 404.)
+#
+# RATE_LIMIT_ENABLED=false: admin calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5015 4985 5168 5078"
+PROFILES="storage.s3 storage.s3-presigned upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
