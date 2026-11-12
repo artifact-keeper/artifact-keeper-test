@@ -398,9 +398,10 @@ case "$CMD" in
     # green on main 2f08663f, red on 1.11.3: token virtual catalog (#4213/
     # #4217), hidden admin nav (#4575), trash purge (#4701), S3 max parts
     # (#4806), signing trust attestations (#4274), repo-admin age gate (#4239;
-    # needs registry.npmjs.org), 1.12.0 dependency controls (#4816/#4817
-    # KNOWN-RED pins), conda virtual shadowing (#4555/#4506), *_FILE secrets
-    # (#4775; #4819 KNOWN-RED pin), device authorization grant (#3549), OIDC
+    # needs registry.npmjs.org), 1.12.0 dependency controls (#4816/#4817,
+    # asserted since the pins were flipped), conda virtual shadowing
+    # (#4555/#4506), *_FILE secrets (#4775; #4819 asserted since its pin was
+    # flipped), device authorization grant (#3549), OIDC
     # group pre-provisioning (#4296), protobuf BSR proxy (#4276), proxy
     # stale-if-error (#4697/#4783). proxy-stale-if-error is slowest.
     # Then the 1.11.x security tiers (#480-#489, #492-#498), each green on the

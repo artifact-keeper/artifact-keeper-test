@@ -29,5 +29,6 @@
 # RATE_LIMIT_ENABLED=false: not under test.
 PROFILES="storage.filesystem upstreams.mock-oci-classify"
 ORACLE="oracle.sh"
+COVERS="5097"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

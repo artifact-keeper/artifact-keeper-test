@@ -17,5 +17,6 @@
 # the 1.11.x line never had the transcode, so cases 1 and 2 pass there.
 PROFILES="storage.filesystem upstreams.mock-files"
 ORACLE="oracle.sh"
+COVERS="4929"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

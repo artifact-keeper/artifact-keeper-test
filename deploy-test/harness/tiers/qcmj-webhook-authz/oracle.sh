@@ -221,7 +221,7 @@ else
        "status=${RC} principal=admin verb=disable webhook=${WH_ADMIN}"
 fi
 
-begin_test "ONCE-ONLY: admin rotate-secret returns 200 with the new secret exactly once (no-store), and no read, repeat or denied call returns it (#5235, GHSA-qcmj)"
+begin_test "FIX #5235: admin rotate-secret returns 200 with the new secret exactly once (no-store), and no read, repeat or denied call returns it (#5235, GHSA-qcmj)"
 # 1.12.0 contract (artifact-keeper#5235): the rotate 200 body carries the new
 # raw `secret` once, with Cache-Control: no-store, the same contract create
 # has. GHSA-qcmj's threat was a NON-admin obtaining a key; (A) above holds that

@@ -1,0 +1,42 @@
+name: Fix Coverage
+
+# Every backend issue a tier's manifest COVERS needs a `FIX #N:` case in that
+# tier (scripts/check-fix-coverage.sh). The backend release preflight (check 7)
+# counts a closed bug as proven only through these COVERS lines, so a claim no
+# case asserts must fail here, before it can satisfy the backstop. Reading
+# only; no tier runs. Unwired tiers are reported, not failed: a wave's tiers
+# land before its wiring PR.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy-test/harness/tiers/**'
+      - '.github/workflows/release-gate.yml'
+      - 'scripts/check-fix-coverage.sh'
+      - '.github/workflows/fix-coverage.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy-test/harness/tiers/**'
+      - '.github/workflows/release-gate.yml'
+      - 'scripts/check-fix-coverage.sh'
+      - '.github/workflows/fix-coverage.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fix-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fix-coverage:
+    name: COVERS claims have FIX cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check COVERS against FIX cases and report gate membership
+        run: scripts/check-fix-coverage.sh
