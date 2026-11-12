@@ -1,0 +1,56 @@
+# DTF tier manifest: image-scan-adapter-resubmit
+#   (artifact-keeper#5657, the backend half; fixed on main for 1.12.0 by
+#   #5804, not on the 1.11.x line)
+# Profile-set: filesystem + trivy (the scanner-adapter sidecar,
+# SCANNER_ADAPTER_IMAGE, default artifact-keeper-scanner-adapter:dev). The
+# oracle builds small alpine-shaped images at run time (fixtures/mkimage.py:
+# libcrypto1.1 1.1.1c-r0, so Trivy reports CVEs) and pushes them through /v2.
+# NETWORK: the adapter downloads the Trivy DB from ghcr.io once (~100 MiB,
+# pre-warmed in setup and cached in the slot's trivy volume).
+#
+# THE BUG (#5657)
+#   1. A scan whose adapter is replaced mid-scan: the adapter keeps jobs in
+#      memory, so the backend's next report poll got "404 unknown scan id"
+#      (or a transport error during the gap) and recorded a failed scan.
+#   2. Concurrent scans in one adapter fail on trivy's exclusive cache lock
+#      (<cache>/fanal/fanal.db, 5 s timeout): "cache may be in use by another
+#      process: timeout" was a failed scan.
+#   #5804 fixed both halves. The adapter half (a scan queue and an in-memory
+#   cache fallback) ships in scanner-adapter 1.7.0 and is not gated here. The
+#   backend half works with any adapter: it rides out an unreachable adapter
+#   for up to 2 minutes, resubmits on 404 unknown scan id, and (for adapters
+#   before 1.7.0) resubmits a scan that failed on the cache lock (10 s, then
+#   20 s).
+#
+# THE GATES
+#   (FIX) RED on main e656947 (predates #5804), GREEN on main 2bdf092, both
+#   with the same pre-fix adapter (sha-e17c0b8):
+#     restart: the oracle waits for the image scan row to be running, gives
+#              the backend 1.5 s to submit, then `docker restart -t 0`s the
+#              adapter inside the backend's ~5 s report-poll gap; the scan
+#              must complete (pre-fix: failed, "404 Not Found fetching
+#              report: unknown scan id");
+#     cache lock: another process holds an exclusive flock on the adapter's
+#              fanal.db for 12 s (the PR's "another process on a shared cache
+#              volume" case; deterministic, unlike a race of six scans); the
+#              scan must complete (pre-fix: failed, "cache may be in use by
+#              another process: timeout").
+#   (CONTROL) both images: one image scan through the adapter completes with
+#     the openssl 1.1.1c CVEs (11 findings).
+#
+# With scanner-adapter 1.7.0 or later the adapter itself reruns a scan that
+# hit the lock on its memory cache, so the cache-lock case then passes on
+# every backend (it stays a valid green check); the restart case does not
+# depend on the adapter version.
+#
+# NOT GATED: six simultaneous scans in one adapter. With this adapter and
+# trivy 0.76 the scans are short enough that 6 or 8 at once never hit the
+# lock locally (8 of 8 completed on e656947), so it is not discriminating;
+# the held lock above drives the same failure. The adapter's own fix is
+# covered by its Go tests (TestConcurrentImageScansDoNotFailOnTheCacheLock).
+#
+# RATE_LIMIT_ENABLED=false: registry pushes and scan polls back to back.
+COVERS="5657"
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
