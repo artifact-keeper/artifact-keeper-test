@@ -1,0 +1,32 @@
+# DTF tier manifest: backup-scoped-restore  (artifact-keeper#5884)
+# Profile-set: filesystem / single.
+#
+# THE BUG (#5884)
+# A backup limited to some repositories (`repository_ids`, #2772) archived
+# every `repositories` row and every `download_statistics` row of the server.
+# Only `artifacts` and the #5654 content tables followed the scope. A restore
+# of such an archive therefore brought back, as empty rows, repositories the
+# backup was never meant to cover (any that had been deleted since), tried to
+# insert download statistics for artifacts the archive does not carry, and,
+# when an out-of-scope RPM repository had a repodata depth, ran as a strict
+# (depth-bearing) restore that failed as a whole on such a row.
+# The fix archives the repository rows in scope and the download statistics
+# of the archived artifacts only.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (SETUP)   two generic repositories, IN and OUT, each with one
+#             random-content artifact that is downloaded once (so each has a
+#             download_statistics row); a full backup scoped to IN completes.
+#   (FIX)     archive   the archive's database/repositories.json holds IN's row
+#                       only, and database/download_statistics.json only the
+#                       download of IN's artifact. Pre-fix: OUT's row and its
+#                       download are in the archive too.
+#   (FIX)     restore   OUT and then IN are deleted (API, async delete job).
+#                       The restore answers 200 `completed` with no errors, IN
+#                       is back and its artifact downloads with its sha256, and
+#                       OUT stays deleted. Pre-fix: OUT comes back, empty.
+#
+# RATE_LIMIT_ENABLED=false: admin calls back to back.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
