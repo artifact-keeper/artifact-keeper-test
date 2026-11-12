@@ -1,0 +1,38 @@
+# DTF tier manifest: auth-strictness-1120
+#   (artifact-keeper 1.12.0 auth strictness fixes: #5525, #5482, #5259)
+# Profile-set: filesystem + sso.mock-ci-oidc (the CI OIDC issuer of the
+# ci-oidc-exchange tier, minting RS256 assertions with claims the oracle
+# picks) + sso.ldap (osixia LDAPS). sso.ldap is listed last so its
+# AK_SSRF_ALLOW_PRIVATE_CIDRS (which includes 172.16.0.0/12) wins.
+#
+# RED image: main sha-c3a650e (2026-11-03, before #5261, #5520 and #5797).
+# 1.11.13 carries #5520, so it is not red for #5525.
+# GREEN: main carrying all three fixes (sha-2bdf092 or later).
+#
+# CONTROLS (pass on every image)
+#   a wrong ASCII Basic password on a private PyPI simple index is 401 and the
+#   admin's Basic login is 200; a signed CI assertion with iss and aud is
+#   exchanged (with and without provider_id) and a wrong aud is 401; an LDAP
+#   user logs in through an enabled provider, and a disabled provider leaves
+#   GET /auth/sso/providers; an ordinary API route carries Referrer-Policy
+#   strict-origin-when-cross-origin and the Agent Plugins token-in-path route
+#   answers 200 with Cache-Control private, no-store.
+#
+# FIX CASES (RED on sha-c3a650e)
+#   #5525 Basic 'x:1234567é' (é across byte 8) on /pypi/{repo}/simple/ is 401;
+#     red: the token lookup panics on a byte-index slice and the connection
+#     drops (curl exit 52).
+#   #5482 a signed CI assertion with no aud, aud null or aud 42 is 401, and one
+#     with no iss sent with {provider_id} is 401; red: 200 with a token.
+#     LDAP login through a disabled provider is 404 with no token; red: 200.
+#     (The blank-sub OIDC callback facet needs a scripted OIDC IdP and is left
+#     to the backend's sso_oidc_login_callback_e2e_tests.)
+#   #5259 the Agent Plugins token route keeps Referrer-Policy: no-referrer;
+#     red: the global layer overwrote it with strict-origin-when-cross-origin.
+#
+# Secrets: the LDAP user's password is generated at run time; the overlay's
+# throwaway bind password is assembled, not committed.
+COVERS="5525 5482 5259"
+PROFILES="storage.filesystem sso.mock-ci-oidc sso.ldap"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
