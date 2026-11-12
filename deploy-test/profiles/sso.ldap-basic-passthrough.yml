@@ -1,0 +1,24 @@
+# =============================================================================
+# profiles/sso.ldap-basic-passthrough.yml - LDAP Basic-auth passthrough on,
+# guest access off  [artifact-keeper #3830, #4933]
+# =============================================================================
+# Stacks on profiles/sso.ldap.yml (the osixia LDAP server at ldap.dtf.local).
+# PATCHES only:
+#   * backend.environment: LDAP_BASIC_AUTH_PASSTHROUGH=true (the opt-in switch
+#     from #3830; ignored by images that predate it) and
+#     AK_GUEST_ACCESS_ENABLED=false, so the global guest-access guard runs on
+#     every request (the #4933 guard cases depend on it).
+#   * openldap.logging: json-file, because the oracle counts SRCH/BIND lines
+#     in `docker logs` of the directory and the rootless-podman journald
+#     driver drops lines.
+# The oracle creates the LDAP provider through the admin API and seeds its
+# directory users at run time; nothing here carries a credential.
+# =============================================================================
+services:
+  openldap:
+    logging:
+      driver: json-file
+  backend:
+    environment:
+      LDAP_BASIC_AUTH_PASSTHROUGH: "true"
+      AK_GUEST_ACCESS_ENABLED: "false"
