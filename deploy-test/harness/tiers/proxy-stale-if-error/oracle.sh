@@ -7,6 +7,9 @@
 #         returned instead of the stale body
 #   #4640 (PR #4783) a kept copy after a definitive upstream 404/410 is served
 #         WITHOUT the stale markers (the #4697 merge fix)
+#   #4815 (PR #4841) the per-repository settings GETs (stale-if-error-grace,
+#         cache-ttl, on-upstream-not-found) hide a private repository: 404
+#         to anonymous and no-grant callers, as for an unknown key
 # See the manifest for THE FIX, the primitives and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
@@ -193,24 +196,64 @@ note "PUT on a local repo: HTTP ${code} $(abody | head -c 160)"
 [ "${code:0:1}" = "4" ] && [ "$code" != "404" ] || fail_g "PUT on a local repo answered HTTP ${code}, expected a 4xx refusal (Remote only)"
 finish_case "#4581: the per-repository stale-if-error grace API is missing or wrong"
 
-# FIX artifact-keeper#4815 (RED on main 2f08663f, GREEN from main adfa0206):
-# the grace GET checks repository visibility, so an anonymous caller and a
-# signed-in user with no grant on the private repo get 404, as for any other
-# read of a repository they cannot see. Before the fix both got 200 with the
-# grace config.
-begin_test "FIX #4815: the grace GET on a private Remote is 404 to an anonymous and to a no-grant caller"
-reset_case
-for who in anonymous no-grant; do
-  if [ "$who" = "anonymous" ]; then
-    code="$(curl -s --max-time 10 -o "$W/who.body" -w '%{http_code}' "$BASE/api/v1/repositories/${R_FRESH}/stale-if-error-grace" || true)"
-  else
-    code="$(curl -s --max-time 10 -o "$W/who.body" -w '%{http_code}' -H "Authorization: Bearer $T_USER" \
-      "$BASE/api/v1/repositories/${R_FRESH}/stale-if-error-grace" || true)"
-  fi
-  note "${who} GET on private ${R_FRESH}: HTTP ${code} $(head -c 200 "$W/who.body" 2>/dev/null)"
-  [ "$code" = "404" ] || fail_g "#4815: ${who} GET of the private repo's grace answered HTTP ${code}, expected 404"
+# FIX artifact-keeper#4815 (PR #4841, merge c8059a03; RED on main 9791590):
+# the per-repository settings GETs check repository visibility, so an
+# anonymous caller and a signed-in user with no grant on the private Remote get
+# 404, exactly as for a key that does not exist. Before the fix all three
+# answered 200 with the repository's settings (stale-if-error-grace,
+# cache-ttl, on-upstream-not-found). The CONTROL below proves the same GETs
+# still answer 200 to an authorised reader.
+# sget <who> <key> <setting> -> HTTP code; body in $W/who.body
+sget(){
+  local auth=()
+  case "$1" in
+    admin)    auth=(-H "Authorization: Bearer $TOK") ;;
+    no-grant) auth=(-H "Authorization: Bearer $T_USER") ;;
+    granted)  auth=(-H "Authorization: Bearer $T_GRANTED") ;;
+  esac
+  curl -s --max-time 10 -o "$W/who.body" -w '%{http_code}' "${auth[@]}" \
+    "$BASE/api/v1/repositories/$2/$3" || true
+}
+SETTINGS_GETS="stale-if-error-grace cache-ttl on-upstream-not-found"
+R_NOKEY="sie-nokey-${SUF}"
+for SETTING in $SETTINGS_GETS; do
+  begin_test "FIX #4815: GET /api/v1/repositories/{key}/${SETTING} on a private Remote is 404 to an anonymous and to a no-grant caller, as for an unknown key"
+  reset_case
+  for who in anonymous no-grant; do
+    code="$(sget "$who" "$R_FRESH" "$SETTING")"
+    note "${who} GET ${SETTING} on private ${R_FRESH}: HTTP ${code} $(head -c 200 "$W/who.body" 2>/dev/null)"
+    ucode="$(sget "$who" "$R_NOKEY" "$SETTING")"
+    note "${who} GET ${SETTING} on unknown ${R_NOKEY}: HTTP ${ucode}"
+    [ "$code" = "404" ] || fail_g "#4815: ${who} GET of the private repo's ${SETTING} answered HTTP ${code}, expected 404"
+    [ "$code" = "$ucode" ] || fail_g "#4815: ${who} GET of the private repo's ${SETTING} (HTTP ${code}) differs from an unknown key (HTTP ${ucode})"
+  done
+  finish_case "#4815: GET ${SETTING} discloses a private repository's settings to a caller who cannot read it"
 done
-finish_case "#4815: the grace GET discloses a private repository's settings to a caller who cannot read it"
+
+begin_test "CONTROL: authorised readers (admin, and a non-admin user granted read on the repo) still get 200 from each per-repository settings GET on the private Remote"
+reset_case
+G_NAME="siegrant${SUF//-/}"; G_PASS="Sieg-${SUF}-Passw0rd!"
+api POST /api/v1/users "$(jq -nc --arg u "$G_NAME" --arg p "$G_PASS" '{username:$u,password:$p,email:($u+"@t.test")}')" >/dev/null
+G_ID="$(abody | jqr '.id // .user.id // empty')"
+api GET "/api/v1/repositories/${R_FRESH}" >/dev/null
+RF_ID="$(abody | jqr '.id // empty')"
+code="$(api POST /api/v1/permissions "$(jq -nc --arg u "$G_ID" --arg r "$RF_ID" \
+  '{principal_type:"user",principal_id:$u,target_type:"repository",target_id:$r,actions:["read"]}')")"
+note "grant read on ${R_FRESH} (${RF_ID}) to ${G_NAME} (${G_ID}): HTTP ${code}"
+T_GRANTED="$(login_as "$G_NAME" "$G_PASS")" || true
+if [ -z "$G_ID" ] || [ -z "$RF_ID" ] || [ "${code:0:1}" != "2" ] || [ -z "$T_GRANTED" ]; then
+  fail_g "could not set up the granted reader (user '${G_ID}', repo '${RF_ID}', grant HTTP ${code})"
+else
+  for who in admin granted; do
+    for SETTING in $SETTINGS_GETS; do
+      code="$(sget "$who" "$R_FRESH" "$SETTING")"
+      note "${who} GET ${SETTING} on private ${R_FRESH}: HTTP ${code} $(head -c 200 "$W/who.body" 2>/dev/null)"
+      [ "$code" = "200" ] || fail_g "${who} GET ${SETTING} answered HTTP ${code}, expected 200"
+      [ "$(jqr '.repository_key // empty' < "$W/who.body")" = "$R_FRESH" ] || fail_g "${who} GET ${SETTING} body does not name ${R_FRESH}"
+    done
+  done
+fi
+finish_case "an authorised reader can no longer read the per-repository settings"
 
 # =============================================================================
 # #4581 FIX: a stale-if-error serve inside the grace is marked and counted.
