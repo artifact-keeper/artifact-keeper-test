@@ -24,6 +24,7 @@
 #
 # Red: ak-backend:1.11.13 (the second publish answers 409 for every format).
 # Green: ak-backend:fix-5662-9ec740a8 (PR #5796).
+COVERS="5662"
 PROFILES="storage.s3"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

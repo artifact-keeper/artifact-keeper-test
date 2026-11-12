@@ -3760,6 +3760,73 @@ jobs:
           # as NOT ON THIS LINE. Local containers only, so required.
           - group: features-1.12.0-conda
             tiers: conda-shard-o1 conda-repodata-revision conda-jlap-incremental conda-remote-shards-synth conda-remote-403-probe-fallback
+          # 1.12.0 backfill fix coverage, wave 1 (artifact-keeper-test#736,
+          # #738, #740-#745, #749, #753, #754, #757-#759, #761, #762, #769-#771,
+          # #773-#778): one tier per fix group of the artifact-keeper 1.12.0
+          # milestone that had no end-to-end proof, each green on main and red
+          # on 1.11.13 or on the main build before its fix. Grouped by wall
+          # clock: api about 8 min, storage-scan about 11.5 min locally,
+          # stack up and down included. api: REST API contract fixes
+          # (api-contracts-1120-fixes, audit.upstream-fetches-all), auth
+          # strictness (auth-strictness-1120, sso.mock-ci-oidc on
+          # 172.16.<slot>.61 + sso.ldap), LDAP Basic passthrough
+          # (ldap-basic-passthrough, sso.ldap + sso.ldap-basic-passthrough),
+          # ten format fixes on S3 (format-fixes-1120), the Maven contract,
+          # Range serves, a Virtual's member gates and member outages
+          # (upstreams.mock-files on 172.16.<slot>.76), MCPB ingest and MCP
+          # introspection, hosted OCI digests scoped to their image
+          # (oci-digest-scope-1120, upstreams.mock-oci-classify on
+          # 172.16.<slot>.83) and webhook delivery fairness
+          # (webhooks.mock-blackhole on 172.16.<slot>.79; ~2 min). FEATURE
+          # gates: red on every 1.11.x image. Never cherry-pick these tiers
+          # onto this repo's release/1.11.x and never move them into a group
+          # a 1.11.x gate is expected to pass; on a 1.11.x candidate they run
+          # as NOT ON THIS LINE. Local containers only, so required.
+          - group: fixes-1.12.0-backfill-api
+            tiers: api-contracts-1120-fixes auth-strictness-1120 ldap-basic-passthrough format-fixes-1120 maven-contract-1120 range-serves-1120 virtual-member-gates-1120 virtual-metadata-member-outage mcpb-ingest-validation mcp-introspection-integrity oci-digest-scope-1120 webhook-delivery-fairness
+          # storage-scan: bounded-memory streaming (bounded-memory-streaming,
+          # limits.memory caps the backend at 768m/3g with no swap, plus
+          # logging.json-file; ~3 min), storage outage and full answers
+          # (storage-outage-and-full, storage.s3 with MinIO and Postgres
+          # stopped in turn; ~2.5 min), the Terraform mirror presigned
+          # redirect and scrub accounting (s3-presign-and-scrub-1120,
+          # storage.s3 + storage.s3-presigned + upstreams.mock-files),
+          # backup/restore completeness, Debian
+          # and RPM maintenance, scan grading and scan-on-proxy identity
+          # (upstreams.mock-files + limits.scan-one-permit; ~2.5 min) and
+          # stored Remote rows through the scan gate
+          # (upstreams.mock-scan-formats on 172.16.<slot>.72), all graded by
+          # the bundled Grype. Same FEATURE rule as the api group. Local
+          # containers only, so required.
+          - group: fixes-1.12.0-backfill-storage-scan
+            tiers: bounded-memory-streaming storage-outage-and-full s3-presign-and-scrub-1120 backup-restore-completeness debian-rpm-maintenance scan-grading-os-and-jar scan-proxy-identity-npm-cargo scan-remote-rows-gated
+          # Tiers whose fix is also on the 1.11.x line, so release/1.11.x
+          # carries them and a 1.11.x candidate runs them here (the other
+          # 1.12.0 groups are NOT ON THIS LINE there): same-version publishes
+          # into two repositories on S3 (s3-cross-repo-same-version, #5662;
+          # line backport artifact-keeper#5851, so red on 1.11.13 and green
+          # from 1.11.14), a multipart server-side copy of a non-ASCII S3 key
+          # (s3-multipart-copy-encoding, storage.s3 +
+          # storage.s3-prefix-nonascii, #4838; green on 1.11.13) and the
+          # test-upstream probe and curation sync following URL validation and
+          # the egress proxy (upstream-probe-egress,
+          # upstreams.mock-egress-recorder on 172.16.<slot>.93, #5079, #5089;
+          # green on 1.11.13). About 2 min. Required.
+          - group: fixes-1.12.0-and-1.11.x
+            tiers: s3-cross-repo-same-version s3-multipart-copy-encoding upstream-probe-egress
+          # Two-instance tiers (peer.second-instance: a second backend and
+          # database in the slot's compose project on the slot's spare port),
+          # one job each so a stuck sync worker in one cannot run the other
+          # past the job timeout. replication-delete-restore: labels,
+          # restores and purges leave push peers with the hub's content
+          # (#5505, #5625, #5627, #5699; ~2 min).
+          # push-sync-oci-and-plugin-metadata: hosted OCI images and indexes
+          # and Maven plugin-prefix metadata reach push peers (#4790, #4916;
+          # ~1.5 min). Same FEATURE rule. Required.
+          - group: fixes-1.12.0-replication-delete-restore
+            tiers: replication-delete-restore
+          - group: fixes-1.12.0-push-sync-oci
+            tiers: push-sync-oci-and-plugin-metadata
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
@@ -3889,6 +3956,14 @@ jobs:
   #              from ghcr at start; its red/green axis is the scanner
   #              adapter image, not the backend. Green on main with the
   #              published adapter :1.
+  #   scanner-adapter-1.12.0 (image-scan-adapter-resubmit):
+  #     reason:  the scanner-adapter sidecar downloads the Trivy DB from
+  #              ghcr on its first scan, like supply-chain. Green on main
+  #              with the published adapter :1.
+  #   mcp-1.12.0 (mcp-publish-resolve-1120):
+  #     reason:  the #5702 case (20 publishes straight after a pull-through)
+  #              races the catalog commit; it is discriminating on the
+  #              image before the fix but timing-dependent. Green on main.
   #   owner:   release-engineering
   #   expires: 2026-10-01 — on/after this date either promote the leg
   #            into dtf-gate or re-justify the waiver in a PR.
@@ -3915,6 +3990,19 @@ jobs:
             tiers: debian-flat-remote conan-protocol-1-11 native-client-modules-and-lfs
           - group: scanner-server
             tiers: trivy-server-mode
+          # 1.12.0 backfill (artifact-keeper-test#767): an image scan lost to
+          # an adapter restart or trivy's cache lock is resubmitted
+          # (#5657, fixed by #5804; scanners.trivy, the adapter fetches the
+          # Trivy DB from ghcr). Red on every 1.11.x image.
+          - group: scanner-adapter-1.12.0
+            tiers: image-scan-adapter-resubmit
+          # 1.12.0 backfill (artifact-keeper-test#763): MCP publish takes exact
+          # npm versions, a Virtual backing fills through its walk's Remote,
+          # a publish right after a pull-through is not left resolving (#5549,
+          # #5537, #5702). The #5702 case is timing-dependent, so advisory.
+          # 1.11.x has no MCP Registry.
+          - group: mcp-1.12.0
+            tiers: mcp-publish-resolve-1120
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
