@@ -1,0 +1,75 @@
+# DTF tier manifest: npm-contract-1120
+#   (artifact-keeper#5345, #5399, #5403, #5631, #5676, #5724, #5725; all fixed for 1.12.0)
+# Profile-set: filesystem / single + the real npm CLI client (client.npm) +
+# upstreams.mock-multi (stdlib-python upstream at 172.16.<slot>.91; /ok/npm/<name>
+# answers a packument for ANY name, scoped or not, at version 1.0.1 and serves
+# its tarball). Every request is the npm native protocol: publish PUT, packument
+# GET, the -rev unpublish routes, the dist-tags API, /-/ meta GETs and tarball GETs.
+#
+# THE BUGS
+# #5345 (PR #5418)  A Remote whose upstream could not answer a /-/ meta GET
+#        (npm search, `npm audit signatures` attestations) fell through to the
+#        Local stub: 501 "/-/<endpoint> is not implemented for local
+#        repositories". Now: unreachable upstream -> 503 "upstream unreachable",
+#        refused by the upstream filter -> 404 naming the filter, cache-only ->
+#        404 naming the mode. Local keeps its 501. The Remotes point at an
+#        unresolvable `.invalid` host.
+# #5399 (PR #5780)  Concurrent publishes of one name@version all passed an
+#        unlocked duplicate check and wrote the same storage key before the
+#        insert: losers answered 500 DATABASE_ERROR, and a loser's bytes could
+#        replace the winner's (served tarball != advertised integrity,
+#        EINTEGRITY). The oracle fires 10 parallel `PUT /npm/<repo>/<pkg>` of one
+#        version with different tarballs, 8 rounds: every loser must be 409 and
+#        the served tarball must be the winner's bytes and match dist.integrity
+#        (checked with the real `npm pack` too).
+# #5403 (PR #5780)  The packument rewrite `PUT /{pkg}/-rev/{rev}` unpublished
+#        every stored version missing from the body and accepted any {rev}, so an
+#        unpublish computed from a packument read before a concurrent publish
+#        removed the new version too (and the whole-package DELETE likewise). Now
+#        the full packument carries `_rev`, a stale rev is 409 with nothing
+#        removed, and a revision-less (`-rev/undefined`) rewrite may remove only
+#        one version.
+# #5631 (PR #5778)  `npm audit` through a Virtual (the setup developers are
+#        told to use), and against a hosted repo, answered both audit POSTs
+#        (/-/npm/v1/security/advisories/bulk, /-/npm/v1/security/audits/quick)
+#        with the empty advisory set `{}`, so npm printed "found 0
+#        vulnerabilities" for a tree nobody audited. Now a Virtual forwards to
+#        the first Remote member whose upstream answers the audit API; when none
+#        can it answers 501 (no capable member, and Local) or 503 (an upstream
+#        was contacted and failed). mock-multi has no audit API (a POST is 501),
+#        so the Virtual over it must answer 501; a Virtual over the `.invalid`
+#        Remote must answer 503; the real `npm audit` must fail, not pass clean.
+# #5676 (PR #5778)  Lifecycle/retention deletes are bulk SQL and skipped the
+#        per-artifact cleanup, so dist-tags naming a retention-deleted version
+#        stayed (`beta` -> a gone version: ETARGET). The oracle ages one version
+#        in the DB (a precondition a user cannot create) and runs a real
+#        max_age_days policy through the lifecycle API.
+# #5724 (PR #5730)  The derived `latest` compared only major.minor.patch, so
+#        among pre-releases of one release the later-published won
+#        ([1.0.0-rc.1, 1.0.0-alpha] -> alpha; [2.0.0-beta.10, 2.0.0-beta.2] ->
+#        beta.2). Asserted on the full and abbreviated packument and with a
+#        real `npm install <pkg>`.
+# #5725 (PR #5846)  Package-name rules disagreed with validate-npm-package-name:
+#        `node_modules` / `favicon.ico` were accepted, a `.` scoped segment
+#        (`@scope/%2e`) reached the handlers, the scope allow-list refused
+#        `@_x` / `@.x` / `@~x`, and the Virtual shadowing guard skipped scoped
+#        names whose scope starts with `_` (a Remote member could serve its
+#        bytes for a hosted `@_scope/x@ver`).
+#
+# Oracle (oracle.sh, RELEASE_GATE=1):
+#   (FIX)     RED on ak-backend:1.11.13: every FIX case fails.
+#   (CONTROL) both images: Local /-/ 501 and Remote /-/ping 200; sequential
+#             duplicate publish 409; real npm unpublish of one version; the
+#             retention sweep removes the aged version; `latest` prefers a
+#             stable version; a valid scope allow-list is stored and `@..` is
+#             refused; the real `npm install` through a Virtual works;
+#             the shadowing guard withholds the Remote for a hosted
+#             `@dtf.../x`.
+# GREEN: ak-backend:sha-9d3aa45 (main at 9d3aa454, contains every fix).
+#
+# RATE_LIMIT_ENABLED=false: ~200 authenticated calls incl. 80 racing publishes.
+PROFILES="storage.filesystem client.npm upstreams.mock-multi"
+ORACLE="oracle.sh"
+COVERS="5345 5399 5403 5631 5676 5724 5725"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
