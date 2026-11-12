@@ -1,0 +1,79 @@
+# DTF tier manifest: bounded-memory-streaming
+#   (artifact-keeper#4924, #5126, #5336, #5364, #5133, #5130; all fixed on
+#   main for 1.12.0. #5130 is also on 1.11.13 through the 1.11.x cherry-pick
+#   d49b5817, so its red image is the main build sha-ad20810.)
+# Profile-set: filesystem + logging.json-file (the #5130 startup line is read
+# with `docker logs`) + limits.memory: the backend container is capped at
+# LIMITS_MEMORY (768m) with no swap. Only this slot's backend is capped; the
+# cap only ever lowers what it may use. Every fixture is random bytes made at
+# run time (nothing large is committed) and every pass is checked against a
+# sha256.
+#
+# THE BUGS
+# #5126  Hosted members of a PyPI virtual served without a presigned
+#        redirect (filesystem, or S3 without presign) went through
+#        `read_local_content`: the whole wheel was read into memory per
+#        concurrent request.
+# #5364  Hosted Conan recipe/package file downloads used `storage.get` +
+#        `Body::from`, and uploads buffered the whole body: memory grew with
+#        the sum of the package files in flight (a CI burst OOM-killed the
+#        pod at 6 GiB).
+# #5336  Backup read every artifact into a Vec, gzipped the archive into a
+#        second buffer and cloned it; restore loaded the .tar.gz and
+#        decompressed every entry into memory before writing.
+# #5133  The final `PUT ?digest=` of a whole-body OCI layer push re-read,
+#        rehashed and rewrote the layer and copied it again before sending
+#        the response headers, so finalize time grew with the layer
+#        (containerd gives it 30 s). The old path streams, so it does not
+#        OOM; the observable is the re-read itself.
+# #4924  A cold `repomd.xml` render of a hosted RPM root loaded every row's
+#        metadata JSON and built each uncompressed document in memory.
+# #5130  The published image was glibc malloc, which keeps freed burst
+#        memory in per-thread arenas (RSS ratchets up and OOMs). Only the
+#        allocator facet is gated: no RSS-over-time assertion.
+#
+# THE GATES (each FIX case: the backend must be the same process at the end
+# of the case, i.e. not OOM-killed, and every byte must match)
+#   (CONTROL) on every image: 1 MiB files round-trip through the PyPI
+#             virtual, hosted Conan and an OCI blob push; a 1 GiB layer
+#             (more than the cap) pushed as one whole-body PUT is 201 and
+#             pulls byte-exact (the upload streams on both images).
+#   (FIX)     #5130 the first `Global allocator:` startup line says jemalloc
+#                   (red sha-ad20810: `system`);
+#             #5133 the backend process reads < 1/8 of the layer
+#                   (/proc/1/io rchar) between the last body byte and the 201
+#                   of that whole-body PUT (red: 2048 MiB for a 1024 MiB
+#                   layer; green: 0);
+#             #5126 8 parallel GETs (16 MB/s each, so they overlap) of a
+#                   160 MiB hosted wheel through the virtual, all byte-exact;
+#             #5364 8 parallel GETs of a 160 MiB conan_package.tgz, and a
+#                   1 GiB conan_package.tgz upload is 201 and downloads
+#                   byte-exact (red: 413, the buffered body is refused
+#                   against the cgroup budget);
+#             #5336 a backup of 6 x 160 MiB artifacts completes (count 6);
+#                   then, with the stored objects removed, a restore of the
+#                   artifacts completes and all 6 download byte-exact. When
+#                   the capped backup fails (red), the archive is taken with
+#                   the cap raised to BMS_HELPER_MEMORY (6g) and the backend
+#                   is restarted under the cap again, so the restore is still
+#                   judged under 768m;
+#             #4924 1000 synthetic packages (419 MiB of file-list metadata,
+#                   seeded straight into Postgres, the
+#                   artifact-keeper-test#621 approach) in an
+#                   `repodata_mode: on_request` root; with the cap raised to
+#                   BMS_RPM_MEMORY (3g) a cold repomd.xml is 200 and
+#                   primary/filelists list every package and match the
+#                   checksums repomd.xml advertises. Last case: it leaves the
+#                   cap raised. The fixed render still peaks at ~0.8-1.3 GiB
+#                   anon here (about 670 MiB plus ~1x the metadata), so it
+#                   cannot run under 768m; 1.11.13 needs more than 4 GiB.
+#
+# Sampled peak anonymous memory (cgroup memory.stat) is printed per case as a
+# note; memory.peak is not used, it counts reclaimable page cache.
+#
+# RATE_LIMIT_ENABLED=false: many admin and download requests back to back.
+COVERS="4924 5126 5336 5364 5133 5130"
+PROFILES="storage.filesystem logging.json-file limits.memory"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+export LIMITS_MEMORY="${LIMITS_MEMORY:-768m}"
