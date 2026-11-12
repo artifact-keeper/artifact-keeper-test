@@ -1,0 +1,44 @@
+# DTF tier manifest: debian-rpm-maintenance
+# Profile-set: filesystem / single.
+#
+# THE BUGS (all main-only: the Debian backfill (#4905) and the precomputed
+# RPM repodata builder (#5067) are not on the 1.11 line)
+#   #5082 POST /api/v1/admin/repositories/{key}/backfill-debian with
+#         dry_run: true did not check where a misfiled package would move.
+#         A package whose pool/main/ destination held a different package, a
+#         trashed row, or the move of another misfiled copy was counted in
+#         packages_registered/packages_relocated by the dry run, while the
+#         real run refused it (artifacts_failed). Fixed by #5083.
+#   #5088 the same endpoint: a misfiled copy merged into a same-bytes
+#         destination row that is itself a candidate. The dry run counted the
+#         package again when the destination came up on a later candidate
+#         page (500 rows by id), so it reported more packages_registered than
+#         the real run; on the same page both modes counted it twice. Fixed by
+#         #5212.
+#   #5072 hosted RPM precomputed repodata: after a repository's storage_path
+#         changed, the builder deleted superseded revisions only through the
+#         new location, so revisions written to the previous location stayed
+#         there for ever. Fixed by #5210.
+#
+# THE PRIMITIVES
+#   Backfill candidates (.deb rows with no Debian control document, the
+#   pre-#4657 migrated shape) are generic uploads of real .debs built by
+#   fixtures/build_deb.py, with any `debian` artifact_metadata row of those
+#   uploads deleted (psql). Taken destinations are native Debian uploads, one
+#   moved to the trash. #5088 adds 1000 filler candidates and adds pairs until
+#   the random id order holds a pair split across candidate pages and a pair
+#   on one page. #5072 moves the repository the way an operator does (copy
+#   the objects, repoint storage_path with psql: no API changes a location)
+#   and forces two builds through the rebuild endpoint.
+#
+# RED/GREEN
+#   red:   ak-backend:sha-c7a9ada (main 2026-10-29, before #5083/#5212/#5210:
+#          every FIX case fails), ak-backend:sha-12808b8 (main 2026-11-02, has
+#          #5083: red for #5088 and #5072 only)
+#   green: ak-backend:sha-9d3aa45 (main, has #5083, #5212 and #5210)
+#
+# RATE_LIMIT_ENABLED=false: ~1100 uploads and the admin calls through one user.
+COVERS="5082 5088 5072"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
