@@ -383,7 +383,8 @@ case "$CMD" in
              upstream-ip-literal-refused sso-idp-user-agent-and-status \
              npm-version-route-dist-tags gcs-error-url-redaction \
              pypi-age-gate-substitute-scanned \
-             s3-multipart-copy-encoding upstream-probe-egress; do
+             s3-cross-repo-same-version s3-multipart-copy-encoding \
+             upstream-probe-egress; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

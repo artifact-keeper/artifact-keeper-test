@@ -148,14 +148,14 @@ for f in $FORMATS; do
       "publish: $(snip "${WORK}/${f}-pa.out") download: $(snip "${WORK}/${f}-da.bin")"
   fi
 
-  begin_test "#5662 ${f}: publishing the same version into a second repository on S3 is 2xx (not 409 cross-repository overwrite)"
+  begin_test "FIX #5662: ${f}: publishing the same version into a second repository on S3 is 2xx (not 409 cross-repository overwrite)"
   pb="$("pub_${f}" "$B" "${WORK}/${f}-pb.out")"
   if is_2xx "$pb"; then pass; else
     fail "${f}: publish B=${pb} (want 2xx). Pre-#5662 the flat cloud key was owned by repository A and the publish answered 409" \
       "$(snip "${WORK}/${f}-pb.out")"
   fi
 
-  begin_test "#5662 ${f}: both repositories serve the published bytes after the second publish"
+  begin_test "FIX #5662: ${f}: both repositories serve the published bytes after the second publish"
   da2="$(code_to_file "$("dl_${f}" "$A")" "${WORK}/${f}-da2.bin" "${AUTHZ[@]}" -L)"
   db="$(code_to_file "$("dl_${f}" "$B")" "${WORK}/${f}-db.bin" "${AUTHZ[@]}" -L)"
   ea="$(cmp -s "${WORK}/${f}-da2.bin" "$PKG" && echo yes || echo no)"
