@@ -1,0 +1,70 @@
+# DTF tier manifest: format-fixes-1120
+#   (artifact-keeper 1.12.0 format fixes: #5227 cargo, #5277 helm, #5278 rpm,
+#    #5197 protobuf, #5198 debian, #5723 pypi, #5739 + #5167 conda,
+#    #5267 agentplugins, #5716 glob)
+# Profile-set: storage.s3 (MinIO, one shared bucket: #5267 only reproduces on
+# a shared-namespace backend) + upstreams.mock-files (the oracle writes a Helm
+# index and a conda channel the Remotes proxy).
+#
+# RED images (two):
+#   ak-backend:sha-12808b8 (main 2026-11-02) predates every fix here, but has
+#     no agentplugins format: the #5267 FIX case fails there by absence.
+#   ak-backend:sha-c3a650e (main 2026-11-03, the agentplugins feature commit)
+#     predates #5267, #5227, #5277, #5278, #5723, #5739, #5716 but already
+#     carries the #5197, #5198 and #5167 fixes (those three cases pass on it).
+# GREEN: ak-backend:sha-9d3aa45 (main; carries all ten fixes).
+#
+# CONTROLS (pass on every image)
+#   cargo: a plain dependency is listed in the sparse index with req "^1"
+#   rpm: a binary noarch package is listed with arch noarch in primary.xml
+#   pypi: 1.0b2 is a pre-release (info.version 1.0; versions [1.0b2, 1.0])
+#   protobuf: Download with label "main" returns the pushed commit
+#   debian: Release (unsigned) is 200 with a non-OpenPGP key bound; a repo
+#     bound to an OpenPGP key serves InRelease 200
+#   helm: a Remote whose upstream index pins dependency versions serves it
+#   conda: the Remote and the allowlisted virtual list an ordinary name;
+#     the empty-subdir .json and .zst renders answer while permits are held
+#   curation: a pattern rule blocks a matching pending package on re-evaluate
+#
+# FIX CASES
+#   #5227 a crate published with `renamed = { package = "rbase" }` is listed
+#     as {name:"renamed", package:"rbase"}; red lists name "rbase" with
+#     explicit_name_in_toml "renamed" (cargo resolves the wrong crate name).
+#   #5277 a helm Remote whose upstream index has a dependency without a
+#     version serves index.yaml (200); red answers 502 "Failed to parse
+#     upstream index.yaml".
+#   #5278 a source RPM (rpmbuild -bs, header ARCH x86_64, SOURCEPACKAGE=1) is
+#     listed with arch src in primary.xml and other.xml; red lists x86_64.
+#     The package is fixtures/rpm/ak-srpm-test-1.0-1.src.rpm (and its .spec),
+#     copied from the backend's backend/tests/fixtures (added by #5303).
+#   #5197 protobuf Download of a module with no ref returns the latest
+#     commit; red picks the module's `_labels` row and answers 500.
+#   #5198 debian InRelease/Release.gpg/gpg-key.asc with a non-OpenPGP (rsa)
+#     key bound answer 409 naming key_type='gpg'; red answers 500 / serves a
+#     PEM as pgp-keys. The binding is written with SQL: the green API refuses
+#     it (a precondition left behind by older releases).
+#   #5723 PEP 440: `1.0beta2.postdev1` (packaging: 1.0b2.post0.dev1) is a
+#     pre-release: JSON info.version is 1.0 and the PEP 691 versions order is
+#     [1.0beta2.postdev1, 1.0]; red treats it as final and newest.
+#   #5739 a conda virtual allowlist entry `dtfst*` admits an upstream record
+#     whose name contains a literal `*`; red drops it.
+#   #5167 the empty-subdir repodata.json.bz2 answers without a regen permit
+#     while both permits are held (a held lock on conda_repodata_jlap stalls
+#     two named-subdir renders); red queues behind them. The JLAP back-step
+#     half is a render race (unit test
+#     renders_of_one_revision_do_not_step_the_tail_back_5167).
+#   #5267 two agentplugins repositories publish the same plugin version (same
+#     bytes) on S3: the second is 201 and both serve it; c3a650e answers 409
+#     "already owned by another repository"; 12808b8 has no agentplugins.
+#     There is no agentplugins CONTROL case (it could not pass on 12808b8):
+#     the first publish (201 on c3a650e) is checked inside the FIX case.
+#   #5716 curation re-evaluate of a pattern rule `*a*a*a*a*a*a*a*a*b` against
+#     an 80-character all-`a` package name returns in < 2 s; red's
+#     backtracking glob runs past 20 s (the request is cut at 30 s).
+#
+# RATE_LIMIT_ENABLED=false: many quick API calls.
+PROFILES="storage.s3 upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+COVERS="5227 5277 5278 5197 5198 5723 5739 5167 5267 5716"
