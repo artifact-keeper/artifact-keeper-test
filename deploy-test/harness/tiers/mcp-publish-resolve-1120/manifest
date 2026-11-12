@@ -1,0 +1,47 @@
+# DTF tier manifest: mcp-publish-resolve-1120
+#   (artifact-keeper 1.12.0 MCP publish and package-resolution fixes:
+#    #5549, #5537, #5702)
+# Profile-set: filesystem / single, UPSTREAM_ALLOW_PRIVATE_IPS=true: the npm
+# Remotes proxy npm Locals of the same backend at its container address.
+# Every request is the one a publisher or an npm client sends, made with curl.
+#
+# RED image: main sha-718def3 (2026-11-10). It carries the MCP Registry and
+# Virtual backing repositories (#5456, #5513) and predates #5759 (#5549),
+# #5763 (#5702) and #5816 (#5537); checked with git merge-base
+# --is-ancestor. 1.11.13 has no MCP Registry.
+# GREEN: main carrying all three fix PRs (sha-2bdf092 or later).
+#
+# CONTROLS (pass on every image)
+#   an npm package version that is exact SemVer (1.2.0) publishes with 200;
+#   a Virtual backing repository whose only member is a Remote fills a
+#   package nobody pulled yet: the publish answers 202 resolving and the
+#   version is served once the resolver has filled it; a publish naming a
+#   version nobody pulled through the Remote backing answers 202 resolving
+#   (the documented fill path, so the #5702 case cannot pass by accident).
+#
+# FIX CASES (RED on sha-718def3)
+#   #5549 npm versions 1.2, v1.2.0, 1.2.0+build.5 and 01.2.3, each present in
+#     the npm repository, answer 400 mcp_invalid_server_json naming
+#     packages[0].version, and the version is not stored. Red: 200.
+#   #5537 (item 1, fill_target follows the walk) a Virtual backing whose
+#     walk serves from a Remote inside a nested Virtual (priority 1) ahead of
+#     a direct Remote (priority 2): the resolver fills through the nested
+#     Remote and the version is served (200). Red: the fill goes through the
+#     direct Remote, which the Virtual's route would not serve from, and the
+#     version ends 404 mcp_unresolvable.
+#   #5702 twenty times in a row, an npm tarball is pulled through the Remote
+#     backing and the MCP version naming it is published straight away:
+#     every publish answers 200. Red: many answer 202 resolving, because the
+#     lookup misses the catalog row the fill writes after the last byte
+#     (5 of 12 and 8 of 10 on this host, no CPU cap). Timing-dependent on red
+#     only; green waits for the in-flight fill, so it is deterministic there.
+#
+# NOT COVERED: #5675 (fix #5762). Its four items need a storage-layer 413,
+# a cross-repository key owner, backfill rows that failed five times and a
+# soft-deleted flat-key Git LFS row, none of which a fresh deployment on
+# repository-scoped keys can produce through the API. See the PR body.
+COVERS="5549 5537 5702"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
