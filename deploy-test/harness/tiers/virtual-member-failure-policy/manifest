@@ -30,6 +30,14 @@
 #        `versions/` was empty and the detail routes 404, so
 #        `ansible-galaxy collection install` failed.
 #
+# SINCE 1.12.0 (artifact-keeper#5621, PR #5809): a member that is unavailable
+#        (upstream 5xx, transport error, past the member deadline) is left out
+#        of a Helm / CRAN / Hex / Puppet / Bazel / Maven merge and the
+#        healthy merge is served 200 with X-AK-Partial-Members naming it and
+#        Cache-Control: no-store, partial opt-in or not; the strict 502 now
+#        applies only to a member whose document does not parse. On main the
+#        failing-member cases assert that; release/1.11.x keeps the 502.
+#
 # RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
 #
 # RATE_LIMIT_ENABLED=false: one admin login and ~60 API calls back to back.
