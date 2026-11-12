@@ -353,6 +353,10 @@ case "$CMD" in
     # reaching a push peer (#4889, #4921) and a blob completion PUT re-sent
     # after a proxy 504 (#4902). maven-upload-tx-and-quality-s3 also gates
     # #4892 since #617, still from main's storage-1.11.0 group.
+    # 1.12.0 backfill tiers whose fix is also on this line, run from main's
+    # fixes-1.12.0-and-1.11.x group: a multipart server-side copy of a
+    # non-ASCII S3 key (#4838) and the test-upstream probe and curation sync
+    # following URL validation and the egress proxy (#5079, #5089).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -378,7 +382,8 @@ case "$CMD" in
              image-inspect-repository-scope oci-scan-proxy-unclassifiable \
              upstream-ip-literal-refused sso-idp-user-agent-and-status \
              npm-version-route-dist-tags gcs-error-url-redaction \
-             pypi-age-gate-substitute-scanned; do
+             pypi-age-gate-substitute-scanned \
+             s3-multipart-copy-encoding upstream-probe-egress; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
