@@ -8,6 +8,8 @@
 #   #5153 an acknowledgement survives a rescan and a promotion
 #   #5006 concurrent scan completions in one repository all recalculate the
 #         repository score
+#   #5891 a burst of them (8, 16) never answers 500; pinned KNOWN-RED unless
+#         DTF_GATE_5891=1
 #   #5715 a scan row whose status the build does not know is unscanned for
 #         block_unscanned, not "not applicable"
 # See the manifest for the fixes and the gates.
@@ -29,7 +31,13 @@ LOG4J="org/apache/logging/log4j/log4j-core/2.14.1/log4j-core-2.14.1.jar"
 SCAN_WAIT=180
 RACE_ROUNDS=5      # #5006: fresh repository per round
 RACE_WIDTH=4       # #5006: artifacts whose ingests complete at once per round
-BURST_WIDTH=8      # KNOWN-RED pin: a burst past the fix's retry bound
+BURST_WIDTH=8      # #5891: a burst past #5007's retry bound
+BURST_ROUNDS=3     # #5891 gated: rounds at BURST_WIDTH, then one at WIDE_WIDTH
+WIDE_WIDTH=16
+# #5891 is pinned KNOWN-RED (reported, never failed) until its fix is on main.
+# DTF_GATE_5891=1 turns the pin into a FIX assertion, for proving the fix on a
+# candidate image; flip the default to 1 once the fix has merged.
+GATE_5891="${DTF_GATE_5891:-0}"
 
 setup_workdir
 W="$WORK_DIR"
@@ -275,21 +283,35 @@ for r in $(seq 1 "$RACE_ROUNDS"); do
 done
 finish_case "concurrent completions lose a score recalculation"
 
-# KNOWN-RED pin (reported, never failed). With #5007 a recalculation that finds
-# the repository lock busy waits for the holder and starts over, and the last of
-# its 8 attempts waits for the lock inside its REPEATABLE READ transaction. That
-# wait happens after the snapshot is taken, so a burst wide enough to use up the
-# attempts still answers 500 "could not serialize access" on main (measured on
-# 2bdf092: width 6, 3 of 10 rounds; width 8, 10 of 10; width 4, 0 of 30).
-begin_test "KNOWN-RED #5006 follow-up: ${BURST_WIDTH} scan completions at once in one repository (reported, not gated)"
-reset_case
-race_round "${P}-burst" "$BURST_WIDTH" "b"
-if [ "$RACE_BAD" = "0" ] && [ "$RACE_SCORE" = "${BURST_WIDTH}|${BURST_WIDTH}" ]; then
-  echo "   KNOWN-RED pin now passes (${BURST_WIDTH} of ${BURST_WIDTH}, score ${RACE_SCORE}): flip it to a FIX assertion"
+# #5891 (artifact-keeper#5891, the #5006 follow-up). With #5007 a
+# recalculation that finds the repository lock busy waits for the holder and
+# starts over, and that counts as one of its 8 attempts; the last attempt waits
+# for the lock inside its REPEATABLE READ transaction. That wait happens after
+# the snapshot is taken, so a burst wide enough to use up the attempts still
+# answers 500 "could not serialize access" (measured on main 2bdf092: width 6,
+# 3 of 10 rounds; width 8, 10 of 10; width 4, 0 of 30). The stored score ends
+# up right; the ingest fails.
+if [ "$GATE_5891" = "1" ]; then
+  begin_test "FIX #5891: ${BURST_ROUNDS} rounds of ${BURST_WIDTH} and one of ${WIDE_WIDTH} scan completions at once in one repository all succeed and the score counts every one"
+  reset_case
+  for r in $(seq 1 "$BURST_ROUNDS") w; do
+    width="$BURST_WIDTH"; [ "$r" = "w" ] && width="$WIDE_WIDTH"
+    race_round "${P}-burst${r}" "$width" "b${r}"
+    [ "$RACE_BAD" = "0" ] || fail_g "burst ${r}: ${RACE_BAD} of ${width} concurrent completions failed (pre-fix: 500 could not serialize access once the retry cap is used up)"
+    [ "$RACE_SCORE" = "${width}|${width}" ] || fail_g "burst ${r}: stored score scanned|high ${RACE_SCORE}, want ${width}|${width}"
+  done
+  finish_case "a burst of concurrent completions answers 500"
 else
-  echo "   KNOWN-RED (not gated): ${RACE_BAD} of ${BURST_WIDTH} completions failed; stored score ${RACE_SCORE}"
+  begin_test "KNOWN-RED #5891: ${BURST_WIDTH} scan completions at once in one repository (reported, not gated; DTF_GATE_5891=1 gates it)"
+  reset_case
+  race_round "${P}-burst" "$BURST_WIDTH" "b"
+  if [ "$RACE_BAD" = "0" ] && [ "$RACE_SCORE" = "${BURST_WIDTH}|${BURST_WIDTH}" ]; then
+    echo "   KNOWN-RED #5891 pin now passes (${BURST_WIDTH} of ${BURST_WIDTH}, score ${RACE_SCORE}): flip DTF_GATE_5891 to 1"
+  else
+    echo "   KNOWN-RED #5891 (not gated): ${RACE_BAD} of ${BURST_WIDTH} completions failed; stored score ${RACE_SCORE}"
+  fi
+  pass
 fi
-pass
 
 # =============================================================================
 # #5715: classify_scan_state and a status this build does not know.
