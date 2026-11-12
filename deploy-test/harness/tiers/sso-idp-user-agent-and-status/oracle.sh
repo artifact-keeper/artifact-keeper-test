@@ -18,6 +18,7 @@ source "$COMMON_SH"
 
 setup_workdir
 W="$WORK_DIR"
+: > "$W/jar"
 SUF="${RUN_ID##*-}-$$"
 OIDC_CTL="http://127.0.0.1:${TRIVY_PORT}"
 CI_CTL="http://127.0.0.1:${NEXUS_API_PORT}"
@@ -40,9 +41,12 @@ mk_oidc() { # <name> <issuer> -> provider id, empty on failure
   case "$st" in 2??) jq -r '.id // empty' "$W/api.json" 2>/dev/null || true ;; *) echo "" ;; esac
 }
 # login_redirect <provider id> -> HTTP code; the Location in $W/location, body in $W/login.body
+# The login's cookies go to $W/jar, which callback() starts empty and carries to
+# the AK callback (one browser): from 1.12.0 a sign-in completes only in the
+# browser that started it (artifact-keeper#5486).
 login_redirect() {
   : > "$W/login.body"
-  curl -s -o "$W/login.body" -w '%{http_code} %{redirect_url}' --max-time 60 \
+  curl -s -b "$W/jar" -c "$W/jar" -o "$W/login.body" -w '%{http_code} %{redirect_url}' --max-time 60 \
     "${BASE_URL}/api/v1/auth/sso/oidc/$1/login" > "$W/login.out" 2>/dev/null || echo "000 " > "$W/login.out"
   cut -d' ' -f2- "$W/login.out" > "$W/location"
   cut -d' ' -f1 "$W/login.out"
@@ -50,14 +54,14 @@ login_redirect() {
 # callback <provider id> <iss> -> callback HTTP code; body in $W/cb.body, headers in $W/cb.hdr
 callback() {
   local st authz cb
-  : > "$W/cb.body"; : > "$W/cb.hdr"
+  : > "$W/cb.body"; : > "$W/cb.hdr"; : > "$W/jar"
   st="$(login_redirect "$1")"
   authz="$(cat "$W/location")"
   [ -n "$authz" ] || { echo "login-${st}"; return; }
   cb="$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 30 \
     "${authz}&sub=dtf-waf-${SUF}&email=dtf-waf-${SUF}%40dtf.test&groups=&iss=$(jq -rn --arg i "$2" '$i|@uri')" 2>/dev/null || true)"
   [ -n "$cb" ] || { echo "no-authorize-redirect"; return; }
-  curl -s -D "$W/cb.hdr" -o "$W/cb.body" -w '%{http_code}' --max-time 60 "$cb" 2>/dev/null || echo 000
+  curl -s -b "$W/jar" -c "$W/jar" -D "$W/cb.hdr" -o "$W/cb.body" -w '%{http_code}' --max-time 60 "$cb" 2>/dev/null || echo 000
 }
 backend_log() { docker logs "$BACKEND_CTR" 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g' || true; }
 snip() { head -c 300 "$1" 2>/dev/null | tr -d '\n' || true; }

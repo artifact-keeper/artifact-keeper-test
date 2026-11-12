@@ -52,10 +52,11 @@ trap 'rm -rf "$WORK"' EXIT
 # --- helpers -----------------------------------------------------------------
 
 # http_req METHOD URL [JSON_BODY] -> writes body to $WORK/body, headers to
-# $WORK/hdr, prints the status code.
+# $WORK/hdr, prints the status code. $JAR, when set, is the cookie jar sent.
 http_req() {
   local method="$1" url="$2" body="${3:-}"
   local args=(-s -X "$method" -D "$WORK/hdr" -o "$WORK/body" -w '%{http_code}')
+  [ -n "${JAR:-}" ] && args+=(-b "$JAR" -c "$JAR")
   [ -n "${TOK:-}" ] && args+=(-H "Authorization: Bearer ${TOK}")
   [ -n "$body" ] && args+=(-H 'Content-Type: application/json' -d "$body")
   curl "${args[@]}" "$url"
@@ -79,16 +80,19 @@ url_query_param() {
 
 # drive_oidc_callback PROVIDER_ID SUB MODE -> prints the callback status; the
 # callback's headers/body land in $WORK/cb_hdr / $WORK/cb_body.
+# One browser per login: a cookie jar at $WORK/jar-SUB carries the login's
+# cookies to the callback and, later, to /auth/sso/exchange (from 1.12.0 a
+# sign-in completes only in the browser that started it, artifact-keeper#5486).
 drive_oidc_callback() {
-  local pid="$1" sub="$2" mode="$3" authz cb
-  : >"$WORK/cb_hdr"; : >"$WORK/cb_body"
-  authz=$(curl -s -o "$WORK/login_body" -w '%{redirect_url}' \
+  local pid="$1" sub="$2" mode="$3" authz cb jar="$WORK/jar-$2"
+  : >"$WORK/cb_hdr"; : >"$WORK/cb_body"; : >"$jar"
+  authz=$(curl -s -b "$jar" -c "$jar" -o "$WORK/login_body" -w '%{redirect_url}' \
     "${BASE_URL}/api/v1/auth/sso/oidc/${pid}/login")
   [ -z "$authz" ] && { echo "000-no-login-redirect"; return; }
   cb=$(curl -s -o "$WORK/authz_body" -w '%{redirect_url}' \
     "${authz}&sub=${sub}&email=${sub}%40dtf.test&groups=&id_token_mode=${mode}")
   [ -z "$cb" ] && { echo "000-no-authorize-redirect"; return; }
-  curl -s -D "$WORK/cb_hdr" -o "$WORK/cb_body" -w '%{http_code}' "$cb"
+  curl -s -b "$jar" -c "$jar" -D "$WORK/cb_hdr" -o "$WORK/cb_body" -w '%{http_code}' "$cb"
 }
 
 # token_request_for CLIENT_ID -> the LAST recorded /token form for that client
@@ -197,6 +201,7 @@ begin_test "#4699: OIDC login against an Entra-shaped IdP (id_token only when th
 ST=$(drive_oidc_callback "$P1" "entra-${SUF}" entra)
 LOC=$(grep -i '^location:' "$WORK/cb_hdr" | tr -d '\r' | sed 's/^[Ll]ocation: *//')
 EX_CODE=$(url_query_param "http://x${LOC}" code)
+EX_JAR="$WORK/jar-entra-${SUF}"
 if [ "$ST" = "307" ] && [ -n "$EX_CODE" ]; then
   pass
 else
@@ -225,13 +230,15 @@ if [ -z "$EX_CODE" ]; then
   # The Entra-shaped login failed (see above); fall back to the control
   # login's code so this gate still judges the exchange on its own.
   EX_CODE="$CTL_CODE"
+  EX_JAR="$WORK/jar-ctl-${SUF}"
 fi
 if [ -z "$EX_CODE" ]; then
   : >"$WORK/hdr"
   fail "no exchange code: neither OIDC login reached /callback?code="
 else
+  # The exchange is sent from the browser the login ran in (its jar).
   SAVED_TOK="$TOK"; TOK=""
-  ST=$(http_req POST "${BASE_URL}/api/v1/auth/sso/exchange" "$(jq -n --arg c "$EX_CODE" '{code:$c}')")
+  ST=$(JAR="$EX_JAR" http_req POST "${BASE_URL}/api/v1/auth/sso/exchange" "$(jq -n --arg c "$EX_CODE" '{code:$c}')")
   TOK="$SAVED_TOK"
   EXP=$(jq -r 'if has("expires_in") then .expires_in else "absent" end' "$WORK/body" 2>/dev/null)
   SSO_AT=$(jq -r '.access_token // empty' "$WORK/body" 2>/dev/null)
