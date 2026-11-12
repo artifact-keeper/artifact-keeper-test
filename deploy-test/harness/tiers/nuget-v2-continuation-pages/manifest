@@ -22,5 +22,6 @@
 # RATE_LIMIT_ENABLED=false: one admin login and ~15 API calls back to back.
 PROFILES="storage.filesystem upstreams.mock-multi"
 ORACLE="oracle.sh"
+COVERS="4856"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

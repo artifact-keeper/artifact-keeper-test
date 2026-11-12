@@ -46,4 +46,5 @@
 # RATE_LIMIT_ENABLED=false: not under test, about 60 requests in a burst.
 PROFILES="storage.s3"
 ORACLE="oracle.sh"
+COVERS="5096 5111"
 RATE_LIMIT_ENABLED="false"
