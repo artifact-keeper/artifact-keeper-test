@@ -1,4 +1,5 @@
-# DTF tier manifest: conda-remote-403-probe-fallback  (artifact-keeper#4929)
+# DTF tier manifest: conda-remote-403-probe-fallback  (artifact-keeper#4929,
+# #4180)
 # Profile-set: filesystem + upstreams.mock-files (the oracle writes the
 # channel's documents and forces per-path statuses at run time).
 #
@@ -15,7 +16,18 @@
 #
 # Red on 1.12.0 main before the fix (sha-8f4b018: the three FIX cases fail);
 # the 1.11.x line never had the transcode, so cases 1 and 2 pass there.
+#
+# #4180 (fixed by #4904, 1.12.0): the transcode itself. A Remote whose upstream
+# publishes only repodata.json.zst, or only .bz2, answers GET repodata.json
+# with the decoded document (byte-equal); the plain rendering has its own ETag,
+# revalidates with 304, and is served from the cached .zst without another
+# upstream read; and a ~140 MiB plain index (past the 128 MiB buffered
+# ceiling) whose .zst is a few MiB is served whole, since the ceiling applies
+# to the compressed bytes. Red on sha-b6265bf (the newest published main image
+# before #4904; the plain route asked upstream for the plain .json only, so
+# every #4180 FIX case gets 404). The 1.11.x line has no transcode either.
 PROFILES="storage.filesystem upstreams.mock-files"
 ORACLE="oracle.sh"
+COVERS="4180"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
