@@ -37,6 +37,8 @@
 #        raw sqlx text, the virtual member walk -> 404). Fix
 #        artifact-keeper#5899: 503 UNAVAILABLE + Retry-After in the /v2
 #        envelope for both.
+# #5901  The OCI push/upload paths put the database error's own text in the
+#        /v2 message. Fix artifact-keeper PR for #5901 (stacked on #5899).
 # #5476  (also on 1.11.x, cherry-pick 2f1f49a2) With Postgres unavailable, an anonymous GET on a PUBLIC repository's
 #        format route answered 401: the visibility middleware's cache-miss
 #        repository lookup read a pool error as "no such repository". Fix
@@ -73,6 +75,12 @@
 #            -> 503 + Retry-After; the GETs in the /v2 envelope as
 #            UNAVAILABLE with the fixed message, never 404 BLOB_UNKNOWN /
 #            MANIFEST_UNKNOWN.
+#     #5901  (same lookup cut, on oci_upload_sessions) an upload start and a
+#            chunked PATCH to a session opened before the cut -> 503 +
+#            Retry-After with the fixed message "Database is temporarily
+#            unavailable, retry shortly"; no body carries the database's own
+#            error text (before: 503 with "error returned from database:
+#            terminating connection ...").
 #     #5894  (database facet, before the quota phase) a lookup cut: a psql
 #            session holds ACCESS EXCLUSIVE on oci_blobs, then on oci_tags +
 #            oci_manifests, and the backend sessions queued behind it are
@@ -115,7 +123,7 @@
 # the Retry-After are what discriminate.
 #
 # RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
-COVERS="5649 5650 5685 5655 5476 5894"
+COVERS="5649 5650 5685 5655 5476 5894 5901"
 PROFILES="storage.s3"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

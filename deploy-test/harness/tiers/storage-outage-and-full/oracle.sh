@@ -16,8 +16,9 @@
 #      manifest (img:v1) pushed and pulled, also through a virtual repository;
 #      the lookup cut (#5894 database facet): with the lookup's tables locked
 #      and the queued backend sessions terminated, blob and manifest GET/HEAD
-#      answer 503; a public pypi repository with a wheel that an anonymous
-#      client can read.
+#      answer 503, and an upload start and a chunked PATCH answer 503 with the
+#      fixed message, no database text (#5901); a public pypi repository with
+#      a wheel that an anonymous client can read.
 #   2. bucket quota (#5650, #5685): a 1 KiB hard quota on this slot's bucket;
 #      64 KiB uploads must answer 507 with a neutral body; /health reports
 #      storage unhealthy; reads still work; clearing the quota restores uploads.
@@ -415,6 +416,36 @@ for l in lcb-blobget lcb-blobhead lcbv-blobget lcbv-blobhead lcm-manget lcm-manh
   fi
 done
 verdict "an OCI pull whose lookup the database could not answer did not answer a retryable 503" "$OUT"
+
+begin_test "FIX #5901 db lookup: a push whose session query the database cannot answer -> 503 + Retry-After with the fixed message, no database text"
+# The PATCH goes to a session opened while the database works.
+probe lcp-open POST "${BASE_URL}/v2/${OCI}/img/blobs/uploads/" -H "$(auth)"
+LCP_LOC="$(grep -i '^location:' "${WORK}/lcp-open.hdr" | head -1 | cut -d' ' -f2- | tr -d '\r')"
+case "$LCP_LOC" in http*) ;; *) LCP_LOC="${BASE_URL}${LCP_LOC}" ;; esac
+mkobj lcp
+oci_push_probes() {
+  local p="$1" a; a="$(auth)"
+  probe "${p}-start" POST "${BASE_URL}/v2/${2}/img/blobs/uploads/" -H "$a" &
+  probe "${p}-patch" PATCH "$LCP_LOC" -H "$a" -H 'Content-Type: application/octet-stream' --data-binary "@${WORK}/obj-lcp" &
+  wait
+}
+if [ "$(code_of lcp-open)" != "202" ] || [ -z "$LCP_LOC" ]; then
+  fail "could not open an upload session with the database healthy" "$(ev lcp-open)"
+else
+  lookup_cut oci_upload_sessions oci_push_probes lcp "$OCI"
+  OUT=""
+  for l in lcp-start lcp-patch; do
+    echo "  $(ev "$l")"
+    if [ "$(code_of "$l")" != "503" ] || [ -z "$(ra_of "$l")" ]; then
+      OUT="${OUT}$(ev "$l") (want 503 + Retry-After)"$'\n'
+    elif [ "$(jq -r '.errors[0].message // empty' "${WORK}/${l}.body" 2>/dev/null)" != "Database is temporarily unavailable, retry shortly" ]; then
+      OUT="${OUT}$(ev "$l") (want the fixed database message)"$'\n'
+    elif grep -qiE 'error returned from database|terminating connection|sqlx|oci_upload_sessions' "${WORK}/${l}.body" 2>/dev/null; then
+      OUT="${OUT}$(ev "$l") (the body carries the database's own error text)"$'\n'
+    fi
+  done
+  verdict "a push whose session query the database could not answer leaked the database error or did not answer a retryable 503" "$OUT"
+fi
 
 begin_test "CONTROL: with the lock gone, the pulls answer 200 again (hosted and virtual)"
 OUT=""
