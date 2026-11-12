@@ -1,0 +1,64 @@
+# DTF tier manifest: range-serves-1120
+#   (artifact-keeper#5145, #5478, #5502, #5509, #5668 (Range part), #5139;
+#   all fixed on main for 1.12.0, none on the 1.11.x line)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files:
+# a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes over
+# a control API and which counts every GET per path). It stands in for the
+# Hugging Face Hub, an Alpine mirror and a generic upstream.
+#
+# THE BUGS
+# #5145  The Hugging Face `resolve` route ignored Range: 200 + the whole file,
+#        no Accept-Ranges, for a hosted file and for a cached Remote file, so
+#        an interrupted `hf download` (or `curl -C -`) could never resume.
+# #5478  `GET /alpine/{repo}/{branch}/{repository}/{arch}/{file}.apk` ignored
+#        Range (rules_apko fetches an .apk's three gzip sections as ranged
+#        GETs and checks each against a lockfile digest).
+# #5502  The generic download route ignored Range on a Remote's proxied serves
+#        (a cache hit or an upstream fetch); only stored artifacts were ranged.
+# #5509  A ranged GET on a cold alpine Remote answered 206 but the tee into
+#        the proxy cache was dropped once the window was written, so the
+#        cache never filled and every repeat went upstream.
+# #5668  The native Maven route `GET /maven/{repo}/...` ignored Range (200,
+#        full body, no Accept-Ranges), so segmented downloads were corrupted.
+#        Only the Range part of #5668 is gated here.
+# #5139  Accepted connections never set TCP_NODELAY. A small body (below one
+#        MSS) is written after the response head, Nagle holds it until the
+#        head is ACKed and the receiver delays that ACK by ~40 ms, so every
+#        small download on a keep-alive connection took ~44 ms.
+#
+# THE GATES
+#   (FIX)      RED on ak 1.11.13 (none of the fixes is on the 1.11.x line),
+#              GREEN on main:
+#              #5145 hosted and cached-Remote HF resolve: Range -> 206 with
+#                    Content-Range and the exact window, 416 past the end, and
+#                    `curl -C -` resumes a partial download to the exact file;
+#              #5478 hosted .apk: Range -> 206 + Accept-Ranges, 416 past end;
+#              #5502 generic Remote: Range on a cache hit and on a cold fetch
+#                    -> 206 with the exact window, 416 past the end;
+#              #5509 cold alpine Remote, Range ending before EOF -> 206, then
+#                    the cache fills: a later whole GET is served without a
+#                    second upstream GET;
+#              #5668 hosted Maven jar: Range -> 206 + Accept-Ranges, 416;
+#              #5139 the median time of 40 GETs of a 1000-byte Maven file on
+#                    one keep-alive connection, measured from a container on
+#                    the backend's network, is under 20 ms (pre-fix ~44 ms;
+#                    42 ms measured on 1.11.13).
+#   (CONTROL)  must hold on BOTH images: whole GETs on every route serve the
+#              exact bytes; a 300 kB Maven file on the same kind of
+#              connection is under 20 ms. It spans several segments, so Nagle
+#              never waits on a delayed ACK for it, and a slow host fails the
+#              control rather than the fix. (A 16 kB file is not a control:
+#              the rootless-podman bridge MTU is 65520, so it is one segment.)
+#
+# TIMING (#5139): the pre-fix median is the kernel's delayed-ACK floor (40 ms
+# minimum on Linux) plus a little; the fixed median is ~1 ms. The 20 ms bound
+# leaves a wide margin on both sides, and the 300 kB control shows that the
+# host itself is fast enough when the bound is missed.
+#
+# RATE_LIMIT_ENABLED=false: ~120 requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5145 5478 5502 5509 5668 5139"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
