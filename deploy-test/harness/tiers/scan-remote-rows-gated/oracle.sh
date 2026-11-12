@@ -26,8 +26,16 @@
 # exported BASE_URL, ADMIN_PASS, RUN_ID, DTF_SLOT, TRIVY_PORT (the mock's
 # control port), DB_CONTAINER, COMMON_SH.
 #
-# Green: an image carrying #5071. Red: ak-backend:1.11.9 (every FIX case;
-# the controls pass on both).
+# #5076 (backend PR #5795) extends the same gate to the NuGet flat-container,
+# Debian pool/, RPM package and Alpine package routes, and makes the generic
+# download route (/api/v1/repositories/{key}/download/*path) refuse an
+# enforced-format row of a scanning Remote with 403
+# scan_on_proxy_route_required: that route has no coordinate parser to grade
+# it with.
+#
+# Green: an image carrying #5071 and #5076. Red: ak-backend:1.11.9 (every
+# FIX #4514 case) and a main image between the two fixes (every FIX #5076
+# case; the FIX #4514 cases pass there). The controls pass on every image.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${COMMON_SH:?}"; : "${DB_CONTAINER:?}"; : "${TRIVY_PORT:?}"
@@ -64,17 +72,27 @@ SPECS=(
   "pod-clean|cocoapods|cocoapods|cocoapods|cocoapods/pods/DtfCleanPod-1.0.0.tar.gz|pods/DtfCleanPod-1.0.0.tar.gz|DtfCleanPod|1.0.0|pods/DtfCleanPod-1.0.0.tar.gz|"
   "sw-vuln|swift|swift|swift|swift/dtf/vulnpkg/1.0.0.zip|dtf/vulnpkg/1.0.0.zip|dtf.vulnpkg|1.0.0|dtf/vulnpkg/1.0.0.zip|"
   "sw-clean|swift|swift|swift|swift/dtf/cleanpkg/1.0.0.zip|dtf/cleanpkg/1.0.0.zip|dtf.cleanpkg|1.0.0|dtf/cleanpkg/1.0.0.zip|"
+  # #5076: NuGet, Debian, RPM and Alpine
+  "nug-vuln|nuget|nuget|nuget/v3/index.json|nuget/v3-flatcontainer/newtonsoft.json/12.0.1/newtonsoft.json.12.0.1.nupkg|v3/flatcontainer/newtonsoft.json/12.0.1/newtonsoft.json.12.0.1.nupkg|Newtonsoft.Json|12.0.1|newtonsoft.json/12.0.1/newtonsoft.json.12.0.1.nupkg|"
+  "nug-clean|nuget|nuget|nuget/v3/index.json|nuget/v3-flatcontainer/dtf.scanclean/1.0.0/dtf.scanclean.1.0.0.nupkg|v3/flatcontainer/dtf.scanclean/1.0.0/dtf.scanclean.1.0.0.nupkg|Dtf.ScanClean|1.0.0|dtf.scanclean/1.0.0/dtf.scanclean.1.0.0.nupkg|"
+  "deb-vuln|debian|debian|debian|debian/pool/main/o/openssl/openssl_3.0.11-1~deb12u2_amd64.deb|pool/main/o/openssl/openssl_3.0.11-1~deb12u2_amd64.deb|openssl|3.0.11-1~deb12u2|pool/main/o/openssl/openssl_3.0.11-1~deb12u2_amd64.deb|"
+  "rpm-vuln|rpm|rpm|rpm|rpm/9/BaseOS/x86_64/os/Packages/o/openssl-libs-3.0.7-17.el9_2.x86_64.rpm|9/BaseOS/x86_64/os/Packages/o/openssl-libs-3.0.7-17.el9_2.x86_64.rpm|openssl-libs|3.0.7-17.el9_2|9/BaseOS/x86_64/os/Packages/o/openssl-libs-3.0.7-17.el9_2.x86_64.rpm|"
+  "rpm-clean|rpm|rpm|rpm|rpm/9/BaseOS/x86_64/os/Packages/d/dtf-scanclean-1.0-1.el9.noarch.rpm|9/BaseOS/x86_64/os/Packages/d/dtf-scanclean-1.0-1.el9.noarch.rpm|dtf-scanclean|1.0-1.el9|9/BaseOS/x86_64/os/Packages/d/dtf-scanclean-1.0-1.el9.noarch.rpm|"
+  "apk-vuln|alpine|alpine|alpine|alpine/v3.19/main/x86_64/busybox-1.36.1-r15.apk|v3.19/main/x86_64/busybox-1.36.1-r15.apk|busybox|1.36.1-r15|v3.19/main/x86_64/busybox-1.36.1-r15.apk|"
+  "apk-clean|alpine|alpine|alpine|alpine/v3.19/main/x86_64/dtf-scanclean-1.0-r0.apk|v3.19/main/x86_64/dtf-scanclean-1.0-r0.apk|dtf-scanclean|1.0-r0|v3.19/main/x86_64/dtf-scanclean-1.0-r0.apk|"
 )
 FORMATS="go rubygems composer pub cocoapods swift"
+# #5076: the routes gated since backend PR #5795.
+FORMATS_5076="nuget debian rpm alpine"
 
-short() { case "$1" in rubygems) echo gem;; composer) echo cmp;; cocoapods) echo pod;; swift) echo sw;; *) echo "$1";; esac; }
+short() { case "$1" in rubygems) echo gem;; composer) echo cmp;; cocoapods) echo pod;; swift) echo sw;; nuget) echo nug;; debian) echo deb;; alpine) echo apk;; *) echo "$1";; esac; }
 seed_key() { echo "srg-s$(short "$1")-${SUF}"; }
 gate_key() { echo "srg-t$(short "$1")-${SUF}"; }
 off_key()  { echo "srg-o$(short "$1")-${SUF}"; }
 
 cleanup() {
   local f
-  for f in $FORMATS; do
+  for f in $FORMATS $FORMATS_5076; do
     for k in "$(seed_key "$f")" "$(gate_key "$f")" "$(off_key "$f")"; do
       api_delete "/api/v1/repositories/${k}" >/dev/null 2>&1 || true
     done
@@ -95,7 +113,9 @@ pull() {
 }
 hdr() { grep -i "^$1:" "$HDR" 2>/dev/null | tr -d '\r' | sed 's/^[^:]*:[[:space:]]*//' | head -1 || true; }
 body_err() { jq -r '.error // .code // empty' "$BODY" 2>/dev/null || true; }
-snippet() { head -c 160 "$BODY" | tr -c '[:print:]' '.'; }
+snippet() { # a JSON error body verbatim (truncated); package bytes as their size
+  if [ "$(head -c 1 "$BODY" 2>/dev/null)" = "{" ]; then head -c 160 "$BODY" | tr -c '[:print:]' '.'; else echo "($(stat -c %s "$BODY" 2>/dev/null || echo 0) bytes)"; fi
+}
 verdict_of() { psql_q "SELECT verdict FROM proxy_scan_results WHERE checksum_sha256='$1' ORDER BY scanned_at DESC LIMIT 1"; }
 scan_cfg() { # key action -> echoes the persisted proxy_scan_action
   api_put "/api/v1/repositories/$1/security" \
@@ -134,14 +154,14 @@ fi
 
 begin_test "Setup: per format an unscanned seed Remote, a fail_closed target Remote and an unscanned target Remote"
 ok=1; acts=""
-for f in $FORMATS; do
+for f in $FORMATS $FORMATS_5076; do
   spec "$(short "$f")-vuln"
   create_repo "$(seed_key "$f")" "$f" remote "${UP}/${S_UPDIR}" || ok=0
   create_repo "$(gate_key "$f")" "$f" remote "${UP}${NONE}/${S_UPDIR}" || ok=0
   create_repo "$(off_key "$f")" "$f" remote "${UP}${NONE}/${S_UPDIR}" || ok=0
   acts="${acts}$(scan_cfg "$(gate_key "$f")" fail_closed) "
 done
-if [ "$ok" = 1 ] && [ "$acts" = "fail_closed fail_closed fail_closed fail_closed fail_closed fail_closed " ]; then
+if [ "$ok" = 1 ] && [ "$acts" = "$(printf 'fail_closed %.0s' $FORMATS $FORMATS_5076)" ]; then
   pass
 else
   infra_fail "repo setup failed (ok=${ok}) or actions not persisted: '${acts}'"
@@ -244,6 +264,58 @@ for id in go-liar gem-liar; do
     fail "status=${ST} scan='${SCAN}' body=$(snippet) verdict='$(verdict_of "$d")'"
   fi
 done
+
+# ---------------------------------------------------------------------------
+# #5076: the NuGet, Debian, RPM and Alpine routes, and the generic route
+# ---------------------------------------------------------------------------
+for f in $FORMATS_5076; do
+  id="$(short "$f")-vuln"
+  begin_test "FIX #5076: a vulnerable ${f} row in the fail_closed Remote is 403 scan_blocked with a 'vulnerable' verdict (was 200 unscanned)"
+  gate_pull "$id"
+  d=$(golden_sha "$S_GOLD")
+  if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
+    pass
+  else
+    fail "status=${ST} scan='${SCAN}' body=$(snippet) verdict='$(verdict_of "$d")'"
+  fi
+done
+
+begin_test "FIX #5076: the clean NuGet, RPM and Alpine rows are graded and served with X-AK-Scan: clean (was no header)"
+bad=""
+for id in nug-clean rpm-clean apk-clean; do
+  gate_pull "$id"
+  d=$(golden_sha "$S_GOLD")
+  [ "$ST/$SCAN" = "200/clean" ] && [ "$BSHA" = "$d" ] && [ "$(verdict_of "$d")" = "clean" ] \
+    || bad="${bad} ${id}=${ST}/${SCAN}/verdict:$(verdict_of "$d")"
+done
+if [ -z "$bad" ]; then pass; else fail "${bad}"; fi
+
+# The generic download route has no per-format coordinate parser, so it
+# cannot grade a row; since #5076 it refuses an enforced-format row of a
+# scanning Remote instead of streaming it (both of its spellings).
+gen_pull() { # key row-path [prefix]
+  ST=$(curl -s -D "$HDR" -o "$BODY" -w '%{http_code}' --max-time 60 -H "$(auth_header)" \
+         "${BASE_URL}${3:-/api/v1/repositories}/$1/download/$2" 2>/dev/null) || ST="000"
+  SCAN=$(hdr x-ak-scan)
+  BSHA=$(sha256sum "$BODY" 2>/dev/null | cut -d' ' -f1)
+}
+begin_test "control: the generic download route streams a stored row of the unscanned RPM Remote (200, row bytes)"
+spec rpm-clean
+gen_pull "$(off_key rpm)" "$S_PATH"
+if [ "$ST" = "200" ] && [ "$BSHA" = "$(golden_sha "$S_GOLD")" ]; then
+  pass
+else
+  fail "status=${ST} body=$(snippet)"
+fi
+
+begin_test "FIX #5076: the generic download route refuses a stored row of a scanning Remote (403 scan_on_proxy_route_required, was 200 ungated)"
+bad=""
+for id in rpm-clean apk-vuln; do
+  spec "$id"
+  gen_pull "$(gate_key "$S_FMT")" "$S_PATH"
+  [ "$ST" = "403" ] && [ "$(body_err)" = "scan_on_proxy_route_required" ] || bad="${bad} ${id}=${ST}:$(snippet)"
+done
+if [ -z "$bad" ]; then pass; else fail "${bad}"; fi
 
 begin_test "control: the target Remotes' upstream got no request (every answer above came from the stored row)"
 NONE_H1=$(hits "$NONE")
