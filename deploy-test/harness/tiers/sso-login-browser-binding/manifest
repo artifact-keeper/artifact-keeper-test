@@ -1,0 +1,67 @@
+# DTF tier manifest: sso-login-browser-binding  (artifact-keeper#5486)
+# Profile-set: filesystem / single + sso=oidc (the oidc-group-sync mock IdP on
+# 172.28.<slot>.0/24, profiles/sso.oidc.yml). SAML needs no IdP container: the
+# assertions are signed by the sso tier's dtf-saml-xsw-probe with a key it
+# generates at run time, whose certificate is registered as the provider's.
+#
+# THE BUG: an SSO sign-in was not bound to the browser that started it. The
+# OIDC `state`, the SAML AuthnRequest id and the exchange code handed to the
+# web UI were bearer values, so a sign-in could be completed in another browser
+# than the one that started it, which then held that account's session.
+#
+# THE FIX (1.12.0): the login start sets a per-login cookie
+#   ak_sso_bind_<16 hex>=<64 hex>; HttpOnly; SameSite=Lax; Path=/api/v1/auth/sso; Max-Age=600
+# that the OIDC callback, the SAML completion step (GET /auth/sso/complete,
+# which the ACS now 303s to without setting a session) and POST
+# /auth/sso/exchange require. A refusal is 401 AUTH_ERROR and consumes nothing.
+# `?client=cli` on the login URL starts a command-line sign-in: the callback /
+# ACS needs no browser cookie, sets no cookie, and shows the exchange code as
+# text/plain; /exchange redeems it only with the login response's cookie.
+#
+# PRIMITIVES
+#   * Each browser is its own curl cookie jar (-b/-c). The IdP step (the mock's
+#     /authorize, or the probe's signed Response) never carries a jar.
+#   * "Set a session" means an ak_access_token Set-Cookie on the response.
+#
+# GATES (fixed image GREEN; pre-fix main RED on every FIX case)
+#   CONTROL (both images):
+#     - an OIDC login started, called back and exchanged in ONE jar completes,
+#       and the exchanged token works on /auth/me as the IdP's user;
+#     - a signed SAML response for a login started in one jar completes in that
+#       jar, in either shape: ACS 307 /callback with the session cookies
+#       (pre-fix), or ACS 303 /auth/sso/complete -> 307 /callback with them.
+#   FIX:
+#     - the OIDC login response sets the binding cookie (name, value, HttpOnly,
+#       SameSite=Lax, Path, Max-Age=600); an unknown `client` value is a 400;
+#     - an OIDC callback for a login started in jar A, delivered in jar B (which
+#       holds the cookie of a sign-in of its own) -> 401 AUTH_ERROR "This sign-in
+#       was not started in this browser", no Set-Cookie; the same callback then
+#       completes in jar A (state not consumed). The same on the per-provider
+#       callback path /oidc/{id}/callback with a jar B holding no cookie;
+#     - an exchange code from a callback completed in jar A, POSTed from jar B
+#       -> 401; then from jar A -> 200, the token works, and the binding cookie
+#       is expired (Max-Age=0);
+#     - a signed SAML response for a login started in jar A, POSTed to the ACS
+#       from jar B -> 303 to /auth/sso/complete, no Set-Cookie; /complete in
+#       jar B -> 401, no Set-Cookie; /complete in jar A -> 307 /callback with
+#       the session cookies; the code redeems in jar A;
+#     - OIDC `?client=cli`: state starts `cli-`; the callback in a jar without
+#       the cookie -> 200 text/plain (no-store) showing a 64-hex code, no
+#       Set-Cookie; /exchange without the cookie -> 401, with the login
+#       response's cookie -> 200 and the token works;
+#     - SAML `?client=cli`: AuthnRequest id starts `_cli-`; the ACS -> 200
+#       text/plain with the code, no Set-Cookie; /exchange with the login
+#       response's cookie -> 200.
+#
+# NOT COVERED: the web UI's /callback page (no frontend in this topology), and
+# a real browser's SameSite enforcement (curl sends a jar's cookies on any
+# request; the jars stand for what a browser would send).
+#
+# The SAML cases need the sso tier's signer: DTF_SAML_XSW_PROBE, or the
+# prebuilt harness/tiers/sso/probe/target/release/dtf-saml-xsw-probe that the
+# release gate's build-dtf-probes job provides.
+#
+# RATE_LIMIT_ENABLED=false: many SSO calls back to back from one client.
+PROFILES="storage.filesystem sso.oidc"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
