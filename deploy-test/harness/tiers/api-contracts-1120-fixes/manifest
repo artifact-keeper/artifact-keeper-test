@@ -1,0 +1,63 @@
+# DTF tier manifest: api-contracts-1120-fixes
+#   (artifact-keeper 1.12.0 REST API contract fixes: #4800, #4825, #4843,
+#    #4834, #4851, #5201, #5652, #5694, #5487, #5347, #5223)
+# Profile-set: filesystem + audit.upstream-fetches-all (AUDIT_UPSTREAM_FETCHES
+# =all, so a cold HEAD's upstream contact is countable in the audit log).
+# Sibling of api-contracts-1120 (features); this one holds the bug fixes.
+#
+# RED images (main builds; the 1.11 line either never had some of these bugs
+# or took the fixes, so it cannot be the red image for all of them):
+#   sha-507857f  main before #4840 (2026-10-20): every FIX except #5694
+#                (whose async delete is not there yet).
+#   sha-c09e5d7  main after #5316/#5331 and before #5414/#5443/#5488/#5754/
+#                #5751 (2026-11-05): #5652, #5487, #5694, #5347, #5223.
+# GREEN: main carrying every fix (sha-2bdf092 or later).
+#
+# CONTROLS (pass on every image)
+#   three migration jobs, one cancelled, list with a matching total; a basic-
+#   auth Remote stores and reports its credentials; a repository-owner role
+#   member reads its repository while a plain user cannot change or delete
+#   it; a valid visibility PATCH applies; posting the settings GET body back
+#   with a new retention_days stores it; cron '30 3 * * MON' is accepted and
+#   weekday '8' refused; a live repository's artifact resolves by id; a CRAN
+#   Remote over a generic upstream serves a cold GET; a Remote with a
+#   60-minute age hold answers a cold download 409.
+#
+# FIX CASES
+#   #4800 GET /migrations?status= : pagination.total and total_pages count
+#     only the filtered jobs.
+#   #4825 a Remote create with upstream_username/password and no
+#     upstream_auth_type is 400 and leaves no repository (was 201 with the
+#     credentials silently dropped).
+#   #4843 basic without a password, or an unknown upstream_auth_type, is 400
+#     and leaves no repository, so the corrected retry is 201 (was 409).
+#   #4851 the repository list (and the PATCH response) report
+#     upstream_auth_type basic / upstream_auth_configured true, like the
+#     detail (was null/false).
+#   #4834 a repository-owner role member (role_assignments row, no
+#     fine-grained rule) can PATCH, set cache-ttl on and DELETE its own
+#     repositories (was 403).
+#   #5201 PATCH {visibility: internal, apt_label: X} on a generic repository
+#     is 400 and leaves visibility private (was 400 after saving internal).
+#   #5652 GET /admin/settings reports max_upload_size_bytes 10 GiB, the limit
+#     in force (was a stored 100 MB); retention_days -5 is 400 and not stored;
+#     the accepted change writes one SETTING_CHANGED audit row.
+#   #5487 cron '30 3 * * 0' and '0 3 * * 0-6' are accepted (0 = Sunday; was
+#     400 "Invalid cron expression").
+#   #5694 right after DELETE answers 202, the repository's artifacts answer
+#     404 on /artifacts/{id} and /stats (was 200 until the job reached them).
+#     150 artifacts keep the job running while the oracle looks.
+#   #5347 a cold HEAD through a CRAN Remote records exactly one
+#     UPSTREAM_FETCHED row with method HEAD (was none).
+#   #5223 a release POSTed straight after a held path's 409 answers 200 and
+#     the path then serves the upstream bytes (was 404 "No cached artifact at
+#     that path" while the 50 MB fill was still running).
+#
+# The Remotes proxy the backend itself on its container address, so the SSRF
+# guard needs UPSTREAM_ALLOW_PRIVATE_IPS. RATE_LIMIT_ENABLED=false: ~250
+# quick API calls.
+COVERS="4800 4825 4843 4834 4851 5201 5652 5694 5487 5347 5223"
+PROFILES="storage.filesystem audit.upstream-fetches-all"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

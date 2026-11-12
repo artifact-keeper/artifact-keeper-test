@@ -1,0 +1,11 @@
+# =============================================================================
+# profiles/audit.upstream-fetches-all.yml: AUDIT_UPSTREAM_FETCHES = all
+# =============================================================================
+# PATCHES backend: every request a proxy sends upstream writes one
+# UPSTREAM_FETCHED audit row (#5286), so a tier can count upstream contact
+# through GET /api/v1/admin/audit instead of a request-recording mock.
+# =============================================================================
+services:
+  backend:
+    environment:
+      AUDIT_UPSTREAM_FETCHES: "all"
