@@ -1,0 +1,42 @@
+# DTF tier manifest: upstream-probe-egress  (artifact-keeper#5079, #5089)
+# Profile-set: filesystem / single + upstreams.mock-egress-recorder (a
+# recording explicit egress proxy at 172.16.<slot>.93:3128, admitted by a /32
+# entry, and a recording listener on 127.0.0.1:18099 inside the backend's
+# network namespace). Neither recorder forwards anything: they answer 200 and
+# record the request line, so "the proxy saw it" and "loopback was dialled"
+# are observable even when the destination host does not resolve.
+#
+# CONTROLS (pass on every image)
+#   a generic Remote on the admitted mock probes 2xx and the mock records the
+#   probe; saving a loopback upstream URL through the API is 400/422 (which is
+#   why the refused-URL cases write the stored URL to the row directly).
+#
+# FIX CASES (RED on sha-c7a9ada, the nearest tagged main commit before #5080
+# and #5090)
+#   #5079 test-upstream on a Remote whose stored upstream URL is loopback is
+#     400 and the loopback listener receives nothing. RED: the probe dials it.
+#   #5079 test-upstream on a Remote with an explicit egress proxy and an
+#     unresolvable upstream host goes through the proxy (absolute-form request
+#     recorded, 2xx). RED: the probe goes direct and the proxy sees nothing.
+#   #5079 test-upstream on an unresolvable upstream whose URL carries userinfo
+#     answers 502 without the password, the userinfo, the host or the path
+#     (GHSA-9549-w783-h7f9, published). RED: the reqwest error text carries
+#     the request URL (host and path; reqwest already drops the userinfo).
+#   #5089 a manual curation sync of an rpm staging repository fetches the
+#     source Remote's repodata/repomd.xml through that Remote's explicit
+#     egress proxy. RED: the sweep's shared client goes direct.
+#   #5089 a curation sync whose source Remote's stored URL is loopback sends no
+#     request and leaves the staging repository unstamped. RED: repomd.xml is
+#     requested from 127.0.0.1. On current main the manual trigger answers
+#     409 naming the refusal (#5207) before the sweep runs; the gate is the
+#     listener and the stamp, so it holds either way.
+#
+# Both fixes were backported into 1.11.13, so this tier is green there.
+#
+# RATE_LIMIT_ENABLED=false: back-to-back admin calls.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the admitted mock is on a private address.
+PROFILES="storage.filesystem upstreams.mock-egress-recorder"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+COVERS="5079 5089"
