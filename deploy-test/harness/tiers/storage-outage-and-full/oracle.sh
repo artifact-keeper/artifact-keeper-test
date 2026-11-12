@@ -13,8 +13,11 @@
 # Phases (see the manifest for each bug and fix):
 #   1. setup + CONTROL: repositories on five routes (generic REST, Maven, OCI,
 #      Go, Ivy), a 64 KiB object uploaded and read back on each; an OCI image
-#      manifest (img:v1) pushed and pulled; a public pypi repository with a
-#      wheel that an anonymous client can read.
+#      manifest (img:v1) pushed and pulled, also through a virtual repository;
+#      the lookup cut (#5894 database facet): with the lookup's tables locked
+#      and the queued backend sessions terminated, blob and manifest GET/HEAD
+#      answer 503; a public pypi repository with a wheel that an anonymous
+#      client can read.
 #   2. bucket quota (#5650, #5685): a 1 KiB hard quota on this slot's bucket;
 #      64 KiB uploads must answer 507 with a neutral body; /health reports
 #      storage unhealthy; reads still work; clearing the quota restores uploads.
@@ -56,6 +59,7 @@ OCI="sof-oci-${SUF}"
 GO="sof-go-${SUF}"
 IVY="sof-ivy-${SUF}"
 DEL="sof-del-${SUF}"
+VOCI="sof-voci-${SUF}"
 PYPI="sof-pypi-${SUF}"
 PRIV="sof-priv-${SUF}"
 PUBGEN="sof-pubgen-${SUF}"
@@ -155,18 +159,57 @@ digest_of() { echo "sha256:$(sha256sum "${WORK}/obj-$1" | cut -d' ' -f1)"; }
 mkobj() { head -c 65536 /dev/urandom > "${WORK}/obj-$1"; }
 
 # The pushed image (img:v1) and its config blob (#5894).
-url_oci_blob() { echo "${BASE_URL}/v2/${OCI}/img/blobs/${OCI_CFG_DIGEST}"; }
-url_oci_man() { echo "${BASE_URL}/v2/${OCI}/img/manifests/v1"; }
+url_oci_blob() { echo "${BASE_URL}/v2/${1:-$OCI}/img/blobs/${OCI_CFG_DIGEST}"; }
+url_oci_man() { echo "${BASE_URL}/v2/${1:-$OCI}/img/manifests/v1"; }
 MAN_ACCEPT="Accept: application/vnd.oci.image.manifest.v1+json"
-# oci_pulls PREFIX: GET and HEAD of the stored config blob and of img:v1, in
-# parallel.
+# oci_pulls PREFIX [REPO]: GET and HEAD of the stored config blob and of
+# img:v1 (in REPO, default the hosted one), in parallel.
 oci_pulls() {
-  local p="$1" a; a="$(auth)"
-  probe "${p}-blobget" GET "$(url_oci_blob)" -H "$a" &
-  probe "${p}-blobhead" HEAD "$(url_oci_blob)" -H "$a" -I &
-  probe "${p}-manget" GET "$(url_oci_man)" -H "$a" -H "$MAN_ACCEPT" &
-  probe "${p}-manhead" HEAD "$(url_oci_man)" -H "$a" -H "$MAN_ACCEPT" -I &
+  oci_blob_pulls "$@" & oci_man_pulls "$@" & wait
+}
+oci_blob_pulls() {
+  local p="$1" r="${2:-$OCI}" a; a="$(auth)"
+  probe "${p}-blobget" GET "$(url_oci_blob "$r")" -H "$a" &
+  probe "${p}-blobhead" HEAD "$(url_oci_blob "$r")" -H "$a" -I &
   wait
+}
+oci_man_pulls() {
+  local p="$1" r="${2:-$OCI}" a; a="$(auth)"
+  probe "${p}-manget" GET "$(url_oci_man "$r")" -H "$a" -H "$MAN_ACCEPT" &
+  probe "${p}-manhead" HEAD "$(url_oci_man "$r")" -H "$a" -H "$MAN_ACCEPT" -I &
+  wait
+}
+
+# --- the #5894 database facet: a lookup the database cannot answer ----------
+# A whole-database outage fails the request at authentication or repository
+# resolution, before the blob/manifest lookup (both images answer 503 there),
+# so the lookup is cut on its own: a session holds ACCESS EXCLUSIVE on the
+# lookup's tables, and the backend sessions that queue behind it are
+# terminated, as a failover or a dropped connection ends a query in flight
+# ("terminating connection due to administrator command").
+LOCK_APP="dtf-5894-lock-${SUF}"
+psql_db() { docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc "$1" 2>/dev/null; }
+# lookup_cut TABLES PROBE-FN PREFIX REPO: run PROBE-FN PREFIX REPO while TABLES
+# are locked, terminating each backend session that waits on the lock until
+# the probes have answered; then release the lock.
+lookup_cut() {
+  local tables="$1" fn="$2" p="$3" r="$4" i pid
+  printf 'BEGIN;\nLOCK TABLE %s IN ACCESS EXCLUSIVE MODE;\nSELECT pg_sleep(60);\nROLLBACK;\n' "$tables" \
+    | docker exec -i -e PGAPPNAME="$LOCK_APP" "$DB_CONTAINER" psql -U registry -d artifact_registry -q >/dev/null 2>&1 &
+  for i in $(seq 1 20); do
+    [ "$(psql_db "SELECT count(*) FROM pg_stat_activity WHERE application_name = '${LOCK_APP}' AND query LIKE '%pg_sleep%'")" = "1" ] && break
+    sleep 0.5
+  done
+  "$fn" "$p" "$r" &
+  pid=$!
+  for i in $(seq 1 60); do
+    psql_db "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+      AND datname = 'artifact_registry' AND application_name <> '${LOCK_APP}' AND pid <> pg_backend_pid()" >/dev/null
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  wait "$pid" 2>/dev/null
+  psql_db "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '${LOCK_APP}'" >/dev/null
 }
 # oci_pulls_ok PREFIX: all four answered 200; the GETs return the pushed bytes.
 oci_pulls_ok() {
@@ -347,6 +390,40 @@ else
   oci_pulls pull0
   verdict "an OCI pull failed with storage healthy" "$(oci_pulls_ok pull0)"
 fi
+
+begin_test "setup: a virtual docker repository over ${OCI}; GET/HEAD of the blob and the manifest through it answer 200"
+api_post "/api/v1/repositories" \
+  "{\"key\":\"${VOCI}\",\"name\":\"${VOCI}\",\"format\":\"docker\",\"repo_type\":\"virtual\",\"is_public\":false}" >/dev/null 2>&1 \
+  && api_post "/api/v1/repositories/${VOCI}/members" "{\"member_key\":\"${OCI}\",\"priority\":1}" >/dev/null 2>&1
+oci_pulls vpull0 "$VOCI"
+verdict "a pull through the virtual repository failed with the database healthy" "$(oci_pulls_ok vpull0)"
+
+begin_test "FIX #5894 db lookup: a blob/manifest lookup the database cannot answer -> 503 + Retry-After (hosted and virtual), never 404 or 500"
+lookup_cut oci_blobs oci_blob_pulls lcb "$OCI"
+lookup_cut oci_blobs oci_blob_pulls lcbv "$VOCI"
+lookup_cut "oci_tags, oci_manifests" oci_man_pulls lcm "$OCI"
+lookup_cut "oci_tags, oci_manifests" oci_man_pulls lcmv "$VOCI"
+OUT=""
+for l in lcb-blobget lcb-blobhead lcbv-blobget lcbv-blobhead lcm-manget lcm-manhead lcmv-manget lcmv-manhead; do
+  echo "  $(ev "$l")"
+  if [ "$(code_of "$l")" != "503" ] || [ -z "$(ra_of "$l")" ]; then
+    OUT="${OUT}$(ev "$l") (want 503 + Retry-After)"$'\n'
+  elif [ "${l%head}" = "$l" ] && [ "$(jq -r '.errors[0].code // empty' "${WORK}/${l}.body" 2>/dev/null)" != "UNAVAILABLE" ]; then
+    OUT="${OUT}$(ev "$l") (want the /v2 envelope with code UNAVAILABLE)"$'\n'
+  elif grep -qiE 'error returned from database|terminating connection|sqlx|pg_' "${WORK}/${l}.body" 2>/dev/null; then
+    OUT="${OUT}$(ev "$l") (the body carries the database's own error text)"$'\n'
+  fi
+done
+verdict "an OCI pull whose lookup the database could not answer did not answer a retryable 503" "$OUT"
+
+begin_test "CONTROL: with the lock gone, the pulls answer 200 again (hosted and virtual)"
+OUT=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  oci_pulls lcok "$OCI"; oci_pulls lcokv "$VOCI"
+  OUT="$(oci_pulls_ok lcok; oci_pulls_ok lcokv)" && break
+  sleep 2
+done
+verdict "a pull did not recover after the lookup cut" "$OUT"
 
 begin_test "CONTROL before: an anonymous GET of /pypi/<public repo>/simple/${PKG}/ answers 200"
 anon_get anon0 "${BASE_URL}/pypi/${PYPI}/simple/${PKG}/"
