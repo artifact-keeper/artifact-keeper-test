@@ -1,6 +1,6 @@
 # DTF tier manifest: storage-outage-and-full
-#   (artifact-keeper#5649, #5650, #5685, #5655, #5476; all fixed on main for
-#   1.12.0; only #5476 is also on the 1.11.x line)
+#   (artifact-keeper#5649, #5650, #5685, #5655, #5476, #5894; all fixed on main
+#   for 1.12.0; only #5476 is also on the 1.11.x line)
 # Profile-set: s3 (MinIO). The oracle stops this slot's own MinIO, puts a hard
 # quota on this slot's own bucket, and stops this slot's own Postgres.
 #
@@ -28,6 +28,15 @@
 #        #5753: `completed_with_errors`, `failed_items` and an error summary.
 #        (The async delete job is main-only: 1.11.13 answers the DELETE with a
 #        synchronous 200 and reports nothing about the purge.)
+# #5894  With MinIO stopped, an OCI pull of content the repository holds
+#        answered 404: the blob GET and the manifest GET/HEAD read the storage
+#        error as "not stored here" and fell through to BLOB_UNKNOWN /
+#        MANIFEST_UNKNOWN, which docker/containerd take as "this image does
+#        not exist" and do not retry. A database error on the lookup itself
+#        did the same (blob GET/HEAD -> 404, manifest GET/HEAD -> 500 with the
+#        raw sqlx text, the virtual member walk -> 404). Fix
+#        artifact-keeper#5899: 503 UNAVAILABLE + Retry-After in the /v2
+#        envelope for both.
 # #5476  (also on 1.11.x, cherry-pick 2f1f49a2) With Postgres unavailable, an anonymous GET on a PUBLIC repository's
 #        format route answered 401: the visibility middleware's cache-miss
 #        repository lookup read a pool error as "no such repository". Fix
@@ -59,6 +68,19 @@
 #            STORAGE_UNAVAILABLE + Retry-After; OCI blob POST -> 503
 #            UNAVAILABLE in the /v2 envelope; /readyz stays ready with
 #            `degraded` naming storage.
+#     #5894  with MinIO stopped: GET of the stored 64 KiB blob and GET/HEAD
+#            of the pushed image's config blob and of its manifest (img:v1)
+#            -> 503 + Retry-After; the GETs in the /v2 envelope as
+#            UNAVAILABLE with the fixed message, never 404 BLOB_UNKNOWN /
+#            MANIFEST_UNKNOWN.
+#     #5894  (database facet, before the quota phase) a lookup cut: a psql
+#            session holds ACCESS EXCLUSIVE on oci_blobs, then on oci_tags +
+#            oci_manifests, and the backend sessions queued behind it are
+#            terminated (what a failover does to a query in flight). Blob
+#            GET/HEAD and manifest GET/HEAD, on the hosted repository and
+#            through a virtual one over it -> 503 + Retry-After, the GETs as
+#            UNAVAILABLE in the /v2 envelope. A full Postgres stop cannot
+#            show this: authentication answers 503 first on every image.
 #     #5655  a repository DELETE issued with MinIO stopped -> 202 + a job that
 #            ends `completed_with_errors` with failed_items > 0 and an
 #            error_summary (MinIO stays down until the job is terminal).
@@ -68,17 +90,14 @@
 #            Retry-After: 1, not 401 (repositories not looked up within the
 #            visibility cache's 60 s TTL, so the lookup is a cache miss).
 #   (CONTROL)  true on both images: uploads and downloads on every route work
-#              before; downloads still work while the bucket is full; uploads
+#              before; the OCI image pushes and pulls (hosted and through the
+#              virtual) before and after the lookup cut and the outage; downloads still work while the bucket is full; uploads
 #              work again after the quota is cleared and after MinIO is back;
 #              the anonymous pypi GET answers 200 before the DB outage and
 #              after it, and a missing and a private repository still answer
 #              401 after it.
 #
-# NOT GATED: an OCI blob GET of an existing blob with MinIO stopped answers
-# 404 BLOB_UNKNOWN on main (the existence check reads the outage as a miss).
-# The oracle prints it as a NOTE only; it is outside these issues.
-#
-# RED IMAGES (two):
+# RED IMAGES (two, plus one for #5894):
 #   * 1.11.13: every FIX case except #5476 fails. The #5476 fix was
 #     cherry-picked to the 1.11.x line (2f1f49a2) and is in 1.11.13, so both
 #     #5476 cases pass there. The #5655 case fails because 1.11.13 answers
@@ -86,12 +105,17 @@
 #   * main sha-ad20810 (before #5477, #5682, #5728 and #5753; it has the async
 #     delete job): every FIX case fails, #5476 with the 401 and #5655 with a
 #     job that reports `completed`.
+#   * main sha-2bdf092 (after the five fixes above, before the #5894 fix):
+#     only the two #5894 cases fail: storage down, blob GET and manifest
+#     GET/HEAD answer 404 (the hosted blob HEAD already answered 503); lookup
+#     cut, blob GET/HEAD answer 404 and manifest GET/HEAD 500, hosted and
+#     virtual alike.
 # In this environment the pre-fix builds answer 500 after 20-45 s rather than
 # hanging (a stopped container's address times out on connect); the 503 and
 # the Retry-After are what discriminate.
 #
 # RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
-COVERS="5649 5650 5685 5655 5476"
+COVERS="5649 5650 5685 5655 5476 5894"
 PROFILES="storage.s3"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

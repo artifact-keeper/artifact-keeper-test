@@ -3,7 +3,8 @@
 # tiers/storage-outage-and-full/oracle.sh: a storage outage answers 503, a full
 #   bucket answers 507, a delete job reports the object deletes it could not do,
 #   and a database outage on an anonymous pull answers 503, not 401
-#   (artifact-keeper#5649, #5650, #5685, #5655, #5476)
+#   (artifact-keeper#5649, #5650, #5685, #5655, #5476), and an OCI pull of a
+#   stored blob or manifest answers 503 with storage down, not 404 (#5894)
 # =============================================================================
 # run.sh has stood up the `s3` profile-set (MinIO) with RATE_LIMIT_ENABLED=false
 # and exported BASE_URL, DB_CONTAINER, ADMIN_USER, ADMIN_PASS, RUN_ID,
@@ -11,13 +12,18 @@
 #
 # Phases (see the manifest for each bug and fix):
 #   1. setup + CONTROL: repositories on five routes (generic REST, Maven, OCI,
-#      Go, Ivy), a 64 KiB object uploaded and read back on each; a public pypi
-#      repository with a wheel that an anonymous client can read.
+#      Go, Ivy), a 64 KiB object uploaded and read back on each; an OCI image
+#      manifest (img:v1) pushed and pulled, also through a virtual repository;
+#      the lookup cut (#5894 database facet): with the lookup's tables locked
+#      and the queued backend sessions terminated, blob and manifest GET/HEAD
+#      answer 503; a public pypi repository with a wheel that an anonymous
+#      client can read.
 #   2. bucket quota (#5650, #5685): a 1 KiB hard quota on this slot's bucket;
 #      64 KiB uploads must answer 507 with a neutral body; /health reports
 #      storage unhealthy; reads still work; clearing the quota restores uploads.
-#   3. MinIO stopped (#5649, #5685, #5655): uploads and downloads answer 503 +
-#      Retry-After within a 60 s client timeout; /readyz lists storage as
+#   3. MinIO stopped (#5649, #5685, #5655, #5894): uploads and downloads answer
+#      503 + Retry-After within a 60 s client timeout, OCI blob and manifest
+#      GET/HEAD of stored content included; /readyz lists storage as
 #      degraded; a repository delete job ends completed_with_errors. Then MinIO
 #      is started and every route works again.
 #   4. Postgres stopped (#5476): anonymous GETs on public repositories whose
@@ -53,6 +59,7 @@ OCI="sof-oci-${SUF}"
 GO="sof-go-${SUF}"
 IVY="sof-ivy-${SUF}"
 DEL="sof-del-${SUF}"
+VOCI="sof-voci-${SUF}"
 PYPI="sof-pypi-${SUF}"
 PRIV="sof-priv-${SUF}"
 PUBGEN="sof-pubgen-${SUF}"
@@ -150,6 +157,76 @@ url_oci_post() { echo "${BASE_URL}/v2/${OCI}/img/blobs/uploads/?digest=$(digest_
 url_oci_get() { echo "${BASE_URL}/v2/${OCI}/img/blobs/$(digest_of "$1")"; }
 digest_of() { echo "sha256:$(sha256sum "${WORK}/obj-$1" | cut -d' ' -f1)"; }
 mkobj() { head -c 65536 /dev/urandom > "${WORK}/obj-$1"; }
+
+# The pushed image (img:v1) and its config blob (#5894).
+url_oci_blob() { echo "${BASE_URL}/v2/${1:-$OCI}/img/blobs/${OCI_CFG_DIGEST}"; }
+url_oci_man() { echo "${BASE_URL}/v2/${1:-$OCI}/img/manifests/v1"; }
+MAN_ACCEPT="Accept: application/vnd.oci.image.manifest.v1+json"
+# oci_pulls PREFIX [REPO]: GET and HEAD of the stored config blob and of
+# img:v1 (in REPO, default the hosted one), in parallel.
+oci_pulls() {
+  oci_blob_pulls "$@" & oci_man_pulls "$@" & wait
+}
+oci_blob_pulls() {
+  local p="$1" r="${2:-$OCI}" a; a="$(auth)"
+  probe "${p}-blobget" GET "$(url_oci_blob "$r")" -H "$a" &
+  probe "${p}-blobhead" HEAD "$(url_oci_blob "$r")" -H "$a" -I &
+  wait
+}
+oci_man_pulls() {
+  local p="$1" r="${2:-$OCI}" a; a="$(auth)"
+  probe "${p}-manget" GET "$(url_oci_man "$r")" -H "$a" -H "$MAN_ACCEPT" &
+  probe "${p}-manhead" HEAD "$(url_oci_man "$r")" -H "$a" -H "$MAN_ACCEPT" -I &
+  wait
+}
+
+# --- the #5894 database facet: a lookup the database cannot answer ----------
+# A whole-database outage fails the request at authentication or repository
+# resolution, before the blob/manifest lookup (both images answer 503 there),
+# so the lookup is cut on its own: a session holds ACCESS EXCLUSIVE on the
+# lookup's tables, and the backend sessions that queue behind it are
+# terminated, as a failover or a dropped connection ends a query in flight
+# ("terminating connection due to administrator command").
+LOCK_APP="dtf-5894-lock-${SUF}"
+psql_db() { docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc "$1" 2>/dev/null; }
+# lookup_cut TABLES PROBE-FN PREFIX REPO: run PROBE-FN PREFIX REPO while TABLES
+# are locked, terminating each backend session that waits on the lock until
+# the probes have answered; then release the lock.
+lookup_cut() {
+  local tables="$1" fn="$2" p="$3" r="$4" i pid
+  printf 'BEGIN;\nLOCK TABLE %s IN ACCESS EXCLUSIVE MODE;\nSELECT pg_sleep(60);\nROLLBACK;\n' "$tables" \
+    | docker exec -i -e PGAPPNAME="$LOCK_APP" "$DB_CONTAINER" psql -U registry -d artifact_registry -q >/dev/null 2>&1 &
+  for i in $(seq 1 20); do
+    [ "$(psql_db "SELECT count(*) FROM pg_stat_activity WHERE application_name = '${LOCK_APP}' AND query LIKE '%pg_sleep%'")" = "1" ] && break
+    sleep 0.5
+  done
+  "$fn" "$p" "$r" &
+  pid=$!
+  for i in $(seq 1 60); do
+    psql_db "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+      AND datname = 'artifact_registry' AND application_name <> '${LOCK_APP}' AND pid <> pg_backend_pid()" >/dev/null
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  wait "$pid" 2>/dev/null
+  psql_db "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '${LOCK_APP}'" >/dev/null
+}
+# oci_pulls_ok PREFIX: all four answered 200; the GETs return the pushed bytes.
+oci_pulls_ok() {
+  local r bad=""
+  for r in blobget blobhead manget manhead; do
+    [ "$(code_of "$1-$r")" = "200" ] || bad="${bad}$(ev "$1-$r")"$'\n'
+  done
+  same_bytes "$1-blobget" "${WORK}/oci-config.json" || bad="${bad}blob GET bytes differ: $(ev "$1-blobget")"$'\n'
+  same_bytes "$1-manget" "${WORK}/oci-manifest.json" || bad="${bad}manifest GET bytes differ: $(ev "$1-manget")"$'\n'
+  [ -z "$bad" ] || { printf '%s' "$bad"; return 1; }
+}
+# expect_head_503 LABEL: a HEAD answered 503 with Retry-After (no body to judge).
+expect_head_503() {
+  if [ "$(code_of "$1")" != "503" ]; then echo "$(ev "$1") (want 503)"; return 1; fi
+  if [ -z "$(ra_of "$1")" ]; then echo "$(ev "$1") (no Retry-After on the 503)"; return 1; fi
+  return 0
+}
 
 # put_all PREFIX TAG: the five uploads of object TAG, in parallel.
 put_all() {
@@ -296,6 +373,58 @@ OUT="$(all_put_ok up0)"
 if [ -z "$OUT" ]; then get_all get0 base; OUT="$(all_get_ok get0 base)"; fi
 verdict "an upload or download failed with storage healthy" "$OUT"
 
+begin_test "CONTROL before: an OCI image (config blob + manifest img:v1) pushes, and GET/HEAD of the blob and the manifest answer 200"
+# A real config document and a manifest with no layers: the pull that matters
+# here is of content the repository records (#5894).
+printf '{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"dtf":"%s"}' "$SUF" > "${WORK}/oci-config.json"
+OCI_CFG_DIGEST="sha256:$(sha256sum "${WORK}/oci-config.json" | cut -d' ' -f1)"
+probe oci-cfg POST "${BASE_URL}/v2/${OCI}/img/blobs/uploads/?digest=${OCI_CFG_DIGEST}" -H "$(auth)" \
+  -H 'Content-Type: application/octet-stream' --data-binary "@${WORK}/oci-config.json"
+printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"%s","size":%s},"layers":[]}' \
+  "$OCI_CFG_DIGEST" "$(stat -c %s "${WORK}/oci-config.json")" > "${WORK}/oci-manifest.json"
+probe oci-man PUT "$(url_oci_man)" -H "$(auth)" -H 'Content-Type: application/vnd.oci.image.manifest.v1+json' \
+  --data-binary "@${WORK}/oci-manifest.json"
+if [ "$(code_of oci-cfg)" != "201" ] || [ "$(code_of oci-man)" != "201" ]; then
+  fail "the OCI image push failed with storage healthy" "$(ev oci-cfg)"$'\n'"$(ev oci-man)"
+else
+  oci_pulls pull0
+  verdict "an OCI pull failed with storage healthy" "$(oci_pulls_ok pull0)"
+fi
+
+begin_test "setup: a virtual docker repository over ${OCI}; GET/HEAD of the blob and the manifest through it answer 200"
+api_post "/api/v1/repositories" \
+  "{\"key\":\"${VOCI}\",\"name\":\"${VOCI}\",\"format\":\"docker\",\"repo_type\":\"virtual\",\"is_public\":false}" >/dev/null 2>&1 \
+  && api_post "/api/v1/repositories/${VOCI}/members" "{\"member_key\":\"${OCI}\",\"priority\":1}" >/dev/null 2>&1
+oci_pulls vpull0 "$VOCI"
+verdict "a pull through the virtual repository failed with the database healthy" "$(oci_pulls_ok vpull0)"
+
+begin_test "FIX #5894 db lookup: a blob/manifest lookup the database cannot answer -> 503 + Retry-After (hosted and virtual), never 404 or 500"
+lookup_cut oci_blobs oci_blob_pulls lcb "$OCI"
+lookup_cut oci_blobs oci_blob_pulls lcbv "$VOCI"
+lookup_cut "oci_tags, oci_manifests" oci_man_pulls lcm "$OCI"
+lookup_cut "oci_tags, oci_manifests" oci_man_pulls lcmv "$VOCI"
+OUT=""
+for l in lcb-blobget lcb-blobhead lcbv-blobget lcbv-blobhead lcm-manget lcm-manhead lcmv-manget lcmv-manhead; do
+  echo "  $(ev "$l")"
+  if [ "$(code_of "$l")" != "503" ] || [ -z "$(ra_of "$l")" ]; then
+    OUT="${OUT}$(ev "$l") (want 503 + Retry-After)"$'\n'
+  elif [ "${l%head}" = "$l" ] && [ "$(jq -r '.errors[0].code // empty' "${WORK}/${l}.body" 2>/dev/null)" != "UNAVAILABLE" ]; then
+    OUT="${OUT}$(ev "$l") (want the /v2 envelope with code UNAVAILABLE)"$'\n'
+  elif grep -qiE 'error returned from database|terminating connection|sqlx|pg_' "${WORK}/${l}.body" 2>/dev/null; then
+    OUT="${OUT}$(ev "$l") (the body carries the database's own error text)"$'\n'
+  fi
+done
+verdict "an OCI pull whose lookup the database could not answer did not answer a retryable 503" "$OUT"
+
+begin_test "CONTROL: with the lock gone, the pulls answer 200 again (hosted and virtual)"
+OUT=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  oci_pulls lcok "$OCI"; oci_pulls lcokv "$VOCI"
+  OUT="$(oci_pulls_ok lcok; oci_pulls_ok lcokv)" && break
+  sleep 2
+done
+verdict "a pull did not recover after the lookup cut" "$OUT"
+
 begin_test "CONTROL before: an anonymous GET of /pypi/<public repo>/simple/${PKG}/ answers 200"
 anon_get anon0 "${BASE_URL}/pypi/${PYPI}/simple/${PKG}/"
 # The visibility middleware caches this lookup for 60 s; the #5476 probe on the
@@ -381,6 +510,7 @@ DEL_PID=$!
 mkobj outage
 put_all oput outage &
 get_all oget base &
+oci_pulls opull &
 wait
 wait "$DEL_PID" 2>/dev/null
 echo "  outage batch took $(( $(date +%s) - OUT_T0 ))s"
@@ -397,9 +527,14 @@ verdict "a Maven request with storage down did not answer 503 in time (000 = cli
 
 begin_test "FIX #5649 outage: OCI blob upload -> 503 UNAVAILABLE + Retry-After in the /v2 envelope within ${PROBE_TIMEOUT}s"
 echo "  POST $(code_of oput-oci) in $(secs_of oput-oci)s"
-# Not gated (outside these issues): the blob GET of an existing blob.
-echo "  NOTE: OCI blob GET of an existing blob with storage down: $(ev oget-oci)"
 verdict "an OCI blob upload with storage down did not answer 503 UNAVAILABLE" "$(expect_oci_err oput-oci 503 UNAVAILABLE)"
+
+begin_test "FIX #5894 outage: OCI pull of stored content (blob GET/HEAD, manifest GET/HEAD) -> 503 UNAVAILABLE + Retry-After, not 404 BLOB_UNKNOWN / MANIFEST_UNKNOWN"
+for l in oget-oci opull-blobget opull-blobhead opull-manget opull-manhead; do echo "  $(ev "$l")"; done
+OUT="$(expect_oci_err oget-oci 503 UNAVAILABLE; expect_oci_err opull-blobget 503 UNAVAILABLE
+       expect_head_503 opull-blobhead
+       expect_oci_err opull-manget 503 UNAVAILABLE; expect_head_503 opull-manhead)"
+verdict "an OCI pull of stored content with storage down did not answer 503 (a 404 tells docker the image does not exist)" "$OUT"
 
 begin_test "FIX #5649 outage: /readyz stays ready and lists storage under degraded"
 if wait_until "/readyz degraded: storage" 30 readyz_degraded_storage; then
@@ -428,7 +563,7 @@ else
   pass
 fi
 
-begin_test "CONTROL recovery: start ${MINIO_CTR}; uploads and downloads on all five routes work again"
+begin_test "CONTROL recovery: start ${MINIO_CTR}; uploads and downloads on all five routes and the OCI image pull work again"
 docker start "$MINIO_CTR" >/dev/null 2>&1
 MINIO_STOPPED=0
 wait_until "${MINIO_CTR} healthy" 90 minio_healthy >/dev/null
@@ -441,6 +576,7 @@ for _ in $(seq 1 12); do
 done
 if [ -z "$OUT" ]; then get_all getback back; OUT="$(all_get_ok getback back)"; fi
 if [ -z "$OUT" ]; then get_all getbase base; OUT="$(all_get_ok getbase base)"; fi
+if [ -z "$OUT" ]; then oci_pulls pullback; OUT="$(oci_pulls_ok pullback)"; fi
 verdict "a route did not recover after MinIO came back" "$OUT"
 
 begin_test "CONTROL recovery: the deleted repository is gone"
