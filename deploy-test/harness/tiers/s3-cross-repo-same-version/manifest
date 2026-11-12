@@ -1,0 +1,29 @@
+# DTF tier manifest: s3-cross-repo-same-version
+#   artifact-keeper#5662 (PR #5796, 1.12.0): on S3/GCS/Azure storage the
+#   hosted packages of 18 formats were written to flat, repository-blind keys
+#   such as `chef/<name>/<version>/<file>`. Two repositories of the same
+#   format share one object namespace on a cloud backend, so publishing a
+#   version that another repository already held answered 409 CONFLICT
+#   "... already owned by another repository; refusing cross-repository
+#   overwrite". The fix writes new objects under `<prefix>/<repository-id>/...`
+#   on cloud backends.
+#   Profile-set: storage.s3 (MinIO, one shared bucket).
+#
+# For each covered format (cran, helm, chef, puppet, rubygems, hex) the oracle
+# creates two hosted repositories, publishes the same version (same bytes)
+# into both with the format's native publish request, and downloads it from
+# both.
+#
+# Gates: (CONTROL) the first publish is 2xx and downloads byte-exact (both
+# images). (#5662) the second publish into the other repository is 2xx, both
+# repositories then serve the published bytes, and the first repository's
+# copy still downloads byte-exact.
+#
+# RATE_LIMIT_ENABLED=false: not under test; the oracle drives a dozen
+# publishes and two dozen downloads back-to-back.
+#
+# Red: ak-backend:1.11.13 (the second publish answers 409 for every format).
+# Green: ak-backend:fix-5662-9ec740a8 (PR #5796).
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
