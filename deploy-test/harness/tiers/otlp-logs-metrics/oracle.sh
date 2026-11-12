@@ -27,6 +27,11 @@ BACKEND_CTR="ak-dtf${DTF_SLOT}-backend"
 SINK_CTR="ak-dtf${DTF_SLOT}-otlp-sink"
 SINK="http://127.0.0.1:${TRIVY_PORT}"
 MK="otlm${DTF_SLOT}${RUN_ID##*-}"
+# #4931: the bound on SIGTERM -> exit with the collector down. The three
+# flushes one after another take ~15 s (main d5d41b4); concurrent on one 5 s
+# window ~5.0 s (main 0ea3c8d and later). 9 s sits ~1.7x from both and inside
+# Docker's default 10 s stop grace.
+STOP_FIX_MS=9000
 
 PROFILES=""
 # shellcheck source=/dev/null
@@ -216,7 +221,7 @@ for needle in "SELECT " "INSERT INTO " "DELETE FROM " "pg_try_advisory_lock" "FR
 done
 finish_case "#4337: SQL statement text reaches the collector in log records"
 
-begin_test "FIX(#4931): exported 'Request completed' records carry the request's method and uri as their own attributes"
+begin_test "FIX #4931: exported 'Request completed' records carry the request's method and uri as their own attributes"
 reset_case
 # The traffic URIs carry no query, so the redacted uri equals the path.
 n=0
@@ -228,7 +233,7 @@ note "/v1/logs bodies with a method=GET attribute: ${gm}; requests whose exact u
 [ "$n" -ge 8 ] || fail_g "only ${n} of the 10 requests' uri attributes are in exported log records"
 finish_case "#4931: 'Request completed' log records carry no method or uri of their own"
 
-begin_test "FIX(#4931): the exported uri attribute is redacted (a token query value never reaches /v1/logs)"
+begin_test "FIX #4931: the exported uri attribute is redacted (a token query value never reaches /v1/logs)"
 reset_case
 want="${RQ_PATH}?page=1&token=[REDACTED]"
 rh="$(sink_grep "$(kv_str uri "$want")" /v1/logs)"; lh="$(sink_grep "$QV" /v1/logs)"
@@ -237,7 +242,7 @@ note "redacted uri attribute hits: ${rh}; hits of the raw query value in /v1/log
 [ "$lh" = "0" ] || fail_g "the raw query value appears in ${lh} exported log bod(y/ies)"
 finish_case "#4931: the exported uri attribute is missing or not redacted"
 
-begin_test "FIX(#4931): the resolve_virtual_members span exports ${MC_KEY} as an integer"
+begin_test "FIX #4931: the resolve_virtual_members span exports ${MC_KEY} as an integer"
 reset_case
 ih="$(sink_grep "$(kv_int1 "$MC_KEY")" /v1/traces)"; sh="$(sink_grep "$(kv_str "$MC_KEY" 1)" /v1/traces)"
 note "setup (HTTP): ${VSETUP}; ${MC_KEY} hits: $(sink_grep "$MC_KEY" /v1/traces), as integer 1: ${ih}, as string \"1\": ${sh}"
@@ -278,15 +283,44 @@ finish_case "a down collector slows requests"
 begin_test "GUARD: with the collector down, shutdown completes promptly and cleanly"
 reset_case
 t0="$(now_ms)"
+STOP_T0_ISO="$(date -u +%FT%T.%3NZ)"
 docker stop -t 60 "$BACKEND_CTR" >/dev/null 2>&1
 STOP_MS=$(( $(now_ms) - t0 ))
 EXIT="$(docker inspect -f '{{.State.ExitCode}}' "$BACKEND_CTR" 2>/dev/null)"
+# #4931: the backend's own shutdown time, from the moment it logged the
+# SIGTERM to the moment the process exited (the runtime's FinishedAt). This
+# leaves out the container runtime's signal delivery and teardown, which on a
+# loaded rootless-podman host add a few seconds, now and then much more, to
+# the `docker stop` wall time above.
+SIGTERM_TS="$(docker logs -t --since "$STOP_T0_ISO" "$BACKEND_CTR" 2>&1 | grep -m1 'received SIGTERM' | awk '{print $1}')"
+FINISHED_TS="$(docker inspect -f '{{.State.FinishedAt}}' "$BACKEND_CTR" 2>/dev/null)"
+SHUT_MS=-1
+if [ -n "$SIGTERM_TS" ] && [ -n "$FINISHED_TS" ]; then
+  a="$(date -d "$SIGTERM_TS" +%s%3N 2>/dev/null)"; b="$(date -d "${FINISHED_TS% [A-Z]*}" +%s%3N 2>/dev/null)"
+  [ -n "$a" ] && [ -n "$b" ] && SHUT_MS=$(( b - a ))
+fi
 LOGS="$(backend_logs)"
 note "docker stop took ${STOP_MS} ms, exit code ${EXIT}"
 [ "$STOP_MS" -le 25000 ] || fail_g "shutdown took ${STOP_MS} ms (bound 25000)"
 [ "$EXIT" != "137" ] || fail_g "the backend had to be killed (exit 137)"
 grep -q 'panicked' <<<"$LOGS" && fail_g "the backend logged a panic: $(grep -m1 'panicked' <<<"$LOGS" | head -c 300)"
 finish_case "a down collector stalls or breaks shutdown"
+
+# #4931 item 6 (#4959 flushes the three exporters concurrently, #5018 puts
+# them on one shared 5 s deadline): with the collector down, the final flush
+# must end inside Docker's default 10 s stop grace, or a plain `docker stop`
+# SIGKILLs the backend before it. Measured on the same stop as the GUARD above
+# (-t 60, so a slow shutdown is timed rather than killed), from SIGTERM to exit.
+begin_test "FIX #4931: with the collector down, the backend exits within ${STOP_FIX_MS} ms of SIGTERM, inside Docker's default 10 s stop grace (the exporters flush together on one deadline, not one after another)"
+reset_case
+note "SIGTERM logged at '${SIGTERM_TS}', process finished at '${FINISHED_TS}': ${SHUT_MS} ms (bound ${STOP_FIX_MS}; Docker's default grace is 10000); docker stop wall time ${STOP_MS} ms"
+if [ "$SHUT_MS" -lt 0 ]; then
+  fail_g "could not time the shutdown (no 'received SIGTERM' line or no FinishedAt)"
+elif [ "$SHUT_MS" -gt "$STOP_FIX_MS" ]; then
+  fail_g "the backend took ${SHUT_MS} ms from SIGTERM to exit with the collector down, over ${STOP_FIX_MS} ms: the exporters flush one after another, not together on one deadline"
+  note "stop sent at ${STOP_T0_ISO}; backend output after it: $(docker logs -t --since "$STOP_T0_ISO" "$BACKEND_CTR" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | tail -25 | cut -c1-240)"
+fi
+finish_case "#4931: shutdown with a down collector outlasts Docker's default stop grace"
 
 # =============================================================================
 # Leg B: signals on, OTEL_EXPORTER_OTLP_ENDPOINT unparseable (#4931 item 2).
@@ -295,7 +329,7 @@ recreate COMPOSE_BAD keep-sink
 B_READY="$READY_MS"
 LOGS="$(backend_logs)"
 
-begin_test "FIX(#4931): an unparseable OTLP endpoint turns the exporters off and startup continues (no panic)"
+begin_test "FIX #4931: an unparseable OTLP endpoint turns the exporters off and startup continues (no panic)"
 reset_case
 note "ready in ${B_READY} ms; stderr: $(grep -m3 -E 'export disabled|panicked' <<<"$LOGS" | head -c 600 | tr '\n' ' ')"
 [ "$B_READY" -ge 0 ] || fail_g "/readyz never answered 200 within 120 s with OTEL_EXPORTER_OTLP_ENDPOINT='not a url'"
@@ -311,7 +345,7 @@ recreate COMPOSE_EMPTY keep-sink
 E_READY="$READY_MS"
 LOGS="$(backend_logs)"
 
-begin_test "FIX(#4931): an empty OTEL_EXPORTER_OTLP_ENDPOINT counts as unset (OTel stays off, startup normal)"
+begin_test "FIX #4931: an empty OTEL_EXPORTER_OTLP_ENDPOINT counts as unset (OTel stays off, startup normal)"
 reset_case
 note "ready in ${E_READY} ms; OTel lines: $(grep -m2 -E 'OpenTelemetry tracing enabled|export disabled|panicked' <<<"$LOGS" | head -c 400 | tr '\n' ' ')"
 [ "$E_READY" -ge 0 ] || fail_g "/readyz never answered 200 within 120 s with an empty endpoint"

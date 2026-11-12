@@ -1,0 +1,44 @@
+# DTF tier manifest: ldap-basic-passthrough  (artifact-keeper#3830, #4933)
+# Profile-set: filesystem / single + the osixia LDAP server (sso.ldap) +
+# sso.ldap-basic-passthrough (LDAP_BASIC_AUTH_PASSTHROUGH=true,
+# AK_GUEST_ACCESS_ENABLED=false, json-file logs for the directory).
+#
+# The oracle seeds directory users with random passwords (ldapadd), creates a
+# plain ldap://ldap.dtf.local:389 provider through the admin API, and counts
+# each username's SRCH/BIND lines in the slapd log to see when the backend
+# contacts the directory.
+#
+# CONTROLS (pass on every image)
+#   a directory user logs in through the web LDAP endpoint (200 + token);
+#   anonymous package reads are 401 with guest access off; the admin's local
+#   password over Basic reads the same packages; a local account's username
+#   (also present in the directory) with a wrong password is 401 and is never
+#   searched or bound in the directory.
+#
+# FIX CASES
+#   #3830 a directory user with no local account fetches a Maven jar and a PyPI
+#     wheel (simple index + file) over Basic with the directory password, and
+#     is provisioned as an ldap account. RED on 1.11.13: 401.
+#   #3830 a provisioned directory user's wrong password is 401 after exactly
+#     one directory BIND and one LOGIN_FAILED row; the same wrong password
+#     again is 401 with no new BIND and one more LOGIN_FAILED row. RED on
+#     1.11.13: the right password is 401 and the directory is never bound.
+#     (#4933 item 2, "two LOGIN_FAILED rows per wrong password", rides here as
+#     a guard rail: through the real router sha-8d0e6e2 writes one row too, so
+#     it cannot discriminate end to end.)
+#   #4933 with guest access off, the directory password over Basic on the
+#     management API (/api/v1/repositories) and on /v2/ is refused without any
+#     directory SRCH/BIND or LOGIN/LOGIN_FAILED row. RED on sha-8d0e6e2: the
+#     guard binds the user and writes a package-manager LOGIN row.
+#   #4933 an administrator deactivates a directory user: web LDAP login with
+#     the right password is refused, the account stays inactive and the
+#     passthrough keeps refusing it (GHSA-c965-g6xf-xrqp, published). RED on
+#     sha-8d0e6e2: web login answers 200 and reactivates the account, and
+#     the passthrough then serves it. (1.11.13 already refuses; the
+#     reactivation half is not new on that line.)
+#
+# RATE_LIMIT_ENABLED=false: back-to-back admin and directory logins.
+PROFILES="storage.filesystem sso.ldap sso.ldap-basic-passthrough"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="3830 4933"

@@ -23,4 +23,5 @@
 # RATE_LIMIT_ENABLED=false: 16 concurrent uploads plus ~25 calls back to back.
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
+COVERS="4832"
 RATE_LIMIT_ENABLED="false"

@@ -28,6 +28,6 @@
 # every #4180 FIX case gets 404). The 1.11.x line has no transcode either.
 PROFILES="storage.filesystem upstreams.mock-files"
 ORACLE="oracle.sh"
-COVERS="4180"
+COVERS="4929 4180"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

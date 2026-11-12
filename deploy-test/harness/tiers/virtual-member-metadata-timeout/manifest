@@ -18,10 +18,18 @@
 #        Metric: ak_virtual_member_metadata_timeouts_total{member}. Artifact
 #        downloads are not bounded by it.
 #
+# SINCE 1.12.0 (artifact-keeper#5621, PR #5809): a member that is unavailable
+#        (upstream 5xx, transport error, past the member deadline) is left out
+#        of a Helm / CRAN / Hex / Puppet / Bazel / Maven merge and the
+#        healthy merge is served 200 with X-AK-Partial-Members naming it and
+#        Cache-Control: no-store, partial opt-in or not; the strict 502 now
+#        applies only to a member whose document does not parse. On main the
+#        failing-member cases assert that; release/1.11.x keeps the 502.
+#
 # The deadline is lowered to 8 s so the tier is quick and the knob itself is
-# proven (the 502 body names the 8 s it missed); the fixed image must answer
-# well inside 15 s, the 1.10.0 baseline needs the full 60 s and the oracle
-# gives up on it at 40 s.
+# proven (the partial answer is timed against the 8 s bound); the fixed
+# image must answer well inside 15 s, the 1.10.0 baseline needs the full
+# 60 s and the oracle gives up on it at 40 s.
 #
 # RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
 #

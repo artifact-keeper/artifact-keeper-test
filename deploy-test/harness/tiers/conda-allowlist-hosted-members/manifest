@@ -21,10 +21,22 @@
 #
 # RED image: ak-backend:1.11.8 (every FIX case). GREEN: 1.11.9 and 1.12.0.
 #
+# The shard index and its shards, run_exports.json and the CEP-50 `.sigs` /
+# `.sigs.<sha256>` sidecars are asserted too (RED on sha-b2d0bcc, the parent of
+# the fix on main): the unlisted hosted package and its owned name are not in
+# the virtual's shard index and their shards are 404 by address through it,
+# run_exports.json leaves them out, and the hidden package's sidecars are 404
+# through the virtual, while the listed package keeps its shard, run_exports
+# record and sidecar, and the hosted repository serves everything directly.
+# For the sidecars the oracle recreates the backend once at the start with a
+# P-256 key it generates (fixtures/attestation-key.yml,
+# CONDA_ATTESTATION_PUBLIC_KEYS) and attests both hosted packages with it.
+#
 # RATE_LIMIT_ENABLED=false: one admin login then ~40 authenticated calls back
 # to back. UPSTREAM_ALLOW_PRIVATE_IPS=true: the remote's upstream is the mock
 # on a private address (the profile also scopes AK_SSRF_ALLOW_PRIVATE_CIDRS).
 PROFILES="storage.filesystem upstreams.mock-conda client.conda"
 ORACLE="oracle.sh"
+COVERS="5055"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

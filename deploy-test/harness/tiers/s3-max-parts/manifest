@@ -37,5 +37,6 @@
 # RATE_LIMIT_ENABLED=false: a handful of large authenticated transfers.
 PROFILES="storage.s3 storage.s3-max-parts"
 ORACLE="oracle.sh"
+COVERS="4805"
 RATE_LIMIT_ENABLED="false"
 export S3_MAX_PARTS=10

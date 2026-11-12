@@ -30,4 +30,5 @@
 # line unchanged.
 PROFILES="storage.filesystem sso.mock-ci-oidc"
 ORACLE="oracle.sh"
+COVERS="5054"
 RATE_LIMIT_ENABLED="false"
