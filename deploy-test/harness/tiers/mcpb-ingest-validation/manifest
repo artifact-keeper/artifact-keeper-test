@@ -1,0 +1,49 @@
+# DTF tier manifest: mcpb-ingest-validation
+#   (artifact-keeper 1.12.0 MCPB ingest and listing-cursor fixes:
+#    #5467, #5468, #5469, #5470, #5471)
+# Profile-set: filesystem / single. No client container: every request is
+# the one a publisher or a registry client sends, made with curl.
+#
+# THE FEATURE: an MCPB bundle (a ZIP with a root manifest.json) is uploaded
+# with PUT /mcp/{repo}/v0.1/servers/{name}/versions/{v}/bundles/{file}.mcpb
+# before the version is published. Before the fixes the backend read only
+# manifest.json and stored the archive verbatim, whatever else it held.
+# fixtures/build_bundles.py writes one otherwise valid bundle per defect with
+# a hand-rolled ZIP writer (byte-level names, local headers and modes).
+#
+# RED image: main sha-a837f88 (2026-11-05). It carries the MCP Registry
+# (#5257) and predates #5433 (sealed listing cursors, the #5471 fix), #5522
+# (#5467) and #5539 (#5468, #5469, #5470); checked with
+# git merge-base --is-ancestor. 1.11.13 has no MCP Registry at all.
+# GREEN: main carrying all three fix PRs (sha-2bdf092 or later).
+#
+# CONTROLS (pass on every image)
+#   a plain bundle uploads with 201; a bundle of exactly 10,000 entries
+#   uploads with 201 (the boundary of the shared ingest ceiling); a listing
+#   with no cursor answers 200 with the published server, a malformed cursor
+#   (`!!!`) answers 400 mcp_invalid_query, and the cursor the backend handed
+#   out reads the next page with 200.
+#
+# FIX CASES (RED on sha-a837f88: 201, the archive stored)
+#   #5467 10,001 entries answers 400 mcp_bundle_invalid.
+#   #5468 a second manifest.json entry, and a manifest whose `description`
+#     key appears twice, each answer 400 mcp_bundle_invalid.
+#   #5469 `../`, absolute, drive-letter and backslash entry names and a
+#     symlink entry each answer 400 mcp_bundle_invalid.
+#   #5470 a name that is not UTF-8 under the UTF-8 flag, and a local header
+#     whose name differs from the central directory's, each answer 400
+#     mcp_bundle_invalid.
+#   For every refusal the same file name then accepts a plain bundle with
+#     201, which shows the refused archive was not stored (on red it answers
+#     409 mcp_bundle_exists: the defective bytes hold the name).
+#   #5471 GET /mcp/{repo}/v0.1/servers?limit=1&cursor=YToA (base64url of a
+#     coordinate holding NUL) answers 400 mcp_invalid_query, not 500
+#     mcp_internal_error, and /health stays 200.
+#
+# None of these issues has a security advisory (checked
+# gh api repos/artifact-keeper/artifact-keeper/security-advisories), and the
+# issues are public, so the tier asserts the full behaviour.
+COVERS="5467 5468 5469 5470 5471"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
