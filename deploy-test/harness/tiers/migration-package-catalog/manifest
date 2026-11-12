@@ -71,10 +71,24 @@
 #              pool/main/, one with Artifactory property deb.component=universe
 #              under pool/universe/, and a re-run moves a misfiled row back and
 #              retires the old one (red on 1.11.2).
+#   (FIX #4740, source-free backfill, artifact-keeper#4905) with a pre-#4657
+#              import staged in Postgres (control documents and catalog gone,
+#              the flat .deb back at pool/<file>.deb, a migration-origin and a
+#              hosted dists/ row added, as the backend's own #4905 tests seed
+#              it), POST /api/v1/admin/repositories/{key}/backfill-debian:
+#              dry_run reports 2 registered / 1 relocated / 1 dists removed
+#              and writes nothing; the real run restores the catalog and the
+#              control-file Packages stanzas, moves the flat .deb under
+#              pool/main/, drops only the migration dists/ row; a second run
+#              is a no-op; on the component repository the backfill files a
+#              pool/<letter>/<name>/ .deb under main and keeps pool/universe/
+#              in universe; a Maven repository is refused with 422. Red on
+#              sha-bbc18f3 (the parent of #4905's merge; no such endpoint).
 #   (FIX #2525) an Artifactory `cran` repository becomes a native CRAN
 #              repository; PACKAGES lists dtfr 1.0 and not the source's own
 #              PACKAGES file (1.10.0: the job fails).
-# Red images: #4691/#4657 on 1.11.1, #4740 on 1.11.2, the other source-fidelity
+# Red images: #4691/#4657 on 1.11.1, #4740 component placement on 1.11.2 and
+# the #4740 backfill on sha-bbc18f3, the other source-fidelity
 # cases on 1.10.0 (where several of the #4657 controls are also red: Debian
 # then migrated into a generic repository).
 #
@@ -87,5 +101,6 @@
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the source sits on a private subnet.
 PROFILES="storage.filesystem upstreams.mock-artifactory-catalog"
 ORACLE="oracle.sh"
+COVERS="4740"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
