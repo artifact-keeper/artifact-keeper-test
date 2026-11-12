@@ -1,0 +1,54 @@
+# DTF tier manifest: oci-digest-scope-1120
+#   artifact-keeper#5793 (a hosted digest resolves only under the image that
+#   holds it), #5794 (tags/list answers `name` with the full request name) and
+#   #5169 (a Remote repairs a corrupt stored blob from its upstream). All
+#   1.12.0. Profile-set: filesystem / single + upstreams.mock-oci-classify (a
+#   raw-body OCI upstream on 172.16.<slot>.83; only its `runnable` image and
+#   blobs are used here).
+#
+# THE BUGS
+# * #5793: in a hosted OCI repository every per-digest table is
+#   repository-wide, so `GET/HEAD /v2/<repo>/<image>/manifests/<digest>` and
+#   `/blobs/<digest>` answered 200 under ANY image name of the repository,
+#   including one that was never pushed (its tags/list is 404 NAME_UNKNOWN) and
+#   one that holds a different image, directly and through a Virtual. The fix
+#   (PR #5859) answers 404 MANIFEST_UNKNOWN / BLOB_UNKNOWN unless the image
+#   holds the digest (a tag, a by-digest push, an index live under it, an
+#   upload or a mount under it, or a manifest of it that references the blob).
+#   Controls (both images): the holder serves the index, its platform child
+#   and the layer; the old digest of an overwritten tag stays pullable under
+#   its own image (#1681); a blob uploaded under a fresh name HEADs under it
+#   before its manifest exists; a manifest PUT under a second name that only
+#   references existing blobs is accepted and makes them pullable there; a
+#   same-repository mount from a never-pushed name is 202. Cross-repository
+#   mounts are not exercised: on per-repository filesystem roots 1.11.13
+#   answers 202 to every one of them.
+# * #5794: `GET /v2/<repo>/<image>/tags/list` answered `name` with the image
+#   path inside the repository (`aktest/tags`) instead of the `<name>` the
+#   client addressed (`<repo>/aktest/tags`), unpaginated and with `?n=`, and
+#   on a Virtual. Control: the tag set itself.
+# * #5169: a Remote OCI repository holds an `oci_blobs` copy of a layer it
+#   staged for the inline proxy scan (a plain pull-through only fills the
+#   proxy cache, which these serves do not verify). When that stored copy no
+#   longer hashes to its digest, the pull was refused with 502
+#   STORED_OBJECT_INTEGRITY on every request (main before PR #5215), or, on
+#   1.11.x, which does not verify OCI blob serves at all, answered 200 with the
+#   corrupt bytes. The fix refetches a blob of up to 4 MiB from the upstream,
+#   overwrites the stored object and answers 200 with the digest's bytes.
+#   The corruption is staged by rewriting one byte of the stored object on the
+#   backend's /data volume (a throwaway postgres:16-alpine container with
+#   --volumes-from the backend; the backend image has no shell).
+#   Control: the intact staged layer pulls byte-identical before the damage.
+#   Hosted keeps its 502 on main; that is not asserted here because 1.11.x
+#   serves the corrupt hosted blob with 200 (artifact-keeper#4323, covered by
+#   storage-integrity-serve-routes).
+#
+# Red: ak-backend:1.11.13 (every FIX case; #5169 serves the corrupt bytes) and
+#      ak-backend:sha-12808b8 (main 2026-11-02, before #5215, #5838 and #5859;
+#      every FIX case; #5169 is the 502).
+# Green: ak-backend:sha-6e652be (main with #5859, #5838 and #5215).
+COVERS="5793 5794 5169"
+PROFILES="storage.filesystem upstreams.mock-oci-classify"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
