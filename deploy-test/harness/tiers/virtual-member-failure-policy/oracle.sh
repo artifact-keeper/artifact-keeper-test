@@ -149,14 +149,18 @@ else
   fail "HTTP ${st}, want 200 listing dtfhelm-ok and dtfhelm-ok2" "$(head -c 400 "$WORK/hvg.yaml")"
 fi
 
-begin_test "FIX #4192: a Helm virtual with a failing member answers 502 naming that member, not a 200 index without it"
+# Since artifact-keeper#5621 (#5809) an unavailable member (upstream 5xx) is
+# left out of the merge and the response says so, partial or not; the strict
+# 502 of #4192 now applies only to a member whose document does not parse.
+# release/1.11.x keeps the 502 expectation.
+begin_test "FIX #4192/#5621: a Helm virtual with a failing member serves the healthy merge marked partial, naming that member"
 st="$(get "/helm/${HVS}/index.yaml" "$WORK/hvs.yaml")"
-# The cause names the upstream status the proxy reported (a 5xx: the mock's
-# 500, or 503 once the proxy's breaker for that upstream has opened).
-if [ "$st" = "502" ] && grep -q "member '${HFAIL}' failed: index.yaml: upstream fetch failed with 5" "$WORK/hvs.yaml"; then
+pm="$(hdr "$WORK/hvs.yaml" x-ak-partial-members)"; cc="$(hdr "$WORK/hvs.yaml" cache-control)"
+if [ "$st" = "200" ] && [ "$pm" = "$HFAIL" ] && [ "$cc" = "no-store" ] && grep -q 'dtfhelm-ok:' "$WORK/hvs.yaml"; then
   pass
 else
-  fail "HTTP ${st}, want 502 naming member '${HFAIL}' and its upstream 5xx" "$(head -c 400 "$WORK/hvs.yaml")"
+  fail "HTTP ${st} X-AK-Partial-Members='${pm}' Cache-Control='${cc}'; want 200 + '${HFAIL}' + no-store listing dtfhelm-ok" \
+    "$(head -c 400 "$WORK/hvs.yaml")"
 fi
 
 begin_test "FIX #4192: with virtual_metadata_partial a Helm virtual serves the healthy merge marked partial and uncacheable"
@@ -179,12 +183,14 @@ else
   fail "HTTP ${st}, want 200 listing dtfcranok and dtfcranok2" "$(head -c 400 "$WORK/cvg.txt")"
 fi
 
-begin_test "FIX #4192: a CRAN virtual with a failing member answers 502 naming that member"
+begin_test "FIX #4192/#5621: a CRAN virtual with a failing member serves the healthy PACKAGES marked partial, naming that member"
 st="$(get "/cran/${CVS}/src/contrib/PACKAGES" "$WORK/cvs.txt")"
-if [ "$st" = "502" ] && grep -q "member '${CFAIL}' failed" "$WORK/cvs.txt"; then
+pm="$(hdr "$WORK/cvs.txt" x-ak-partial-members)"; cc="$(hdr "$WORK/cvs.txt" cache-control)"
+if [ "$st" = "200" ] && [ "$pm" = "$CFAIL" ] && [ "$cc" = "no-store" ] && grep -qx 'Package: dtfcranok' "$WORK/cvs.txt"; then
   pass
 else
-  fail "HTTP ${st}, want 502 naming member '${CFAIL}'" "$(head -c 400 "$WORK/cvs.txt")"
+  fail "HTTP ${st} X-AK-Partial-Members='${pm}' Cache-Control='${cc}'; want 200 + '${CFAIL}' + no-store listing dtfcranok" \
+    "$(head -c 400 "$WORK/cvs.txt")"
 fi
 
 begin_test "FIX #4192: with virtual_metadata_partial a CRAN virtual serves the healthy PACKAGES marked partial"
