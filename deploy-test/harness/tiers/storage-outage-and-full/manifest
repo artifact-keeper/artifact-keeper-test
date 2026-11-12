@@ -1,0 +1,97 @@
+# DTF tier manifest: storage-outage-and-full
+#   (artifact-keeper#5649, #5650, #5685, #5655, #5476; all fixed on main for
+#   1.12.0; only #5476 is also on the 1.11.x line)
+# Profile-set: s3 (MinIO). The oracle stops this slot's own MinIO, puts a hard
+# quota on this slot's own bucket, and stops this slot's own Postgres.
+#
+# THE BUGS
+# #5649  With object storage down, every upload and download blocked until the
+#        store came back: object_store's 3-minute retry budget with a 5 s
+#        connect timeout per attempt and backoff up to 15 s. No 5xx, and
+#        /health stayed healthy. Fix #5682: bounded connect timeout and retry
+#        pause, 503 STORAGE_UNAVAILABLE + Retry-After on every route (OCI /v2:
+#        503 UNAVAILABLE), /readyz stays ready but lists `degraded:
+#        ["storage"]`.
+# #5650  A full bucket (MinIO hard quota) answered a raw 500 STORAGE_ERROR on
+#        generic and Maven uploads, and an OCI blob upload answered 500 with
+#        MinIO's XML error (bucket name, request ids). Fix #5682: 507
+#        STORAGE_FULL with a fixed message (OCI: 507 INSUFFICIENT_STORAGE in
+#        the /v2 envelope, no XML), and /health + /readyz report storage
+#        unhealthy for 60 s after a write refused for lack of space.
+# #5685  The remaining native package routes still answered a hard-coded 500
+#        on the same two conditions. Fix #5728: 503 (+ Retry-After) / 507 with
+#        the fixed message. Gated here on the Go module proxy (PUT and GET of
+#        a .mod) and the sbt/Ivy route (PUT and GET of a jar), both plain
+#        HTTP.
+# #5655  A repository delete job whose object deletes failed (storage down)
+#        still reported `status: completed` with `error_summary: null`. Fix
+#        #5753: `completed_with_errors`, `failed_items` and an error summary.
+#        (The async delete job is main-only: 1.11.13 answers the DELETE with a
+#        synchronous 200 and reports nothing about the purge.)
+# #5476  (also on 1.11.x, cherry-pick 2f1f49a2) With Postgres unavailable, an anonymous GET on a PUBLIC repository's
+#        format route answered 401: the visibility middleware's cache-miss
+#        repository lookup read a pool error as "no such repository". Fix
+#        #5477: 503 + Retry-After: 1 for an unavailable database; a missing or
+#        private repository still gets 401. The download route's middleware
+#        had the same defect.
+#
+# THE PRIMITIVES (all on this slot only; an EXIT trap undoes each one)
+#   * `docker stop ak-dtf<slot>-minio`, then `docker start`.
+#   * `mc quota set local/ak-artifacts --size 1KiB` from a transient
+#     `l2-s<slot>-mc` container in MinIO's network namespace (the MinIO
+#     credentials are read from the minio container's env at run time); every
+#     probe uploads 64 KiB, which MinIO refuses whatever its usage count says.
+#   * `docker stop ak-dtf<slot>-db`, then `docker start` (as auth-db-outage).
+#
+# THE GATES
+#   (FIX)      RED (see RED IMAGES below); GREEN on main.
+#     #5650  under the quota: generic REST PUT and Maven PUT -> 507
+#            STORAGE_FULL with the fixed message; OCI monolithic blob POST and
+#            chunked PATCH -> 507 INSUFFICIENT_STORAGE in the /v2 envelope;
+#            /health checks.storage goes unhealthy. No body names the bucket
+#            or carries XML, a request id or MinIO error codes.
+#     #5685  under the quota: Go .mod PUT and Ivy jar PUT -> 507 with the
+#            fixed message; with MinIO stopped: Go .mod GET/PUT and Ivy jar
+#            GET/PUT -> 503 + Retry-After with the fixed message.
+#     #5649  with MinIO stopped, each answered within a 60 s client timeout
+#            (the fix answers in ~10-35 s):
+#            generic REST PUT and download, Maven PUT and GET -> 503
+#            STORAGE_UNAVAILABLE + Retry-After; OCI blob POST -> 503
+#            UNAVAILABLE in the /v2 envelope; /readyz stays ready with
+#            `degraded` naming storage.
+#     #5655  a repository DELETE issued with MinIO stopped -> 202 + a job that
+#            ends `completed_with_errors` with failed_items > 0 and an
+#            error_summary (MinIO stays down until the job is terminal).
+#     #5476  with Postgres stopped, an anonymous GET of
+#            /pypi/<public repo>/simple/<pkg>/ and of
+#            /api/v1/repositories/<public repo>/download/<path> -> 503 +
+#            Retry-After: 1, not 401 (repositories not looked up within the
+#            visibility cache's 60 s TTL, so the lookup is a cache miss).
+#   (CONTROL)  true on both images: uploads and downloads on every route work
+#              before; downloads still work while the bucket is full; uploads
+#              work again after the quota is cleared and after MinIO is back;
+#              the anonymous pypi GET answers 200 before the DB outage and
+#              after it, and a missing and a private repository still answer
+#              401 after it.
+#
+# NOT GATED: an OCI blob GET of an existing blob with MinIO stopped answers
+# 404 BLOB_UNKNOWN on main (the existence check reads the outage as a miss).
+# The oracle prints it as a NOTE only; it is outside these issues.
+#
+# RED IMAGES (two):
+#   * 1.11.13: every FIX case except #5476 fails. The #5476 fix was
+#     cherry-picked to the 1.11.x line (2f1f49a2) and is in 1.11.13, so both
+#     #5476 cases pass there. The #5655 case fails because 1.11.13 answers
+#     the DELETE with a synchronous 200 and no job.
+#   * main sha-ad20810 (before #5477, #5682, #5728 and #5753; it has the async
+#     delete job): every FIX case fails, #5476 with the 401 and #5655 with a
+#     job that reports `completed`.
+# In this environment the pre-fix builds answer 500 after 20-45 s rather than
+# hanging (a stopped container's address times out on connect); the 503 and
+# the Retry-After are what discriminate.
+#
+# RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
+COVERS="5649 5650 5685 5655 5476"
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
