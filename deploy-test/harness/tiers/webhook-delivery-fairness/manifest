@@ -1,0 +1,35 @@
+# DTF tier manifest: webhook-delivery-fairness  (artifact-keeper#5661, #5234)
+# Profile-set: filesystem / single + webhooks.v2-producer (event deliveries
+# are enqueued) + secrets.webhook-key (webhook secrets are
+# encrypted at rest; the key is generated per run) + webhooks.mock-blackhole
+# (`hook-sink` at 172.16.<slot>.79: a live receiver on :80 and a black hole on
+# :81 that accepts a POST and never answers).
+#
+# CONTROLS (pass on every image)
+#   with no backlog, an artifact_uploaded delivery for a webhook with a secret
+#   reaches the live receiver (within 90 s; the retry worker ticks every 30 s),
+#   and its X-ArtifactKeeper-Signature v1 token is HMAC(secret, "<t>.<body>").
+#
+# FIX CASES
+#   #5234 on that delivery, X-Webhook-Signature is sha256=HMAC(secret, body).
+#     RED on 1.11.13: it equals sha256=HMAC(secret, "<t>.<body>"), the v1
+#     value, and the header carries no timestamp to verify it with.
+#   #5661 four webhooks on another repository point at the black hole; five
+#     uploads queue 20 deliveries for them. Once the black hole has received
+#     one, an upload to the live repository must reach the live receiver
+#     within 120 s (the oracle waits 150 s). RED on 1.11.13: the worker claims
+#     the 50 oldest due rows and sends them one at a time with a 30 s timeout,
+#     so the live delivery waits behind at least 20 x 30 s = 600 s and is not
+#     delivered inside the wait. Fixed: up to 8 endpoints in parallel and a
+#     failed endpoint's other rows are deferred, so the live row goes out on
+#     the next pass (observed in about 30 s).
+#
+# Wall clock: about 1.5 minutes green, about 3.5 minutes red.
+# RATE_LIMIT_ENABLED=false: back-to-back admin calls.
+PROFILES="storage.filesystem secrets.webhook-key webhooks.v2-producer webhooks.mock-blackhole"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="5661 5234"
+# A fresh 32-byte key per run (no key material in the repository).
+DTF_WEBHOOK_SECRET_KEY="$(openssl rand -base64 32)"
+export DTF_WEBHOOK_SECRET_KEY
