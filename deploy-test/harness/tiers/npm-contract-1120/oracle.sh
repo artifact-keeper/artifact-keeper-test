@@ -3,7 +3,7 @@
 # =============================================================================
 # tiers/npm-contract-1120/oracle.sh
 #   npm native-protocol contracts fixed for 1.12.0: artifact-keeper#5345 (/-/
-#   meta failure names its cause), #5399 (concurrent same-version publishes),
+#   meta failure names its cause), #5870 (attestations 404 with no upstream), #5399 (concurrent same-version publishes),
 #   #5403 (stale unpublish), #5676 (retention deletes retract dist-tags), #5724
 #   (derived latest by SemVer precedence), #5725 (package-name rules). See the
 #   manifest for each bug and the gates.
@@ -181,6 +181,30 @@ note "cache-only search: ${CODE} ${BODY:0:200}"
 [ "$CODE" = "404" ] || fail_g "the cache-only search answered ${CODE}, not 404"
 grep -q "is cache-only" <<<"$BODY" && grep -q "$CO" <<<"$BODY" || fail_g "the message does not name ${CO}'s cache-only mode"
 finish_case "a cache-only Remote's /-/ refusal does not name the mode"
+
+# =============================================================================
+# #5870: attestation lookups on a repository with no upstream
+# =============================================================================
+# pnpm 11 (minimumReleaseAge) asks /-/npm/v1/attestations/<pkg>@<ver> for every
+# resolved version. A Local, and a Virtual with no Remote member, answered 501,
+# which pnpm retries as a server error. Hosted versions have no attestations:
+# the answer is 404, as on registry.npmjs.org.
+ATT_V="npmc-attv-${SUF}"
+req POST /api/v1/repositories "$(jq -nc --arg k "$ATT_V" --arg l "$L" \
+  '{key:$k,name:$k,format:"npm",repo_type:"virtual",is_public:true,member_repos:[{repo_key:$l,priority:1}]}')"
+is_2xx "$CODE" || { infra_fail "creating virtual ${ATT_V} answered ${CODE}: ${BODY:0:200}"; end_suite; exit 1; }
+
+begin_test "FIX #5870: /-/npm/v1/attestations on a Local and on a Virtual with no Remote member is 404, not 501"
+reset_case
+for r in "$L" "$ATT_V"; do
+  for spec in "lodash@4.17.21" "@dtfatt/pkg@1.0.0"; do
+    req GET "/npm/${r}/-/npm/v1/attestations/${spec}"
+    note "${r} attestations ${spec}: ${CODE} ${BODY:0:200}"
+    [ "$CODE" = "404" ] || fail_g "${r}: attestations for ${spec} answered ${CODE}, not 404"
+    grep -q "$LOCAL_STUB" <<<"$BODY" && fail_g "${r}: attestations for ${spec} is still the local-repository stub"
+  done
+done
+finish_case "an attestation lookup with no upstream to ask is not a 404"
 
 # =============================================================================
 # #5399: concurrent publishes of one version

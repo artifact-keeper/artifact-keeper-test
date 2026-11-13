@@ -14,6 +14,11 @@
 #        refused by the upstream filter -> 404 naming the filter, cache-only ->
 #        404 naming the mode. Local keeps its 501. The Remotes point at an
 #        unresolvable `.invalid` host.
+# #5870 (PR #5927)  GET /-/npm/v1/attestations/<pkg>@<ver> on a Local, and on a
+#        Virtual with no Remote member, answered 501 "not implemented for local
+#        repositories". pnpm 11's minimumReleaseAge check asks it for every
+#        resolved version and retries a 5xx. Now 404 (no attestations), as on
+#        registry.npmjs.org. Other /-/ endpoints on a Local keep their 501.
 # #5399 (PR #5780)  Concurrent publishes of one name@version all passed an
 #        unlocked duplicate check and wrote the same storage key before the
 #        insert: losers answered 500 DATABASE_ERROR, and a loser's bytes could
@@ -70,6 +75,6 @@
 # RATE_LIMIT_ENABLED=false: ~200 authenticated calls incl. 80 racing publishes.
 PROFILES="storage.filesystem client.npm upstreams.mock-multi"
 ORACLE="oracle.sh"
-COVERS="5345 5399 5403 5631 5676 5724 5725"
+COVERS="5345 5870 5399 5403 5631 5676 5724 5725"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
