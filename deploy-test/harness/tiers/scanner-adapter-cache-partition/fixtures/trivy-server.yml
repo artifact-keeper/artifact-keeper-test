@@ -1,0 +1,10 @@
+# Overlay the oracle recreates the adapter with (on top of compose.base +
+# storage.filesystem + scanners.trivy): client mode against one shared trivy
+# server (started by the oracle as ak-dtf<slot>-sacp-trivysrv, network alias
+# dtf-trivysrv), with an operator partition prefix. The partition MODE is not
+# set here, so the adapter runs in its default (static) mode.
+services:
+  trivy:
+    environment:
+      SCANNER_TRIVY_SERVER: http://dtf-trivysrv:4954
+      SCANNER_TRIVY_CACHE_PARTITION: dtf
