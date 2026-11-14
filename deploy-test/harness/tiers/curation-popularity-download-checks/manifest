@@ -1,0 +1,47 @@
+# DTF tier manifest: curation-popularity-download-checks  (artifact-keeper#5274, PR #5275 / 1.12.0)
+# Profile-set: filesystem / single, plus the mock npm upstream and the
+# json-file log driver for the backend (the oracle greps its flag line).
+#
+# #5274 lets a `popularity` curation rule run its name checks (typo-squat,
+# homoglyph/mixed-script, affix) on npm and PyPI Remote and Virtual
+# downloads, but only when the rule opts in with
+# `"download_name_checks": true`. Without the key a rule behaves exactly as
+# before: it runs only in the staging sync, and downloads are unchanged.
+#
+# Topology: the mock npm upstream (upstreams.mock-npm) serves one package,
+# `dtf-held` 1.0.0, under any path prefix. Every rule uses a custom popular
+# list `["dtf-hold"]`, so:
+#   * `dtf-held` is one edit from `dtf-hold`: an edit-distance match, which
+#     only ever FLAGS on a download (served, flag line logged).
+#   * `dtf-hоld` (Cyrillic о, U+043E) is a homoglyph of `dtf-hold`: with
+#     `block_typosquat: true` it is refused with 403 curation_blocked before
+#     any upstream request.
+#
+# Repositories (all npm, curation default action `allow`):
+#   ON    Remote, curation on, opted-in rule {download_name_checks, block_typosquat}
+#   VON   Virtual over NONE, curation on, the same opted-in rule on the Virtual
+#         (npm applies the Virtual's own rules)
+#   OFF   Remote, curation on, the same rule WITHOUT download_name_checks
+#         (a rule as written before #5274)
+#   NONE  Remote, curation off, no rules
+#
+# Cases:
+#   FIX #5274   ON refuses the homoglyph tarball: 403 curation_blocked, and
+#               the mock saw no request for it.
+#   FIX #5274   ON serves `dtf-held` and the backend logs the flag line
+#               naming the package.
+#   FIX #5274   VON refuses the homoglyph tarball: 403 curation_blocked.
+#   FIX #5274   creating the OFF rule on a Remote returns a `warnings` entry
+#               naming download_name_checks; the opted-in rule returns none.
+#   CONTROL     OFF serves `dtf-held`, does not 403 the homoglyph, and logs no
+#               flag line for OFF (upgrade safety: an existing rule changes
+#               no download).
+#   CONTROL     NONE serves `dtf-held` and does not 403 the homoglyph.
+#
+# Red on an image without #5275 (ghcr ...:main before the merge): every FIX
+# case fails (no name checks on downloads, no warnings field); every CONTROL
+# passes. Green on the #5275 image.
+COVERS="5274"
+PROFILES="storage.filesystem upstreams.mock-npm logging.json-file"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
