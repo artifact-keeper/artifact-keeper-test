@@ -1,0 +1,14 @@
+# Tier-local compose override for scan-queue-upload-image-rescan
+# (artifact-keeper#5946, #5947). Layered on compose.base.yml and
+# storage.filesystem when the oracle recreates the backend for a phase.
+# The durable scan queue on, the in-process worker on or off per phase.
+# SCAN_RESCAN_MAX_PER_DAY is NOT set here (rescan-cap.yml adds it), so the
+# "unset" control really runs without the variable. json-file logging keeps
+# the backend log readable.
+services:
+  backend:
+    environment:
+      SCAN_QUEUE_ENABLED: "true"
+      SCAN_WORKER_ENABLED: "${DTF_SQ_WORKER:?set DTF_SQ_WORKER}"
+    logging:
+      driver: json-file

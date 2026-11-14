@@ -1,0 +1,6 @@
+# Tier-local compose override for scan-queue-upload-image-rescan (#5947):
+# layered after scan-queue.yml for the rescan phase only.
+services:
+  backend:
+    environment:
+      SCAN_RESCAN_MAX_PER_DAY: "100"
