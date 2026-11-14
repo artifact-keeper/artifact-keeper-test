@@ -1,0 +1,4 @@
+{
+  "default": {"max_concurrent": 0, "weight": 1},
+  "dtf-rega:5000": {"max_concurrent": 1}
+}

@@ -1,0 +1,3 @@
+{
+  "default": {"max_concurrent": 0, "weight": 1}
+}

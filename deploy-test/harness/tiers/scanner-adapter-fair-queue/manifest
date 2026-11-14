@@ -1,0 +1,56 @@
+# DTF tier manifest: scanner-adapter-fair-queue
+#   (artifact-keeper#5944, PR #5951, added on main for 1.12.0, not on the
+#   1.11.x line)
+# Profile-set: filesystem + trivy (the scanner-adapter sidecar,
+# SCANNER_ADAPTER_IMAGE). The backend is not involved: the oracle calls the
+# adapter's HTTP API directly. It recreates the adapter with
+# fixtures/fair-queue.yml once per configuration (SCANNER_MAX_CONCURRENT_SCANS,
+# SCANNER_CLIENT_LIMITS_FILE from fixtures/limits-*.json, SCANNER_METRICS_ADDR).
+# The images are served by a stdlib mock registry (fixtures/ocireg.py, one
+# container started with docker run and removed by exact name) under two host
+# names, dtf-rega:5000 and dtf-regb:5000: two clients of the adapter, as when
+# several Artifact Keeper instances or clients share one adapter. A repository
+# named .../hold-<x> holds its manifest until the oracle releases it, so a
+# scan keeps its slot; the registry's /tmp/arrivals gives the order scans were
+# given a slot. Images: fixtures/mkimage.py (libcrypto1.1 1.1.1c-r0).
+# NETWORK: the adapter downloads the Trivy DB from ghcr.io once (~100 MiB,
+# pre-warmed in setup and cached in the slot's trivy volume).
+#
+# WHAT IS GATED
+#   #5944 Several clients share the adapter's scan slots. A limits file sets a
+#         per-client max_concurrent and weight; slots go out by weighted fair
+#         queueing across clients (FIFO within one); a "priority":
+#         "background" scan yields to interactive ones (up to
+#         SCANNER_BACKGROUND_MAX_WAIT, left at 30m); SCANNER_METRICS_ADDR
+#         serves the queue gauges on GET /metrics.
+#
+# THE CASES
+#   4 slots, dtf-rega:5000 capped at 1, metrics on :9090:
+#   (FIX #5944) A submits 3 held scans: one reaches the registry, the other
+#     two report 302 X-Scan-Status Queued while B's scan runs on a free slot;
+#     each release starts exactly A's next scan. Pre-fix: all 3 start at once.
+#   (FIX #5944) with A1 and B1 running and A2, A3 and an A background scan
+#     queued, /metrics reads queued{interactive} 2, queued{background} 1,
+#     running 2, slots_capacity 4; after draining, queued and running read 0.
+#     Pre-fix: no metrics listener.
+#   1 slot, a limits file with only a default entry:
+#   (FIX #5944) A queues 6 held scans, then B 1: B starts within the first 3
+#     (2nd), A's stay FIFO. Pre-fix: B starts 7th.
+#   (FIX #5944) with the slot held, a background scan (B) then an interactive
+#     scan (A) queue: the interactive one starts first. Pre-fix: the priority
+#     field is accepted (202) and ignored, arrival order.
+#   1 slot, no limits file:
+#   (CONTROL) A queues 3, then B 1: strict arrival order a1 a2 a3 b1.
+#   (CONTROL) a 1.11.x-shaped request (no priority) gets 202 and a 200 report
+#     with libcrypto1.1's CVEs.
+#
+# RED  adapter sha-ff3335f (main without the change): 3 of 7,
+#      the four FIX cases fail, both CONTROLs pass.
+# GREEN adapter built from PR #5951 head f3616637: 7 of 7
+#      (two runs, about 75 s each after the stack is up).
+#
+# RATE_LIMIT_ENABLED=false: scan polls back to back.
+COVERS="5944"
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
