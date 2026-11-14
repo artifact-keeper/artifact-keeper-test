@@ -1,0 +1,6 @@
+# Added on top of trivy-server.yml: one cache partition per registry host of
+# each image scan (artifact-keeper#5943).
+services:
+  trivy:
+    environment:
+      SCANNER_TRIVY_CACHE_PARTITION_MODE: registry

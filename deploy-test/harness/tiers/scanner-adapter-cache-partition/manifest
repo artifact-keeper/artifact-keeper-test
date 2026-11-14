@@ -1,0 +1,53 @@
+# DTF tier manifest: scanner-adapter-cache-partition
+#   (artifact-keeper#5943, PR #5949: a 1.12.0 adapter feature, not on the
+#   1.11.x line)
+# Profile-set: filesystem + trivy (the scanner-adapter sidecar,
+# SCANNER_ADAPTER_IMAGE). The oracle starts two more containers on the slot
+# network with `docker run` and removes them by name on exit:
+#   ak-dtf<slot>-sacp-trivysrv  a trivy server (pinned by digest, alias
+#                               dtf-trivysrv) that the adapter uses in client
+#                               mode: one shared analysis cache
+#   ak-dtf<slot>-sacp-reg       fixtures/ocireg.py, a read-only OCI registry
+#                               answering as dtf-rega:5000 and dtf-regb:5000,
+#                               the registry hosts of two Artifact Keeper
+#                               instances that share the adapter
+# and recreates the adapter with fixtures/trivy-server.yml (client mode,
+# partition prefix "dtf"), plus fixtures/registry-mode.yml for the FIX cases.
+# Images are built at run time by fixtures/mkimage.py: alpine-shaped layers
+# listing libcrypto1.1 1.1.1c-r0 (Trivy reports its CVEs), each with a unique
+# mark so every case starts on fresh cache keys, and "forged" images whose
+# single layer holds no packages but whose config claims a genuine layer's
+# diff ID.
+# NETWORK: the trivy server downloads the Trivy DB from ghcr.io once per run
+# (~130 MiB).
+#
+# WHAT IS GATED
+#   #5943 trivy keys a layer's cached analysis by the diff ID the image config
+#         claims. With one partition per adapter (SCANNER_TRIVY_CACHE_PARTITION,
+#         static), anyone who can push to one instance's registry can plant an
+#         analysis that another instance's scan of a genuine image reuses: a
+#         false clean. SCANNER_TRIVY_CACHE_PARTITION_MODE=registry derives the
+#         partition per request from the registry host.
+#
+# THE CASES
+#   (CONTROL) default mode: a genuine image on a fresh cache key reports its
+#     vulnerabilities; /api/v1/metadata has no partition-mode property.
+#   (CONTROL) default mode is unchanged: forged image via host A, then the
+#     genuine image via host B reports 0 (one shared partition, as before),
+#     and a request without a registry host is still accepted (202).
+#   (FIX #5943) registry mode is applied: metadata reports
+#     properties."env.SCANNER_TRIVY_CACHE_PARTITION_MODE"=registry, and
+#     neither metadata nor the startup log shows the partition value.
+#   (FIX #5943) registry mode: forged image via host A, then the genuine image
+#     via host B reports the same count as on a fresh key. Pre-fix: 0.
+#   (FIX #5943) registry mode refuses a request with no registry host (empty
+#     or scheme-only registry.url) with 400. Pre-fix: 202.
+#
+# RED  backend :main + adapter sha-ff3335f (main): 3 of 6, the three FIX
+#      cases fail. GREEN backend :main + the adapter built from #5949: 6 of 6.
+#
+# RATE_LIMIT_ENABLED=false: back-to-back report polls.
+COVERS="5943"
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
