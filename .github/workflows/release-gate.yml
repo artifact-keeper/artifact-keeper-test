@@ -5,10 +5,11 @@ name: Release Gate
 #
 #   workflow_call     - the REAL release path. artifact-keeper
 #                       release.yml calls this workflow with the
-#                       resolved candidate tag+digest and
-#                       `secrets: inherit`, which populates the
-#                       GHCR_DOCKER_CONFIG secret declared below from
-#                       the calling repo's secrets.
+#                       resolved candidate tag+digest and passes the
+#                       one secret declared below, GHCR_DOCKER_CONFIG,
+#                       by name from the calling repo's secrets (not
+#                       `secrets: inherit`, which would hand this
+#                       workflow every secret the caller can read).
 #   workflow_dispatch - a manual REHEARSAL of the gate against an
 #                       arbitrary already-published candidate: supply
 #                       backend_tag (+ backend_digest to pin the exact
@@ -137,13 +138,24 @@ on:
       GHCR_DOCKER_CONFIG:
         description: >-
           base64-encoded docker config.json with a pull-scope-only
-          ghcr.io credential. Populated by the caller via
-          `secrets: inherit` (artifact-keeper release.yml). Optional:
+          ghcr.io credential. Passed by name by the caller
+          (artifact-keeper release.yml and release-candidate.yml,
+          artifact-keeper-web docker-publish.yml). Optional:
           public-only tags work without it. On the workflow_dispatch
           rehearsal path this declaration is not consulted; the same
           secret name resolves from this repo's/org's secrets instead
           (see the invocation-paths comment above).
         required: false
+
+# Least privilege for every job's GITHUB_TOKEN. No job writes to this or any
+# repository; checkouts and the switch-tests-ref.sh Cargo.toml read need
+# contents: read and nothing more. The two DTF jobs that log in to ghcr with
+# the token (the GHCR_DOCKER_CONFIG fallback and the Trivy DB pull) add
+# packages: read at job level. On the workflow_call path these are requested
+# from the caller, so every calling job must grant at least
+# `contents: read` and `packages: read`.
+permissions:
+  contents: read
 
 # Serialize gate runs that target the same backend image so two runs
 # of one candidate do not interleave across the single shared ARC pool
@@ -195,6 +207,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      # Before any input reaches a command: names against
+      # ^[A-Za-z0-9._/-]{1,128}$, the digest against ^sha256:[0-9a-f]{64}$.
+      - name: Validate gate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          IAC_REF: ${{ inputs.iac_ref }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
@@ -2991,6 +3015,18 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      # Before any input reaches a command: names against
+      # ^[A-Za-z0-9._/-]{1,128}$, the digest against ^sha256:[0-9a-f]{64}$.
+      - name: Validate gate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          IAC_REF: ${{ inputs.iac_ref }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: scripts/validate-gate-inputs.sh
+
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
           GH_TOKEN: ${{ github.token }}
@@ -3124,6 +3160,18 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      # Before any input reaches a command: names against
+      # ^[A-Za-z0-9._/-]{1,128}$, the digest against ^sha256:[0-9a-f]{64}$.
+      - name: Validate gate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          IAC_REF: ${{ inputs.iac_ref }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: scripts/validate-gate-inputs.sh
+
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
           GH_TOKEN: ${{ github.token }}
@@ -3254,6 +3302,11 @@ jobs:
   dtf-gate:
     needs: [version-set-integrity, build-dtf-probes]
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    # Logs in to ghcr with the job token (Trivy DB pull, and the fallback when
+    # GHCR_DOCKER_CONFIG is absent): see the top-level permissions comment.
+    permissions:
+      contents: read
+      packages: read
     runs-on: ak-docker-runners
     timeout-minutes: 45
     strategy:
@@ -3850,7 +3903,7 @@ jobs:
         run: |
           # Prefer the org pull-secret (private tags); fall back to the
           # workflow token (public images). Identical on the real
-          # (workflow_call, secrets: inherit) and rehearsal
+          # (workflow_call, the secret passed by name) and rehearsal
           # (workflow_dispatch, repo/org secret) paths -- #2701.
           chmod +x deploy-test/harness/ghcr-docker-auth.sh
           ./deploy-test/harness/ghcr-docker-auth.sh
@@ -3972,6 +4025,11 @@ jobs:
     needs: version-set-integrity
     continue-on-error: true
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    # Logs in to ghcr with the job token (Trivy DB pull, and the fallback when
+    # GHCR_DOCKER_CONFIG is absent): see the top-level permissions comment.
+    permissions:
+      contents: read
+      packages: read
     runs-on: ak-docker-runners
     timeout-minutes: 60
     strategy:
@@ -4075,6 +4133,10 @@ jobs:
 
       - name: Publish test summary
         if: always()
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          RUN_ID: ${{ needs.deploy.outputs.run_id }}
         run: |
           echo "## Release Gate Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -4119,9 +4181,9 @@ jobs:
           done
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Backend tag:** \`${{ inputs.backend_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Web tag:** \`${{ inputs.web_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Run ID:** \`${{ needs.deploy.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Backend tag:** \`${BACKEND_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Web tag:** \`${WEB_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Run ID:** \`${RUN_ID}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload combined results
         if: always()
@@ -4255,6 +4317,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      # Before any input reaches a command: names against
+      # ^[A-Za-z0-9._/-]{1,128}$, the digest against ^sha256:[0-9a-f]{64}$.
+      - name: Validate gate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          IAC_REF: ${{ inputs.iac_ref }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
         env:

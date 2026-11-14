@@ -53,6 +53,11 @@ concurrency:
 jobs:
   pin-gate-fails-on-image-pull-backoff:
     name: Gate must reject ImagePullBackOff (fixture A)
+    # Never for a pull request from a fork: this job runs the PR's own
+    # scripts on the shared self-hosted ARC pool, and workflow-run approval
+    # would otherwise be the only thing keeping fork code off it. Same-repo
+    # PRs and pushes to main still run it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ak-e2e-runners
     timeout-minutes: 10
     steps:
@@ -97,6 +102,11 @@ jobs:
 
   pin-gate-fails-on-crash-loop:
     name: Gate must reject CrashLoopBackOff (fixture B)
+    # Never for a pull request from a fork: this job runs the PR's own
+    # scripts on the shared self-hosted ARC pool, and workflow-run approval
+    # would otherwise be the only thing keeping fork code off it. Same-repo
+    # PRs and pushes to main still run it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ak-e2e-runners
     timeout-minutes: 12
     steps:
