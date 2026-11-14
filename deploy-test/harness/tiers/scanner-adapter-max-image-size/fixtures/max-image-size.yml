@@ -1,0 +1,9 @@
+# Overlay the oracle recreates the adapter with (on top of compose.base +
+# storage.filesystem + scanners.trivy).
+#   SCANNER_MAX_IMAGE_BYTES (#5909): the adapter refuses an image whose
+#   compressed config and layers add up to more than this, before trivy runs.
+#   Empty = unset: the adapter reads "" as its default, 0 (no bound).
+services:
+  trivy:
+    environment:
+      SCANNER_MAX_IMAGE_BYTES: ${DTF_MAX_IMAGE_BYTES:-}

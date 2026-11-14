@@ -1,0 +1,62 @@
+# DTF tier manifest: scanner-adapter-max-image-size
+#   (artifact-keeper#5909, PR #5910, added on main for 1.12.0, not on the
+#   1.11.x line)
+# Profile-set: filesystem + trivy (the scanner-adapter sidecar,
+# SCANNER_ADAPTER_IMAGE). The oracle recreates the adapter with
+# fixtures/max-image-size.yml on top (SCANNER_MAX_IMAGE_BYTES=4194304, then
+# unset), and starts a read-only mock OCI registry (fixtures/ocireg.py, one
+# docker-run container on the slot network, removed by name on exit) that
+# logs every request. Images are built at run time (fixtures/mkimage.py:
+# alpine-shaped, libcrypto1.1 1.1.1c-r0, so Trivy reports CVEs; --pad-mib 8
+# adds 8 MiB of random bytes, about 8 MiB compressed). The backend images
+# are pushed to the backend's own registry through /v2.
+# NETWORK: the adapter downloads the Trivy DB from ghcr.io once (~100 MiB,
+# pre-warmed in setup and cached in the slot's trivy volume).
+#
+# WHAT IS GATED
+#   #5909 trivy downloads every layer and holds the analysed layers in
+#         memory, so an image larger than the adapter's memory or
+#         ephemeral-storage limit got the adapter OOM-killed or evicted
+#         mid-scan, taking every other running scan with it. With
+#         SCANNER_MAX_IMAGE_BYTES set, the adapter reads the manifest first
+#         (with the scan request's credential, before the job takes a slot),
+#         sums the config and layer compressed sizes, and refuses an image
+#         over the limit without running trivy: report 422,
+#         X-Scan-Status: TooLarge, "not scanned: image too large: <image> is
+#         <n> bytes (compressed layers), over SCANNER_MAX_IMAGE_BYTES=<limit>".
+#         The backend records that scan failed with the adapter's reason,
+#         never completed. This tier asserts the refusal; it does not
+#         reproduce the OOM kill itself.
+#
+# THE CASES
+#   (FIX #5909) limit 4 MiB, direct scan of an 8 MiB image in the mock
+#     registry: 422, X-Scan-Status TooLarge, the body names the image, its
+#     size and SCANNER_MAX_IMAGE_BYTES=4194304; the registry saw manifest
+#     reads only, no blob request (trivy never ran). Pre-fix: trivy pulls
+#     the layer and the report is 200.
+#   (FIX #5909) limit 4 MiB, an 8 MiB image pushed to the backend and
+#     scanned (bypass_dedup): the image scan row is failed, findings_count 0,
+#     no scan_findings, error_message carries "image too large" and the
+#     limit, and no completed image row exists. Pre-fix: completed with
+#     libcrypto1.1's CVEs.
+#   (CONTROL) limit 4 MiB, a ~1 KiB image: direct 200 with vulnerabilities.
+#   (CONTROL) limit 4 MiB, a ~1 KiB image through the backend: completed
+#     with findings.
+#   (CONTROL) limit unset (default 0, no bound): an 8 MiB image scans
+#     normally, direct (200 with vulnerabilities) and through the backend
+#     (completed with findings).
+#
+# RED  backend :main + adapter sha-ff3335f (main without the change): 4 of 6
+#      (setup and the three controls pass), the two FIX cases fail. GREEN
+#      backend :main + the adapter built from #5910: 6 of 6. The backend
+#      half of #5910 only changes the error class (UnprocessableEntity
+#      instead of BadGateway, no resubmit); the main
+#      backend already records the adapter's terminal 422 as a failed scan
+#      with the adapter's text, so the tier asserts the reason, not the
+#      "Unprocessable entity" prefix.
+#
+# RATE_LIMIT_ENABLED=false: registry pushes and scan polls back to back.
+COVERS="5909"
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
