@@ -22,7 +22,10 @@
 #   O5S answers 503 for /v2/app/manifests/latest, top member of OVS
 #   O5D answers 503 for /v2/app/manifests/latest, top member of OVD
 #   OLO healthy, `latest` = the "low" manifest
+#   OTA anonymous; its `latest` answers 401 with a Bearer challenge whose
+#       realm (on the mock) refuses the token request with 401
 #   OVS strict    [O5S, OLO]     OVD default (available) [O5D, OLO]
+#   OVT strict    [OTA, OLO]
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${COMMON_SH:?}"; : "${ADMIN_PASS:?}"
@@ -60,7 +63,11 @@ mock_put_manifest(){ # <path> <file>
   curl -s --max-time 10 -X PUT --data-binary @"$2" \
     "${MOCK}/__file?path=$1&ctype=application%2Fvnd.oci.image.manifest.v1%2Bjson" | jqr '.bytes // empty'
 }
-mock_status(){ curl -s --max-time 5 -X POST "${MOCK}/__status?path=$1&code=$2" | jqr '.code // empty'; }
+mock_status(){ # <path> <code> [WWW-Authenticate]
+  local ch=""
+  [ -n "${3:-}" ] && ch="&challenge=$(jq -rn --arg v "$3" '$v|@uri')"
+  curl -s --max-time 5 -X POST "${MOCK}/__status?path=$1&code=$2${ch}" | jqr '.code // empty'
+}
 mock_delay(){ curl -s --max-time 5 -X POST "${MOCK}/__delay?path=$1&ms=$2" | jqr '.ms // empty'; }
 
 # get <path> <out>: sets ST (HTTP status) and SECS (wall clock)
@@ -152,12 +159,17 @@ OLOW_SHA="$(sha256sum "$W/low.manifest" | cut -d' ' -f1)"
 OM="v2/app/manifests/latest"
 [ -n "$(mock_put_manifest "/${P}-olo/${OM}" "$W/low.manifest")" ] || SETUP_ERR="${SETUP_ERR} mock-put:olo"
 for pre in o5s o5d; do [ "$(mock_status "/${P}-${pre}/${OM}" 503)" = "503" ] || SETUP_ERR="${SETUP_ERR} mock-status:${pre}"; done
-O5S="vmfs-o5s-${SUF}"; O5D="vmfs-o5d-${SUF}"; OLO="vmfs-olo-${SUF}"
-OVS="vmfs-ovs-${SUF}"; OVD="vmfs-ovd-${SUF}"
-for pair in "$O5S:o5s" "$O5D:o5d" "$OLO:olo"; do mk "${pair%%:*}" remote "${UP}/${P}-${pair#*:}/" docker; done
+TREALM="${UP}/${P}-ota/token"
+[ "$(mock_status "/${P}-ota/${OM}" 401 "Bearer realm=\"${TREALM}\",service=\"dtf-mock\",scope=\"repository:app:pull\"")" = "401" ] \
+  || SETUP_ERR="${SETUP_ERR} mock-status:ota"
+[ "$(mock_status "/${P}-ota/token" 401)" = "401" ] || SETUP_ERR="${SETUP_ERR} mock-status:ota-token"
+O5S="vmfs-o5s-${SUF}"; O5D="vmfs-o5d-${SUF}"; OLO="vmfs-olo-${SUF}"; OTA="vmfs-ota-${SUF}"
+OVS="vmfs-ovs-${SUF}"; OVD="vmfs-ovd-${SUF}"; OVT="vmfs-ovt-${SUF}"
+for pair in "$O5S:o5s" "$O5D:o5d" "$OLO:olo" "$OTA:ota"; do mk "${pair%%:*}" remote "${UP}/${P}-${pair#*:}/" docker; done
 VFMT=docker virt "$OVS" "$O5S" "$OLO"
 VFMT=docker virt "$OVD" "$O5D" "$OLO"
-for k in "$VN" "$VH" "$OVS"; do note "PATCH ${k} strict: HTTP $(patch_fallback "$k" '"strict"')"; done
+VFMT=docker virt "$OVT" "$OTA" "$OLO"
+for k in "$VN" "$VH" "$OVS" "$OVT"; do note "PATCH ${k} strict: HTTP $(patch_fallback "$k" '"strict"')"; done
 if [ -n "$SETUP_ERR" ]; then fail "setup failed:${SETUP_ERR}"; else pass; fi
 
 # -----------------------------------------------------------------------------
@@ -248,5 +260,21 @@ asked="$(curl -s --max-time 5 "${MOCK}/__requests?path=/${P}-o5d/${OM}" | jqr '.
 note "the 5xx top member was asked ${asked:-0} time(s)"
 [ "${asked:-0}" -ge 1 ] 2>/dev/null || fail_g "the 5xx top member was never asked, so the walk did not pass over it"
 finish_case "the default OCI fallback changed"
+
+# -----------------------------------------------------------------------------
+# A CONTROL, not a FIX: it holds on an image without strict mode too. It pins
+# that strict mode reads an anonymous token refusal as a miss (#4527), which
+# the first OCI strict commit (af614f19) got wrong.
+reset_case
+begin_test "CONTROL: strict Docker virtual [anonymous Remote whose token endpoint answers 401, healthy] walks on and serves the lower member's manifest"
+oci_get "$OVT" "$W/ovt.manifest"
+got_sha="$(sha256sum "$W/ovt.manifest" 2>/dev/null | cut -d' ' -f1)"
+note "GET /v2/${OVT}/app/manifests/latest: HTTP ${ST}, body: $(snip "$W/ovt.manifest")"
+[ "$ST" = "200" ] || fail_g "answered ${ST}, expected 200 (a token refusal is a miss)"
+[ "$got_sha" = "$OLOW_SHA" ] || fail_g "did not serve the lower member's manifest"
+asked="$(curl -s --max-time 5 "${MOCK}/__requests?path=/${P}-ota/token" | jqr '.get // 0')"
+note "the refusing token endpoint was asked ${asked:-0} time(s)"
+[ "${asked:-0}" -ge 1 ] 2>/dev/null || fail_g "the token endpoint was never asked, so the case did not exercise a token refusal"
+finish_case "a strict virtual stopped at an anonymous token refusal"
 
 end_suite
