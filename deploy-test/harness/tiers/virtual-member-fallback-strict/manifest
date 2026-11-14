@@ -39,7 +39,10 @@
 #              healthy remote] serves the lower member's jar (a 404 is a
 #              miss); strict virtual [healthy remote, healthy remote] serves
 #              the top member's jar; default Docker virtual [5xx remote,
-#              healthy remote] serves the lower member's manifest by tag.
+#              healthy remote] serves the lower member's manifest by tag;
+#              strict Docker virtual [anonymous remote whose token endpoint
+#              answers 401, healthy remote] serves the lower member's
+#              manifest (a token refusal is a miss, #4527).
 #
 # TIMING: two downloads wait out the default 20 s download deadline
 # (AK_VIRTUAL_MEMBER_DOWNLOAD_DEADLINE_SECS); each allows 45 s, and curl
