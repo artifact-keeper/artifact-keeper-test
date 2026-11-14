@@ -74,15 +74,38 @@ case "$C" in 2??) ;; *) SETUP_ERR="${SETUP_ERR} repo(${C}: $(body "$W/repo.json"
 printf '%s' "$TOK" | put /work/token || SETUP_ERR="${SETUP_ERR} token-file"
 printf 'version: v1\ntls:\n  use: false\n' | put /work/bufcfg/config.yaml || SETUP_ERR="${SETUP_ERR} buf-config"
 bx . 'buf --version' && BUF_VERSION="$(tr -d '\n' <"$W/bx.out")" || SETUP_ERR="${SETUP_ERR} buf(--version: $(body "$W/bx.out" 200))"
-# The proxy is up and maps its root onto the repository: a BSR write method
-# is answered by the backend (its /proto write gate, 401 without a token), not
-# with a proxy error. Recorded, not gated.
-docker exec "$BUFC" sh -c "wget -q -O - --header 'Content-Type: application/json' --post-data '{}' \
-  http://${REGISTRY}/buf.registry.module.v1.ModuleService/DeleteModules" >"$W/probe.out" 2>&1
-PROXY_PROBE="$(body "$W/probe.out" 200)"
-echo "-- buf ${BUF_VERSION:-?}; proxy probe (expect the backend's own answer): ${PROXY_PROBE}"
+# The proxy is up and maps its root onto the repository: an anonymous POST is
+# answered by the backend's /proto write gate with a 401, not a proxy error.
+docker exec "$BUFC" sh -c "wget -S -q -O - --header 'Content-Type: application/json' --post-data '{}' \
+  http://${REGISTRY}/buf.registry.module.v1.ModuleService/GetModules" >"$W/probe.out" 2>&1
+PROXY_PROBE="$(body "$W/probe.out" 300)"
+echo "-- buf ${BUF_VERSION:-?}; anonymous probe through the proxy: ${PROXY_PROBE}"
+grep -q '401' "$W/probe.out" || SETUP_ERR="${SETUP_ERR} proxy(anonymous probe was not the backend's 401: ${PROXY_PROBE})"
 if [ -n "$SETUP_ERR" ]; then infra_fail "setup failed:${SETUP_ERR}"; end_suite; fi
 pass
+
+# =============================================================================
+# CONTROL (both images): a push without valid credentials is refused by the
+# server and stores nothing. buf refuses to send a request with no token at
+# all, so it is given a token that is not one: the refusal has to come from
+# the backend (401), not from the client. buf reports the server's
+# `unauthenticated` as "the BUF_TOKEN environment variable is not valid for
+# <host>"; with no token at all it never sends the request ("Set the BUF_TOKEN
+# environment variable or run ..."), which this case does not accept.
+# =============================================================================
+write_module noauth acme/noauth
+printf 'syntax = "proto3";\npackage acme.noauth.v1;\n' | put /work/noauth/acme/noauth/v1/noauth.proto
+docker exec -e HOME=/work -e BUF_CONFIG_DIR=/work/bufcfg -e BUF_CACHE_DIR=/work/cache \
+  -w /work/noauth "$BUFC" sh -c 'BUF_TOKEN=not-an-ak-token buf push --create --create-visibility public' >"$W/noauth.out" 2>&1
+RCN=$?
+NA="$(post_json "/proto/${REPO}/buf.registry.module.v1.ModuleService/GetModules" "$W/noauth.mods" \
+  '{"moduleRefs":[{"owner":"acme","module":"noauth"}]}')"
+echo "-- unauthenticated buf push: exit ${RCN}: $(body "$W/noauth.out" 200); GetModules(acme/noauth)=${NA} $(body "$W/noauth.mods" 120)"
+
+begin_test "CONTROL: buf push without valid credentials is refused by the server and stores nothing"
+if [ "$RCN" -ne 0 ] && grep -qiE 'unauthenticated|401|is not valid for' "$W/noauth.out" \
+   && ! grep -q 'Set the BUF_TOKEN' "$W/noauth.out" && [ "$NA" = "200" ] && [ "$(jqr '.modules | length' <"$W/noauth.mods")" = "0" ]; then pass
+else fail "an unauthenticated push exited ${RCN}; GetModules(acme/noauth) answered ${NA}" "$(body "$W/noauth.out") / $(body "$W/noauth.mods")"; fi
 
 # =============================================================================
 # CONTROL (both images): the JSON codec the hosted endpoints have always
@@ -119,14 +142,19 @@ if [ -z "$reset_fail" ]; then pass; else fail "the JSON codec changed:${reset_fa
 # FIX #5066: a binary-codec Connect call on a hosted repository is served, not
 # refused by the JSON extractor with a bare 415.
 # =============================================================================
-begin_test "FIX #5066: a binary Connect GetModules (application/proto) on a hosted repo answers 200 application/proto, not 415"
+# The request is a real GetModulesRequest naming acme/jsononly (pushed over
+# JSON above), hand-encoded: module_refs[0].name = {owner "acme", module
+# "jsononly"}. The reply must name that module with the schema's bare name.
+begin_test "FIX #5066: a binary Connect GetModules (application/proto) for a pushed module is answered in the binary codec, not 415"
+printf '\x0a\x12\x12\x10\x0a\x04acme\x12\x08jsononly' >"$W/getmodules.bin"
 BC="$(curl -s --max-time 30 -o "$W/bin.mods" -D "$W/bin.hdr" -w '%{http_code}' -X POST \
   -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/proto' -H 'Connect-Protocol-Version: 1' \
-  --data-binary '' "${BASE}/proto/${REPO}/buf.registry.module.v1.ModuleService/GetModules" 2>/dev/null || true)"
+  --data-binary @"$W/getmodules.bin" "${BASE}/proto/${REPO}/buf.registry.module.v1.ModuleService/GetModules" 2>/dev/null || true)"
 BCT="$(tr -d '\r' <"$W/bin.hdr" 2>/dev/null | sed -n 's/^[Cc]ontent-[Tt]ype: //p' | head -1)"
-echo "-- binary GetModules: HTTP ${BC} content-type '${BCT}' body $(body "$W/bin.mods" 160)"
-if [ "$BC" = "200" ] && [ "$BCT" = "application/proto" ]; then pass
-else fail "binary GetModules answered HTTP ${BC} (content-type '${BCT}'); pre-#5074 the hosted handlers took only JSON and answered 415" "$(body "$W/bin.mods")"; fi
+echo "-- binary GetModules(acme/jsononly): HTTP ${BC} content-type '${BCT}' body $(head -c 160 "$W/bin.mods" | tr -c '[:print:]' '.')"
+if [ "$BC" = "200" ] && [ "$BCT" = "application/proto" ] && grep -aq 'jsononly' "$W/bin.mods" \
+   && ! grep -aq 'acme/jsononly' "$W/bin.mods"; then pass
+else fail "binary GetModules answered HTTP ${BC} (content-type '${BCT}'); pre-#5074 the hosted handlers took only JSON and answered 415" "$(head -c 300 "$W/bin.mods" | tr -c '[:print:]' '.')"; fi
 
 # =============================================================================
 # FIX #5117: buf push --create of a module with no dependencies.

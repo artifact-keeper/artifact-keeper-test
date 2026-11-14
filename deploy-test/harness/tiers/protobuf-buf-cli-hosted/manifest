@@ -19,8 +19,9 @@
 # so the profile maps a host root onto the repository, the documented setup.
 #
 # THE GATES
-#   (FIX #5066)  a binary-codec GetModules on the hosted repo answers 200
-#                application/proto.  RED on main before #5074: 415.
+#   (FIX #5066)  a well-formed binary-codec GetModulesRequest for a module
+#                pushed over JSON answers 200 application/proto naming the
+#                module by its bare name.  RED on main before #5074: 415.
 #   (FIX #5117)  buf push --create of acme/payments reports a tuuid commit;
 #                buf dep update pins it with a b5 digest and acme/orders (which
 #                imports it) pushes; a consumer of acme/orders pins BOTH commits
@@ -29,7 +30,9 @@
 #                pushed is answered to a JSON caller in the JSON shape.
 #                RED on main before #5074: the first buf call fails (415), so
 #                nothing is pushed and every later case fails.
-#   (CONTROL)    must hold on BOTH images: the JSON codec answers as before --
+#   (CONTROL)    must hold on BOTH images: an anonymous call through the proxy
+#                is the backend's 401 (setup), and buf push with no token is
+#                refused and stores nothing; the JSON codec answers as before --
 #                Upload (digest type sha256), GetModules (name owner/module, a
 #                missing module omitted from a 200), Download by label.
 #
