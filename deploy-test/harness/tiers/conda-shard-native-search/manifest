@@ -1,0 +1,28 @@
+# DTF tier manifest: conda-shard-native-search  (artifact-keeper#5432)
+# Profile-set: filesystem / single.
+#
+# THE BUG (1.12.0 pre-release main; the 1.11.x line serves the same records)
+# #5432  every record in a CEP-16 shard carried `fn`, although the shard's
+#        `packages` / `packages.conda` map already keys the record by its
+#        filename. conda 26.7 reads shards by default (repodata_use_shards)
+#        and passes the key as `fn` when it builds a PackageRecord, so
+#        `conda search` against a hosted or virtual channel failed with
+#        "PackageRecord() got multiple values for keyword argument 'fn'".
+#
+# THE FIX (artifact-keeper#5432's PR)
+#        shard records omit `fn` and keep every other field; migration 343
+#        rebuilds shards stored by an older writer.
+#
+# THE PRIMITIVES
+#   PUT  /conda/{hosted}/noarch/{file}  (fixtures/conda/build.sh)
+#   GET  /conda/{repo}/noarch/repodata_shards.msgpack.zst, shards/{sha}.msgpack.zst
+#        decoded by conda-sharded-remote-virtual/fixtures/cep16.py
+#   a REAL conda 26.7 client (docker.io/condaforge/miniforge3:26.7.2-0,
+#     `conda search`) behind conda-jlap-incremental/fixtures/logproxy.py in
+#     the backend's network namespace
+#
+# Oracle (discriminating, RELEASE_GATE=1): see oracle.sh's header.
+COVERS="5432"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
