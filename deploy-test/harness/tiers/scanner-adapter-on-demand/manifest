@@ -1,0 +1,49 @@
+# DTF tier manifest: scanner-adapter-on-demand
+#   (artifact-keeper#5945 and #5948, added on main for 1.12.0, not on the
+#   1.11.x line)
+# Profile-set: filesystem + trivy (the scanner-adapter sidecar,
+# SCANNER_ADAPTER_IMAGE). The oracle recreates the adapter and the backend
+# with fixtures/on-demand.yml on top: a per-run scan token on both sides, and
+# the backend's SCANNER_ADAPTER_READY_TIMEOUT_SECS. It builds small
+# alpine-shaped images at run time (fixtures/mkimage.py: libcrypto1.1
+# 1.1.1c-r0, so Trivy reports CVEs) and pushes them through /v2.
+# NETWORK: the adapter downloads the Trivy DB from ghcr.io once (~100 MiB,
+# pre-warmed in setup and cached in the slot's trivy volume).
+#
+# WHAT IS GATED
+#   #5945 An adapter that is started on demand (scaled to zero behind a
+#         proxy, say) is not ready for a while after the first scan request.
+#         The backend used to give up after three readiness probes (at most
+#         about 16 s). SCANNER_ADAPTER_READY_TIMEOUT_SECS sets a total wait.
+#   #5948 SCANNER_SCAN_TOKEN makes the adapter's scan and report routes
+#         answer 401 without `Authorization: Bearer <token>`; the backend
+#         sends TRIVY_ADAPTER_TOKEN on every adapter request. Probes and
+#         metadata stay open.
+#
+# THE CASES (the adapter is stopped with `docker stop` and started again)
+#   (FIX #5948) direct scan, report and filesystem-scan calls with no token
+#     or a wrong one get 401; the right token reaches the handler (404 for an
+#     unknown id). Pre-fix: 202.
+#   (FIX #5948) the backend scans an image through the token-requiring
+#     adapter; the token appears neither in the backend log nor in any scan
+#     error.
+#   (FIX #5945) the adapter is started 25 s after the scan request with a
+#     60 s budget: the scan completes. Pre-fix: failed within the fixed
+#     three-attempt gate (7 s locally, at most about 16 s).
+#   (FIX #5945) the adapter stays down 80 s with a 60 s budget: the scan
+#     fails closed at the budget (55 to 80 s), naming the adapter
+#     unreachable. Pre-fix: failed after at most about 16 s.
+#   (CONTROL) the probes and /api/v1/metadata answer 200 without a token.
+#   (CONTROL) with the default wait (variable unset), the adapter started
+#     25 s after the request fails the scan closed in under 25 s, as before
+#     (7 s on both images: unset keeps the earlier gate).
+#
+# RED  backend + adapter sha-ff3335f (main without the change): 3 of 7, the
+#      four FIX cases fail. GREEN backend with #5945 + #5948 (local overlay)
+#      and the adapter built from #5948: 7 of 7.
+#
+# RATE_LIMIT_ENABLED=false: registry pushes and scan polls back to back.
+COVERS="5945 5948"
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

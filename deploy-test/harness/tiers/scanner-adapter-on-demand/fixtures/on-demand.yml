@@ -1,0 +1,15 @@
+# Overlay the oracle recreates the adapter and the backend with (on top of
+# compose.base + storage.filesystem + scanners.trivy). The token is generated
+# by the oracle at run time; nothing secret is committed.
+#   adapter: SCANNER_SCAN_TOKEN gates its scan and report routes (#5948)
+#   backend: TRIVY_ADAPTER_TOKEN is sent on every adapter request (#5948);
+#            SCANNER_ADAPTER_READY_TIMEOUT_SECS is the readiness wait (#5945),
+#            empty = the default (16 s)
+services:
+  trivy:
+    environment:
+      SCANNER_SCAN_TOKEN: ${DTF_ADAPTER_SCAN_TOKEN:?set by the oracle}
+  backend:
+    environment:
+      TRIVY_ADAPTER_TOKEN: ${DTF_ADAPTER_SCAN_TOKEN:?set by the oracle}
+      SCANNER_ADAPTER_READY_TIMEOUT_SECS: ${DTF_ADAPTER_READY_TIMEOUT_SECS:-}
