@@ -3075,12 +3075,14 @@ jobs:
           echo "PEER3_URL=http://artifact-keeper-backend.${BASE_NS}-peer3.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
 
       - name: Wait for mesh instances ready
+        env:
+          MAIN_URL: ${{ steps.mesh-deploy.outputs.MAIN_URL }}
+          PEER1_URL: ${{ steps.mesh-deploy.outputs.PEER1_URL }}
+          PEER2_URL: ${{ steps.mesh-deploy.outputs.PEER2_URL }}
+          PEER3_URL: ${{ steps.mesh-deploy.outputs.PEER3_URL }}
         run: |
           chmod +x tests/lib/wait-for-ready.sh
-          for url in "${{ steps.mesh-deploy.outputs.MAIN_URL }}" \
-                     "${{ steps.mesh-deploy.outputs.PEER1_URL }}" \
-                     "${{ steps.mesh-deploy.outputs.PEER2_URL }}" \
-                     "${{ steps.mesh-deploy.outputs.PEER3_URL }}"; do
+          for url in "${MAIN_URL}" "${PEER1_URL}" "${PEER2_URL}" "${PEER3_URL}"; do
             ./tests/lib/wait-for-ready.sh "$url" 300
           done
 
