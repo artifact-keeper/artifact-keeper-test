@@ -14,7 +14,7 @@
 #   coordinates, so #5892 adds a per-virtual setting `virtual_member_fallback`
 #   (`available`, the default, or `strict`). In strict mode the first member in
 #   priority order that is unavailable ends the download with 503 and
-#   Retry-After. A hung member costs the download deadline (20 s by default),
+#   Retry-After. A hung member holds the download for the deadline (20 s by default),
 #   not the upstream read timeout (PROXY_UPSTREAM_READ_TIMEOUT_SECS, 60 s). A
 #   404 is still a miss.
 #
