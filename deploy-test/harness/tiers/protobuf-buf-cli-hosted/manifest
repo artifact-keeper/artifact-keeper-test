@@ -1,0 +1,43 @@
+# DTF tier manifest: protobuf-buf-cli-hosted  (artifact-keeper#5066, #5117; fix PR #5074)
+# Profile-set: filesystem + client.buf (the real bufbuild/buf 1.72.0 CLI, and
+# caddy-bsr: a plain-HTTP caddy:2 aliased bsr.dtf.local whose root is
+# rewritten onto /proto/pb-buf/, the hosted repository the oracle creates).
+#
+# THE BUG (#5066, split as #5117 for what #5074 fixes)
+# A local (hosted) protobuf repository could not be used from the buf CLI at
+# all. The CLI speaks Connect with the binary protobuf codec
+# (`application/proto`), and every hosted handler took its body through
+# axum's Json extractor, so every call was refused with a bare 415 before a
+# handler ran. Behind that: the replies were a JSON lookalike of
+# buf.registry.module.v1 (string digest type, hex digest, row UUIDs), commits
+# carried a SHA-256 where buf verifies a b5 digest, the v1 Upload/Download
+# and owner.v1 GetOwners the CLI calls were not routed, GetModules answered a
+# short list where `buf push --create` needs not_found, GetGraph was not the
+# closure, and Module.name carried owner/module where buf wants the bare name.
+#
+# buf cannot name /proto/<repo> in a module name (exactly registry/owner/name),
+# so the profile maps a host root onto the repository, the documented setup.
+#
+# THE GATES
+#   (FIX #5066)  a well-formed binary-codec GetModulesRequest for a module
+#                pushed over JSON answers 200 application/proto naming the
+#                module by its bare name.  RED on main before #5074: 415.
+#   (FIX #5117)  buf push --create of acme/payments reports a tuuid commit;
+#                buf dep update pins it with a b5 digest and acme/orders (which
+#                imports it) pushes; a consumer of acme/orders pins BOTH commits
+#                and both b5 digests (buf recomputes b5 over the downloaded files
+#                and refuses a mismatch) and buf build succeeds; the module buf
+#                pushed is answered to a JSON caller in the JSON shape.
+#                RED on main before #5074: the first buf call fails (415), so
+#                nothing is pushed and every later case fails.
+#   (CONTROL)    must hold on BOTH images: an anonymous call through the proxy
+#                is the backend's 401 (setup), and buf push with no token is
+#                refused and stores nothing; the JSON codec answers as before --
+#                Upload (digest type sha256), GetModules (name owner/module, a
+#                missing module omitted from a 200), Download by label.
+#
+# RATE_LIMIT_ENABLED=false: buf makes a few dozen calls back to back.
+PROFILES="storage.filesystem client.buf"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="5066 5117"

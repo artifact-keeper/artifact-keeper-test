@@ -1,0 +1,12 @@
+# The host root of bsr.dtf.local is the hosted protobuf repository `pb-buf`:
+# buf calls <host>/buf.registry.<pkg>.<Service>/<Method>, and the backend
+# serves those under /proto/<repo>/ (artifact-keeper#5066).
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	rewrite * /proto/pb-buf{uri}
+	reverse_proxy backend:8080
+}
