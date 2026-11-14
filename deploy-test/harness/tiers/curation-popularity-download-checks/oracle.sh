@@ -24,6 +24,8 @@ ON="dtf-popdl-on-${SUF}"
 VON="dtf-popdl-von-${SUF}"
 OFF="dtf-popdl-off-${SUF}"
 NONE="dtf-popdl-none-${SUF}"
+PYON="dtf-popdl-pyon-${SUF}"
+PYOFF="dtf-popdl-pyoff-${SUF}"
 PKG="dtf-held"
 # Cyrillic о (U+043E, UTF-8 D0 BE) for the `o` of the popular name dtf-hold.
 HOMO_ENC="dtf-h%D0%BEld"
@@ -57,25 +59,25 @@ RULES=()
 cleanup() {
   local r
   for r in "${RULES[@]}"; do api DELETE "/api/v1/curation/rules/${r}" >/dev/null || true; done
-  for r in "$VON" "$ON" "$OFF" "$NONE"; do api DELETE "/api/v1/repositories/${r}" >/dev/null || true; done
+  for r in "$VON" "$ON" "$OFF" "$NONE" "$PYON" "$PYOFF"; do api DELETE "/api/v1/repositories/${r}" >/dev/null || true; done
 }
 add_exit_handler "cleanup"
 ERR=""
 need2xx() { case "$1" in 2??) ;; *) ERR="${ERR} $2: HTTP $1 $(head -c 200 "$W/api.json");" ;; esac; }
-mk() { # <key> <type> [upstream]
-  need2xx "$(api POST /api/v1/repositories "$(jq -nc --arg k "$1" --arg t "$2" --arg u "${3:-}" \
-    '{key:$k,name:$k,format:"npm",repo_type:$t,is_public:false} + (if $u != "" then {upstream_url:$u} else {} end)')")" "create $1"
+mk() { # <key> <type> [upstream] [format]
+  need2xx "$(api POST /api/v1/repositories "$(jq -nc --arg k "$1" --arg t "$2" --arg u "${3:-}" --arg f "${4:-npm}" \
+    '{key:$k,name:$k,format:$f,repo_type:$t,is_public:false} + (if $u != "" then {upstream_url:$u} else {} end)')")" "create $1"
 }
 curate() { # <key>
   need2xx "$(api PATCH "/api/v1/repositories/$1" '{"curation_enabled":true,"curation_default_action":"allow"}')" "curation on $1"
 }
 repo_id() { api GET "/api/v1/repositories/$1" >/dev/null; jq -r '.id // empty' "$W/api.json" 2>/dev/null || true; }
-# rule <repo key> <opt-in true|false> -> saves the response as $W/rule-<key>.json
+# rule <repo key> <opt-in true|false> [popular list JSON] -> saves the response as $W/rule-<key>.json
 rule() {
-  local id cfg
+  local id cfg popular="${3:-[\"dtf-hold\"]}"
   id="$(repo_id "$1")"
-  cfg='{"block_typosquat":true,"popular_packages":["dtf-hold"]}'
-  [ "$2" = "true" ] && cfg='{"block_typosquat":true,"download_name_checks":true,"popular_packages":["dtf-hold"]}'
+  cfg="$(jq -nc --argjson p "$popular" --argjson o "$2" \
+    '{block_typosquat:true,popular_packages:$p} + (if $o then {download_name_checks:true} else {} end)')"
   need2xx "$(api POST /api/v1/curation/rules "$(jq -nc --arg r "$id" --argjson c "$cfg" \
     '{staging_repo_id:$r,rule_type:"popularity",action:"block",priority:10,reason:"dtf #5274 popularity",config:$c}')")" "rule on $1"
   cp "$W/api.json" "$W/rule-$1.json"
@@ -86,9 +88,12 @@ mk "$ON" remote "${MOCK}/on"
 mk "$OFF" remote "${MOCK}/off"
 mk "$NONE" remote "${MOCK}/none"
 mk "$VON" virtual
+mk "$PYON" remote "${MOCK}/pyon" pypi
+mk "$PYOFF" remote "${MOCK}/pyoff" pypi
 need2xx "$(api POST "/api/v1/repositories/${VON}/members" "$(jq -nc --arg m "$NONE" '{member_key:$m}')")" "member of ${VON}"
-curate "$ON"; curate "$OFF"; curate "$VON"
+curate "$ON"; curate "$OFF"; curate "$VON"; curate "$PYON"; curate "$PYOFF"
 rule "$ON" true; rule "$VON" true; rule "$OFF" false
+rule "$PYON" true '["click"]'; rule "$PYOFF" false '["click"]'
 if [ -z "$ERR" ]; then pass; else infra_fail "$ERR"; end_suite; fi
 
 # --- opted in ---------------------------------------------------------------------
@@ -121,6 +126,21 @@ w_off="$(jq -r '(.warnings // []) | join(" | ")' "$W/rule-${OFF}.json" 2>/dev/nu
 w_on="$(jq -r '(.warnings // []) | length' "$W/rule-${ON}.json" 2>/dev/null || echo x)"
 if printf '%s' "$w_off" | grep -q 'download_name_checks' && [ "$w_on" = "0" ]; then pass
 else fail "OFF warnings='${w_off}', ON warning count=${w_on}; want a download_name_checks warning on OFF only"; fi
+
+# simple <repo> <project> -> HTTP code, body in $W/tgz.out (so blocked() reads it)
+simple() {
+  curl -s -o "$W/tgz.out" -w '%{http_code}' --max-time 60 -H "Authorization: Bearer ${TOK}" \
+    "${BASE_URL}/pypi/$1/simple/$2/" 2>/dev/null || echo 000
+}
+st="$(simple "$PYON" c1ick)"
+begin_test "FIX #5274: opted-in PyPI Remote refuses an ASCII confusable (c1ick for click, 403 curation_blocked)"
+if [ "$st" = "403" ] && blocked; then pass
+else fail "HTTP ${st}, want 403 curation_blocked" "$(head -c 300 "$W/tgz.out" 2>/dev/null)"; fi
+
+st="$(simple "$PYOFF" c1ick)"; b=0; blocked && b=1
+begin_test "CONTROL: a PyPI rule without download_name_checks does not refuse c1ick"
+if [ "$st" != "403" ] && [ "$b" = "0" ]; then pass
+else fail "HTTP ${st} (blocked=${b}); want anything but 403 curation_blocked"; fi
 
 # --- not opted in / no curation: unchanged ----------------------------------------
 st="$(tarball "$OFF" "$PKG")"

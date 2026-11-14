@@ -24,6 +24,8 @@
 #   OFF   Remote, curation on, the same rule WITHOUT download_name_checks
 #         (a rule as written before #5274)
 #   NONE  Remote, curation off, no rules
+#   PYON  PyPI Remote, curation on, opted-in rule with popular list ["click"]
+#   PYOFF PyPI Remote, curation on, the same rule WITHOUT download_name_checks
 #
 # Cases:
 #   FIX #5274   ON refuses the homoglyph tarball: 403 curation_blocked, and
@@ -36,6 +38,10 @@
 #   CONTROL     OFF serves `dtf-held`, does not 403 the homoglyph, and logs no
 #               flag line for OFF (upgrade safety: an existing rule changes
 #               no download).
+#   FIX #5274   PYON refuses the ASCII confusable `c1ick` (simple index,
+#               403 curation_blocked). PyPI refuses non-PEP 508 names, so an
+#               ASCII confusable is the only lookalike that reaches the check.
+#   CONTROL     PYOFF does not refuse `c1ick`.
 #   CONTROL     NONE serves `dtf-held` and does not 403 the homoglyph.
 #
 # Red on an image without #5275 (ghcr ...:main before the merge): every FIX
