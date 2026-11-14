@@ -114,6 +114,11 @@ jobs:
     # Check name kept stable (branch-protection reference); the mechanism is now
     # "scanner-adapter scaled to zero", see the comment block above and #312.
     name: Gate must reject Trivy scaled to zero (fixture A)
+    # Never for a pull request from a fork: this job runs the PR's own
+    # scripts on the shared self-hosted ARC pool, and workflow-run approval
+    # would otherwise be the only thing keeping fork code off it. Same-repo
+    # PRs and pushes to main still run it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ak-e2e-runners
     timeout-minutes: 15
     env:
@@ -255,6 +260,11 @@ jobs:
   # -------------------------------------------------------------------
   pin-gate-fails-on-below-floor-scanner:
     name: Gate must reject a required scanner below the CVE floor (fixture B)
+    # Never for a pull request from a fork: this job runs the PR's own
+    # scripts on the shared self-hosted ARC pool, and workflow-run approval
+    # would otherwise be the only thing keeping fork code off it. Same-repo
+    # PRs and pushes to main still run it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ak-e2e-runners
     timeout-minutes: 15
     env:

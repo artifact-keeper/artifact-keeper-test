@@ -47,12 +47,16 @@ on:
       # adding one anywhere has to re-run this job.
       - 'tests/**'
       - 'scripts/run-suite.sh'
+      - 'scripts/validate-gate-inputs.sh'
+      - 'scripts/selftest-validate-gate-inputs.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
     paths:
       - 'tests/**'
       - 'scripts/run-suite.sh'
+      - 'scripts/validate-gate-inputs.sh'
+      - 'scripts/selftest-validate-gate-inputs.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -72,3 +76,8 @@ jobs:
         run: |
           chmod +x tests/lib/selftest-release-gate-contract.sh
           ./tests/lib/selftest-release-gate-contract.sh
+
+      # The release gate's input validator (scripts/validate-gate-inputs.sh):
+      # the values callers pass are accepted, everything else is refused.
+      - name: Run gate-input validator self-test
+        run: bash scripts/selftest-validate-gate-inputs.sh

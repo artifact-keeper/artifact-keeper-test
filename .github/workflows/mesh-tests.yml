@@ -29,6 +29,9 @@ jobs:
 
       - name: Deploy mesh topology (4 instances)
         id: deploy
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
         run: |
           chmod +x scripts/create-test-namespace.sh
           MESH_RUN_ID="${RUN_ID}"
@@ -36,8 +39,8 @@ jobs:
           for i in main peer1 peer2 peer3; do
             ./scripts/create-test-namespace.sh \
               --run-id "${MESH_RUN_ID}-mesh-${i}" \
-              --backend-tag "${{ inputs.backend_tag }}" \
-              --web-tag "${{ inputs.web_tag }}" \
+              --backend-tag "${BACKEND_TAG}" \
+              --web-tag "${WEB_TAG}" \
               --values helm/values-test-mesh.yaml
           done
 
@@ -48,12 +51,14 @@ jobs:
           echo "PEER3_URL=http://artifact-keeper-backend.${BASE_NS}-peer3.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
 
       - name: Wait for all instances ready
+        env:
+          MAIN_URL: ${{ steps.deploy.outputs.MAIN_URL }}
+          PEER1_URL: ${{ steps.deploy.outputs.PEER1_URL }}
+          PEER2_URL: ${{ steps.deploy.outputs.PEER2_URL }}
+          PEER3_URL: ${{ steps.deploy.outputs.PEER3_URL }}
         run: |
           chmod +x tests/lib/wait-for-ready.sh
-          for url in "${{ steps.deploy.outputs.MAIN_URL }}" \
-                     "${{ steps.deploy.outputs.PEER1_URL }}" \
-                     "${{ steps.deploy.outputs.PEER2_URL }}" \
-                     "${{ steps.deploy.outputs.PEER3_URL }}"; do
+          for url in "${MAIN_URL}" "${PEER1_URL}" "${PEER2_URL}" "${PEER3_URL}"; do
             ./tests/lib/wait-for-ready.sh "$url" 180
           done
 
