@@ -1,0 +1,62 @@
+# DTF tier manifest: scan-queue-upload-image-rescan
+#   (artifact-keeper#5946, PR #5950; #5947, PR #5954; main only, for 1.12.0)
+# Profile-set: filesystem / single. LOCAL-ONLY: scans run the backend image's
+# bundled Grype with its pre-seeded DB; no scanner sidecar, no network. The
+# oracle recreates the backend (same postgres and data volume) for each phase
+# with fixtures/scan-queue.yml, and for the rescan phase also
+# fixtures/rescan-cap.yml.
+#
+# THE CHANGES
+# #5946  With SCAN_QUEUE_ENABLED=true, scan_on_upload queues its scan on the
+#        durable scan queue instead of spawning it in the process that took
+#        the upload: a pushed OCI image is one `hosted_image` job per
+#        (repository, manifest digest), so pushing the same manifest again (or
+#        under another tag) adds no job; every other upload is a
+#        `hosted_upload` job per artifact. A worker runs them.
+# #5947  With SCAN_RESCAN_MAX_PER_DAY > 0, a worker compares each scan type's
+#        current vulnerability-database build (what the scanner reports live,
+#        and what recent scans recorded in scan_results.vuln_db_published_at)
+#        with the build each stored artifact's newest scan used. Every digest
+#        graded on an older build is queued ONCE as a `rescan` job at priority
+#        5, below hosted scans (10). Earlier scan_results rows are kept.
+#
+# HOW THE DB BUILD CHANGE IS SIMULATED: the oracle seeds the recorded build on
+# the existing Grype scan rows of two digests to 2020-01-01 (UPDATE scan_results SET
+# vuln_db_published_at), so the bundled Grype DB is "newer" than what those
+# rows were graded on. A third digest keeps its real build and must not be
+# queued. A rescan job is claimed by the worker within a second of being
+# queued, so the rescan phase installs a test-only trigger on scan_queue that
+# pushes a new `rescan` row's next_attempt_at an hour out (the enqueue itself
+# is untouched); the oracle reads the jobs through the admin API, then drops
+# the trigger and makes them due.
+#
+# THE GATES
+#   (FIX)      RED on ghcr main (no hosted_upload / hosted_image / rescan
+#              kinds: scan_on_upload scans in-process, SCAN_RESCAN_MAX_PER_DAY
+#              is unknown). GREEN on main + #5954 (which contains #5950).
+#              #5946 queue on, worker off: an image pushed three times (tag
+#                    v1, v1 again, v2) and a generic upload are one
+#                    hosted_image job (the repository and the manifest digest)
+#                    and one hosted_upload job per upload in
+#                    GET /api/v1/admin/security/scan-queue, and nothing is
+#                    scanned before a worker runs;
+#              #5946 worker on: the queue drains and every tag row and upload
+#                    gets a completed scan written after the worker started;
+#              #5947 SCAN_RESCAN_MAX_PER_DAY=100: exactly one `rescan` job per
+#                    seeded digest (one generic digest stored in two
+#                    repositories, one image digest under two tags), priority
+#                    below the hosted jobs, the unseeded digest not queued; once
+#                    due, each row of those digests gets a new completed scan
+#                    on a newer build and the seeded rows are still there.
+#   (CONTROL)  must hold on BOTH images:
+#              queue off (the default): a generic upload and an image push
+#              into scan_on_upload repositories are scanned in-process and
+#              leave no job in the queue view, which reports enabled=false;
+#              queue on and SCAN_RESCAN_MAX_PER_DAY unset: the seeded rows
+#              queue no rescan job and get no new scan in 30 s.
+#
+# RATE_LIMIT_ENABLED=false: ~200 API calls back to back.
+COVERS="5946 5947"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
