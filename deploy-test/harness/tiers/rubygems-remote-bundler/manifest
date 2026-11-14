@@ -1,0 +1,41 @@
+# DTF tier manifest: rubygems-remote-bundler
+#   (artifact-keeper#5686, fixed for 1.12.0 by PR #5688)
+# Profile-set: filesystem / single + the real Ruby/Bundler client
+# (client.rubygems, ruby:3.3-slim with Bundler 2.5) + upstreams.mock-files
+# (stdlib-python upstream at 172.16.<slot>.76 whose files the oracle writes).
+# The oracle builds a small rubygems.org-shaped upstream with the client's own
+# `gem` library (fixtures/gen_upstream.rb: real .gem files, quick gemspecs,
+# Marshal specs indexes and a Compact Index whose `versions` lines carry the
+# MD5 of each `info/<name>` body) and stores it on the mock.
+#
+# THE BUG
+# #5686 A Remote RubyGems repository could not be used as a Bundler source on
+#       `/gems/<repo>`. `specs.4.8.gz` and `.gem` files were proxied, but the
+#       endpoints Bundler resolves with answered from local rows only: the
+#       Compact Index (`/versions`, `/names`, `/info/<name>`) was not routed
+#       (404), `quick/Marshal.4.8/<spec>.gemspec.rz` was proxied only for
+#       Virtual repositories (404 for any gem a Remote had not cached), and
+#       `api/v1/dependencies` answered `200 []`, which reads as "no versions".
+#       `bundle lock` / `bundle install` failed. Now a Remote passes the
+#       upstream Compact Index and quick gemspecs through byte for byte,
+#       re-declaring an upstream Content-Encoding, and its Dependency API
+#       answers 404 like rubygems.org.
+#
+# Oracle (oracle.sh, RELEASE_GATE=1):
+#   (FIX)     the Compact Index documents are the upstream bytes and info/<name>
+#             matches its MD5 in versions; a gzip-coded info document keeps its
+#             Content-Encoding; an uncached quick gemspec is served; the
+#             Dependency API does not answer `200 []`; a real `bundle lock` and
+#             `bundle install` resolve and install dtfbundler-app 1.0.0 with its
+#             dependency through the Remote.
+#   (CONTROL) both images: the Remote proxies specs.4.8.gz and a .gem
+#             byte for byte; a Local RubyGems repository still answers 404 on
+#             the Compact Index (Bundler falls back to the Marshal indexes
+#             there, #4272) and still serves its own specs.4.8.gz.
+#
+# RATE_LIMIT_ENABLED=false: Bundler issues its resolve requests back to back.
+PROFILES="storage.filesystem client.rubygems upstreams.mock-files"
+ORACLE="oracle.sh"
+COVERS="5686"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
