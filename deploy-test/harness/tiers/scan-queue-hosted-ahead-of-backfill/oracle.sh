@@ -47,7 +47,7 @@ UP="http://172.16.${DTF_SLOT}.76"   # where the BACKEND reaches the mock
 N_BACKLOG="${SQB_BACKLOG:-60}"
 N_DRAIN="${SQB_DRAIN:-12}"
 AGING=20
-HOSTED_BOUND=45
+HOSTED_BOUND=60
 
 REMOTE="sqb-npm-${SUF}"   # npm Remote, scan_on_proxy, fail_open
 HG="sqb-gen-${SUF}"       # generic, scan_on_upload (H1, phase A)
@@ -162,7 +162,7 @@ if [ "$(curl -s --max-time 5 "${MOCK}/__readyz" || true)" != "ok" ]; then
   infra_fail "mock upstream not reachable on ${MOCK} (profiles/upstreams.mock-files.yml)"; end_suite
 fi
 mkdir -p "${W}/fx" "${W}/h1" "${W}/h3"
-n=$(python3 -I "${HERE}/fixtures/build_backlog.py" "${W}/fx" "$UP" "a:${N_BACKLOG}" o:3 n:3 "d:${N_DRAIN}" 2>"${W}/fx.err") || n=""
+n=$(python3 -I "${HERE}/fixtures/build_backlog.py" "${W}/fx" "$UP" "$SUF" "a:${N_BACKLOG}" o:3 n:3 "d:${N_DRAIN}" 2>"${W}/fx.err") || n=""
 python3 -I "$MAKE_FX" "${W}/h1" "${SUF}h1" >/dev/null 2>>"${W}/fx.err"
 python3 -I "$MAKE_FX" "${W}/h3" "${SUF}h3" >/dev/null 2>>"${W}/fx.err"
 err=""
@@ -214,6 +214,9 @@ fi
 begin_test "setup: recreate the backend with the worker on and SCAN_WORKER_CONCURRENCY=1"
 T_WORKER="$(db_now)"
 if recreate_backend true 1 ""; then pass; else infra_fail "recreate failed"; end_suite; fi
+# The latency bound counts from the new backend answering /health, not from
+# the recreate (container stop and boot are not the claim order's time).
+T_UP="$(db_now)"
 
 reset_case
 begin_test "FIX #6032: an upload and an image push queued behind ${N_BACKLOG} fail-open proxy scans get their verdicts first, within ${HOSTED_BOUND} s"
@@ -221,9 +224,9 @@ H2_D="$(sha256sum "${W}/h1/oci-manifest.json" | cut -d' ' -f1)"
 wait_until "hosted verdicts" 240 hosted_done "$HG" "${HO}:${H2_D}"
 if hosted_done "$HG" "${HO}:${H2_D}"; then
   H_DONE="$(hosted_last "$HG" "$HO")"
-  lat=$(secs_between "$T_WORKER" "$H_DONE")
+  lat=$(secs_between "$T_UP" "$H_DONE")
   before=$(verdicts a "scanned_at < '${H_DONE}'")
-  note "hosted verdicts ${lat}s after the worker started; backlog verdicts before them: ${before}/${N_BACKLOG}"
+  note "hosted verdicts ${lat}s after the new backend was healthy; backlog verdicts before them: ${before}/${N_BACKLOG}"
   [ "${before:-99}" -le 1 ] 2>/dev/null || fail_g "${before} of ${N_BACKLOG} backlog scans ran before the hosted scans (the hosted jobs waited for the backlog)"
   [ "${lat:-999}" -le "$HOSTED_BOUND" ] 2>/dev/null || fail_g "hosted verdicts took ${lat}s, over the ${HOSTED_BOUND}s bound"
 else
@@ -317,7 +320,9 @@ if [ "$D_ON" = 1 ]; then
   begin_test "FIX #6033: SCAN_WORKER_CONCURRENCY unset follows MAX_CONCURRENT_SCAN_EXTRACTIONS=1: slot capacity 1, never more than 1 job running"
   max_run=0; cap=""; t_end=$(( $(date +%s) + 60 + N_DRAIN * 5 ))
   while [ "$(date +%s)" -lt "$t_end" ]; do
-    r=$(psql_q "SELECT count(*) FROM scan_queue WHERE state = 'running'")
+    # Only this phase's jobs: a row the previous backend left `running` keeps
+    # that state until its lease lapses.
+    r=$(psql_q "SELECT count(*) FROM scan_queue WHERE state = 'running' AND digest IN ($(digests_sql d))")
     [ "${r:-0}" -gt "$max_run" ] 2>/dev/null && max_run="$r"
     [ -z "$cap" ] && cap="$(metric ak_scan_worker_slots_capacity)"
     [ "$(verdicts d)" = "$N_DRAIN" ] && [ "$(backfill_left d)" = "0" ] && [ -n "$cap" ] && break

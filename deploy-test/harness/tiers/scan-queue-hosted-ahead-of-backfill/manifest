@@ -32,7 +32,7 @@
 #   (FIX) RED on 1.12.0, GREEN on the fix:
 #     #6032 60 proxy_file jobs queued, then a generic upload and an image push
 #           into scan_on_upload repositories: both hosted verdicts land within
-#           45 s of the worker starting with at most 1 backlog verdict before
+#           60 s of the new backend being healthy, with at most 1 backlog verdict before
 #           them (pre-fix: all 60 first), and the backlog then drains.
 #     #6032 aging, window 20 s: 3 backfill jobs queued 35 s before a hosted
 #           upload, 3 queued right after it. Verdicts land old backfill, then

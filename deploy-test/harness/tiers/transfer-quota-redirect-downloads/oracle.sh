@@ -94,8 +94,16 @@ fetch() {
 # DELTA (the growth of used_bytes; polled up to 25 s for the 10 s flush and
 # the count to land) plus fetch's ST/STORE/DL/BSHA.
 metered() {
-  local before now t_end
-  before="$(used)"
+  local before now t_end r i
+  # A reading taken while a flush is in progress can miss the bytes it is
+  # moving (pending already reset, the shared total not yet updated), which
+  # would inflate DELTA. Keep the largest of three readings.
+  before=""
+  for i in 1 2 3; do
+    r="$(used)"
+    [ -n "$r" ] && { [ -z "$before" ] || [ "$r" -gt "$before" ]; } && before="$r"
+    [ "$i" -lt 3 ] && sleep 0.5
+  done
   fetch "$1" "$2" "$3"
   DELTA=""
   [ -n "$before" ] || return 0

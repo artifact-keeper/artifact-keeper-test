@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # =============================================================================
-# build_backlog.py <out-dir> <upstream-base-url> <group>:<count> [...]
+# build_backlog.py <out-dir> <upstream-base-url> <run-suffix> <group>:<count> [...]
 #   npm packages for the scan-queue-hosted-ahead-of-backfill tier
 # =============================================================================
 # One ordinary npm package per entry, named dtf-bf<group>-NNN 1.0.0
-# (package/package.json first, distinct bytes), so every first pull through a
+# (package/package.json first; the run suffix is in index.js, so the bytes and
+# digests differ per run and a rerun on a kept database finds no old verdict),
+# so every first pull through a
 # fail_open Remote with scan_on_proxy queues one `proxy_file` backfill job.
 # Writes the files into <out-dir> and an index, <out-dir>/files.tsv:
 #     <upstream path>\t<local file>\t<content type>
@@ -23,6 +25,7 @@ import tarfile
 
 OUT = sys.argv[1]
 SELF = sys.argv[2].rstrip("/")
+SUF = sys.argv[3]
 MTIME = 1577836800
 INDEX = []
 
@@ -53,7 +56,7 @@ def npm(name, version):
     pj = json.dumps({"name": name, "version": version,
                      "description": "dtf scan backlog fixture", "license": "MIT"})
     body = tgz([("package/package.json", pj),
-                ("package/index.js", f"module.exports = {json.dumps(name)};\n")])
+                ("package/index.js", f"module.exports = {json.dumps(name + '/' + SUF)};\n")])
     fname = f"{name}-{version}.tgz"
     emit(f"/npm/{name}/-/{fname}", body)
     doc = {
@@ -74,7 +77,7 @@ def npm(name, version):
 
 
 total = 0
-for spec in sys.argv[3:]:
+for spec in sys.argv[4:]:
     group, count = spec.split(":")
     with open(os.path.join(OUT, f"{group}.list"), "w") as lst:
         for i in range(1, int(count) + 1):

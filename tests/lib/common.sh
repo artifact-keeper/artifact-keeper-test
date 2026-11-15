@@ -272,6 +272,8 @@ get_backend_version() {
   if [ -z "$BACKEND_VERSION" ] && [ -n "${AK_BACKEND_VERSION_OVERRIDE:-}" ]; then
     if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ "${RELEASE_GATE:-0}" = "1" ]; then
       echo "  WARN: AK_BACKEND_VERSION_OVERRIDE is ignored in a release-gate CI run; probing ${BASE_URL}/health" >&2
+    elif ! [[ "$AK_BACKEND_VERSION_OVERRIDE" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+      echo "  WARN: AK_BACKEND_VERSION_OVERRIDE='${AK_BACKEND_VERSION_OVERRIDE}' is not a version (X.Y.Z); ignored, probing ${BASE_URL}/health" >&2
     else
       echo "  WARN: backend version taken from AK_BACKEND_VERSION_OVERRIDE=${AK_BACKEND_VERSION_OVERRIDE}, not from /health" >&2
       BACKEND_VERSION="$AK_BACKEND_VERSION_OVERRIDE"
