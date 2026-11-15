@@ -51,6 +51,7 @@
 # leftovers, including B (test#503).
 #
 # RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back on A and B.
+COVERS="5856"
 PROFILES="storage.filesystem peer.second-instance"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

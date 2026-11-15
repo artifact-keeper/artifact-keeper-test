@@ -115,13 +115,13 @@ if [ "$c" = "201" ]; then pass; else fail "owner PUT v1.0.1.zip returned ${c}, w
 
 # --- FIX a: the owner cannot delete a published version ----------------------
 for p in "$ZIP_STORED" "$MOD_STORED"; do
-  begin_test "FIX a: repository owner (non-admin) DELETE ${p##*/} -> 409"
+  begin_test "FIX #5885: (a) repository owner (non-admin) DELETE ${p##*/} -> 409"
   c="$(del "$OWNER_TOKEN" "$p")"
   if [ "$c" = "409" ]; then pass
   else fail "owner DELETE ${p} returned ${c}, want 409 (a published Go version is a release)" "$(head -c 300 "${WORK}/delbody")"; fi
 done
 
-begin_test "FIX a: after the owner's attempts both files still download unchanged"
+begin_test "FIX #5885: (a) after the owner's attempts both files still download unchanged"
 if same_as "${VER}.zip" "${WORK}/zip.a" && same_as "${VER}.mod" "${WORK}/mod.a"; then pass
 else fail "zip: $(describe "${VER}.zip"); mod: $(describe "${VER}.mod")"; fi
 
@@ -140,17 +140,17 @@ gz="$(get "${VER}.zip" "${WORK}/got")"; gm="$(get "${VER}.mod" "${WORK}/got")"
 if [ "$gz" = "404" ] && [ "$gm" = "404" ]; then pass; else fail "zip=${gz} mod=${gm}, want 404/404"; fi
 
 # --- FIX b: the version comes back with the same bytes only ------------------
-begin_test "FIX b: republish ${VER}.zip with OTHER bytes -> 409"
+begin_test "FIX #5885: (b) republish ${VER}.zip with OTHER bytes -> 409"
 c="$(put "$ADMIN_TOKEN" "${VER}.zip" "${WORK}/zip.b")"
 if [ "$c" = "409" ]; then pass
 else fail "PUT ${VER}.zip with other bytes returned ${c}, want 409" "$(head -c 300 "${WORK}/putbody")"; fi
 
-begin_test "FIX b: republish ${VER}.mod with OTHER bytes -> 409"
+begin_test "FIX #5885: (b) republish ${VER}.mod with OTHER bytes -> 409"
 c="$(put "$ADMIN_TOKEN" "${VER}.mod" "${WORK}/mod.b")"
 if [ "$c" = "409" ]; then pass
 else fail "PUT ${VER}.mod with other bytes returned ${c}, want 409" "$(head -c 300 "${WORK}/putbody")"; fi
 
-begin_test "FIX b: republish both files with the ORIGINAL bytes succeeds"
+begin_test "FIX #5885: (b) republish both files with the ORIGINAL bytes succeeds"
 cz="$(put "$ADMIN_TOKEN" "${VER}.zip" "${WORK}/zip.a")"; zb="$(head -c 200 "${WORK}/putbody")"
 cm="$(put "$ADMIN_TOKEN" "${VER}.mod" "${WORK}/mod.a")"
 case "$cz:$cm" in
@@ -158,7 +158,7 @@ case "$cz:$cm" in
   *) fail "same-bytes PUT zip=${cz} mod=${cm}, want 2xx/2xx" "zip: ${zb} mod: $(head -c 200 "${WORK}/putbody")" ;;
 esac
 
-begin_test "FIX b: both files download as the ORIGINAL bytes"
+begin_test "FIX #5885: (b) both files download as the ORIGINAL bytes"
 if same_as "${VER}.zip" "${WORK}/zip.a" && same_as "${VER}.mod" "${WORK}/mod.a"; then pass
 else fail "zip: $(describe "${VER}.zip"); mod: $(describe "${VER}.mod")"; fi
 

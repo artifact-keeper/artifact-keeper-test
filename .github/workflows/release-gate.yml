@@ -3882,10 +3882,70 @@ jobs:
             tiers: replication-delete-restore
           - group: fixes-1.12.0-push-sync-oci
             tiers: push-sync-oci-and-plugin-metadata
+          # 1.12.0 wave 2 (test#755 onward), api: PERMISSION_DENIED rows
+          # record the full admin path (audit-admin-denial-full-path, #5603),
+          # a published Go version survives an owner delete and a
+          # different-bytes republish (go-hosted-release-immutable, #5885), an
+          # SSO sign-in completes only in the browser that started it
+          # (sso-login-browser-binding, #5486; sso.oidc on 172.28.<slot>.0/24,
+          # and the SAML cases need the prebuilt dtf-saml-xsw-probe staged
+          # above), the npm contract (npm-contract-1120, #5345 #5399 #5403
+          # #5631 #5676 #5724 #5725; client.npm + upstreams.mock-multi), a
+          # strict virtual's 503 at the download deadline
+          # (virtual-member-fallback-strict, #5810; upstreams.mock-files),
+          # Bundler through a RubyGems Remote (rubygems-remote-bundler, #5686;
+          # client.rubygems + upstreams.mock-files), the real buf CLI on a
+          # hosted protobuf repo (protobuf-buf-cli-hosted, #5066 #5117;
+          # client.buf), opted-in popularity checks on npm and PyPI downloads
+          # (curation-popularity-download-checks, #5274; upstreams.mock-npm +
+          # logging.json-file) and conda 26.7 searching sharded channels
+          # (conda-shard-native-search, #5432). Red on every 1.11.x image
+          # (1.11.x has none of these fixes): never cherry-pick them onto
+          # release/1.11.x; a 1.11.x candidate runs them as NOT ON THIS LINE.
+          # Local containers only, so required.
+          - group: fixes-1.12.0-wave2-api
+            tiers: audit-admin-denial-full-path go-hosted-release-immutable sso-login-browser-binding npm-contract-1120 virtual-member-fallback-strict rubygems-remote-bundler protobuf-buf-cli-hosted curation-popularity-download-checks conda-shard-native-search
+          # 1.12.0 wave 2, storage and scan: a restore stopped in its object
+          # pass leaves no rows and a backup reads each object once inside its
+          # timeout (backup-restore-s3-faults, #5857 #5858; storage.s3 +
+          # storage.s3-fault-proxy), a scoped backup archives and restores
+          # only its repositories (backup-scoped-restore, #5884), long scan
+          # strings, durable acknowledgements, concurrent score
+          # recalculation and unknown scan status (scan-results-durability,
+          # #5534 #5564 #5153 #5006 #5715; upstreams.mock-scan-formats,
+          # bundled Grype), and uploads and pushed images through the durable
+          # scan queue with one rescan per digest after a DB build change
+          # (scan-queue-upload-image-rescan, #5946 #5947; bundled Grype, about
+          # 95 s green). Same 1.12.0-only rule. Required.
+          - group: fixes-1.12.0-wave2-storage-scan
+            tiers: backup-restore-s3-faults backup-scoped-restore scan-results-durability scan-queue-upload-image-rescan
+          # OpenSCAP scans evaluate the image's unpacked root filesystem, not
+          # the sidecar's own (#6000): openscap-evaluates-image-rootfs runs the
+          # wrapper as its non-root UID in a user namespace
+          # (scanners.openscap, seccomp=unconfined) and openscap-root-mode in
+          # the opt-in root mode (scanners.openscap-root). GREEN needs the
+          # fixed backend AND the fixed OpenSCAP image, so this job pins
+          # OPENSCAP_IMAGE to the candidate's tag (openscap is published in
+          # lockstep with the backend; version-set-integrity checks the tag
+          # exists) instead of the profiles' :main default. Same 1.12.0-only
+          # rule. Required.
+          - group: fixes-1.12.0-openscap
+            tiers: openscap-evaluates-image-rootfs openscap-root-mode
+          # Two-instance tier (peer.second-instance), one job like the other
+          # peer tiers: a full backup of A restored into a fresh server B
+          # brings back every repository, artifact and webhook, and a restore
+          # that drops rows is never completed (backup-restore-fresh-server,
+          # #5856). Same 1.12.0-only rule. Required.
+          - group: fixes-1.12.0-backup-fresh-server
+            tiers: backup-restore-fresh-server
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
       TIERS_LIST: ${{ matrix.tiers }}
+      # The OpenSCAP sidecar of the scanners.openscap and scanners.openscap-root
+      # profiles: the candidate's own image, not :main (fixes-1.12.0-openscap).
+      # No other dtf-gate tier reads it.
+      OPENSCAP_IMAGE: ghcr.io/artifact-keeper/artifact-keeper-openscap:${{ inputs.backend_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3910,18 +3970,22 @@ jobs:
           chmod +x deploy-test/harness/ghcr-docker-auth.sh
           ./deploy-test/harness/ghcr-docker-auth.sh
 
-      # Hand the sso and deps-1.12.0-controls tiers their prebuilt signer.
-      # Only the groups that run them need it, so the other legs skip the
-      # download entirely. Both tiers read it from the same path.
+      # Hand the sso, deps-1.12.0-controls and sso-login-browser-binding
+      # tiers their prebuilt signer. Only the groups that run them need it, so
+      # the other legs skip the download entirely. All three read it from the
+      # same path. contains() on the tiers string is a substring match, so
+      # 'sso' alone would also match sso-login-browser-binding; it is named
+      # anyway so that renaming or moving the sso tier cannot drop the probe
+      # from the group that runs the SAML binding cases.
       - name: Download the prebuilt DTF probes
-        if: contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls')
+        if: contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls') || contains(matrix.tiers, 'sso-login-browser-binding')
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dtf-probes
           path: /tmp/dtf-probes
 
-      - name: Stage the SAML XSW probe for the sso and deps-1.12.0-controls tiers
-        if: contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls')
+      - name: Stage the SAML XSW probe for the sso, deps-1.12.0-controls and sso-login-browser-binding tiers
+        if: contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls') || contains(matrix.tiers, 'sso-login-browser-binding')
         run: |
           set -euo pipefail
           ARCH="$(uname -m)"
@@ -4015,6 +4079,18 @@ jobs:
   #     reason:  the scanner-adapter sidecar downloads the Trivy DB from
   #              ghcr on its first scan, like supply-chain. Green on main
   #              with the published adapter :1.
+  #   scanner-adapter-features-1.12.0 (scanner-adapter-on-demand,
+  #     scanner-adapter-cache-partition, scanner-adapter-max-image-size,
+  #     scanner-adapter-fair-queue):
+  #     reason:  scanners.trivy, so the adapter (or the cache-partition
+  #              tier's trivy server) downloads the Trivy DB from ghcr, like
+  #              supply-chain. Their red/green axis is the scanner-adapter
+  #              image (#5948, #5943, #5909, #5944), and this job runs the
+  #              published adapter :1, which moves only in the post-gate
+  #              promotion: until a 1.12.0 adapter is promoted to :1 these
+  #              FIX cases are expected red here on a 1.12.0 candidate.
+  #              Promote the group once the job is given the candidate's
+  #              adapter digest.
   #   mcp-1.12.0 (mcp-publish-resolve-1120):
   #     reason:  the #5702 case (20 publishes straight after a pull-through)
   #              races the catalog commit; it is discriminating on the
@@ -4063,6 +4139,16 @@ jobs:
           # 1.11.x has no MCP Registry.
           - group: mcp-1.12.0
             tiers: mcp-publish-resolve-1120
+          # 1.12.0 wave 2 (test#786, #788, #789, #791): an adapter started on
+          # demand is waited for and its scan routes take the backend's token
+          # (#5945, #5948), registry partition mode keeps one registry host's
+          # cached layer analysis out of another's (#5943), an image over
+          # SCANNER_MAX_IMAGE_BYTES is refused and recorded not scanned
+          # (#5909), and per-client limits, fair queueing, a background band
+          # and queue metrics (#5944). Red on every 1.11.x adapter. See the
+          # waiver above for the adapter image this job runs.
+          - group: scanner-adapter-features-1.12.0
+            tiers: scanner-adapter-on-demand scanner-adapter-cache-partition scanner-adapter-max-image-size scanner-adapter-fair-queue
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

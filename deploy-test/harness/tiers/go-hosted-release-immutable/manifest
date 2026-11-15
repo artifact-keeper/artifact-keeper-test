@@ -45,6 +45,7 @@
 #             the original bytes again.
 #
 # RATE_LIMIT_ENABLED=false: two logins and ~30 back-to-back calls.
+COVERS="5885"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

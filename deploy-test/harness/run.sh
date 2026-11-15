@@ -510,6 +510,18 @@ case "$CMD" in
     # image scan resubmit through the scanner adapter and the MCP publish
     # resolve (advisory). s3-multipart-copy-encoding (#4838) and
     # upstream-probe-egress (#5079, #5089) also gate the 1.11.x line.
+    # 1.12.0 wave 2 (fixes-1.12.0-wave2-*, fixes-1.12.0-openscap and
+    # fixes-1.12.0-backup-fresh-server; red on 1.11.x): the full admin path
+    # on PERMISSION_DENIED rows, immutable hosted Go releases, SSO sign-ins
+    # bound to their browser, the npm contract, a strict virtual's member
+    # fallback, Bundler through a RubyGems Remote, the buf CLI on a hosted
+    # protobuf repo, opted-in popularity checks on downloads, conda 26.7 on
+    # sharded channels, restore and backup S3 faults, scoped backups, scan
+    # result durability, the durable scan queue and DB-build rescans,
+    # OpenSCAP on the image's own root filesystem (userns and root mode), a
+    # backup restored into a fresh server, and four scanner-adapter features
+    # (advisory: on-demand start and token, cache partition, image size
+    # limit, fair queueing).
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -600,7 +612,15 @@ case "$CMD" in
              virtual-member-gates-1120 virtual-metadata-member-outage webhook-delivery-fairness \
              replication-delete-restore push-sync-oci-and-plugin-metadata \
              s3-presign-and-scrub-1120 oci-digest-scope-1120 \
-             image-scan-adapter-resubmit mcp-publish-resolve-1120; do
+             image-scan-adapter-resubmit mcp-publish-resolve-1120 \
+             audit-admin-denial-full-path go-hosted-release-immutable sso-login-browser-binding \
+             npm-contract-1120 virtual-member-fallback-strict rubygems-remote-bundler \
+             protobuf-buf-cli-hosted curation-popularity-download-checks conda-shard-native-search \
+             backup-restore-s3-faults backup-scoped-restore scan-results-durability \
+             scan-queue-upload-image-rescan openscap-evaluates-image-rootfs openscap-root-mode \
+             backup-restore-fresh-server \
+             scanner-adapter-on-demand scanner-adapter-cache-partition \
+             scanner-adapter-max-image-size scanner-adapter-fair-queue; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
