@@ -190,7 +190,7 @@ fi
 # =============================================================================
 # FIX: everything comes back on the fresh server
 # =============================================================================
-begin_test "FIX(#5856): restoring A's full backup into fresh server B answers 200 completed with no errors"
+begin_test "FIX #5856: restoring A's full backup into fresh server B answers 200 completed with no errors"
 c="$(restore_on_b "$FULL_ID")"
 cp "$W/last" "$W/restore-full.json"
 st="$(jq -r '.status // empty' "$W/restore-full.json" 2>/dev/null)"
@@ -200,13 +200,13 @@ if [ "$c" = "200" ] && [ "$st" = "completed" ] && [ "$nerr" = "0" ]; then pass; 
   fail "restore -> HTTP ${c} status=${st:-?} errors=${nerr:-?}: $(jq -c '.errors' "$W/restore-full.json" 2>/dev/null | head -c 600)"
 fi
 
-begin_test "FIX(#5856): every repository of A exists on B with its format"
+begin_test "FIX #5856: every repository of A exists on B with its format"
 psql_b "SELECT key || '|' || format FROM repositories WHERE key IN ('${GEN_A}','${GEN_B}','${MVN}') ORDER BY 1" > "$W/repos.got"
 if diff -q "$W/repos.expected" "$W/repos.got" >/dev/null; then pass; else
   fail "B has [$(tr '\n' ' ' < "$W/repos.got")], want [$(tr '\n' ' ' < "$W/repos.expected")] (pre-#5856: the rows fail their created_by foreign key)"
 fi
 
-begin_test "FIX(#5856): every artifact of A downloads from B with A's sha256"
+begin_test "FIX #5856: every artifact of A downloads from B with A's sha256"
 ok=0; bad=""
 while IFS='|' read -r repo path want; do
   case "$path" in
@@ -223,7 +223,7 @@ if [ "$ok" = "$total" ]; then pass; else
   fail "${ok}/${total} artifacts match; missing or wrong:${bad}"
 fi
 
-begin_test "FIX(#5856): both webhooks of A exist on B with their url, events and repository"
+begin_test "FIX #5856: both webhooks of A exist on B with their url, events and repository"
 psql_b "SELECT w.name || '|' || w.url || '|' || array_to_string(w.events, ',') || '|' || coalesce(r.key, '-')
           FROM webhooks w LEFT JOIN repositories r ON r.id = w.repository_id
          WHERE w.name IN ('${HOOK_GLOBAL}','${HOOK_REPO}') ORDER BY 1" > "$W/hooks.got"
@@ -231,7 +231,7 @@ if diff -q "$W/hooks.expected" "$W/hooks.got" >/dev/null; then pass; else
   fail "B has [$(tr '\n' ' ' < "$W/hooks.got")], want [$(tr '\n' ' ' < "$W/hooks.expected")]"
 fi
 
-begin_test "FIX(#5856): the archived user and its group membership exist on B, and B's own admin owns the archived admin's repositories"
+begin_test "FIX #5856: the archived user and its group membership exist on B, and B's own admin owns the archived admin's repositories"
 member="$(psql_b "SELECT count(*) FROM user_group_members m JOIN users u ON u.id = m.user_id
                     JOIN groups g ON g.id = m.group_id
                    WHERE u.username = '${USER_NAME}' AND g.name = '${GROUP_NAME}'")"
@@ -243,7 +243,7 @@ fi
 # =============================================================================
 # FIX: a restore that cannot insert every row is never `completed`
 # =============================================================================
-begin_test "FIX(#5856): a restore whose artifact rows cannot be inserted reports partial (or fails), never completed"
+begin_test "FIX #5856: a restore whose artifact rows cannot be inserted reports partial (or fails), never completed"
 SCOPED_ERR=""
 c="$(create_repo_on "$A" "$CONFLICT" generic)"; [[ "$c" == 20? ]] || SCOPED_ERR="create ${CONFLICT} on A -> ${c};"
 make_file conflict-1.bin 4096; make_file conflict-2.bin 8192

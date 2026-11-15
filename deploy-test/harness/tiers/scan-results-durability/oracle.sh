@@ -8,8 +8,8 @@
 #   #5153 an acknowledgement survives a rescan and a promotion
 #   #5006 concurrent scan completions in one repository all recalculate the
 #         repository score
-#   #5891 a burst of them (8, 16) never answers 500; pinned KNOWN-RED unless
-#         DTF_GATE_5891=1
+#   #5891 a burst of them (8, 16) never answers 500; gated by default
+#         (DTF_GATE_5891=0 pins it KNOWN-RED instead)
 #   #5715 a scan row whose status the build does not know is unscanned for
 #         block_unscanned, not "not applicable"
 # See the manifest for the fixes and the gates.
@@ -34,10 +34,10 @@ RACE_WIDTH=4       # #5006: artifacts whose ingests complete at once per round
 BURST_WIDTH=8      # #5891: a burst past #5007's retry bound
 BURST_ROUNDS=3     # #5891 gated: rounds at BURST_WIDTH, then one at WIDE_WIDTH
 WIDE_WIDTH=16
-# #5891 is pinned KNOWN-RED (reported, never failed) until its fix is on main.
-# DTF_GATE_5891=1 turns the pin into a FIX assertion, for proving the fix on a
-# candidate image; flip the default to 1 once the fix has merged.
-GATE_5891="${DTF_GATE_5891:-0}"
+# #5891 is a FIX assertion by default: its fix (artifact-keeper#5898) is on
+# main. DTF_GATE_5891=0 turns it back into the KNOWN-RED pin (reported, never
+# failed), for running the tier on an image that predates #5898.
+GATE_5891="${DTF_GATE_5891:-1}"
 
 setup_workdir
 W="$WORK_DIR"

@@ -19,12 +19,15 @@
 #   CLI_TAG         name, or empty for the latest release
 #   TEST_SUITE      name
 #   BACKEND_DIGEST  sha256:<64 hex>, or empty for tag-only
+#   SCANNER_ADAPTER_TAG  an image tag (no '/'), or empty for backend_tag
 #
 # Exits 1 naming every value that is refused. Values are never echoed back.
 set -uo pipefail
 
 NAME_RE='^[A-Za-z0-9._/-]{1,128}$'
 DIGEST_RE='^sha256:[0-9a-f]{64}$'
+# An image tag, as the scanner-adapter tag is used: ghcr.io/...:<tag>.
+TAG_RE='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
 bad=0
 
 check() { # check <input name> <value> <regex> <allow empty: 0|1>
@@ -32,7 +35,7 @@ check() { # check <input name> <value> <regex> <allow empty: 0|1>
   if [[ -z "$value" && "$empty_ok" == 1 ]]; then return 0; fi
   # A leading '-' would be read as an option by git and helm.
   if [[ "$value" =~ $re && "$value" != -* ]]; then return 0; fi
-  if [[ "$re" == "$NAME_RE" ]]; then
+  if [[ "$re" == "$NAME_RE" || "$re" == "$TAG_RE" ]]; then
     echo "::error title=Invalid release-gate input::${name} must match ${re} and must not start with '-'." >&2
   else
     echo "::error title=Invalid release-gate input::${name} must match ${re}." >&2
@@ -46,6 +49,7 @@ check iac_ref        "${IAC_REF-}"        "$NAME_RE"   1
 check cli_tag        "${CLI_TAG-}"        "$NAME_RE"   1
 check test_suite     "${TEST_SUITE-}"     "$NAME_RE"   1
 check backend_digest "${BACKEND_DIGEST-}" "$DIGEST_RE" 1
+check scanner_adapter_tag "${SCANNER_ADAPTER_TAG-}" "$TAG_RE" 1
 
 if [[ "$bad" -ne 0 ]]; then
   exit 1

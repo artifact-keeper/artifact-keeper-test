@@ -27,6 +27,7 @@
 #
 # RATE_LIMIT_ENABLED=false: an admin login, a user create, a user login and a
 # burst of audit polls; the base default (ON) could turn a poll into a 429.
+COVERS="5603"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

@@ -58,20 +58,21 @@
 #     scan; Grype reports log4j-core's CVEs, a severity policy blocks the jar
 #     and acknowledging every finding opens it; block_unscanned refuses a
 #     never-scanned artifact and passes one whose only row is not_applicable.
-#   (KNOWN-RED #5891, reported, never failed) 8 ingests at once in one
-#     repository: on main 2bdf092 some still answer 500 "could not serialize
-#     access" (width 6: 3 of 10 rounds, width 8: 10 of 10). #5007 counts an
-#     attempt that found the lock busy against its 8-attempt cap, and the last
-#     attempt waits for the lock after its REPEATABLE READ snapshot is taken.
-#     DTF_GATE_5891=1 makes it a FIX assertion (3 rounds of 8 and one of 16,
-#     every ingest 200, the score counts every one); flip that default once
-#     the fix for artifact-keeper#5891 is on main.
+#   (FIX #5891, fixed by artifact-keeper#5898) 3 rounds of 8 ingests at once
+#     in one repository and one of 16: every ingest answers 200 and the score
+#     counts every one. On main 2bdf092, before #5898, some answered 500
+#     "could not serialize access" (width 6: 3 of 10 rounds, width 8: 10 of
+#     10): #5007 counted an attempt that found the lock busy against its
+#     8-attempt cap, and the last attempt waited for the lock after its
+#     REPEATABLE READ snapshot was taken. Gated by default; DTF_GATE_5891=0
+#     turns it back into a KNOWN-RED pin (reported, never failed) for an image
+#     that predates #5898.
 #
 # NOT GATED: vuln_db_version (#5564) is not settable through the ingest; the
 # dedup-copy and expiry paths of #5153.
 #
 # RATE_LIMIT_ENABLED=false: ~100 API calls back to back.
-COVERS="5534 5564 5153 5006 5715"
+COVERS="5534 5564 5153 5006 5715 5891"
 PROFILES="storage.filesystem upstreams.mock-scan-formats"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

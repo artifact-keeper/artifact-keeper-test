@@ -42,6 +42,7 @@
 # S3_BULK_TIMEOUT_SECS=10: with 4 MiB/s and 24 MiB objects each object takes
 # ~6 s on its own, and a queued one waits ~6 s more before its first byte is
 # read.
+COVERS="5857 5858"
 PROFILES="storage.s3 storage.s3-fault-proxy"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

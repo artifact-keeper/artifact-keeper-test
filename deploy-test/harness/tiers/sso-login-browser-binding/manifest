@@ -62,6 +62,7 @@
 # release gate's build-dtf-probes job provides.
 #
 # RATE_LIMIT_ENABLED=false: many SSO calls back to back from one client.
+COVERS="5486"
 PROFILES="storage.filesystem sso.oidc"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

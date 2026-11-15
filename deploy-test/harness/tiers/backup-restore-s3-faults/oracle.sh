@@ -127,7 +127,7 @@ if [ "$c" = "200" ] && [ "$(sha "$W/dl")" = "$(sha "$W/slow-1.bin")" ] \
   infra_fail "one throttled object: HTTP ${c} in ${took}s (want 200, the right bytes, 3s < t < ${BULK_TIMEOUT}s); the store is not slow enough or too slow for the gate below to mean anything"
 fi
 
-begin_test "FIX(#5858): a backup of three such objects completes, and each object is read with one GET inside its timeout"
+begin_test "FIX #5858: a backup of three such objects completes, and each object is read with one GET inside its timeout"
 # Fresh GET counters for the backup alone.
 ctl reset >/dev/null
 ctl "throttle?match=/${BUCKET}/&bps=${BPS}" >/dev/null
@@ -182,7 +182,7 @@ if [ -z "$SETUP_ERR" ]; then pass; else
   infra_fail "setup could not complete: ${SETUP_ERR}"; end_suite; exit $?
 fi
 
-begin_test "FIX(#5857): a restore whose archive changes between its verify pass and its write pass fails without restoring a database row, and says so"
+begin_test "FIX #5857: a restore whose archive changes between its verify pass and its write pass fails without restoring a database row, and says so"
 ctl "hold?match=${ARCHIVE_KEY##*/}&nth=2" >/dev/null
 ( curl -s -o "$W/restore-swap.json" -w '%{http_code}' --max-time 600 -u "$AUTH" -X POST \
     -H 'Content-Type: application/json' -d '{}' \

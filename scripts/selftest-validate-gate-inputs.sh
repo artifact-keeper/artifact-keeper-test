@@ -41,6 +41,9 @@ expect 0 "a release-line iac ref"                       BACKEND_TAG=1.12.0 IAC_R
 expect 0 "another release-line iac ref"                 BACKEND_TAG=sha-abc1234 IAC_REF=release/1.11.x TEST_SUITE=dtf
 expect 0 "a prerelease tag"                             BACKEND_TAG=v1.12.0-rc.1
 expect 0 "optional inputs empty"                        BACKEND_TAG=1.12.0 WEB_TAG= IAC_REF= CLI_TAG= TEST_SUITE= BACKEND_DIGEST=
+expect 0 "an adapter sha tag"                           BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=sha-a94c2fd
+expect 0 "an adapter version tag"                       BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=1.3.2
+expect 0 "scanner_adapter_tag empty"                    BACKEND_TAG=sha-a94c2fd SCANNER_ADAPTER_TAG=
 expect 0 "a 128-character name"                         BACKEND_TAG="$(printf 'a%.0s' $(seq 128))"
 
 echo "validate-gate-inputs.sh: everything else is refused"
@@ -59,6 +62,9 @@ expect 1 "a bad test_suite"                             BACKEND_TAG=1.12.0 TEST_
 expect 1 "digest: upper-case hex"                       BACKEND_TAG=1.12.0 BACKEND_DIGEST="sha256:$(printf 'A%.0s' $(seq 64))"
 expect 1 "digest: too short"                            BACKEND_TAG=1.12.0 BACKEND_DIGEST=sha256:abc
 expect 1 "digest: 65 hex digits"                        BACKEND_TAG=1.12.0 BACKEND_DIGEST="${DIGEST}0"
+expect 1 "adapter tag: a slash"                         BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=a/b
+expect 1 "adapter tag: an @ (a digest suffix)"          BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=1@sha256
+expect 1 "adapter tag: a leading -"                     BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=-x
 expect 1 "digest: wrong algorithm"                      BACKEND_TAG=1.12.0 BACKEND_DIGEST="sha512:${DIGEST#sha256:}"
 
 if [ "$fails" -ne 0 ]; then
