@@ -22,6 +22,12 @@
 #     (proves the per-provider column is honored at bind, not a global toggle).
 #   * REAL-BIND sanity: a wrong password on a working provider -> 401 (not a
 #     blanket accept).
+#   * #5483 (1.12.0, 1.11.14): accounts are bound to the provider that
+#     created them, so every provider that must sign in uses its own
+#     directory user (alice: skip=true, bob: CA, carol: the flipped negative
+#     provider). alice through the CA provider is then 409 with her account
+#     still bound to the skip=true provider where users.auth_provider_id
+#     exists (migration 350), and 200 (same account) where it does not.
 # Pre-#2782 there is no per-provider skip/CA option, so the positive controls
 # cannot pass -> discriminating. The 1.6.1-rc image HAS the fix (verified: the
 # ldap_configs table carries both columns) -> this tier is EXPECTED TO PASS.
