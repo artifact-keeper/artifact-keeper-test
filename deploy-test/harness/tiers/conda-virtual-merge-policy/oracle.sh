@@ -17,7 +17,8 @@
 #   RF  remote -> mock /fail/ (500 to everything)
 #   RB  remote -> mock /big/  (~2 MiB repodata.json, over the 1 MiB ceiling)
 #   VM  virtual {H, R, R2}    healthy merge
-#   VF  virtual {H, R, RF}    strict (default) member-failure policy
+#   VF  virtual {H, R, RF}    default member-failure policy (strict for an
+#                             unusable document; RF left out since #5621)
 #   VP  virtual {H, R, RF}    virtual_metadata_partial = true
 #   VB  virtual {H, RB}       member over CONDA_VIRTUAL_MEMBER_MAX_BYTES
 #
@@ -177,15 +178,25 @@ fi
 # =============================================================================
 # #4192 member failure policy
 # =============================================================================
-begin_test "FIX #4192: a member whose upstream answers 500 fails the virtual's repodata.json and channeldata.json with 502 naming the member"
+# Since artifact-keeper#5621 (#5809) an unavailable member (upstream 5xx) is
+# left out of the merge and the response says so, partial opt-in or not; the
+# strict 502 of #4192 now applies only to a member whose document cannot be
+# used (over the member ceiling, undecodable, unparsable; see the #4555 case
+# below). release/1.11.x keeps the 502 expectation.
+begin_test "FIX #4192/#5621: a member whose upstream answers 500 is left out of the virtual's repodata.json and channeldata.json, marked partial naming the member"
 st_r="$(hget "/conda/${VF}/noarch/repodata.json" "$WORK/vf_rd.json")"
 st_c="$(hget "/conda/${VF}/channeldata.json" "$WORK/vf_cd.json")"
-if [ "$st_r" = "502" ] && grep -q "member '${RF}' failed" "$WORK/vf_rd.json" && grep -q "upstream fetch failed" "$WORK/vf_rd.json" \
-   && [ "$st_c" = "502" ] && grep -q "member '${RF}' failed" "$WORK/vf_cd.json"; then
+pm_r="$(hdr "$WORK/vf_rd.json" X-AK-Partial-Members)"; cc_r="$(hdr "$WORK/vf_rd.json" Cache-Control)"; wn_r="$(hdr "$WORK/vf_rd.json" Warning)"
+pm_c="$(hdr "$WORK/vf_cd.json" X-AK-Partial-Members)"; cc_c="$(hdr "$WORK/vf_cd.json" Cache-Control)"; wn_c="$(hdr "$WORK/vf_cd.json" Warning)"
+if [ "$st_r" = "200" ] && [ "$pm_r" = "$RF" ] && [ "$cc_r" = "no-store" ] && [ "${wn_r#199 }" != "$wn_r" ] \
+   && [ -z "$(hdr "$WORK/vf_rd.json" ETag)" ] \
+   && jq -e --arg h "$HOSTED" --arg a "$UP_ALPHA2" '.packages | has($h) and has($a)' "$WORK/vf_rd.json" >/dev/null 2>&1 \
+   && [ "$st_c" = "200" ] && [ "$pm_c" = "$RF" ] && [ "$cc_c" = "no-store" ] && [ "${wn_c#199 }" != "$wn_c" ] \
+   && jq -e '.packages | has("c12-host") and has("dtfup-alpha")' "$WORK/vf_cd.json" >/dev/null 2>&1; then
   pass
 else
-  fail "a failed member was silently dropped from the merge" \
-    "repodata HTTP ${st_r}: $(head -c 300 "$WORK/vf_rd.json" | tr '\n' ' '); channeldata HTTP ${st_c}: $(head -c 200 "$WORK/vf_cd.json" | tr '\n' ' ')"
+  fail "the healthy merge was not served marked partial naming '${RF}'" \
+    "repodata HTTP ${st_r} X-AK-Partial-Members='${pm_r}' Cache-Control='${cc_r}' Warning='${wn_r}' ETag='$(hdr "$WORK/vf_rd.json" ETag)' keys=$(keys_of "$WORK/vf_rd.json") $(head -c 200 "$WORK/vf_rd.json" | tr '\n' ' '); channeldata HTTP ${st_c} X-AK-Partial-Members='${pm_c}' Cache-Control='${cc_c}' Warning='${wn_c}' $(head -c 200 "$WORK/vf_cd.json" | tr '\n' ' ')"
 fi
 
 begin_test "FIX #4192: with virtual_metadata_partial the healthy members are served 200, marked X-AK-Partial-Members, no-store, Warning 199"
