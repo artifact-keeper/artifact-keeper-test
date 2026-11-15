@@ -2695,15 +2695,14 @@ jobs:
     # a hard gate. Those two clauses are now removed from the predicate, so
     # intent and predicate finally agree.
     #
-    # KNOWN GAP, stated plainly: mesh coverage is advisory, and the suite has
-    # a real harness bug of its own — test-peer-failover.sh registers its
-    # simulated "broken peer" at loopback `http://127.0.0.1:1`, which the
-    # backend's peer-registration SSRF allowlist correctly 400s, so the
-    # failover path is never exercised. That fix, and the migration of mesh
-    # coverage onto a DTF tier (the shape oci-push-scope uses: digest-pinned,
-    # INFRA-vs-regression labeled), are DEFERRED to a future release by
-    # product direction. Nothing here is fixed — mesh is simply no longer
-    # pretending to be a gate.
+    # KNOWN GAP, stated plainly: mesh coverage is advisory. The suites used
+    # to register their simulated "broken peer" at loopback
+    # `http://127.0.0.1:1`, which the backend's peer-registration SSRF
+    # allowlist correctly 400s, so the failover path was never exercised;
+    # they now use an unresolvable `.invalid` name the backend accepts.
+    # Migrating mesh coverage onto a DTF tier (the shape oci-push-scope
+    # uses: digest-pinned, INFRA-vs-regression labeled) is DEFERRED to a
+    # future release by product direction, so mesh is still not a gate.
     #   owner:   release-engineering
     #   expires: 2026-12-01 — on/after this date either land the DTF
     #            peer-failover tier and make it blocking, or re-justify this

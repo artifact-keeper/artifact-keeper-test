@@ -14,7 +14,8 @@
 #
 # Requires: curl, jq, MAIN_URL + PEER1_URL exported.
 # PEER2_URL is optional -- if absent we reuse PEER1_URL as the
-# "healthy" target and a closed port as the "broken" target.
+# "healthy" target and an unresolvable `.invalid` name as the "broken"
+# target.
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "federation-peer-failover"
@@ -29,10 +30,19 @@ BASE_URL="$MAIN_URL"
 auth_admin
 MAIN_TOKEN="$ADMIN_TOKEN"
 
-# PEER2_URL is optional. The "broken" leg always points at a closed
-# port so failover semantics still hold even on a 1-peer cluster.
+# PEER2_URL is optional. The "broken" leg always points at a dead
+# URL so failover semantics still hold even on a 1-peer cluster.
 HEALTHY_URL="$PEER1_URL"
-DEAD_URL="http://127.0.0.1:1"
+# The "broken" peer must be a URL the backend ACCEPTS but cannot reach.
+# Loopback (http://127.0.0.1:1) is not one: peer endpoint URLs pass the
+# outbound address policy, which refuses loopback with a 400 and offers no
+# setting to admit it (artifact-keeper#1868, every release since 1.2.1), so
+# the broken peer was never registered and the steps below never ran. A name
+# under the reserved `.invalid` TLD (RFC 6761) never resolves, so it is
+# accepted at registration (a down peer can still be registered) and every
+# transfer or probe to it fails at name resolution, before any connect.
+# Override with MESH_DEAD_PEER_URL.
+DEAD_URL="${MESH_DEAD_PEER_URL:-http://ak-dead-peer.invalid:1}"
 
 REPO_KEY="fed-fover-${RUN_ID}"
 HEALTHY_PEER="fed-fover-healthy-${RUN_ID}"
@@ -76,7 +86,21 @@ fi
 export BASE_URL="$MAIN_URL"; export ADMIN_TOKEN="$MAIN_TOKEN"
 
 begin_test "Register healthy peer"
-payload="{\"name\":\"${HEALTHY_PEER}\",\"endpoint_url\":\"${HEALTHY_URL}\",\"api_key\":\"fed-test-key\"}"
+# The healthy peer needs a credential it accepts: main's sync worker pushes
+# with this key, and a placeholder like "fed-test-key" is answered 401, so the
+# artifact never arrives (same token minting as test-artifact-sync.sh).
+HEALTHY_KEY=""
+export BASE_URL="$HEALTHY_URL"; export ADMIN_TOKEN="$PEER_TOKEN"
+if resp=$(api_post "/api/v1/auth/tokens" \
+    "{\"name\":\"fed-fover-key-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" 2>/dev/null); then
+  HEALTHY_KEY=$(printf '%s' "$resp" | jq -r '.token // empty') || true
+fi
+export BASE_URL="$MAIN_URL"; export ADMIN_TOKEN="$MAIN_TOKEN"
+if [ -z "$HEALTHY_KEY" ] || [ "$HEALTHY_KEY" = "null" ]; then
+  HEALTHY_KEY="$PEER_TOKEN"
+fi
+payload=$(jq -nc --arg n "$HEALTHY_PEER" --arg u "$HEALTHY_URL" --arg k "$HEALTHY_KEY" \
+  '{name: $n, endpoint_url: $u, api_key: $k}')
 status=$(curl -s -o "${WORK_DIR}/healthy.json" -w '%{http_code}' $CURL_TIMEOUT \
   -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
   -d "$payload" "${BASE_URL}/api/v1/peers" 2>/dev/null) || status=000
@@ -94,17 +118,17 @@ case "$status" in
   *) fail "healthy peer registration failed: HTTP ${status}" ;;
 esac
 
-begin_test "Register broken peer (closed port)"
+begin_test "Register broken peer (unresolvable URL)"
 payload="{\"name\":\"${BROKEN_PEER}\",\"endpoint_url\":\"${DEAD_URL}\",\"api_key\":\"fed-test-key\"}"
-if resp=$(api_post "/api/v1/peers" "$payload" 2>/dev/null); then
-  BROKEN_ID=$(echo "$resp" | jq -r '.id // empty')
+if api_post_capture "/api/v1/peers" "$payload"; then
+  BROKEN_ID=$(printf '%s' "$API_BODY" | jq -r '.id // empty')
   if [ -n "$BROKEN_ID" ] && [ "$BROKEN_ID" != "null" ]; then
     pass
   else
     fail "broken peer created but no id"
   fi
 else
-  fail "broken peer registration failed"
+  fail "broken peer registration failed: HTTP ${API_STATUS} ${API_BODY:0:200}"
 fi
 
 begin_test "Create fan-out policy targeting both peers"
@@ -139,6 +163,10 @@ fi
 begin_test "Healthy peer receives artifact despite broken peer in fan-out"
 if [ -z "${HEALTHY_ID:-}" ] || [ "$HEALTHY_ID" = "null" ]; then
   skip "no healthy peer"
+elif [ -z "${POLICY_ID:-}" ] || [ "$POLICY_ID" = "null" ]; then
+  # Nothing was uploaded, so waiting for it would only turn the earlier
+  # failure into a second, misleading one ("did not receive artifact").
+  skip "no policy (nothing was uploaded)"
 else
   export BASE_URL="$HEALTHY_URL"; export ADMIN_TOKEN="$PEER_TOKEN"
   elapsed=0
