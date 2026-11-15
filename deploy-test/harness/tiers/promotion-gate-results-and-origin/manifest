@@ -1,8 +1,11 @@
 # DTF tier manifest: promotion-gate-results-and-origin
-#   (artifact-keeper#4556, #4557, #4558, #3977, #4152, #4147, #4160, #1758)
-# Profile-set: filesystem only. Every case is the promotion API, the scan
-# policy / quality gate API, the artifact read API and Postgres; no scanner,
-# no upstream and no signing key is involved. The audit's three Y2 tiers
+#   (artifact-keeper#4556, #4557, #4558, #3977, #4152, #4147, #4160, #1758,
+#    #4161)
+# Profile-set: filesystem + upstreams.mock-files. The promotion cases use the
+# promotion API, the scan policy / quality gate API, the artifact read API and
+# Postgres; no scanner and no signing key is involved. The #4161 cases add
+# generic Remotes over the mock-files upstream (172.16.<slot>.76; the tier's
+# only 172.16.<slot>.0/24 mock). The audit's three Y2 tiers
 # promotion-gate-results-and-metadata, bulk-promotion-gate-and-origin and
 # promotion-warn-and-predicates share this profile set and are folded here.
 #
@@ -32,6 +35,17 @@
 # #1758: artifact GET and listing responses carry last_promotion
 #   {target_repo_key, promoted_at, status}; null when never promoted (or only
 #   refused); target_repo_key null for a caller who cannot read the target.
+# #4161 (fixed by #4625 / #4506): no production path gave proxied content an
+#   origin (a Remote's fetches write proxy_cache_artifacts, no artifacts row),
+#   so origin.allowed_kinds naming `proxy` was unsatisfiable and one naming
+#   only `hosted` never refused a Remote's content. Since 1.11.0 content a
+#   Remote serves has origin kind `proxy` and the Remote's origin policies are
+#   checked before the cache or upstream is read (403 "Artifact download is
+#   blocked by the repository's scan policy"). No API response exposes that
+#   origin (there is no artifacts row), so the tier asserts the decision: the
+#   same upstream file is refused under allowed_kinds [hosted] (uncached: the
+#   upstream sees no GET; cached before the policy existed: still refused) and
+#   served under allowed_kinds [proxy].
 #
 # THE PRIMITIVES
 #   generic staging repos with: no gate (control), an origin.allowed_kinds
@@ -51,8 +65,13 @@
 #             predicates are inert, bulk ignores gates and policies, warn
 #             violations are [], artifacts.origin and last_promotion do not
 #             exist, and the release repodata loses depends/license/md5.
+#   (CONTROL) a Remote with no policy serves the mock's file byte-identical.
+#   (FIX #4161) allowed_kinds [hosted] on a Remote -> 403 uncached (no
+#             upstream GET) and cached; allowed_kinds [proxy] serves the file
+#             [hosted] refuses. On 1.10.x every Remote serves (200).
 #
 # RATE_LIMIT_ENABLED=false: about 80 authenticated calls back to back.
-PROFILES="storage.filesystem"
+PROFILES="storage.filesystem upstreams.mock-files"
+COVERS="4161"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

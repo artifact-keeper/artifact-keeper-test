@@ -6,7 +6,7 @@
 # invocation modes of that workflow (artifact-keeper#2701):
 #
 #   workflow_call     (real release): GHCR_DOCKER_CONFIG arrives via
-#                     `secrets: inherit` from the calling repo.
+#                     a named secret the calling job passes.
 #   workflow_dispatch (rehearsal):    the same secret name resolves
 #                     from the artifact-keeper-test repo/org secrets.
 #

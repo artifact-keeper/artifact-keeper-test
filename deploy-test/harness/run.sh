@@ -398,9 +398,10 @@ case "$CMD" in
     # green on main 2f08663f, red on 1.11.3: token virtual catalog (#4213/
     # #4217), hidden admin nav (#4575), trash purge (#4701), S3 max parts
     # (#4806), signing trust attestations (#4274), repo-admin age gate (#4239;
-    # needs registry.npmjs.org), 1.12.0 dependency controls (#4816/#4817
-    # KNOWN-RED pins), conda virtual shadowing (#4555/#4506), *_FILE secrets
-    # (#4775; #4819 KNOWN-RED pin), device authorization grant (#3549), OIDC
+    # needs registry.npmjs.org), 1.12.0 dependency controls (#4816/#4817,
+    # asserted since the pins were flipped), conda virtual shadowing
+    # (#4555/#4506), *_FILE secrets (#4775; #4819 asserted since its pin was
+    # flipped), device authorization grant (#3549), OIDC
     # group pre-provisioning (#4296), protobuf BSR proxy (#4276), proxy
     # stale-if-error (#4697/#4783). proxy-stale-if-error is slowest.
     # Then the 1.11.x security tiers (#480-#489, #492-#498), each green on the
@@ -494,6 +495,21 @@ case "$CMD" in
     # Packagist-style Remote members (#4951) and, for 1.11.8, a proxy
     # rescan that cannot grade a package keeping the stored verdict
     # (GHSA-9vgh-8jfp-78ff, #5030 on main, #5031 on the line).
+    # 1.12.0 backfill, wave 1 (fixes-1.12.0-* groups; red on 1.11.x unless
+    # noted): REST API contract fixes, auth strictness, backup/restore
+    # completeness, bounded-memory streaming under a memory cap, Debian and
+    # RPM maintenance, ten format fixes, LDAP Basic passthrough, the Maven
+    # contract, MCPB ingest validation and MCP introspection, Range serves,
+    # same-version publishes across repositories on S3, scan grading and
+    # scan-on-proxy identity, stored Remote rows through the scan gate,
+    # storage outage and full answers, a Virtual's member gates and member
+    # outages, webhook delivery fairness, S3 presigned mirror serves and
+    # scrub accounting, hosted OCI digests scoped to their image, the two
+    # push-sync peer tiers
+    # (replication-delete-restore, push-sync-oci-and-plugin-metadata), the
+    # image scan resubmit through the scanner adapter and the MCP publish
+    # resolve (advisory). s3-multipart-copy-encoding (#4838) and
+    # upstream-probe-egress (#5079, #5089) also gate the 1.11.x line.
     for t in smoke isolation migration proxy-egress sso native-client upgrade supply-chain dos format-conformance \
              ci-token-basic virtual-usage maven-files-casing backup-reclaim nexus-go-apt nexus-group-virtual pypi-contenttype ldaps \
              vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race \
@@ -574,7 +590,17 @@ case "$CMD" in
              upstream-ip-literal-refused sso-idp-user-agent-and-status \
              npm-version-route-dist-tags gcs-error-url-redaction \
              pypi-age-gate-substitute-scanned \
-             mcp-registry; do
+             mcp-registry \
+             api-contracts-1120-fixes auth-strictness-1120 backup-restore-completeness \
+             bounded-memory-streaming debian-rpm-maintenance format-fixes-1120 \
+             ldap-basic-passthrough maven-contract-1120 mcpb-ingest-validation \
+             mcp-introspection-integrity range-serves-1120 s3-cross-repo-same-version \
+             s3-multipart-copy-encoding scan-grading-os-and-jar scan-proxy-identity-npm-cargo \
+             scan-remote-rows-gated storage-outage-and-full upstream-probe-egress \
+             virtual-member-gates-1120 virtual-metadata-member-outage webhook-delivery-fairness \
+             replication-delete-restore push-sync-oci-and-plugin-metadata \
+             s3-presign-and-scrub-1120 oci-digest-scope-1120 \
+             image-scan-adapter-resubmit mcp-publish-resolve-1120; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

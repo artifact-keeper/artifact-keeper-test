@@ -1,0 +1,87 @@
+# =============================================================================
+# profiles/upstreams.mock-egress-recorder.yml - a recording egress proxy and a
+# loopback listener in the backend's network namespace
+# [artifact-keeper #5079, #5089]
+# =============================================================================
+# Both sidecars run harness/tiers/upstream-probe-egress/fixtures/
+# mock_egress_recorder.py, which answers every request with 200 and records
+# the request line as received (GET /__log reads it back):
+#   * egress-proxy    on 172.16.<slot>.93:3128 (per-slot mock subnet). A
+#                   repository's explicit egress proxy points here; it never
+#                   forwards, so a request is recorded even when the
+#                   destination host does not resolve. Also serves as a plain
+#                   origin for the control probe.
+#   * egress-loopback on 127.0.0.1:18099 inside the backend's network namespace
+#                   (network_mode service:backend). A request here means the
+#                   backend dialled a loopback upstream URL.
+# PATCHES backend onto the mock subnet and sets AK_SSRF_ALLOW_PRIVATE_CIDRS to
+# the mock's /32 only (the tier manifest sets UPSTREAM_ALLOW_PRIVATE_IPS=true).
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  egress-proxy:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-egress-proxy
+    command: ["python3", "-I", "/app/mock_egress_recorder.py"]
+    environment:
+      MOCK_BIND: "0.0.0.0:3128"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/upstream-probe-egress/fixtures/mock_egress_recorder.py:/app/mock_egress_recorder.py:ro"
+    # The bind-mounted fixture is unreadable on an SELinux-enforcing host
+    # without this.
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3128/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      egressrec:
+        ipv4_address: 172.16.${DTF_SLOT}.93
+
+  egress-loopback:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-egress-loopback
+    command: ["python3", "-I", "/app/mock_egress_recorder.py"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    network_mode: "service:backend"
+    environment:
+      MOCK_BIND: "127.0.0.1:18099"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/upstream-probe-egress/fixtures/mock_egress_recorder.py:/app/mock_egress_recorder.py:ro"
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:18099/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      egress-proxy:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.93/32
+    networks:
+      dtf: {}
+      egressrec: {}
+
+networks:
+  egressrec:
+    name: ak-dtf${DTF_SLOT}-egressrec
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

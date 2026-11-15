@@ -287,7 +287,7 @@ finish_case "#4701 scope: a repository-restricted admin token is not held to its
 # its repositories, like the purge (#4701). SA (repository A) is still trashed
 # after the case above; the token is restricted to repository B.
 # =============================================================================
-begin_test "FIX #4813 (scope): a repository-restricted admin token's trash list omits another repository's artifact and its restore of it is 404 (row kept); the unrestricted admin still lists it"
+begin_test "FIX #4813: a repository-restricted admin token's trash list omits another repository's artifact and its restore of it is 404 (row kept); the unrestricted admin still lists it"
 reset_case
 c="$(http GET "$BASE/api/v1/admin/trash?per_page=100" "$TOK" "$W/o")"
 n_admin="$(jq -r --arg i "$SA" '[.items[]? | select(.id == $i)] | length' < "$W/o" 2>/dev/null || true)"

@@ -5,10 +5,11 @@ name: Release Gate
 #
 #   workflow_call     - the REAL release path. artifact-keeper
 #                       release.yml calls this workflow with the
-#                       resolved candidate tag+digest and
-#                       `secrets: inherit`, which populates the
-#                       GHCR_DOCKER_CONFIG secret declared below from
-#                       the calling repo's secrets.
+#                       resolved candidate tag+digest and passes the
+#                       one secret declared below, GHCR_DOCKER_CONFIG,
+#                       by name from the calling repo's secrets (not
+#                       `secrets: inherit`, which would hand this
+#                       workflow every secret the caller can read).
 #   workflow_dispatch - a manual REHEARSAL of the gate against an
 #                       arbitrary already-published candidate: supply
 #                       backend_tag (+ backend_digest to pin the exact
@@ -137,13 +138,24 @@ on:
       GHCR_DOCKER_CONFIG:
         description: >-
           base64-encoded docker config.json with a pull-scope-only
-          ghcr.io credential. Populated by the caller via
-          `secrets: inherit` (artifact-keeper release.yml). Optional:
+          ghcr.io credential. Passed by name by the caller
+          (artifact-keeper release.yml and release-candidate.yml,
+          artifact-keeper-web docker-publish.yml). Optional:
           public-only tags work without it. On the workflow_dispatch
           rehearsal path this declaration is not consulted; the same
           secret name resolves from this repo's/org's secrets instead
           (see the invocation-paths comment above).
         required: false
+
+# Least privilege for every job's GITHUB_TOKEN. No job writes to this or any
+# repository; checkouts and the switch-tests-ref.sh Cargo.toml read need
+# contents: read and nothing more. The two DTF jobs that log in to ghcr with
+# the token (the GHCR_DOCKER_CONFIG fallback and the Trivy DB pull) add
+# packages: read at job level. On the workflow_call path these are requested
+# from the caller, so every calling job must grant at least
+# `contents: read` and `packages: read`.
+permissions:
+  contents: read
 
 # Serialize gate runs that target the same backend image so two runs
 # of one candidate do not interleave across the single shared ARC pool
@@ -195,6 +207,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      # Before any input reaches a command: names against
+      # ^[A-Za-z0-9._/-]{1,128}$, the digest against ^sha256:[0-9a-f]{64}$.
+      - name: Validate gate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          IAC_REF: ${{ inputs.iac_ref }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
@@ -2991,6 +3015,18 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      # Before any input reaches a command: names against
+      # ^[A-Za-z0-9._/-]{1,128}$, the digest against ^sha256:[0-9a-f]{64}$.
+      - name: Validate gate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          IAC_REF: ${{ inputs.iac_ref }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: scripts/validate-gate-inputs.sh
+
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
           GH_TOKEN: ${{ github.token }}
@@ -3039,12 +3075,14 @@ jobs:
           echo "PEER3_URL=http://artifact-keeper-backend.${BASE_NS}-peer3.svc.cluster.local:8080" >> "$GITHUB_OUTPUT"
 
       - name: Wait for mesh instances ready
+        env:
+          MAIN_URL: ${{ steps.mesh-deploy.outputs.MAIN_URL }}
+          PEER1_URL: ${{ steps.mesh-deploy.outputs.PEER1_URL }}
+          PEER2_URL: ${{ steps.mesh-deploy.outputs.PEER2_URL }}
+          PEER3_URL: ${{ steps.mesh-deploy.outputs.PEER3_URL }}
         run: |
           chmod +x tests/lib/wait-for-ready.sh
-          for url in "${{ steps.mesh-deploy.outputs.MAIN_URL }}" \
-                     "${{ steps.mesh-deploy.outputs.PEER1_URL }}" \
-                     "${{ steps.mesh-deploy.outputs.PEER2_URL }}" \
-                     "${{ steps.mesh-deploy.outputs.PEER3_URL }}"; do
+          for url in "${MAIN_URL}" "${PEER1_URL}" "${PEER2_URL}" "${PEER3_URL}"; do
             ./tests/lib/wait-for-ready.sh "$url" 300
           done
 
@@ -3123,6 +3161,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      # Before any input reaches a command: names against
+      # ^[A-Za-z0-9._/-]{1,128}$, the digest against ^sha256:[0-9a-f]{64}$.
+      - name: Validate gate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          IAC_REF: ${{ inputs.iac_ref }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
@@ -3254,6 +3304,11 @@ jobs:
   dtf-gate:
     needs: [version-set-integrity, build-dtf-probes]
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    # Logs in to ghcr with the job token (Trivy DB pull, and the fallback when
+    # GHCR_DOCKER_CONFIG is absent): see the top-level permissions comment.
+    permissions:
+      contents: read
+      packages: read
     runs-on: ak-docker-runners
     timeout-minutes: 45
     strategy:
@@ -3760,6 +3815,73 @@ jobs:
           # as NOT ON THIS LINE. Local containers only, so required.
           - group: features-1.12.0-conda
             tiers: conda-shard-o1 conda-repodata-revision conda-jlap-incremental conda-remote-shards-synth conda-remote-403-probe-fallback
+          # 1.12.0 backfill fix coverage, wave 1 (artifact-keeper-test#736,
+          # #738, #740-#745, #749, #753, #754, #757-#759, #761, #762, #769-#771,
+          # #773-#778): one tier per fix group of the artifact-keeper 1.12.0
+          # milestone that had no end-to-end proof, each green on main and red
+          # on 1.11.13 or on the main build before its fix. Grouped by wall
+          # clock: api about 8 min, storage-scan about 11.5 min locally,
+          # stack up and down included. api: REST API contract fixes
+          # (api-contracts-1120-fixes, audit.upstream-fetches-all), auth
+          # strictness (auth-strictness-1120, sso.mock-ci-oidc on
+          # 172.16.<slot>.61 + sso.ldap), LDAP Basic passthrough
+          # (ldap-basic-passthrough, sso.ldap + sso.ldap-basic-passthrough),
+          # ten format fixes on S3 (format-fixes-1120), the Maven contract,
+          # Range serves, a Virtual's member gates and member outages
+          # (upstreams.mock-files on 172.16.<slot>.76), MCPB ingest and MCP
+          # introspection, hosted OCI digests scoped to their image
+          # (oci-digest-scope-1120, upstreams.mock-oci-classify on
+          # 172.16.<slot>.83) and webhook delivery fairness
+          # (webhooks.mock-blackhole on 172.16.<slot>.79; ~2 min). FEATURE
+          # gates: red on every 1.11.x image. Never cherry-pick these tiers
+          # onto this repo's release/1.11.x and never move them into a group
+          # a 1.11.x gate is expected to pass; on a 1.11.x candidate they run
+          # as NOT ON THIS LINE. Local containers only, so required.
+          - group: fixes-1.12.0-backfill-api
+            tiers: api-contracts-1120-fixes auth-strictness-1120 ldap-basic-passthrough format-fixes-1120 maven-contract-1120 range-serves-1120 virtual-member-gates-1120 virtual-metadata-member-outage mcpb-ingest-validation mcp-introspection-integrity oci-digest-scope-1120 webhook-delivery-fairness
+          # storage-scan: bounded-memory streaming (bounded-memory-streaming,
+          # limits.memory caps the backend at 768m/3g with no swap, plus
+          # logging.json-file; ~3 min), storage outage and full answers
+          # (storage-outage-and-full, storage.s3 with MinIO and Postgres
+          # stopped in turn; ~2.5 min), the Terraform mirror presigned
+          # redirect and scrub accounting (s3-presign-and-scrub-1120,
+          # storage.s3 + storage.s3-presigned + upstreams.mock-files),
+          # backup/restore completeness, Debian
+          # and RPM maintenance, scan grading and scan-on-proxy identity
+          # (upstreams.mock-files + limits.scan-one-permit; ~2.5 min) and
+          # stored Remote rows through the scan gate
+          # (upstreams.mock-scan-formats on 172.16.<slot>.72), all graded by
+          # the bundled Grype. Same FEATURE rule as the api group. Local
+          # containers only, so required.
+          - group: fixes-1.12.0-backfill-storage-scan
+            tiers: bounded-memory-streaming storage-outage-and-full s3-presign-and-scrub-1120 backup-restore-completeness debian-rpm-maintenance scan-grading-os-and-jar scan-proxy-identity-npm-cargo scan-remote-rows-gated
+          # Tiers whose fix is also on the 1.11.x line, so release/1.11.x
+          # carries them and a 1.11.x candidate runs them here (the other
+          # 1.12.0 groups are NOT ON THIS LINE there): same-version publishes
+          # into two repositories on S3 (s3-cross-repo-same-version, #5662;
+          # line backport artifact-keeper#5851, so red on 1.11.13 and green
+          # from 1.11.14), a multipart server-side copy of a non-ASCII S3 key
+          # (s3-multipart-copy-encoding, storage.s3 +
+          # storage.s3-prefix-nonascii, #4838; green on 1.11.13) and the
+          # test-upstream probe and curation sync following URL validation and
+          # the egress proxy (upstream-probe-egress,
+          # upstreams.mock-egress-recorder on 172.16.<slot>.93, #5079, #5089;
+          # green on 1.11.13). About 2 min. Required.
+          - group: fixes-1.12.0-and-1.11.x
+            tiers: s3-cross-repo-same-version s3-multipart-copy-encoding upstream-probe-egress
+          # Two-instance tiers (peer.second-instance: a second backend and
+          # database in the slot's compose project on the slot's spare port),
+          # one job each so a stuck sync worker in one cannot run the other
+          # past the job timeout. replication-delete-restore: labels,
+          # restores and purges leave push peers with the hub's content
+          # (#5505, #5625, #5627, #5699; ~2 min).
+          # push-sync-oci-and-plugin-metadata: hosted OCI images and indexes
+          # and Maven plugin-prefix metadata reach push peers (#4790, #4916;
+          # ~1.5 min). Same FEATURE rule. Required.
+          - group: fixes-1.12.0-replication-delete-restore
+            tiers: replication-delete-restore
+          - group: fixes-1.12.0-push-sync-oci
+            tiers: push-sync-oci-and-plugin-metadata
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
@@ -3783,7 +3905,7 @@ jobs:
         run: |
           # Prefer the org pull-secret (private tags); fall back to the
           # workflow token (public images). Identical on the real
-          # (workflow_call, secrets: inherit) and rehearsal
+          # (workflow_call, the secret passed by name) and rehearsal
           # (workflow_dispatch, repo/org secret) paths -- #2701.
           chmod +x deploy-test/harness/ghcr-docker-auth.sh
           ./deploy-test/harness/ghcr-docker-auth.sh
@@ -3889,6 +4011,14 @@ jobs:
   #              from ghcr at start; its red/green axis is the scanner
   #              adapter image, not the backend. Green on main with the
   #              published adapter :1.
+  #   scanner-adapter-1.12.0 (image-scan-adapter-resubmit):
+  #     reason:  the scanner-adapter sidecar downloads the Trivy DB from
+  #              ghcr on its first scan, like supply-chain. Green on main
+  #              with the published adapter :1.
+  #   mcp-1.12.0 (mcp-publish-resolve-1120):
+  #     reason:  the #5702 case (20 publishes straight after a pull-through)
+  #              races the catalog commit; it is discriminating on the
+  #              image before the fix but timing-dependent. Green on main.
   #   owner:   release-engineering
   #   expires: 2026-10-01 — on/after this date either promote the leg
   #            into dtf-gate or re-justify the waiver in a PR.
@@ -3897,6 +4027,11 @@ jobs:
     needs: version-set-integrity
     continue-on-error: true
     if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    # Logs in to ghcr with the job token (Trivy DB pull, and the fallback when
+    # GHCR_DOCKER_CONFIG is absent): see the top-level permissions comment.
+    permissions:
+      contents: read
+      packages: read
     runs-on: ak-docker-runners
     timeout-minutes: 60
     strategy:
@@ -3915,6 +4050,19 @@ jobs:
             tiers: debian-flat-remote conan-protocol-1-11 native-client-modules-and-lfs
           - group: scanner-server
             tiers: trivy-server-mode
+          # 1.12.0 backfill (artifact-keeper-test#767): an image scan lost to
+          # an adapter restart or trivy's cache lock is resubmitted
+          # (#5657, fixed by #5804; scanners.trivy, the adapter fetches the
+          # Trivy DB from ghcr). Red on every 1.11.x image.
+          - group: scanner-adapter-1.12.0
+            tiers: image-scan-adapter-resubmit
+          # 1.12.0 backfill (artifact-keeper-test#763): MCP publish takes exact
+          # npm versions, a Virtual backing fills through its walk's Remote,
+          # a publish right after a pull-through is not left resolving (#5549,
+          # #5537, #5702). The #5702 case is timing-dependent, so advisory.
+          # 1.11.x has no MCP Registry.
+          - group: mcp-1.12.0
+            tiers: mcp-publish-resolve-1120
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
@@ -3987,6 +4135,10 @@ jobs:
 
       - name: Publish test summary
         if: always()
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          RUN_ID: ${{ needs.deploy.outputs.run_id }}
         run: |
           echo "## Release Gate Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -4031,9 +4183,9 @@ jobs:
           done
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Backend tag:** \`${{ inputs.backend_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Web tag:** \`${{ inputs.web_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Run ID:** \`${{ needs.deploy.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Backend tag:** \`${BACKEND_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Web tag:** \`${WEB_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Run ID:** \`${RUN_ID}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload combined results
         if: always()
@@ -4167,6 +4319,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: artifact-keeper/artifact-keeper-test
+
+      # Before any input reaches a command: names against
+      # ^[A-Za-z0-9._/-]{1,128}$, the digest against ^sha256:[0-9a-f]{64}$.
+      - name: Validate gate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          WEB_TAG: ${{ inputs.web_tag }}
+          IAC_REF: ${{ inputs.iac_ref }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+        run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
         env:

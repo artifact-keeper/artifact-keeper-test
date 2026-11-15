@@ -20,7 +20,17 @@
 # Remotes' upstream is a path the mock does not serve, and the oracle checks
 # it got no request, so every answer below comes from the stored row.
 #
-# Red: ak-backend:1.11.9. Green: an image carrying artifact-keeper#5071.
+# #5076 (backend PR #5795) closes the same hole on the NuGet flat-container,
+# Debian pool/, RPM package and Alpine package routes (seeded the same way
+# from the mock's Newtonsoft.Json, openssl .deb, openssl-libs .rpm and busybox
+# .apk fixtures, plus clean ones), and makes the generic download route
+# refuse an enforced-format row of a scanning Remote with 403
+# scan_on_proxy_route_required (it has no coordinate parser to grade with).
+#
+# Red: ak-backend:1.11.9 for the FIX #4514 cases; a main image after #5071
+# and before #5795 (sha-d7a945a) for the FIX #5076 cases. Green: an image
+# carrying artifact-keeper#5071 and #5795.
+COVERS="4514 5076"
 PROFILES="storage.filesystem upstreams.mock-scan-formats"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

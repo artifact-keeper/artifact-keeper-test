@@ -10,17 +10,23 @@
 # a Go @v/list or a crate tarball is just a file at the path that format's
 # client protocol asks for.
 #
-#   PUT  /__file?path=<p>[&ctype=<t>]  store the request body at <p> (an
+#   PUT  /__file?path=<p>[&ctype=<t>][&cenc=<c>]
+#                                      store the request body at <p> (an
 #                                      absolute URL path, query not included).
 #                                      Replaces any previous body; the ETag is
 #                                      derived from the bytes, so new bytes
-#                                      mean a new validator.
+#                                      mean a new validator. cenc, when given,
+#                                      is sent as Content-Encoding with the
+#                                      stored (already coded) bytes.
 #   POST /__delay?path=<p>&ms=<n>      hold every GET of <p> n ms before the
 #                                      status line (0 clears).
 #   POST /__status?path=<p>&code=<n>   answer every GET/HEAD of <p> with status
 #                                      n and a short body, whatever is stored
 #                                      (0 clears). An S3 bucket without list
 #                                      permission answers 403 for a missing key.
+#                                      Optional &challenge=<v>: also send
+#                                      `WWW-Authenticate: <v>` with it (an OCI
+#                                      registry's Bearer challenge).
 #   GET  /__requests?path=<p>          {"path", "get", "head", "conditional"}:
 #                                      requests seen for <p> (any status).
 #   GET  /__log                        every request seen, one per line:
@@ -49,9 +55,10 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("MOCK_PORT", "80"))
 
 LOCK = threading.Lock()
-FILES = {}    # path -> (body, ctype, etag)
+FILES = {}    # path -> (body, ctype, etag, cenc or None)
 DELAYS = {}   # path -> ms
 STATUS = {}   # path -> forced status code
+CHALLENGE = {}  # path -> WWW-Authenticate sent with the forced status
 COUNTS = {}   # path -> {"get": n, "head": n, "conditional": n}
 LOG = []
 
@@ -92,16 +99,18 @@ class Handler(BaseHTTPRequestHandler):
             entry = FILES.get(p)
             delay = DELAYS.get(p, 0)
             forced = STATUS.get(p, 0)
+            challenge = CHALLENGE.get(p)
         if delay and not head:
             time.sleep(delay / 1000.0)
         if forced:
             code = forced
-            self._send(forced, b'{"errors":[{"detail":"forced status"}]}', "application/json", head=head)
+            extra = {"WWW-Authenticate": challenge} if challenge else None
+            self._send(forced, b'{"errors":[{"detail":"forced status"}]}', "application/json", extra, head=head)
         elif entry is None:
             code = 404
             self._send(404, b'{"errors":[{"detail":"not found"}]}', "application/json", head=head)
         else:
-            body, ctype, etag = entry
+            body, ctype, etag, cenc = entry
             inm = self.headers.get("If-None-Match")
             if inm is not None and etag in [t.strip() for t in inm.split(",")]:
                 code = 304
@@ -111,7 +120,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
             else:
                 code = 200
-                self._send(200, body, ctype, {"ETag": etag}, head=head)
+                extra = {"ETag": etag}
+                if cenc:
+                    extra["Content-Encoding"] = cenc
+                self._send(200, body, ctype, extra, head=head)
         with LOCK:
             LOG.append(f"{self.command} {p} {code}")
 
@@ -146,9 +158,10 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(n) if n else b""
         ctype = q.get("ctype", ["application/octet-stream"])[0]
+        cenc = q.get("cenc", [""])[0] or None
         etag = etag_of(body)
         with LOCK:
-            FILES[p] = (body, ctype, etag)
+            FILES[p] = (body, ctype, etag, cenc)
         return self._json(200, {"path": p, "bytes": len(body), "etag": etag})
 
     def do_POST(self):  # noqa: N802
@@ -163,11 +176,16 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/__status":
             p = q.get("path", [""])[0]
             code = int(q.get("code", ["0"])[0])
+            challenge = q.get("challenge", [""])[0]
             with LOCK:
                 if code:
                     STATUS[p] = code
                 else:
                     STATUS.pop(p, None)
+                if code and challenge:
+                    CHALLENGE[p] = challenge
+                else:
+                    CHALLENGE.pop(p, None)
             return self._json(200, {"path": p, "code": code})
         return self._json(404, {"error": "unknown control endpoint"})
 

@@ -62,5 +62,6 @@
 # private per-slot subnet.
 PROFILES="storage.s3 storage.s3-oss telemetry.otlp-sink http.cors-origins"
 ORACLE="oracle.sh"
+COVERS="4816 4817"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

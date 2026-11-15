@@ -29,6 +29,8 @@
 #         summary and `<rpm:requires>` (was synthesised from the file name).
 #   #3926 an artifact whose body takes longer than 30 s to stream migrates
 #         (was "error decoding response body" under a whole-request timeout).
+#   #4740 (#4905) a pre-#4657 Debian import is repaired without the source by
+#         POST /api/v1/admin/repositories/{key}/backfill-debian.
 #   #4797/#4740 (1.11.3) a `.deb` in the Nexus `pool/<letter>/<name>/` layout
 #         is filed under `pool/main/`, one whose Artifactory `deb.component`
 #         property says `universe` under `pool/universe/`; a re-run moves a
@@ -653,6 +655,223 @@ else
   fail "after moving dtfletter's row back to ${DEBC_LETTER_SRC} and re-running: status=${DC2_ST}, row at the old path \
 still live=${OLD_LIVE} (want 0), live rows:
 ${DC2_PATHS}" "$(job_row "$JOB_DEBC2" | jq -c '{status,total_items,completed_items,skipped_items,failed_items}' 2>/dev/null)"
+fi
+
+# ===========================================================================
+# SOURCE-FREE DEBIAN BACKFILL (#4740 part 2, artifact-keeper#4905)
+# ===========================================================================
+# A Debian repository imported before #4657 has its .deb rows and nothing
+# else: no `debian` control document, no catalog row, a flat-layout package
+# still at its source path pool/<file>.deb (or pool/<letter>/<name>/), and the
+# source's own dists/ index files copied in as artifacts. Re-running the
+# migration repairs that only while the source system still exists. #4905 adds
+# POST /api/v1/admin/repositories/{key}/backfill-debian {dry_run, limit?,
+# after?}, which reads each package's control.tar from the repository's own
+# storage, records what a native upload records, moves a package outside
+# pool/<component>/ under pool/main/, and soft-deletes migration-origin dists/
+# rows (hosted ones stay).
+#
+# The pre-fix state is staged in Postgres exactly as the backend's own tests
+# for #4905 seed it (rows with stored bytes and no metadata; dists/ rows with
+# a migration or hosted origin): the API offers no way to write a .deb row
+# without registering it, which is the point of the fix. The bytes stay the
+# ones the migration stored (content-addressed), so only rows change.
+# Endpoint absent (sha-bbc18f3 and earlier): every FIX case below fails.
+bf() { # REPO_KEY BODY -> http code (body in ${WORK}/last.body)
+  ac POST "/api/v1/admin/repositories/${1}/backfill-debian" "$2"
+}
+bf_sum() { # FILE -> "scanned/registered/relocated/skipped/failed/dists/truncated"
+  jq -r '"\(.artifacts_scanned)/\(.packages_registered)/\(.packages_relocated)/\(.artifacts_skipped)/\(.artifacts_failed)/\(.dists_removed)/\(.truncated)"' \
+    "$1" 2>/dev/null || echo "?"
+}
+deb_meta_count() { # REPO_ID -> live rows' debian control documents
+  psql_ak "SELECT count(*) FROM artifact_metadata am JOIN artifacts a ON a.id = am.artifact_id
+    WHERE a.repository_id='${1}' AND am.format='debian' AND a.is_deleted=false;"
+}
+row_live() { # REPO_ID PATH -> 1 when a live row sits at PATH
+  psql_ak "SELECT count(*) FROM artifacts WHERE repository_id='${1}' AND path='${2}' AND is_deleted=false;"
+}
+DIST_MIG="dists/dtfsrc/Release"                         # the source's index copy
+DIST_HOSTED="dists/dtfhosted/main/binary-amd64/Packages" # a hosted row, kept
+
+# --- stage the pre-#4657 import of ${DEB} -----------------------------------
+psql_ak "DELETE FROM packages WHERE repository_id='${DEB_REPO_ID}';" >/dev/null
+psql_ak "DELETE FROM artifact_metadata WHERE format='debian' AND artifact_id IN
+  (SELECT id FROM artifacts WHERE repository_id='${DEB_REPO_ID}');" >/dev/null
+BF_FLAT_MOVED="$(psql_ak "WITH m AS (UPDATE artifacts SET path='${DEB_FLAT_SRC}' WHERE repository_id='${DEB_REPO_ID}'
+  AND path='${DEB_FLAT_DST}' AND is_deleted=false RETURNING 1) SELECT count(*) FROM m;")"
+BF_DISTS="$(psql_ak "WITH src AS (SELECT origin FROM artifacts WHERE repository_id='${DEB_REPO_ID}'
+    AND path='${DEB_POOLED}' AND is_deleted=false LIMIT 1),
+  ins AS (INSERT INTO artifacts (repository_id, path, name, size_bytes, checksum_sha256, content_type, storage_key, origin)
+    SELECT '${DEB_REPO_ID}', v.path, 'dists-index', 1, repeat('0', 64), 'text/plain',
+           'dtf-backfill-' || md5(v.path || '${SUF}'), v.origin
+    FROM src, LATERAL (VALUES
+      ('${DIST_MIG}', src.origin),
+      ('${DIST_HOSTED}', jsonb_build_object('v', src.origin->'v', 'kind', 'hosted', 'repository_key', '${DEB}'))
+    ) AS v(path, origin)
+    RETURNING 1) SELECT count(*) FROM ins;")"
+BF_ORIGIN="$(psql_ak "SELECT origin->>'kind' FROM artifacts WHERE repository_id='${DEB_REPO_ID}' AND path='${DIST_MIG}';")"
+BF_STAGED_META="$(deb_meta_count "$DEB_REPO_ID")"
+BF_STAGED_CAT="$(catalog_db "$DEB" | grep -c . || true)"
+BF_STAGE_OK=1
+if [ "$BF_FLAT_MOVED" != "1" ] || [ "$BF_DISTS" != "2" ] || [ "$BF_ORIGIN" != "migration" ] \
+   || [ "$BF_STAGED_META" != "0" ] || [ "$BF_STAGED_CAT" != "0" ]; then
+  BF_STAGE_OK=0
+fi
+BF_STAGE_MSG="flat row moved=${BF_FLAT_MOVED} (want 1), dists rows inserted=${BF_DISTS} (want 2), \
+migration dists origin=${BF_ORIGIN} (want migration), control documents left=${BF_STAGED_META}, catalog rows left=${BF_STAGED_CAT}"
+echo "  [observe] staged pre-#4657 ${DEB}: ${BF_STAGE_MSG}"
+
+# Dry run: reports, writes nothing.
+BFD_CODE="$(bf "$DEB" '{"dry_run":true}')"
+cp "${WORK}/last.body" "${WORK}/bf-dry.json" 2>/dev/null || : > "${WORK}/bf-dry.json"
+BFD_SUM="$(bf_sum "${WORK}/bf-dry.json")"
+BFD_META="$(deb_meta_count "$DEB_REPO_ID")"
+BFD_FLAT_SRC="$(row_live "$DEB_REPO_ID" "$DEB_FLAT_SRC")"
+BFD_DIST="$(row_live "$DEB_REPO_ID" "$DIST_MIG")"
+begin_test "FIX #4740: backfill-debian dry_run reports 2 packages (1 to move under pool/main/) and 1 dists/ copy, and writes nothing"
+if [ "$BF_STAGE_OK" != "1" ]; then
+  infra_fail "could not stage the pre-#4657 import of ${DEB}: ${BF_STAGE_MSG}"
+elif [ "$BFD_CODE" = "200" ] && [ "$BFD_SUM" = "2/2/1/0/0/1/false" ] \
+     && [ "$(jqf "$(cat "${WORK}/bf-dry.json")" '.dry_run' '')" = "true" ] \
+     && [ "$BFD_META" = "0" ] && [ "$BFD_FLAT_SRC" = "1" ] && [ "$BFD_DIST" = "1" ]; then
+  pass
+else
+  fail "POST /api/v1/admin/repositories/${DEB}/backfill-debian {dry_run:true} -> HTTP ${BFD_CODE}, \
+scanned/registered/relocated/skipped/failed/dists_removed/truncated=${BFD_SUM} (want 2/2/1/0/0/1/false); \
+after the dry run: control documents=${BFD_META} (want 0), row still at ${DEB_FLAT_SRC}=${BFD_FLAT_SRC} (want 1), \
+${DIST_MIG} still live=${BFD_DIST} (want 1). Without #4905 a pre-#4657 Debian import can only be repaired by \
+re-running the migration against the source system (#4740)." \
+    "$(head -c 800 "${WORK}/bf-dry.json" 2>/dev/null)"
+fi
+
+# The real run.
+BFR_CODE="$(bf "$DEB" '{"dry_run":false}')"
+cp "${WORK}/last.body" "${WORK}/bf-run.json" 2>/dev/null || : > "${WORK}/bf-run.json"
+BFR_SUM="$(bf_sum "${WORK}/bf-run.json")"
+BFR_PATHS="$( (jq -r '.registered_paths[]?' "${WORK}/bf-run.json" 2>/dev/null || true) | sort | paste -sd, -)"
+BFR_API="$(catalog "$DEB")"
+BFR_LIVE="$(live_paths "$DEB")"
+packages_index "$DEB" amd64 "${WORK}/Packages-bf" >/dev/null
+BFR_ST_POOLED="$(stanza "${WORK}/Packages-bf" dtfpkg)"
+BFR_ST_FLAT="$(stanza "${WORK}/Packages-bf" dtfflat)"
+begin_test "FIX #4740: backfill-debian registers both .debs from stored bytes (catalog lists dtfflat 2.0, dtfpkg 1.0)"
+if [ "$BF_STAGE_OK" != "1" ]; then
+  infra_fail "could not stage the pre-#4657 import of ${DEB}: ${BF_STAGE_MSG}"
+elif [ "$BFR_CODE" = "200" ] && [ "$BFR_SUM" = "2/2/1/0/0/1/false" ] \
+     && [ "$BFR_PATHS" = "$(printf '%s\n%s\n' "$DEB_FLAT_DST" "$DEB_POOLED" | sort | paste -sd, -)" ] \
+     && [ "$BFR_API" = "$(printf 'dtfflat 2.0\ndtfpkg 1.0')" ] \
+     && [ "$(deb_meta_count "$DEB_REPO_ID")" = "2" ]; then
+  pass
+else
+  fail "POST .../backfill-debian {dry_run:false} -> HTTP ${BFR_CODE}, counts=${BFR_SUM} (want 2/2/1/0/0/1/false), \
+registered_paths=[${BFR_PATHS}] (want [${DEB_FLAT_DST},${DEB_POOLED}]); catalog afterwards=[$(echo "$BFR_API" | paste -sd, -)] \
+(want dtfflat 2.0, dtfpkg 1.0), control documents=$(deb_meta_count "$DEB_REPO_ID") (want 2)." \
+    "$(head -c 800 "${WORK}/bf-run.json" 2>/dev/null)
+live rows:
+${BFR_LIVE}"
+fi
+
+begin_test "FIX #4740: after the backfill the index carries both control files and the flat .deb is served from pool/main/"
+BFR_F_CODE="$(fetch "/debian/${DEB}/${DEB_FLAT_DST}" "${WORK}/flat-bf.deb")"
+if [ "$BF_STAGE_OK" != "1" ]; then
+  infra_fail "could not stage the pre-#4657 import of ${DEB}: ${BF_STAGE_MSG}"
+elif echo "$BFR_ST_POOLED" | grep -qxF "Description: ${DEB_POOLED_DESC}" \
+     && echo "$BFR_ST_POOLED" | grep -qxF "SHA256: $(sha "${SRC}/${DEB}/${DEB_POOLED}")" \
+     && echo "$BFR_ST_FLAT" | grep -qxF "Filename: ${DEB_FLAT_DST}" \
+     && echo "$BFR_ST_FLAT" | grep -qxF "Description: ${DEB_FLAT_DESC}" \
+     && [ "$BFR_F_CODE" = "200" ] && [ "$(sha "${WORK}/flat-bf.deb")" = "$(sha "${SRC}/${DEB}/${DEB_FLAT_SRC}")" ] \
+     && [ "$(row_live "$DEB_REPO_ID" "$DEB_FLAT_SRC")" = "0" ]; then
+  pass
+else
+  fail "after the backfill: main/binary-amd64/Packages must carry dtfpkg's Description and SHA256 and dtfflat at \
+Filename: ${DEB_FLAT_DST} with its Description; GET /debian/${DEB}/${DEB_FLAT_DST} -> ${BFR_F_CODE} (want 200, source bytes); \
+row still live at ${DEB_FLAT_SRC}=$(row_live "$DEB_REPO_ID" "$DEB_FLAT_SRC") (want 0)." \
+    "dtfpkg stanza:
+${BFR_ST_POOLED:-<absent>}
+dtfflat stanza:
+${BFR_ST_FLAT:-<absent>}
+live rows:
+${BFR_LIVE}"
+fi
+
+begin_test "FIX #4740: the backfill drops the migration's dists/ copy from the artifact list and leaves a hosted dists/ row alone"
+BFR_DIST_MIG="$(row_live "$DEB_REPO_ID" "$DIST_MIG")"
+BFR_DIST_HOSTED="$(row_live "$DEB_REPO_ID" "$DIST_HOSTED")"
+if [ "$BF_STAGE_OK" != "1" ]; then
+  infra_fail "could not stage the pre-#4657 import of ${DEB}: ${BF_STAGE_MSG}"
+elif [ "$BFR_CODE" = "200" ] && [ "$BFR_DIST_MIG" = "0" ] && [ "$BFR_DIST_HOSTED" = "1" ]; then
+  pass
+else
+  fail "backfill -> HTTP ${BFR_CODE}; ${DIST_MIG} (origin kind migration) still live=${BFR_DIST_MIG} (want 0); \
+${DIST_HOSTED} (origin kind hosted) live=${BFR_DIST_HOSTED} (want 1)." \
+    "live rows:
+${BFR_LIVE}"
+fi
+
+BF2_CODE="$(bf "$DEB" '{"dry_run":false}')"
+BF2_SUM="$(bf_sum "${WORK}/last.body")"
+BF2_LIVE="$(live_paths "$DEB")"
+begin_test "FIX #4740: a second backfill is a no-op (nothing scanned, registered or removed; rows unchanged)"
+if [ "$BF_STAGE_OK" != "1" ]; then
+  infra_fail "could not stage the pre-#4657 import of ${DEB}: ${BF_STAGE_MSG}"
+elif [ "$BF2_CODE" = "200" ] && [ "$BF2_SUM" = "0/0/0/0/0/0/false" ] && [ "$BF2_LIVE" = "$BFR_LIVE" ] \
+     && [ "$(catalog "$DEB")" = "$BFR_API" ]; then
+  pass
+else
+  fail "second backfill -> HTTP ${BF2_CODE}, counts=${BF2_SUM} (want 0/0/0/0/0/0/false); live rows changed=\
+$([ "$BF2_LIVE" = "$BFR_LIVE" ] && echo no || echo yes)" "$(head -c 600 "${WORK}/last.body" 2>/dev/null)"
+fi
+
+# --- the component facet without the source: ${DEBC} -------------------------
+# Strip DEBC's control documents and catalog and put dtfletter back at its
+# Nexus pool/<letter>/<name>/ source path. With no deb.component to read, the
+# backfill takes the component from the path: pool/universe/... stays in
+# universe, pool/d/... (no component segment) goes under pool/main/.
+psql_ak "DELETE FROM packages WHERE repository_id='${DEBC_REPO_ID}';" >/dev/null
+psql_ak "DELETE FROM artifact_metadata WHERE format='debian' AND artifact_id IN
+  (SELECT id FROM artifacts WHERE repository_id='${DEBC_REPO_ID}');" >/dev/null
+# The re-run case above retired the row it moved away from the source path;
+# UNIQUE (repository_id, path) covers trashed rows, so purge that tombstone
+# before putting the live row back there.
+psql_ak "DELETE FROM artifacts WHERE repository_id='${DEBC_REPO_ID}' AND path='${DEBC_LETTER_SRC}'
+  AND is_deleted=true;" >/dev/null
+BFC_MOVED="$(psql_ak "WITH m AS (UPDATE artifacts SET path='${DEBC_LETTER_SRC}' WHERE repository_id='${DEBC_REPO_ID}'
+  AND path='${DEBC_LETTER_DST}' AND is_deleted=false RETURNING 1) SELECT count(*) FROM m;")"
+BFC_META0="$(deb_meta_count "$DEBC_REPO_ID")"
+BFC_CODE="$(bf "$DEBC" '{"dry_run":false}')"
+BFC_SUM="$(bf_sum "${WORK}/last.body")"
+BFC_LIVE="$(live_paths "$DEBC")"
+fetch "/debian/${DEBC}/dists/stable/main/binary-amd64/Packages" "${WORK}/debc-main-bf" >/dev/null
+fetch "/debian/${DEBC}/dists/stable/universe/binary-amd64/Packages" "${WORK}/debc-univ-bf" >/dev/null
+begin_test "FIX #4740: without the source, the backfill files a pool/<letter>/<name>/ .deb under main and keeps a pool/universe/ one in universe"
+if [ "$BFC_MOVED" != "1" ] || [ "$BFC_META0" != "0" ]; then
+  infra_fail "could not stage the pre-#4740 import of ${DEBC}: letter row moved=${BFC_MOVED} (want 1), control documents left=${BFC_META0} (want 0)" \
+    "live rows:
+${BFC_LIVE}"
+elif [ "$BFC_CODE" = "200" ] && [ "$BFC_SUM" = "2/2/1/0/0/0/false" ] \
+     && echo "$BFC_LIVE" | grep -qxF "$DEBC_LETTER_DST" && ! echo "$BFC_LIVE" | grep -qxF "$DEBC_LETTER_SRC" \
+     && stanza "${WORK}/debc-main-bf" dtfletter | grep -qxF "Filename: ${DEBC_LETTER_DST}" \
+     && stanza "${WORK}/debc-univ-bf" dtfuniv | grep -qxF "Filename: ${DEBC_UNIV_DST}" \
+     && [ -z "$(stanza "${WORK}/debc-main-bf" dtfuniv)" ]; then
+  pass
+else
+  fail "POST .../${DEBC}/backfill-debian -> HTTP ${BFC_CODE}, counts=${BFC_SUM} (want 2/2/1/0/0/0/false); want dtfletter \
+moved to ${DEBC_LETTER_DST} and listed in main, dtfuniv listed in universe at ${DEBC_UNIV_DST} and not in main." \
+    "$(head -c 600 "${WORK}/last.body" 2>/dev/null)
+main dtfletter: $(stanza "${WORK}/debc-main-bf" dtfletter | grep '^Filename' || echo '<absent>')
+universe dtfuniv: $(stanza "${WORK}/debc-univ-bf" dtfuniv | grep '^Filename' || echo '<absent>')
+live rows:
+${BFC_LIVE}"
+fi
+
+BFM_CODE="$(bf "$MVN" '{"dry_run":true}')"
+begin_test "FIX #4740: backfill-debian refuses a non-Debian repository with 422"
+if [ "$BFM_CODE" = "422" ]; then
+  pass
+else
+  fail "POST /api/v1/admin/repositories/${MVN}/backfill-debian -> HTTP ${BFM_CODE} (want 422: only hosted Debian repositories)" \
+    "$(head -c 400 "${WORK}/last.body" 2>/dev/null)"
 fi
 
 # ===========================================================================

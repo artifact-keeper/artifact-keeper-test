@@ -1,0 +1,30 @@
+# DTF tier manifest: s3-multipart-copy-encoding
+#   (artifact-keeper#4838; fixed on main by #4846 and on the 1.11.x line since
+#   1.11.4 by the cherry-pick b678cb64, so this tier is green on 1.11.13 and
+#   its red image is the main build sha-adfa020)
+# Profile-set: S3 (MinIO) + storage.s3-prefix-nonascii: S3_PREFIX=dtf-café,
+# so every key the backend writes has a non-ASCII segment (MinIO stores
+# `dtf-caf%C3%A9/...`), and S3_MAX_SINGLE_COPY_BYTES=5 MiB, so a server-side
+# copy above 5 MiB goes through multipart UploadPartCopy.
+#
+# THE BUG
+# #4838  object_store percent-encodes non-ASCII path segments when it writes
+#        to S3, but the multipart server-side copy named its source by the
+#        unencoded key, so copying a large non-ASCII object failed with
+#        NoSuchKey while a small one (single CopyObject, through the encoding
+#        layer) worked. Completing a multi-PATCH OCI upload copies the
+#        concatenated staging object to the blob key, which reaches it.
+#
+# THE GATES
+#   (CONTROL) a 2 MiB blob pushed in two PATCH chunks (single-request copy)
+#             is 201 and pulls byte-exact, and objects exist under the
+#             encoded prefix.
+#   (FIX)     #4838 a 12 MiB blob pushed in three PATCH chunks is 201 and
+#                   pulls byte-exact (red: 500 BLOB_UPLOAD_UNKNOWN,
+#                   "UploadPartCopy part 1 ... NoSuchKey").
+#
+# RATE_LIMIT_ENABLED=false, for parity with the other S3 tiers.
+COVERS="4838"
+PROFILES="storage.s3 storage.s3-prefix-nonascii"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

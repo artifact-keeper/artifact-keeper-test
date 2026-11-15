@@ -1,0 +1,63 @@
+# DTF tier manifest: scan-grading-os-and-jar
+#   (artifact-keeper#5236, #5262, #5170, #5628; all fixed on main for 1.12.0;
+#   only #5262 is also on the 1.11.x line)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files,
+# a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes
+# over a control API). fixtures/build_fixtures.py builds an Alpine v3.22
+# branch, a Debian bookworm suite, a RHEL 9 yum tree and a Maven repository
+# with fixed timestamps; the oracle stores them in the mock. LOCAL-ONLY:
+# verdicts come from the backend image's bundled Grype and its pre-seeded DB
+# (no scanner sidecar, no OSV, no internet).
+#
+# THE BUGS
+# #5236  An Alpine subpackage is graded through a synthetic installed record
+#        naming its origin; grype's NVD CPE search for the origin rewrote the
+#        subpackage CPE (libcurl:libcurl -> curl:curl), which NVD does not use
+#        (haxx:curl). libcurl 8.14.1-r4 graded clean (0 findings) and passed a
+#        fail_closed gate that blocks curl 8.14.1-r4. Since #5726 the origin
+#        is cataloged as itself and its findings are folded onto the
+#        subpackage.
+# #5262  A JAR was scanned as a directory, so syft's POM cataloger read the
+#        embedded META-INF/maven/.../pom.xml and cataloged its declared
+#        dependencies, `provided` and `test` scope included: a Maven plugin was
+#        blocked for maven-core's CVEs. Since #5340 directory scans exclude
+#        the embedded build POMs; pom.properties still name the archive and
+#        each bundled component.
+# #5170  (items 1 and 2) A Debian version marker naming another release than
+#        the suite (+deb11u1 in a Debian 12 suite) was not cross-checked, and
+#        a pool file no cached index lists was graded on the one release every
+#        cached suite agreed on. Since #5228 both are inconclusive (423 under
+#        fail_closed). Item 3 (signed .apk metadata in
+#        AlpineHandler::extract_pkginfo) feeds FormatHandler::parse_metadata,
+#        which no HTTP route reaches; the backend's unit tests cover it.
+# #5628  A proxy rescan has no request, so it cannot pin a .deb / .rpm to its
+#        release: it catalogs the package itself and matches nothing. Before
+#        #5711 that clean, unpinned result replaced the release-pinned
+#        vulnerable verdict (200 {"state":"clean"}). Now it is refused with
+#        503 RESCAN_REQUEST_PINNED and the verdict and pin are kept.
+#
+# THE GATES
+#   (FIX)      RED on a main image before all four fixes (sha-5458c71; 1.11.13
+#              has no Debian/RPM/Alpine scan-on-proxy and carries #5262), GREEN
+#              on main:
+#              #5236 libcurl 8.14.1-r4 on v3.22: 403 scan_blocked, >= 10
+#                    findings;
+#              #5262 the plugin JAR: 200 X-AK-Scan: clean, verdict clean;
+#              #5170 dtf-oldmark 1.0-1+deb11u1 (listed in bookworm) and
+#                    dtf-unlisted 1.0-1 (listed nowhere): 423
+#                    scan_identity_unestablished, no verdict;
+#              #5628 rescan of the openssl .deb and openssl-libs .rpm: 503
+#                    RESCAN_REQUEST_PINNED, verdict vulnerable and pin kept,
+#                    the next pull still 403.
+#   (CONTROL)  hold on BOTH images: the unscanned Remote streams every .deb;
+#              curl 8.14.1-r4, log4j-core 2.14.1, openssl ~deb12u2 and
+#              openssl-libs el9_2 are 403 scan_blocked; an unmarked .deb the
+#              bookworm index lists is 200 clean.
+#
+# RATE_LIMIT_ENABLED=false: requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5236 5262 5170 5628"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

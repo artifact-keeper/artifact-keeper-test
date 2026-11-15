@@ -60,4 +60,5 @@
 # RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back.
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
+COVERS="4813"
 RATE_LIMIT_ENABLED="false"

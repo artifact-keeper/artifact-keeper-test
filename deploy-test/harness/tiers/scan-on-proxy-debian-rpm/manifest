@@ -22,5 +22,6 @@
 # Red: ak-backend:1.11.5. Green: an image carrying artifact-keeper#4111/#4112.
 PROFILES="storage.filesystem upstreams.mock-scan-formats"
 ORACLE="oracle.sh"
+COVERS="5695"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

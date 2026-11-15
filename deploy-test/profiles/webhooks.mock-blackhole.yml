@@ -1,0 +1,58 @@
+# =============================================================================
+# profiles/webhooks.mock-blackhole.yml - a live webhook receiver and a black
+# hole that never answers  [artifact-keeper #5661, #5234]
+# =============================================================================
+# Adds `hook-sink` (harness/tiers/webhook-delivery-fairness/fixtures/
+# mock_hook_sink.py) at 172.16.<slot>.79 on the per-slot mock subnet:
+#   :80  a live receiver: records each POST (headers, raw body, arrival time)
+#        and answers 200 at once; GET /__log reads the shared log back.
+#   :81  a black hole: records the arrival, then holds the connection open
+#        and never answers, so the sender waits out its own timeout (an
+#        unreachable or decommissioned receiver).
+# PATCHES backend onto the mock subnet and sets AK_SSRF_ALLOW_PRIVATE_CIDRS to
+# the sink's /32 only, so both webhook targets pass the webhook SSRF guard.
+# The oracle reads the log with `docker exec`; nothing is published.
+#
+# Required vars (run.sh exports them): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  hook-sink:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-hook-sink
+    command: ["python3", "-I", "/app/mock_hook_sink.py"]
+    volumes:
+      - "${DTF_DIR}/harness/tiers/webhook-delivery-fairness/fixtures/mock_hook_sink.py:/app/mock_hook_sink.py:ro"
+    # The bind-mounted fixture is unreadable on an SELinux-enforcing host
+    # without this.
+    security_opt:
+      - label=disable
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      hooksink:
+        ipv4_address: 172.16.${DTF_SLOT}.79
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hook-sink:
+        condition: service_healthy
+    environment:
+      AK_SSRF_ALLOW_PRIVATE_CIDRS: 172.16.${DTF_SLOT}.79/32
+    networks:
+      dtf: {}
+      hooksink: {}
+
+networks:
+  hooksink:
+    name: ak-dtf${DTF_SLOT}-hooksink
+    ipam:
+      config:
+        - subnet: 172.16.${DTF_SLOT}.0/24

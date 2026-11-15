@@ -62,4 +62,5 @@
 # RATE_LIMIT_ENABLED=false: a dozen logins across seven boots.
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
+COVERS="4819"
 RATE_LIMIT_ENABLED="false"

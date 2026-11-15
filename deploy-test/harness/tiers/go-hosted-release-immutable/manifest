@@ -1,0 +1,50 @@
+# DTF tier manifest: go-hosted-release-immutable
+# (artifact-keeper#5885, fixed by artifact-keeper#5834)
+# Profile-set: filesystem. Both defects sit in the delete handler's release
+# classification and the Go upload handler's soft-deleted-row handling, ahead
+# of any storage-backend choice.
+#
+# THE BUGS
+# Hosted Go stores a published version as `<module>/<ver>/<ver>.zip` and
+# `<module>/<ver>/go.mod`.
+#  (a) The release delete gate on `DELETE /api/v1/repositories/{key}/artifacts/
+#      {path}` only knew the `/@v/` download form, so it classified those stored
+#      paths as mutable and let a repository owner who is not an admin delete a
+#      published module version.
+#  (b) `PUT /go/{key}/<module>/@v/<ver>.zip` (and `.mod`) purged a soft-deleted
+#      row at its path without looking at it, so after a delete the version
+#      came back with DIFFERENT bytes (201), which go.sum and the checksum
+#      database then reject on every client.
+# The fix maps the stored paths to their `@v/` form before classifying (the
+# non-admin delete answers 409, an admin can still retract) and sends the
+# upload through the same checked restore as cargo, npm and maven: identical
+# bytes restore the version, other bytes answer 409.
+#
+# THE PRIMITIVES
+#   POST /api/v1/repositories (format go, local, private), as admin
+#   PUT  /go/{key}/<module>/@v/<ver>.zip|.mod, Bearer
+#   GET  /go/{key}/<module>/@v/<ver>.zip|.mod, Bearer (admin)
+#   DELETE /api/v1/repositories/{key}/artifacts/<module>/<ver>/<ver>.zip|go.mod
+#   INSERT INTO role_assignments (repository-owner on the repo): the API has no
+#   repo-scoped role grant (POST /users/{id}/roles writes user_roles, which
+#   grants no repository access, #3522), so the oracle writes the row the
+#   repository-create owner auto-grant would, as repo-mutation-authz does.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) the admin publishes v1.0.0 zip + go.mod (201) and both download
+#             byte for byte; the repository owner can publish v1.0.1 (201),
+#             so the grant is live.
+#   (FIX a)   the owner's DELETE of each stored path answers 409 and both
+#             files still download unchanged. RED on main 2bdf0923: 200, the
+#             files are gone.
+#   (CONTROL) the admin's DELETE of each stored path succeeds and the
+#             download is then 404.
+#   (FIX b)   PUT of the zip and of the go.mod with OTHER bytes answers 409.
+#             RED on main 2bdf0923: 201.
+#   (FIX b)   PUT with the ORIGINAL bytes succeeds and both files download as
+#             the original bytes again.
+#
+# RATE_LIMIT_ENABLED=false: two logins and ~30 back-to-back calls.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

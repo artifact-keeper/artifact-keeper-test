@@ -66,13 +66,16 @@ create_oidc_provider(){ # <name> <client_id> <map_groups:true|false> -> id
 }
 
 # drive_oidc_login <provider_id> <sub> <groups_csv> -> AK callback status (307 = OK)
+# The login and its callback share one cookie jar (one browser): from 1.12.0 a
+# sign-in completes only in the browser that started it (artifact-keeper#5486).
 drive_oidc_login(){
-  local pid="$1" sub="$2" groups="$3" authz cb
-  authz=$(curl -s -o /dev/null -w '%{redirect_url}' "$BASE/api/v1/auth/sso/oidc/${pid}/login")
+  local pid="$1" sub="$2" groups="$3" authz cb jar="$W/jar-$2"
+  : > "$jar"
+  authz=$(curl -s -b "$jar" -c "$jar" -o /dev/null -w '%{redirect_url}' "$BASE/api/v1/auth/sso/oidc/${pid}/login")
   [ -z "$authz" ] && { echo "000-no-login-redirect"; return; }
   cb=$(curl -s -o /dev/null -w '%{redirect_url}' "${authz}&sub=${sub}&email=${sub}%40dtf.test&groups=${groups}")
   [ -z "$cb" ] && { echo "000-no-authorize-redirect"; return; }
-  curl -s -o /dev/null -w '%{http_code}' "$cb"
+  curl -s -b "$jar" -c "$jar" -o /dev/null -w '%{http_code}' "$cb"
 }
 
 preprovision(){ # <token> <provider_id> <name> -> status, body in $W/body

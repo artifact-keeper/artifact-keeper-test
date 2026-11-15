@@ -1,0 +1,66 @@
+# DTF tier manifest: backup-restore-completeness
+#   (artifact-keeper#5654; fixed on main for 1.12.0 by #5799, not on 1.11.x)
+# Profile-set: filesystem / single. The bug is in what the backup archives and
+# what the restore reports, not in a storage backend.
+#
+# THE BUG
+# A "full" backup (`POST /api/v1/admin/backups`, then `.../execute`) archived
+# 8 tables (users, roles, user_roles, permission_grants, api_tokens,
+# repositories, artifacts, download_statistics) and the bytes of the
+# `artifacts` rows, and nothing said what it left out:
+#   * Docker/OCI images: no oci_blobs / oci_manifests / oci_tags rows and no
+#     blob bytes. Restoring a deleted Docker repository answered 200 with
+#     `errors: []`, the image then 404ed, and every later boot logged the
+#     hollow-tag warning.
+#   * groups and members, webhooks, admin settings (system_settings) and scan
+#     data (scan_configs, scan_policies, results) never came back.
+# Fix #5799: a full backup carries the image rows and blob bytes, groups and
+# access, webhooks, settings and scan data; `manifest.json` gains a `contents`
+# object (`excluded` categories, `excluded_tables`, `oci_repositories`); the
+# restore response gains `status` (`completed` only when `errors` is empty,
+# else `partial`) and `excluded`, and `errors` names rows whose bytes the
+# archive does not carry.
+#
+# THE ORACLE (one server: back up, delete, restore on the same instance)
+#   setup: a Docker repository with an image pushed through /v2 (config blob,
+#   layer blob, manifest tagged v1), a generic repository with 5 artifacts, a
+#   group with a member, a global webhook, a system_settings row, a scan
+#   config on the Docker repository and a global scan policy. Then a full
+#   backup and a metadata backup of the Docker repository.
+#   Then the two repositories are deleted through the API (their rows and
+#   bytes go), as are the group, the webhook and the scan policy; the setting
+#   row is deleted in the database (there is no API to remove a key). Then the
+#   full backup is restored.
+#   (FIX)      RED on 1.11.13, GREEN on main:
+#     * the full backup's manifest.json lists the image, group, webhook,
+#       settings and scan tables, names the Docker repository under
+#       contents.oci_repositories, and reports what it excludes
+#       (contents.excluded with categories, contents.excluded_tables);
+#     * after the restore, the image pulls again: the manifest by tag and by
+#       digest and both blobs by digest answer 200 with the pushed bytes;
+#     * the group (with its member), the webhook and the setting are back;
+#     * the Docker repository's scan config and the scan policy are back;
+#     * the restore response says `status: completed`, `errors: []`, and
+#       lists the excluded categories;
+#     * honesty: with the Docker repository deleted again, restoring the
+#       metadata backup (rows, no bytes) reports a `status` and lists
+#       `artifact_bytes` under `excluded`; pre-fix it answered `errors: []`
+#       with nothing excluded, as if the restore were complete. (The
+#       `status: partial` path, a full archive whose rows reference bytes it
+#       does not carry, needs a corrupted or pre-1.12 archive and is covered
+#       by the backend's archive_rows_without_bytes_are_reported_missing_5654
+#       and archive_with_oci_manifest_rows_names_the_repository_5654 tests.)
+#   (CONTROL)  true on both images: the backup and the restore complete; the
+#   image 404s after the delete (so the restore is what brings it back); the
+#   5 generic artifacts round-trip with matching SHA-256 checksums.
+#
+# NOT HERE: restoring into a fresh server (#5856, tier
+# backup-restore-fresh-server), a restore whose object pass fails (#5857) and
+# backup stream timeouts on a slow store (#5858), both in the restore lane's
+# backup-restore-s3-faults tier.
+#
+# RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
+COVERS="5654"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

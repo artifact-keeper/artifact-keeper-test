@@ -1,0 +1,43 @@
+# DTF tier manifest: push-sync-oci-and-plugin-metadata
+#   (artifact-keeper 1.12.0 push replication fixes: #4790, #4916)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}). A is `backend`; B is the push peer
+# A's sync worker (10 s tick) delivers to over the slot's compose network.
+# Two backends and two databases: run it alone on a loaded host.
+#
+# Why a tier of its own and not more cases in push-sync-native-formats: that
+# tier is in the 1.11.x gate and both fixes are 1.12.0-only (red on 1.11.13).
+#
+# THE PEER
+# As in push-sync-native-formats: a `*`-scoped API key minted on B, B
+# registered on A and set online in A's DB, hosted docker, maven and generic
+# repositories subscribed in push mode; the same keys exist on B.
+#
+# RED image: 1.11.13 (neither #4850 nor #4981 is on the 1.11 line; checked
+# with git merge-base --is-ancestor). GREEN: main (sha-2bdf092 or later).
+#
+# CONTROLS (pass on every image)
+#   a generic upload on A reaches B (row, sha256, served bytes); the image
+#   and the index pushed with curl over /v2 pull back from A; a Maven jar
+#   and its pom uploaded to A reach B.
+#
+# FIX CASES (RED on 1.11.13: nothing of them reaches B)
+#   #4790 an OCI image (config + two layers) pushed to a hosted docker
+#     repository reaches B: the manifest by tag with A's digest, by digest,
+#     and every blob it references with its digest. An image index over two
+#     child manifests reaches B with both children and their blobs.
+#   #4916 (item 4) a group-level plugin-prefix maven-metadata.xml
+#     (<plugins>) uploaded to A reaches B, and B merges it into the mapping
+#     it already held: B's own prefix stays, A's prefixes are added.
+#   The other #4916 items (orphaned label objects, pre-#4889 empty rows,
+#   two-way label moves) are covered by the backend's tests named in the PR.
+#
+# RATE_LIMIT_ENABLED=false: a few dozen authenticated calls on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the peer endpoint goes through
+# validate_outbound_url and B sits on a private compose address.
+COVERS="4790 4916"
+PROFILES="storage.filesystem peer.second-instance"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

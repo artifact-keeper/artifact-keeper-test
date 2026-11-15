@@ -14,5 +14,6 @@
 # Red on 1.11.7 (and 1.12.0 main before the fix); green with the fix.
 PROFILES="storage.filesystem upstreams.mock-scan-formats client.composer"
 ORACLE="oracle.sh"
+COVERS="4951"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

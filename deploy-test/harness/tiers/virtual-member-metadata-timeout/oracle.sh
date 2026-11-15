@@ -140,23 +140,28 @@ fi
 # =============================================================================
 # FIX: the member deadline
 # =============================================================================
-begin_test "FIX #4508: Maven virtual maven-metadata.xml with a blackholed member answers 502 naming it within the ${DEADLINE}s deadline"
+# Since artifact-keeper#5621 (#5809) a member past the deadline is left out of
+# the merge: the members that answered are served within the deadline, marked
+# partial, instead of a 502 naming the late member. release/1.11.x keeps the
+# 502 expectation.
+begin_test "FIX #4508/#5621: Maven virtual maven-metadata.xml with a blackholed member serves the hosted member's versions marked partial within the ${DEADLINE}s deadline"
 read -r st t <<<"$(timed_get "/maven/${MV}/${META}" "$WORK/mv.xml")"
-if [ "$st" = "502" ] && secs_lt "$t" "$FAST_LIMIT" && grep -q "member '${MRH}'" "$WORK/mv.xml" \
-   && grep -q "no answer within ${DEADLINE}s (AK_VIRTUAL_MEMBER_METADATA_TIMEOUT_SECS)" "$WORK/mv.xml"; then
+pm="$(hdr "$WORK/mv.xml" x-ak-partial-members)"; cc="$(hdr "$WORK/mv.xml" cache-control)"
+if [ "$st" = "200" ] && secs_lt "$t" "$FAST_LIMIT" && [ "$pm" = "$MRH" ] && [ "$cc" = "no-store" ] \
+   && grep -q '<version>1.0</version>' "$WORK/mv.xml"; then
   pass
 else
-  fail "HTTP ${st} after ${t}s; want 502 in <${FAST_LIMIT}s naming '${MRH}' and the ${DEADLINE}s deadline (000 = still waiting at ${GIVE_UP}s)" \
+  fail "HTTP ${st} after ${t}s X-AK-Partial-Members='${pm}' Cache-Control='${cc}'; want 200 in <${FAST_LIMIT}s listing 1.0, partial '${MRH}', no-store (000 = still waiting at ${GIVE_UP}s)" \
     "$(head -c 300 "$WORK/mv.xml" 2>/dev/null)"
 fi
 
-begin_test "FIX #4508: a Helm virtual with a blackholed member answers 502 naming it within the deadline"
+begin_test "FIX #4508/#5621: a Helm virtual with a blackholed member serves the healthy merge marked partial within the deadline"
 read -r st t <<<"$(timed_get "/helm/${HVT}/index.yaml" "$WORK/hvt.yaml")"
-if [ "$st" = "502" ] && secs_lt "$t" "$FAST_LIMIT" && grep -q "member '${HHANG}' failed" "$WORK/hvt.yaml" \
-   && grep -q "no answer within ${DEADLINE}s" "$WORK/hvt.yaml"; then
+pm="$(hdr "$WORK/hvt.yaml" x-ak-partial-members)"
+if [ "$st" = "200" ] && secs_lt "$t" "$FAST_LIMIT" && [ "$pm" = "$HHANG" ] && grep -q 'dtfhelm-ok:' "$WORK/hvt.yaml"; then
   pass
 else
-  fail "HTTP ${st} after ${t}s; want 502 in <${FAST_LIMIT}s naming '${HHANG}'" "$(head -c 300 "$WORK/hvt.yaml" 2>/dev/null)"
+  fail "HTTP ${st} after ${t}s X-AK-Partial-Members='${pm}'; want 200 in <${FAST_LIMIT}s + '${HHANG}' listing dtfhelm-ok" "$(head -c 300 "$WORK/hvt.yaml" 2>/dev/null)"
 fi
 
 begin_test "FIX #4508: with partial merges the late member is reported in X-AK-Partial-Members and the healthy merge served in time"

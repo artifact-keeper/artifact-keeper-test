@@ -29,4 +29,5 @@
 # RATE_LIMIT_ENABLED=false: admin login + repo/scan/gate setup + a few GETs.
 PROFILES="storage.filesystem upstreams.mockpypi-agegate"
 ORACLE="oracle.sh"
+COVERS="5075"
 RATE_LIMIT_ENABLED="false"

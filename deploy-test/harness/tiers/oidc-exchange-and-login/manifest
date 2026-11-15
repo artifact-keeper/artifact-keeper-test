@@ -36,7 +36,9 @@
 #     if the token request's scope includes openid), never sends an id_token
 #     (`never`), or always does (`always`, the control).
 #   * The oracle plays the browser: AK login -> mock /authorize -> AK callback
-#     -> POST /auth/sso/exchange.
+#     -> POST /auth/sso/exchange, with one cookie jar per login carried from
+#     the login to the exchange (a sign-in completes only in the browser that
+#     started it from 1.12.0, artifact-keeper#5486).
 #   * #4143 peers: two throwaway curl containers on the mock network, pinned to
 #     172.16.<slot>.70 (inside RATE_LIMIT_TRUSTED_PROXY_CIDRS=172.16.<slot>.64/28,
 #     TRUSTED) and 172.16.<slot>.90 (outside it, UNTRUSTED), both calling

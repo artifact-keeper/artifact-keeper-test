@@ -1,5 +1,5 @@
 # DTF tier manifest: proxy-stale-if-error  (artifact-keeper#4581 / PR #4697,
-# with #4640 / PR #4783)
+# with #4640 / PR #4783; #4815 / PR #4841)
 # Profile-set: filesystem + the steerable static upstream (upstreams.mock-static,
 # harness/tiers/proxy-cache-empty-object/fixtures/mock_static.py). This tier
 # adds four per-path modes to that mock: e500, e404, e410 (answer that status)
@@ -46,12 +46,21 @@
 #   (CONTROL)  must hold on BOTH images: a cold fetch caches and the next fetch
 #              is a hit, neither marked; under the default policy an upstream
 #              404 on an expired entry answers 404, not the old body.
-#   (FIX #4815) RED on main 2f08663f, GREEN from main adfa0206: the grace GET
-#              on a private Remote is 404 to an anonymous and to a no-grant
-#              caller (it had no visibility check and answered 200).
+#   (FIX #4815) PR #4841 (merge c8059a03). The three per-repository settings
+#              GETs on a private Remote (stale-if-error-grace, cache-ttl,
+#              on-upstream-not-found) are each 404 to an anonymous and to a
+#              no-grant caller, the same status an unknown key gets (before the
+#              fix they had no visibility check and answered 200 with the
+#              settings). RED on main 9791590 (the fix's parent): those three
+#              cases only; 1.11.13 is not a usable RED image because it has
+#              no grace or on-upstream-not-found route at all (404 for every
+#              caller).
+#   (CONTROL)  the same three GETs answer 200 with the repository's settings
+#              to the admin and to a non-admin user granted read on the repo.
 #
 # RATE_LIMIT_ENABLED=false: ~50 authenticated calls back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="4815"
 PROFILES="storage.filesystem upstreams.mock-static"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

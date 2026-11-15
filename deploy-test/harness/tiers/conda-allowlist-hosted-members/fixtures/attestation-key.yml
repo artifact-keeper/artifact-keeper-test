@@ -1,0 +1,13 @@
+# Tier-local compose override for conda-allowlist-hosted-members
+# (artifact-keeper#5055). Layered on compose.base.yml and the tier's profiles
+# when the oracle recreates the backend at the start of setup. The oracle
+# generates a P-256 key pair at run time and exports its public PEM inline in
+# DTF_CAH_KEYS (`dtf-cah=<PEM>`), so the CEP-27 bundles it signs for the hosted
+# packages verify and their CEP-50 `.sigs` sidecars exist. No key material is
+# committed. json-file logging keeps the backend log readable.
+services:
+  backend:
+    environment:
+      CONDA_ATTESTATION_PUBLIC_KEYS: "${DTF_CAH_KEYS:?set DTF_CAH_KEYS}"
+    logging:
+      driver: json-file

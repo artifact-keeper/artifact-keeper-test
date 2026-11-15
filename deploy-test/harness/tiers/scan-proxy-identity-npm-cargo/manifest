@@ -1,0 +1,62 @@
+# DTF tier manifest: scan-proxy-identity-npm-cargo
+#   (artifact-keeper#5140, #5143, #5148, #5149, #5231; all fixed on main for
+#   1.12.0, none on the 1.11.x line)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files,
+# a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes
+# over a control API) + limits.scan-one-permit (MAX_CONCURRENT_SCAN_EXTRACTIONS
+# =1). fixtures/build_fixtures.py builds the npm packuments and tarballs and a
+# Cargo sparse registry with fixed timestamps; the oracle stores them in the
+# mock. LOCAL-ONLY: verdicts come from the backend image's bundled Grype and
+# its pre-seeded DB (no scanner sidecar, no OSV, no internet).
+#
+# THE BUGS
+# #5140  CargoPackage.readme was Option<String>, so a Cargo.toml with
+#        `readme = false` (what cargo writes for a package without a README)
+#        or `readme = true` failed to parse; the identity was unestablished
+#        and a fail_closed cargo Remote withheld the crate (423) on every
+#        pull, without scanning it.
+# #5143  A pinned .crate was graded on every package in its OWN bundled
+#        Cargo.lock (the author's build, which no consumer installs), so a
+#        crate locking crossbeam-deque 0.7.3 was blocked 403.
+# #5148  npm identity was read from package/package.json with the 10000-entry
+#        ingest cap; a tarball whose package.json sits past entry 10000 never
+#        established an identity and got 423 `scan_pending` ("artifact is
+#        being scanned; retry shortly") forever. Since #5166 npm has its own
+#        entry budget (default 100000) and an unestablished identity answers
+#        423 `scan_identity_unestablished`.
+# #5149  The identity was read only from `package/package.json`; DefinitelyTyped
+#        publishes with the package's own directory (`node/`, `react/`), so
+#        every @types/* tarball was withheld 423 `scan_pending` forever.
+# #5231  The 30 s inline scan budget started when a scan began WAITING for a
+#        permit, and an over-budget scan was killed. A first install's burst of
+#        new tarballs queued behind the scans ahead of it: under fail_closed
+#        some got 423, and under record_only most files were left with no
+#        verdict at all (57 of 73 in the issue). Since #5242 the budget counts
+#        from the permit and record_only scans stay queued until they run.
+#
+# THE GATES
+#   (FIX)      RED on ak 1.11.13, GREEN on main:
+#              #5140 crates with readme = false / true: 200 X-AK-Scan: clean
+#                    under fail_closed (twice), verdict clean;
+#              #5143 crates shipping a Cargo.lock (at the root, and nested at
+#                    fuzz/) that locks crossbeam-deque 0.7.3: 200 clean;
+#              #5148 a tarball with 10050 entries before package/package.json:
+#                    200 clean; the same shape declaring another version: 423
+#                    scan_identity_unestablished and no verdict row;
+#              #5149 @types/dtfnode with root dtfnode/: 200 clean;
+#              #5231 48 first-time pulls at once through a record_only Remote
+#                    with one scan permit: all 48 served 200 and all 48 have a
+#                    verdict within 30 s + 5 s per file.
+#   (CONTROL)  hold on BOTH images: the unscanned Remotes stream every fixture
+#              byte-exact with no X-AK-Scan; an ordinary npm package and a
+#              crate with readme = "README.md" are 200 clean under fail_closed;
+#              lodash 4.17.15 and regex 1.5.4 are still graded on their own
+#              coordinate and blocked 403 scan_blocked.
+#
+# RATE_LIMIT_ENABLED=false: a burst of concurrent pulls.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5140 5143 5148 5149 5231"
+PROFILES="storage.filesystem upstreams.mock-files limits.scan-one-permit"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

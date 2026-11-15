@@ -1,0 +1,48 @@
+# DTF tier manifest: backup-restore-s3-faults  (artifact-keeper#5857, #5858)
+# Profile-set: s3 (MinIO) + storage.s3-fault-proxy, a relay between the
+# backend and MinIO that the oracle can tell to hold the n-th GET of a key or
+# to throttle the responses of matching GETs. MinIO stays reachable directly
+# for the oracle's `mc` container.
+#
+# THE BUGS
+# #5857  A restore committed the database tables before its second pass wrote
+#        the objects. When that pass stopped (here: the archive changes after
+#        the verify pass), the restore answered 400 "the archive changed after
+#        it was verified" but every row was already in the database, pointing
+#        at objects that were never written. The fix writes the objects first
+#        and the tables after, and the error says that no row was restored and
+#        that re-running the restore is safe.
+# #5858  The streaming backup opened up to three artifact GETs ahead of the
+#        archive writer. S3_BULK_TIMEOUT_SECS runs from the start of a GET, so
+#        a queued object lost the time it waited behind the one being written,
+#        and a slow store re-read (or, once the retries ran out, failed) a
+#        backup whose every object fits the timeout on its own. The fix opens each artifact when the writer is ready for
+#        it.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) with the store throttled to 4 MiB/s, one 24 MiB object
+#             downloads through the API intact and inside the 10 s bulk
+#             timeout (so every object fits the timeout on its own).
+#   (FIX)     #5858: a backup of a repository holding three such objects
+#             completes and the proxy sees exactly one GET per object.
+#             Pre-fix: all three GETs start together; the two queued ones run
+#             out of their 10 s while they wait, and object_store re-reads
+#             the rest with a Range GET (on a slower store the retries run
+#             out and the backup fails).
+#   (FIX)     #5857: a restore whose archive is swapped between the verify
+#             pass and the write pass (the proxy holds the second GET of the
+#             archive while the oracle overwrites it in MinIO) fails, its
+#             error says no database rows were restored, and the deleted
+#             repository and its artifact rows are still absent. Pre-fix: the
+#             rows are back, the changed object is not.
+#   (CONTROL) re-running the restore from the intact archive answers
+#             `completed` and every artifact downloads with its sha256.
+#
+# RATE_LIMIT_ENABLED=false: authenticated calls back to back.
+# S3_BULK_TIMEOUT_SECS=10: with 4 MiB/s and 24 MiB objects each object takes
+# ~6 s on its own, and a queued one waits ~6 s more before its first byte is
+# read.
+PROFILES="storage.s3 storage.s3-fault-proxy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+export S3_BULK_TIMEOUT_SECS="10"

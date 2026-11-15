@@ -15,13 +15,17 @@
 #         bulk promotion_history.policy_result records the real evaluation
 #   #4147 / #4160 promotion evaluates the scan-policy predicates; the conda
 #         channel allowlist fails closed on an unknown channel
+#   #4161 content a Remote serves has origin kind proxy: allowed_kinds
+#         [hosted] refuses it (before the cache or upstream is read) and
+#         allowed_kinds [proxy] admits it
 #   #1758 artifact responses carry last_promotion {target_repo_key,
 #         promoted_at, status}, with the target hidden from a caller who
 #         cannot read it
 # See the manifest for the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
-# RELEASE_GATE=1, JUNIT_OUTPUT_DIR, COMMON_SH.
+# RELEASE_GATE=1, JUNIT_OUTPUT_DIR, COMMON_SH, and TRIVY_PORT (the mock-files
+# control port, profiles/upstreams.mock-files.yml).
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${ADMIN_PASS:?}"
@@ -383,5 +387,100 @@ st="$(call GET "/api/v1/artifacts/${A_N2}" "" "$W/lpa.json")"
 jq -e --arg r "$R_PRIV" '.last_promotion.target_repo_key == $r' "$W/lpa.json" >/dev/null 2>&1 \
   || fail_g "admin does not see the private target key"
 finish_case "#1758 last_promotion target visibility wrong"
+
+# =============================================================================
+# PROXY ORIGIN (#4161, fixed in 1.11.0 by #4625 / #4506)
+# =============================================================================
+# Before 1.11.0 no production path gave proxied content an origin: a Remote's
+# fetches write proxy_cache_artifacts and no artifacts row, so there was no
+# origin document to evaluate and origin.allowed_kinds naming `proxy` was
+# unsatisfiable (and one naming only `hosted` never refused proxied content).
+# Since #4625 content a Remote serves has origin {kind: proxy, repository_key:
+# <remote>, upstream_url: <its upstream>} and the Remote's origin policies are
+# checked before the cache or the upstream is read; a refusal is the hosted
+# gate's 403 "Artifact download is blocked by the repository's scan policy".
+# No API response carries that origin (there is no artifacts row to read it
+# from), so the policy decision is the observable surface: the same upstream
+# file is refused by allowed_kinds [hosted] and served by allowed_kinds [proxy].
+# Upstream: profiles/upstreams.mock-files.yml (172.16.<slot>.76).
+: "${TRIVY_PORT:?}"
+PX_MOCK="http://127.0.0.1:${TRIVY_PORT}"
+PX_UP="http://172.16.${DTF_SLOT}.76"
+PX_OPEN="${P}-rem-open"    # Remote, no policy (control)
+PX_HOST="${P}-rem-hosted"  # Remote, origin.allowed_kinds=[hosted] (refuses)
+PX_PROXY="${P}-rem-proxy"  # Remote, origin.allowed_kinds=[proxy]  (serves)
+px_put(){ curl -s --max-time 10 -X PUT --data-binary @"$2" "${PX_MOCK}/__file?path=$1" | jqr '.bytes // empty'; }
+px_gets(){ curl -s --max-time 5 "${PX_MOCK}/__requests?path=$1" | jqr '.get // 0'; }
+px_get(){ # repo path out -> http code
+  curl -s --max-time 60 -o "$3" -w '%{http_code}' -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${BASE_URL}/api/v1/repositories/$1/download/$2" 2>/dev/null || echo 000
+}
+px_remote(){ # key -> id
+  call POST /api/v1/repositories \
+    "{\"key\":\"$1\",\"name\":\"$1\",\"format\":\"generic\",\"repo_type\":\"remote\",\"is_public\":false,\"upstream_url\":\"${PX_UP}/px/\"}" "$W/mk.json" >/dev/null
+  repo_id "$1"
+}
+sha_of(){ sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+
+begin_test "setup: mock upstream files and three generic Remotes over it"
+reset_case
+if [ "$(curl -s --max-time 5 "${PX_MOCK}/__readyz" 2>/dev/null)" != "ok" ]; then
+  infra_fail "mock upstream not reachable on ${PX_MOCK} (profiles/upstreams.mock-files.yml)"; end_suite
+fi
+for f in open cached fresh both; do head -c 4096 /dev/urandom > "$W/px-$f.bin"; done
+for f in open cached fresh both; do
+  [ "$(px_put "/px/${f}-${P}.bin" "$W/px-$f.bin")" = "4096" ] || fail_g "mock upload of ${f}-${P}.bin failed"
+done
+ID_PXO="$(px_remote "$PX_OPEN")"; ID_PXH="$(px_remote "$PX_HOST")"; ID_PXP="$(px_remote "$PX_PROXY")"
+for v in ID_PXO ID_PXH ID_PXP; do [ -n "${!v}" ] || fail_g "Remote for ${v} was not created ($(head -c 200 "$W/mk.json"))"; done
+# Cache one file in the [hosted] Remote BEFORE its policy exists, so the
+# cached read is gated too (#4625 checks the policy before the cache).
+PXC_PRE="$(px_get "$PX_HOST" "cached-${P}.bin" "$W/pxc-pre.bin")"
+[ "$PXC_PRE" = "200" ] || fail_g "pre-policy fetch of cached-${P}.bin through ${PX_HOST} -> HTTP ${PXC_PRE}"
+st="$(policy "${P}-pol-rem-hosted" "$ID_PXH" '{"origin":{"allowed_kinds":["hosted"]}}')"
+[ "$st" = "200" ] || [ "$st" = "201" ] || fail_g "policy on ${PX_HOST} -> HTTP ${st} $(head -c 200 "$W/pol.json")"
+st="$(policy "${P}-pol-rem-proxy" "$ID_PXP" '{"origin":{"allowed_kinds":["proxy"]}}')"
+[ "$st" = "200" ] || [ "$st" = "201" ] || fail_g "policy on ${PX_PROXY} -> HTTP ${st} $(head -c 200 "$W/pol.json")"
+finish_case "proxy-origin setup failed"
+
+begin_test "CONTROL: a Remote with no policy serves the upstream file byte-identical"
+reset_case
+st="$(px_get "$PX_OPEN" "open-${P}.bin" "$W/pxo.bin")"
+[ "$st" = "200" ] && [ "$(sha_of "$W/pxo.bin")" = "$(sha_of "$W/px-open.bin")" ] \
+  || fail_g "GET ${PX_OPEN}/open-${P}.bin -> HTTP ${st} (want 200, the upstream bytes)"
+[ "$PXC_PRE" = "200" ] && [ "$(sha_of "$W/pxc-pre.bin")" = "$(sha_of "$W/px-cached.bin")" ] \
+  || fail_g "pre-policy fetch through ${PX_HOST} -> HTTP ${PXC_PRE} (want 200, the upstream bytes)"
+finish_case "the Remote does not proxy the mock upstream"
+
+begin_test "FIX #4161: origin.allowed_kinds [hosted] refuses a Remote's uncached file with 403, before the upstream is contacted"
+reset_case
+st="$(px_get "$PX_HOST" "fresh-${P}.bin" "$W/pxh.bin")"
+[ "$st" = "403" ] || fail_g "GET ${PX_HOST}/fresh-${P}.bin -> HTTP ${st} (want 403: proxied content has origin kind proxy, not in [hosted])"
+grep -q "blocked by the repository's scan policy" "$W/pxh.bin" 2>/dev/null \
+  || fail_g "refusal body does not name the scan policy: $(head -c 200 "$W/pxh.bin" 2>/dev/null)"
+n="$(px_gets "/px/fresh-${P}.bin")"
+[ "$n" = "0" ] || fail_g "the upstream saw ${n} GET(s) of fresh-${P}.bin (want 0: the policy is checked before the upstream is read)"
+finish_case "#4161 proxied content carries no origin kind proxy, so allowed_kinds [hosted] never refuses it"
+
+begin_test "FIX #4161: the same policy refuses a file the Remote cached before the policy was attached"
+reset_case
+n0="$(px_gets "/px/cached-${P}.bin")"
+st="$(px_get "$PX_HOST" "cached-${P}.bin" "$W/pxhc.bin")"
+[ "$st" = "403" ] || fail_g "GET ${PX_HOST}/cached-${P}.bin (cached) -> HTTP ${st} (want 403: the policy is checked before the cache is read)"
+n1="$(px_gets "/px/cached-${P}.bin")"
+[ "$n1" = "$n0" ] || fail_g "the upstream saw $((n1 - n0)) new GET(s) of cached-${P}.bin while refusing"
+finish_case "#4161 cached proxy content bypasses the origin policy"
+
+begin_test "FIX #4161: allowed_kinds [proxy] is satisfiable: it serves the upstream file that [hosted] refuses"
+reset_case
+st_p="$(px_get "$PX_PROXY" "both-${P}.bin" "$W/pxp.bin")"
+st_h="$(px_get "$PX_HOST" "both-${P}.bin" "$W/pxpb.bin")"
+[ "$st_p" = "200" ] && [ "$(sha_of "$W/pxp.bin")" = "$(sha_of "$W/px-both.bin")" ] \
+  || fail_g "GET ${PX_PROXY}/both-${P}.bin -> HTTP ${st_p} (want 200 and the upstream bytes: proxied content's kind is proxy)"
+[ "$st_h" = "403" ] || fail_g "GET ${PX_HOST}/both-${P}.bin -> HTTP ${st_h} (want 403); with no proxy origin the kind lists decide nothing"
+st="$(px_get "$PX_PROXY" "both-${P}.bin" "$W/pxp2.bin")"
+[ "$st" = "200" ] && [ "$(sha_of "$W/pxp2.bin")" = "$(sha_of "$W/px-both.bin")" ] \
+  || fail_g "second (cached) GET through ${PX_PROXY} -> HTTP ${st} (want 200)"
+finish_case "#4161 the origin kind lists do not tell proxied content apart"
 
 end_suite

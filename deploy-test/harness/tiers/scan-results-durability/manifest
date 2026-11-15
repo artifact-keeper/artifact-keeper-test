@@ -1,0 +1,77 @@
+# DTF tier manifest: scan-results-durability
+#   (artifact-keeper#5534, #5564, #5153, #5006, #5715; all fixed on main for
+#   1.12.0. #5534 and #5006 were also backported to 1.11.x, so this tier is
+#   red on 1.11.x for the others and must not gate that line.)
+# Profile-set: filesystem + the mock-scan-formats upstream, used ONLY as a
+# fixture server for log4j-core 2.14.1 (nothing is proxied). LOCAL-ONLY:
+# hosted scans run the backend image's bundled Grype with its pre-seeded DB.
+# Scan results are also written through the external findings ingest
+# (POST /api/v1/security/findings/external), the API an outside scanner uses.
+#
+# THE BUGS
+# #5534  scan_findings.affected_version, fixed_version and source were
+#        VARCHAR(100). Findings go in as one batched INSERT, so ONE value over
+#        100 characters (an advisory listing several fixed versions) failed the
+#        whole batch and the scan lost every finding. Fixed: TEXT (migration
+#        339); a cve_id over 30 (still VARCHAR(30)) is refused by name.
+# #5564  scan_results.scanner_version (VARCHAR 50) and vuln_db_version
+#        (VARCHAR 100) failed complete_scan the same way: the ingest answered
+#        500 for an over-long scanner_version. Fixed: TEXT (migration 342),
+#        and the ingest answers 400 VALIDATION_ERROR for what the schema still
+#        refuses.
+# #5153  An acknowledgement was a flag on one scan_findings row, so a rescan
+#        or a promotion brought the finding back and the gate blocked again;
+#        the promotion gate counted acknowledged findings too. Fixed: a
+#        durable decision keyed by repository, bytes, advisory, component and
+#        version, applied by every reader, and carried by a promotion.
+# #5006  recalculate_score ran REPEATABLE READ with no per-repository lock
+#        and no retry. Two scans of one repository completing together: one
+#        failed on "could not serialize access due to concurrent update" and
+#        its recalculation was lost. Fixed (#5007): a per-repository advisory
+#        lock and a bounded retry on 40001/40P01.
+# #5715  classify_scan_state fell through to NotApplicable for any row set
+#        with no completed, in-progress or failed row, so a row whose status
+#        the build does not know passed block_unscanned. Fixed: NotApplicable
+#        only when every row is a not-applicable marker, otherwise Failed.
+#
+# THE GATES
+#   (FIX) RED on main e656947 (predates every fix), GREEN on main 2bdf092:
+#     #5534 an ingest with a fixed_version, affected_version and source over
+#           100 characters answers 200 and stores all three findings intact;
+#     #5564 an ingest with a 146-character scanner_version answers 200 and
+#           the completed row stores it; a 46-character cve_id is 400
+#           VALIDATION_ERROR and writes no scan row;
+#     #5153 log4j-core scanned by Grype, every finding acknowledged: a
+#           bypass_dedup rescan reporting the same CVEs leaves the download
+#           open; a promotion of the acknowledged artifact from a staging
+#           repository is allowed and the copy downloads from a target with
+#           a block_unscanned, max_severity=high policy;
+#     #5006 5 rounds of 4 external ingests at once into 4 fresh artifacts of
+#           a fresh repository: every one answers 200 and the stored score
+#           counts all 4 (scanned and high_count). Pre-fix 2 to 3 of every 4
+#           answer 500 (20 of 20 rounds failed when measured); fixed, 0 of
+#           30 rounds;
+#     #5715 the tier drops scan_results_status_check in its own database and
+#           seeds a row with status 'superseded' (a status a newer release
+#           could write): block_unscanned refuses that artifact (403).
+#   (CONTROL) both images: a short-string ingest is stored as one completed
+#     scan; Grype reports log4j-core's CVEs, a severity policy blocks the jar
+#     and acknowledging every finding opens it; block_unscanned refuses a
+#     never-scanned artifact and passes one whose only row is not_applicable.
+#   (KNOWN-RED #5891, reported, never failed) 8 ingests at once in one
+#     repository: on main 2bdf092 some still answer 500 "could not serialize
+#     access" (width 6: 3 of 10 rounds, width 8: 10 of 10). #5007 counts an
+#     attempt that found the lock busy against its 8-attempt cap, and the last
+#     attempt waits for the lock after its REPEATABLE READ snapshot is taken.
+#     DTF_GATE_5891=1 makes it a FIX assertion (3 rounds of 8 and one of 16,
+#     every ingest 200, the score counts every one); flip that default once
+#     the fix for artifact-keeper#5891 is on main.
+#
+# NOT GATED: vuln_db_version (#5564) is not settable through the ingest; the
+# dedup-copy and expiry paths of #5153.
+#
+# RATE_LIMIT_ENABLED=false: ~100 API calls back to back.
+COVERS="5534 5564 5153 5006 5715"
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -1,0 +1,60 @@
+# DTF tier manifest: replication-delete-restore
+#   (artifact-keeper 1.12.0 peer delete / restore fixes: #5505, #5625, #5627,
+#    #5699)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}). A is `backend`; B is the push peer
+# A's sync worker (10 s tick) delivers to over the slot's compose network.
+# Two backends and two databases: run it alone on a loaded host.
+#
+# THE PEER
+# The oracle mints a `*`-scoped API key on B, registers B on A, sets it
+# online in A's DB, and subscribes one hosted generic repository with
+# POST /api/v1/peers/{id}/repositories (a manual push subscription, no sync
+# policy). The same repository exists on B. Transfers are real.
+#
+# THE PRIMITIVE (an outage, deterministically)
+# The issues are about deletes queued while the peer cannot take them. The
+# oracle sets A's peer row `backoff_until` an hour ahead (the sync worker
+# claims nothing for a peer in backoff), runs the delete / purge / restore
+# steps, then clears it. The delete tasks are queued exactly as for an online
+# peer (status stays online), so this works on images before #5498 too.
+#
+# RED images (at most two, both checked with git merge-base --is-ancestor):
+#   1.11.13      predates #5552: red for #5505 (and #5625, #5699).
+#   sha-718def3  main 2026-11-10, after #5552 (#5505) and #5658 (#5624),
+#                before #5756 (#5625), #5767 (#5699) and #5811 (#5627):
+#                red for #5625, #5627 and #5699.
+# GREEN: main carrying all four fix PRs (sha-2bdf092 or later).
+#
+# CONTROLS (pass on every image)
+#   five generic uploads on A reach B (row, sha256, served bytes); a delete
+#   on A with no restore reaches B (404); a delete made while the peer is in
+#   backoff is queued for it (one pending delete task).
+#
+# FIX CASES
+#   #5625 adding a label to an artifact replicated through the manual
+#     subscription queues no delete for B, and B still serves it 30 s later.
+#     Red (both): a delete is queued and B drops the artifact within a tick.
+#   #5505 an artifact deleted while B is in backoff and restored from trash
+#     before B returns is still served by B once the worker has drained.
+#     Red (1.11.13): the restore leaves the delete queued and B deletes it.
+#   #5627 that restore's re-armed push to B (which never applied the delete)
+#     ends completed, with no failed push task. Red (sha-718def3): B answers
+#     409 immutable for the identical bytes and the task ends failed.
+#   #5699 X1 at a path is replicated, then deleted and purged; X2 is put at
+#     the same path, deleted and restored, all while B is in backoff. After
+#     the worker drains, B serves X2's bytes or 404, never X1's. Red (both):
+#     B keeps serving the purged X1.
+#
+# Teardown note: `harness/run.sh down --slot N` sweeps slot-prefixed
+# leftovers; after --keep it also removes this profile's containers.
+#
+# RATE_LIMIT_ENABLED=false: a few dozen authenticated calls on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the peer endpoint goes through
+# validate_outbound_url and B sits on a private compose address.
+COVERS="5505 5625 5627 5699"
+PROFILES="storage.filesystem peer.second-instance"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

@@ -1,0 +1,17 @@
+# =============================================================================
+# profiles/limits.scan-one-permit.yml: one scan at a time
+# =============================================================================
+# Patches the backend with MAX_CONCURRENT_SCAN_EXTRACTIONS=1 (default 4): the
+# permit pool every inline proxy scan and upload scan draws from. With one
+# permit a burst of first-time proxy pulls queues behind a single running
+# scan, so a tier can build the backlog of artifact-keeper#5231 (an inline
+# scan's 30 s budget spent waiting for a permit) with a couple of dozen small
+# packages instead of a real `npm install` of a large tree. Every backend
+# image reads the setting, so the RED and GREEN legs run with the same pool.
+# =============================================================================
+services:
+  backend:
+    environment:
+      MAX_CONCURRENT_SCAN_EXTRACTIONS: "1"
+    logging:
+      driver: json-file

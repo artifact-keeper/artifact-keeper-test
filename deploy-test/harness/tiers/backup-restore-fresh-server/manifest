@@ -1,0 +1,56 @@
+# DTF tier manifest: backup-restore-fresh-server  (artifact-keeper#5856)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}). Instance A is the source; B is a
+# fresh server that has never seen A's data, with its own bootstrap admin.
+#
+# THE BUG (#5856)
+# Every install creates its own `admin` and seeds its own roles, each with a
+# random id. A `full` backup of A restored into B answered 200 with
+# `status: completed` and `errors: []`, but only users and groups came back:
+#   * the archived admin conflicted on username with B's admin and was
+#     skipped (ON CONFLICT DO NOTHING);
+#   * every row whose created_by / uploaded_by / user_id pointed at the
+#     archived admin's id then failed its foreign key (repositories, and in
+#     cascade artifacts, webhooks, OCI and scan rows), and role_assignments /
+#     user_roles failed on role_id, because each install has its own role ids;
+#   * restore_table_in logged each failed row at WARN (printing the whole row)
+#     and moved on without adding to `errors`, so the status stayed
+#     `completed`.
+# The fix maps archived user ids by username and role/group ids by name onto
+# B's rows before inserting, counts every row that still fails into `errors`
+# (status `partial`), and logs the table and key of a failed row only.
+#
+# HOW THE ARCHIVE REACHES B
+# There is no archive import endpoint. The oracle copies the `backups` row
+# from A's database into B's (created_by cleared: B has no such user) and
+# the archive file from A's /data volume into B's, the way an operator moves
+# a backup to a new server, then calls B's restore endpoint.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (SETUP)   A gets generic and maven repositories with random-content
+#             artifacts, a user, a group, a global and a repository webhook;
+#             a full backup of A completes.
+#   (FIX)     RED on a pre-fix image (main before #5856):
+#             status    B's restore answers 200 `completed` with no errors.
+#             repos     every A repository exists on B with its format.
+#             bytes     every A artifact downloads from B with A's sha256
+#                       (generic via the API, maven via its native path).
+#             webhooks  both webhooks exist on B with A's url, events and
+#                       repository.
+#             identity  the user and the group membership exist on B.
+#             Pre-fix: completed with 0 repositories, artifacts and webhooks.
+#   (FIX)     forced failure: a backup scoped to one repository of A is
+#             restored into B after B created a repository with the same key
+#             (another id), so that archived repository row is skipped and
+#             its artifact rows cannot be inserted. The restore must answer
+#             `partial` (or fail), never `completed`, and name the
+#             `artifacts` rows. Pre-fix: 200 `completed`, errors [].
+#
+# Teardown note: `harness/run.sh down --slot N` sweeps slot-prefixed
+# leftovers, including B (test#503).
+#
+# RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back on A and B.
+PROFILES="storage.filesystem peer.second-instance"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

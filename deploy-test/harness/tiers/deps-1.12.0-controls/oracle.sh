@@ -101,7 +101,7 @@ pass
 # =============================================================================
 
 # --- NuGet: V2 OData upstream translated onto the V3 surface ----------------
-begin_test "#4375 quick-xml / NuGet: a V2 upstream feed with entities, char refs and a BOM is projected onto V3 registration and search"
+begin_test "FIX #4816: #4375 quick-xml / NuGet: a V2 upstream feed with entities, char refs and a BOM is projected onto V3 registration and search"
 reset_case
 NU_PATH="/nugetv2-${SUF}"
 NU_ID="DtfXml.Pkg${SUF}"
@@ -388,7 +388,7 @@ note "signed assertion: HTTP ${code}, user row \"${urow}\""
 finish_case "SAML Response parser broken: non-ASCII text or a BOM no longer parses"
 
 # --- S3 ListObjectsV2 (REST fallback, S3_PROVIDER=oss) -------------------------------
-begin_test "#4375 quick-xml / S3 listing: a storage reindex dry run lists keys with & and ' through the ListObjectsV2 XML parser"
+begin_test "FIX #4817: #4375 quick-xml / S3 listing: a storage reindex dry run lists keys with & and ' through the ListObjectsV2 XML parser"
 reset_case
 R_MV="dtfdeps-mvs3-${SUF}"; R_MVU="dtfdeps-mvs3u-${SUF}"
 mk_repo "$R_MV" maven local || { infra_fail "could not create ${R_MV}"; end_suite; }

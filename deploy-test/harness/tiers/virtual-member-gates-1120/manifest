@@ -1,0 +1,57 @@
+# DTF tier manifest: virtual-member-gates-1120
+#   (artifact-keeper#5146, #5147, #5150, #5151; all fixed on main for 1.12.0,
+#   none on the 1.11.x line)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files:
+# a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes over
+# a control API). The mock stands in for an OCI registry (static /v2/ paths),
+# two npm registries and three PyPI indexes, each under its own path prefix.
+# Proxy scan verdicts come from the backend image's bundled Grype (a clean
+# scan of a one-layer image); the oracle then re-grades that verdict to a
+# medium-severity `vulnerable` row, as #5146 asks ("seed that verdict instead
+# of assuming today's findings").
+#
+# THE BUGS
+# #5146  OCI: adding an EMPTY hosted member to a Docker virtual made the blob
+#        gate block-on-any, so the config and layer of a remote image whose
+#        vulnerable verdict is below the severity threshold answered 403
+#        "blob belongs to an image blocked by scan policy", while its manifest
+#        served and a remote-only virtual served everything.
+# #5147  NuGet: a package whose stored `artifacts.name`/`path` is mixed-case
+#        (rows written by the Artifactory importer) downloaded from its hosted
+#        repository but 404'd through a virtual over it.
+# #5150  Age gate: in an npm or PyPI virtual, a gated Remote member whose
+#        upstream does not host the package answered 451 (no publish time =
+#        too young) and ended the request, so the member that hosts an old
+#        version was never asked.
+# #5151  PyPI age gate: with an upstream that has only the PEP 503 simple
+#        index (no Warehouse JSON API) every version was blocked, even at
+#        min_age_days = 0; the simple index's `data-upload-time` was ignored.
+#
+# THE GATES
+#   (FIX)      RED on ak 1.11.13, GREEN on main:
+#              #5146 virtual [empty hosted, Remote] serves the config and
+#                    layer blobs of the below-threshold image (200, not 403);
+#              #5147 virtual [hosted] downloads the mixed-case stored
+#                    .nupkg by the lowercase and the mixed-case URL;
+#              #5150 npm virtual [gated, not hosting; gated, hosting] and
+#                    PyPI virtual [gated, not hosting; gated, hosting] serve
+#                    the old version (200, not 451) and write no review on the
+#                    member that does not host it;
+#              #5151 simple-index-only PyPI Remote: min_age_days 0 serves an
+#                    undated file, min_age_days 7 serves a file whose
+#                    data-upload-time is 2020.
+#   (CONTROL)  must hold on BOTH images: a remote-only Docker virtual serves
+#              manifest, config and layer; the manifest through the virtual
+#              with the empty hosted member serves; direct hosted NuGet
+#              downloads (both spellings) serve; a natively pushed package
+#              serves through the virtual; each hosting npm / PyPI member
+#              serves the old version directly; a file dated today is still
+#              451 at min_age_days 7 on the simple-index-only Remote.
+#
+# RATE_LIMIT_ENABLED=false: ~100 requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5146 5147 5150 5151"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

@@ -1,0 +1,73 @@
+# DTF tier manifest: maven-contract-1120
+#   (artifact-keeper 1.12.0 Maven native-protocol contracts: #5668, #5678,
+#   #5693, #5713)
+# Profile-set: filesystem only. Every case drives the native /maven/ route
+# with curl (PUT of jars, sidecars and maven-metadata.xml; GET of
+# maven-metadata.xml, sidecars and .meta/prefixes.txt). The only non-native
+# calls are repository creation and, for #5693, the artifact listing.
+#
+# RED images: ak-backend:1.11.13 (red for #5668 and #5713; the #5678 sidecar
+# gate and the #5693 plugin-prefix path are new in 1.12.0, so 1.11.13 has
+# neither bug) and ak-backend:sha-b5db499 (main before all four fixes, red for
+# all four). GREEN: ak-backend:sha-9d3aa45.
+#
+# THE BUGS
+#   #5668 (fixed by #5734) a hosted repository with no artifacts served a
+#     header-only `## repository-prefixes/2.0` .meta/prefixes.txt. Maven
+#     Resolver reads a prefix file as an allowlist, so that file denies every
+#     path and is kept for a day (the SNAPSHOT build number never advanced).
+#     Fixed: 404 with Cache-Control: no-store, and the .sha1 is 404 too.
+#     Also: an uncached GET through a Remote whose upstream does not resolve
+#     answered 500 STORAGE_ERROR; fixed: 502. The issue's Range item is
+#     covered by the range-serves-1120 tier, not here. Its other items
+#     (virtual 400 vs remote 405, create 200 vs 201, the storage card) were
+#     not changed by #5734 (moved to #5744 and artifact-keeper-web#1131), so
+#     they are not cases.
+#   #5678 (fixed by #5732) a released artifact's checksum sidecar that was
+#     already stored answered 409 even for the identical value, so a deploy
+#     PUT retried after a lost response failed. And a wrong .sha1 uploaded
+#     before its jar locked the release: the deploy's correct .sha1 got 409.
+#     Fixed: identical -> 200, the artifact's own digest replaces a wrong
+#     stored value, a different value is still 409.
+#   #5693 (fixed by #5731) the plugin-prefix publish path was chosen by body
+#     content alone (`<plugins`), so an artifact-level or version-level
+#     maven-metadata.xml whose body had a <plugins> block got an artifacts
+#     row (and a push to peers). Fixed: only group-level metadata takes it.
+#   #5713 (fixed by #5720) the Maven version comparator was not Maven's
+#     ComparableVersion: a number past u64 parsed as 0, and a bare a/b/m
+#     qualifier (no digit after it) was aliased to alpha/beta/milestone. The
+#     generated maven-metadata.xml then had the wrong <versions> order and
+#     <latest>/<release>.
+#
+# CONTROLS (pass on every image)
+#   after the first publish the prefix file is 200 and lists the group;
+#   a released jar and its correct .sha1 are stored and served; artifact- and
+#   version-level metadata with <plugins> are stored and served; conventional
+#   versions (1.2 < 1.10 < 2.0-rc-1 < 2.0 < 3.0-SNAPSHOT) are ordered as Maven
+#   does with latest 3.0-SNAPSHOT and release 2.0.
+#
+# FIX CASES
+#   #5668 empty repo prefix file is 404 + no-store, its .sha1 404
+#         (1.11.13 / b5db499: 200 header-only, no Cache-Control);
+#   #5668 Remote at http://mvn-upstream-<sfx>.invalid/maven2: GET pom is 502
+#         without STORAGE_ERROR (red: 500 STORAGE_ERROR);
+#   #5678 identical .sha1 re-upload (also as `<HEX>  <file>`) is 2xx, a
+#         different one 409 (b5db499: 409 for the identical value);
+#   #5678 wrong .sha1 before the jar, then the jar's own .sha1 is 2xx and
+#         served (b5db499: 409);
+#   #5693 no listed artifact row for either metadata document (b5db499:
+#         the artifact-level and version-level paths are listed);
+#   #5713 {1.99999999999999999999, 1.1}: latest/release 1.99999999999999999999
+#         (red: 1.1); {1.0-a, 1.0}: 1.0 < 1.0-a, latest/release 1.0-a
+#         (red: 1.0).
+#   The #5713 sort panic needs a non-total input that Rust's sort detects;
+#   the issue names no concrete set and none is asserted here (the backend
+#   property test `sort_maven_versions` no-panic case covers it).
+#
+# RATE_LIMIT_ENABLED=false: many quick native PUTs and GETs.
+COVERS="5668 5678 5693 5713"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+RED_IMAGES="ak-backend:1.11.13 ak-backend:sha-b5db499"
+GREEN_IMAGE="ak-backend:sha-9d3aa45"

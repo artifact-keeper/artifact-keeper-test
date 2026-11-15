@@ -1,0 +1,62 @@
+# DTF tier manifest: mcp-introspection-integrity
+#   (artifact-keeper 1.12.0 introspection completion fixes:
+#    #5461, #5462, #5464, #5466)
+# Profile-set: filesystem / single. No worker container: the oracle is the
+# introspection worker. It mints an `mcp:introspect` API token for a service
+# account and drives the Worker API (POST /api/v1/mcp/introspection/jobs/claim
+# and /jobs/{id}/complete) with curl, so the remotes[] URL it publishes
+# (https://mcp.example.invalid/mcp) is never contacted. Every outcome is read
+# back through GET /mcp/{repo}/v0.1/servers/{name}/versions/{v}/capabilities.
+# psql in the DB container (run.sh's DB_CONTAINER) is used for two things
+# only: moving a claim's lease_expires_at into the past (#5462) and holding
+# the job row FOR NO KEY UPDATE for a few seconds so concurrent completions
+# queue on it deterministically, as the backend's own regression test does
+# (#5461).
+#
+# RED images (two, both main):
+#   sha-ad20810 (2026-11-06): predates #5530 (f811c6d1, #5462 and #5464) and
+#     #5540 (9c1c8b76, #5466). It already carries #5433, whose transactional
+#     claim lock closed the #5461 race, so FIX #5461 passes there.
+#   sha-a837f88 (2026-11-05): the parent of #5433 (431521b2), the change that
+#     actually fixed #5461 (#5530 only added the regression test, see its PR
+#     body). Every FIX case fails there.
+#   Ancestry checked with git merge-base --is-ancestor. 1.11.13 has no MCP
+#   Registry at all.
+# GREEN: main carrying all fix PRs (sha-2bdf092 or later).
+#
+# CONTROLS (pass on every image)
+#   a live claim's ok result with valid metadata (ttlMs 2592000000,
+#   cacheScope public) is stored and becomes current, and a sequential replay
+#   of the same claim answers 409 mcp_claim_invalid and stores nothing; a
+#   timeout result on attempt 1 answers retry and the job goes back to
+#   pending with no snapshot; a fresher observation (ttlMs 0, cacheScope
+#   private) replaces an older current one.
+#
+# FIX CASES
+#   #5461 four concurrent divergent completions of one claim: exactly one
+#     answers 200 stored, the others 409 mcp_claim_invalid, one snapshot is
+#     stored; a retry racing an ok result of one claim has one winner and
+#     never leaves a snapshot behind a pending job. Red (a837f88): all four
+#     answer stored and four snapshots exist; the retry and the ok result
+#     both answer 200 and the job is pending with a snapshot.
+#   #5462 a claim whose lease has expired (the reaper has not run) answers
+#     409 mcp_claim_invalid and stores nothing. Red: 200 stored, current.
+#   #5464 a later-arriving result observed 3 minutes before the current
+#     snapshot is kept as history and does not become current; an observedAt
+#     an hour before the claim answers 400. Red: the stale result becomes
+#     current; the pre-claim observedAt is stored.
+#   #5466 ttlMs -1, cacheScope "shared" and an observedAt an hour ahead each
+#     answer 400 mcp_invalid_result_metadata naming the field, store nothing
+#     and leave the claim live (a corrected result is then stored). Red: 200
+#     stored.
+#
+# NOT COVERED HERE: #5450, #5451 and #5636 are fixes in the
+# ak-mcp-introspector binary, which no published image ships (see the PR).
+#
+# None of these issues has a security advisory (checked
+# gh api repos/artifact-keeper/artifact-keeper/security-advisories), and the
+# issues are public, so the tier asserts the full behaviour.
+COVERS="5461 5462 5464 5466"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

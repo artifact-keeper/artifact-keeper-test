@@ -42,4 +42,5 @@
 # control does so explicitly (design 2.2, same as isolation / ci-token-basic).
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
+COVERS="5235"
 RATE_LIMIT_ENABLED="false"

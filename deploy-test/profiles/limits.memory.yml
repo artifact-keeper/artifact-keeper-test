@@ -1,0 +1,25 @@
+# =============================================================================
+# profiles/limits.memory.yml: cap the backend container's memory, no swap
+# =============================================================================
+# PATCHES backend only: mem_limit and memswap_limit are both
+# ${LIMITS_MEMORY:-768m}, so the container has no swap and a process that
+# holds more than the cap is OOM-killed by the kernel inside this container's
+# own cgroup (`docker inspect` then reports OOMKilled=true, exit 137). Postgres,
+# MinIO and every other service of the slot keep their defaults, and nothing
+# outside the slot is touched: the cap only ever lowers what this one backend
+# may use.
+#
+# A tier that proves a path streams (memory bounded by a chunk, not by the
+# object) sizes its fixtures so the total the buffering code would hold is
+# well above the cap, while the streaming code stays far below it. The
+# backend's own cgroup counters are readable from inside the container
+# (/sys/fs/cgroup/memory.max, memory.peak, memory.events) for the oracle's
+# notes.
+#
+# LIMITS_MEMORY: a compose size (e.g. 768m, 1g). A tier exports it from its
+# manifest to change the default.
+# =============================================================================
+services:
+  backend:
+    mem_limit: ${LIMITS_MEMORY:-768m}
+    memswap_limit: ${LIMITS_MEMORY:-768m}

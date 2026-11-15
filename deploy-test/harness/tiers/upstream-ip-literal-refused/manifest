@@ -32,4 +32,5 @@
 # RATE_LIMIT_ENABLED=false: not under test.
 PROFILES="storage.filesystem upstreams.mock-helm-literal"
 ORACLE="oracle.sh"
+COVERS="5095"
 RATE_LIMIT_ENABLED="false"

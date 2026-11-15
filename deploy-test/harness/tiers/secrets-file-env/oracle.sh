@@ -311,7 +311,7 @@ finish_case "#4142: an unreadable ADMIN_PASSWORD_FILE does not fail startup with
 # used to inherit the image's baked DATABASE_URL=set-database-url-at-runtime,
 # which won over DATABASE_URL_FILE so the backend never started.
 # =============================================================================
-begin_test "FIX #4819 + CONTROL: with every direct value absent (the documented shape) DATABASE_URL_FILE reaches Postgres and the backend starts; the startup log carries no secret value"
+begin_test "FIX #4819: with every direct value absent (the documented shape) DATABASE_URL_FILE reaches Postgres and the backend starts; the startup log carries no secret value"
 reset_case
 export SF_DATABASE_URL_FILE="${MOUNT_DIR}/database_url" SF_JWT_SECRET_FILE="${MOUNT_DIR}/jwt_secret" SF_ADMIN_PASSWORD_FILE="${MOUNT_DIR}/admin_password"
 ST="$(recreate_backend image-env)"

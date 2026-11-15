@@ -1,0 +1,70 @@
+# DTF tier manifest: virtual-metadata-member-outage
+#   (artifact-keeper#5504, #5616, #5621, #5622; all fixed on main for 1.12.0,
+#   none on the 1.11.x line)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files:
+# a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes over
+# a control API). One mock stands in for every Remote member: each member's
+# upstream URL is its own path prefix, and the oracle makes a member fail by
+# forcing a status on its paths (POST /__status) or hang by holding them
+# (POST /__delay, 120 s, longer than every backend deadline).
+#
+# THE BUGS
+# #5504  A virtual's artifact walk read a member's upstream 5xx as a miss, so
+#        `lib-1.0.jar` answered 404 (which Gradle caches) while its `.sha1`
+#        answered 503; the generic `/download/` route did the same; a hosted
+#        member whose stored object could not be read answered 404 on `.sha1`.
+# #5616  Two stale-if-error serves lacked `Warning: 110` / `X-AK-Stale-Since`:
+#        a Remote's `maven-metadata.xml` (and its `.sha1`) and a generic
+#        Virtual serving through a stale member.
+# #5621  Virtual metadata merges failed the whole response on one member:
+#        Helm `index.yaml` and conda `repodata.json` answered 502 with a
+#        healthy member present (and for a permanent 401/403); a hung member
+#        failed Maven `maven-metadata.xml` with 502 after the 20 s member
+#        deadline instead of serving the healthy member's versions; only
+#        unavailable members gave Maven 404 "Metadata not found"; and
+#        `virtual_metadata_partial` was not readable through the API.
+# #5622  An Alpine Virtual's APKINDEX left out hosted members' packages, and
+#        with every member down it answered 200 with an empty index.
+#
+# THE GATES
+#   (FIX)      RED on ak 1.11.13, GREEN on main. A second red image,
+#              main sha-7ebd80a (after #5568, #5670 and #5769, before #5806
+#              and #5809), isolates #5616 and the #5809 half of #5621: there
+#              the direct Remote's stale serve is marked and the two #5616
+#              routes are not.
+#              #5504 maven virtual [404 member, 503 member]: the jar and its
+#                    .sha1 are 503; generic virtual [404, 503] is 503; a
+#                    hosted member whose object is gone answers .sha1 503;
+#              #5616 Remote maven-metadata.xml and .sha1, and a generic
+#                    Virtual over an expired member, served stale with both
+#                    markers when the upstream answers 500;
+#              #5621 helm [503, ok] -> 200 merge marked partial; helm
+#                    [403, ok] -> 200, not partial; helm [503] -> 503 +
+#                    Retry-After; helm [hung, ok] and maven metadata [hung,
+#                    ok] -> 200 partial with the healthy content inside 40 s;
+#                    maven metadata [503] -> 503 (this item of #5621 was
+#                    fixed by #5670, ahead of #5809); conda repodata [500, ok]
+#                    -> 200 partial; GET /api/v1/repositories/{virtual}
+#                    returns virtual_metadata_partial;
+#              #5622 alpine virtual [hosted] and [hosted, down remote] list
+#                    the hosted package; [hosted, remote] lists both;
+#                    [down remote] -> 503 + Retry-After.
+#   (CONTROL)  must hold on BOTH images: helm [ok, ok2] merges both, not
+#              partial; maven [404, 403] answers 404 for the jar and .sha1 (a
+#              permanent 4xx is a miss); a direct generic Remote serves its
+#              expired entry stale (its markers, #4697, are main-only too,
+#              so they are reported, not asserted); an alpine virtual over
+#              one answering remote passes its APKINDEX through byte for
+#              byte, and one over a remote that 404s answers an empty 200
+#              index.
+#
+# TIMING: the hung-member cases wait out the default 20 s member deadline
+# (AK_VIRTUAL_MEMBER_METADATA_TIMEOUT_SECS); each allows 40 s.
+#
+# RATE_LIMIT_ENABLED=false: ~150 requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5504 5616 5621 5622"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

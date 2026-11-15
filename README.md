@@ -207,13 +207,22 @@ Add this to your release workflow in any Artifact Keeper repo:
 ```yaml
 jobs:
   release-gate:
+    # The gate's jobs request contents: read, and packages: read for ghcr
+    # pulls. A called workflow cannot hold more than its calling job grants,
+    # so grant both here.
+    permissions:
+      contents: read
+      packages: read
     uses: artifact-keeper/artifact-keeper-test/.github/workflows/release-gate.yml@main
     with:
       backend_tag: ${{ github.ref_name }}
-    secrets: inherit
+    # Pass only the one secret the gate declares; `secrets: inherit` would
+    # hand it every secret the calling repository holds.
+    secrets:
+      GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
 ```
 
-The release gate will block the release if any test fails.
+The release gate will block the release if any test fails. Inputs must be plain names (`^[A-Za-z0-9._/-]{1,128}$`, no leading `-`) and `backend_digest` a `sha256:` digest; anything else fails `scripts/validate-gate-inputs.sh` before the gate starts.
 
 ## Repository Structure
 

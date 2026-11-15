@@ -30,4 +30,5 @@
 # RATE_LIMIT_ENABLED=false: not under test.
 PROFILES="storage.gcs-emulator"
 ORACLE="oracle.sh"
+COVERS="5093"
 RATE_LIMIT_ENABLED="false"

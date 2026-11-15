@@ -107,9 +107,12 @@ create_provider() {
 
 # request_id <provider_id> -> the AuthnRequest ID persisted as the pending
 # single-use SSO session (must be echoed as InResponseTo).
+# The login's cookies land in a fresh jar at $KEYDIR/jar (the browser that
+# started the login); post_acs completes the sign-in in it.
 request_id() {
   local pid="$1" loc
-  loc=$(curl -s -o /dev/null -w '%{redirect_url}' \
+  : > "$KEYDIR/jar"
+  loc=$(curl -s -b "$KEYDIR/jar" -c "$KEYDIR/jar" -o /dev/null -w '%{redirect_url}' \
     "${BASE_URL}/api/v1/auth/sso/saml/${pid}/login")
   python3 - "$loc" <<'PY'
 import sys, urllib.parse, base64, re, zlib
@@ -127,13 +130,34 @@ print(m.group(1) if m else "")
 PY
 }
 
-# post_acs <provider_id> <b64payload> -> HTTP status code
+# post_acs <provider_id> <b64payload> -> HTTP status code of the sign-in.
+# An accepted response completes in one of two shapes:
+#   * up to 1.11.x the ACS itself answers 307 to /callback?code= with the
+#     session cookies;
+#   * from 1.12.0 (artifact-keeper#5486) the ACS answers 303 to
+#     /api/v1/auth/sso/complete?code=, which, in the browser that started the
+#     login (the request_id jar), answers 307 to /callback?code= with them.
+# The ACS POST is cross-site in a browser, so it carries no cookies here
+# either. For the second shape this prints /complete's status, so 307 means
+# "signed in" on both lines and a rejection is the ACS's own status.
 post_acs() {
-  local pid="$1" payload="$2"
-  curl -s -o /dev/null -w '%{http_code}' -X POST \
+  local pid="$1" payload="$2" hdr st loc
+  hdr="$(mktemp)"
+  st=$(curl -s -D "$hdr" -o /dev/null -w '%{http_code}' -X POST \
     -H 'Content-Type: application/x-www-form-urlencoded' \
     --data-urlencode "SAMLResponse=${payload}" \
-    "${BASE_URL}/api/v1/auth/sso/saml/${pid}/acs"
+    "${BASE_URL}/api/v1/auth/sso/saml/${pid}/acs")
+  loc=$(grep -i '^location:' "$hdr" | tr -d '\r' | sed 's/^[Ll]ocation: *//' | tail -1)
+  if [ "$st" = "303" ] && [[ "$loc" == /api/v1/auth/sso/complete\?code=* ]]; then
+    st=$(curl -s -b "$KEYDIR/jar" -c "$KEYDIR/jar" -D "$hdr" -o /dev/null -w '%{http_code}' "${BASE_URL}${loc}")
+    loc=$(grep -i '^location:' "$hdr" | tr -d '\r' | sed 's/^[Ll]ocation: *//' | tail -1)
+  fi
+  # "Signed in" means a 307 to /callback?code= that sets the session cookie.
+  if [ "$st" = "307" ] && { [[ "$loc" != /callback\?code=* ]] || ! grep -qi '^set-cookie: *ak_access_token=[^;]' "$hdr"; }; then
+    st="307-without-session"
+  fi
+  rm -f "$hdr"
+  echo "$st"
 }
 
 # db_saml_isadmin <external_id> -> "t" | "f" | "" (no such user)

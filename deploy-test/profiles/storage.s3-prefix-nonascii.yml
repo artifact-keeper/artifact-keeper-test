@@ -1,0 +1,19 @@
+# =============================================================================
+# profiles/storage.s3-prefix-nonascii.yml: a non-ASCII S3_PREFIX and the
+# lowest multipart server-side copy threshold
+# =============================================================================
+# Layered on top of storage.s3.yml (MinIO). Patches the backend only:
+#   * S3_PREFIX=dtf-café: every artifact key the backend writes carries a
+#     non-ASCII segment. object_store percent-encodes it on the wire, so MinIO
+#     stores it as `dtf-caf%C3%A9/...`.
+#   * S3_MAX_SINGLE_COPY_BYTES=5242880 (5 MiB, the clamp floor): a
+#     server-side copy of anything larger goes through the multipart
+#     UploadPartCopy path instead of a single CopyObject, so a tier can drive
+#     it with a 12 MiB object instead of one above the 5 GiB default.
+# A backend that predates a setting ignores it and still boots.
+# =============================================================================
+services:
+  backend:
+    environment:
+      S3_PREFIX: "dtf-café"
+      S3_MAX_SINGLE_COPY_BYTES: "5242880"

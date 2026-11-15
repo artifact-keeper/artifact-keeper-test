@@ -1,0 +1,57 @@
+# DTF tier manifest: virtual-member-fallback-strict
+#   (artifact-keeper#5810, PR #5892; main only, for 1.12.0)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files:
+# a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes over
+# a control API). One mock stands in for every Remote member: each member's
+# upstream URL is its own path prefix. The oracle makes a member hang by
+# holding its paths (POST /__delay, 120 s, longer than the 60 s upstream read
+# timeout and the 20 s download deadline).
+#
+# THE CHANGE (#5810)
+#   Since #5845 (download deadline) and #5849 (member breaker), a download
+#   through a Virtual passes over an unavailable Remote member and serves the
+#   next member's copy. Two members can hold different content at the same
+#   coordinates, so #5892 adds a per-virtual setting `virtual_member_fallback`
+#   (`available`, the default, or `strict`). In strict mode the first member in
+#   priority order that is unavailable ends the download with 503 and
+#   Retry-After. A hung member holds the download for the deadline (20 s by default),
+#   not the upstream read timeout (PROXY_UPSTREAM_READ_TIMEOUT_SECS, 60 s). A
+#   404 is still a miss.
+#
+# THE GATES
+#   (FIX)      RED on ghcr main (no setting: it is not stored or reported, and
+#              a strict virtual serves the lower member's copy after the
+#              deadline). GREEN on main + #5892.
+#              #5810 the setting is stored and read back (`strict` on the
+#                    strict virtual, `available` on an untouched one), and an
+#                    unknown value or a non-virtual is refused with 400;
+#              #5810 strict virtual [hung remote, healthy remote]: a Maven
+#                    jar download answers 503 + Retry-After inside 45 s (the
+#                    20 s deadline, not the 60 s read timeout), with none of
+#                    the lower member's bytes;
+#              #5810 strict Docker virtual [5xx remote, healthy remote]: an
+#                    OCI manifest pull by tag (`/v2/<virtual>/app/manifests/
+#                    latest`) answers 503 + Retry-After, not the lower
+#                    member's manifest.
+#   (CONTROL)  must hold on BOTH images:
+#              default virtual [hung remote, healthy remote] serves the lower
+#              member's jar 200 inside 45 s; strict virtual [404 remote,
+#              healthy remote] serves the lower member's jar (a 404 is a
+#              miss); strict virtual [healthy remote, healthy remote] serves
+#              the top member's jar; default Docker virtual [5xx remote,
+#              healthy remote] serves the lower member's manifest by tag;
+#              strict Docker virtual [anonymous remote whose token endpoint
+#              answers 401, healthy remote] serves the lower member's
+#              manifest (a token refusal is a miss, #4527).
+#
+# TIMING: two downloads wait out the default 20 s download deadline
+# (AK_VIRTUAL_MEMBER_DOWNLOAD_DEADLINE_SECS); each allows 45 s, and curl
+# allows 75 s so a wait for the full read timeout is measured, not cut off.
+#
+# RATE_LIMIT_ENABLED=false: ~40 requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5810"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

@@ -62,6 +62,23 @@
 #             member    a go.mod miss through a Go virtual with one local
 #                       member exports artifact_keeper.virtual.member_count as
 #                       the integer 1, not the string "1".
+#   (FIX #4931 item 6, #4959 + #5018) on the same `docker stop` (-t 60, so a
+#             slow stop is timed, not killed) the backend exits within 9 s of
+#             logging the SIGTERM (its "received SIGTERM" line to the
+#             runtime's FinishedAt), inside Docker's default 10 s stop grace.
+#             Timed in-process because the rootless-podman `docker stop`
+#             wall time adds 0.3-3 s, once 13 s, of runtime overhead. Before
+#             #4959 the span, log and metric providers flushed one after
+#             another, each waiting the SDK's 5 s against the dead collector:
+#             15.01-15.03 s on main d5d41b4 (3 runs), so a plain `docker stop`
+#             SIGKILLed the backend before the final flush. From #4959 they
+#             flush concurrently and #5018 puts them on one shared 5 s
+#             deadline: 5.02-5.03 s on main 2bdf092 (3 runs). The shared
+#             deadline alone is not observable end to end: main 0ea3c8d
+#             (#4959 without #5018) also exits in ~5 s, since the three
+#             flushes already start together and each is bounded by the SDK's
+#             5 s (the periodic metric reader ignores the timeout it is given
+#             either way). So this case is RED on d5d41b4, not on 0ea3c8d.
 # Leg B, signals on, OTEL_EXPORTER_OTLP_ENDPOINT="not a url" (#4931 item 2,
 #   fixed by #4959; fixtures/backend.bad-endpoint.yml).
 #   (FIX)     /readyz answers, admin login works, no panic, and stderr says
@@ -73,6 +90,7 @@
 #             does not print. RED on 1.11.9 (an empty value turns OTel on).
 #
 # RATE_LIMIT_ENABLED=false: five logins across the recreates.
+COVERS="4931"
 PROFILES="storage.filesystem telemetry.otlp-sink"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

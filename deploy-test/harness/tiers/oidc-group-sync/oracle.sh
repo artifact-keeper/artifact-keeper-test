@@ -79,20 +79,24 @@ provider_has_trust_capability() {
 }
 
 # drive_oidc_login <provider_id> <sub> <email> <groups_csv> -> AK callback status
+# The login and its callback share one cookie jar (one browser): from 1.12.0 a
+# sign-in completes only in the browser that started it (artifact-keeper#5486).
 drive_oidc_login() {
-  local pid="$1" sub="$2" email="$3" groups="$4" authz cb
-  authz=$(curl -s -o /dev/null -w '%{redirect_url}' \
+  local pid="$1" sub="$2" email="$3" groups="$4" authz cb jar st
+  jar="$(mktemp)"
+  authz=$(curl -s -b "$jar" -c "$jar" -o /dev/null -w '%{redirect_url}' \
     "${BASE_URL}/api/v1/auth/sso/oidc/${pid}/login")
-  [ -z "$authz" ] && { echo "000-no-login-redirect"; return; }
+  [ -z "$authz" ] && { rm -f "$jar"; echo "000-no-login-redirect"; return; }
   # Hand /authorize to the mock, appending this login's claim controls. The
   # mock echoes AK's state and returns an opaque signed-claims code.
   cb=$(curl -s -o /dev/null -w '%{redirect_url}' \
     "${authz}&sub=${sub}&email=${email}&groups=${groups}")
-  [ -z "$cb" ] && { echo "000-no-authorize-redirect"; return; }
+  [ -z "$cb" ] && { rm -f "$jar"; echo "000-no-authorize-redirect"; return; }
   # Follow to AK's callback: server-side token exchange + id_token verify +
   # group sync run here (synchronously, before the 307), so the DB is settled
   # by the time this returns.
-  curl -s -o /dev/null -w '%{http_code}' "$cb"
+  st=$(curl -s -b "$jar" -c "$jar" -o /dev/null -w '%{http_code}' "$cb")
+  rm -f "$jar"; echo "$st"
 }
 
 # drive_oidc_login_ex <provider_id> <sub> <email> <extra_authorize_query>
@@ -101,14 +105,16 @@ drive_oidc_login() {
 #   set a non-`groups` primary claim, add a second claim, or drive the userinfo
 #   params). e.g. extra="groups_claim=groups_direct&groups=platform%2Fbackend".
 drive_oidc_login_ex() {
-  local pid="$1" sub="$2" email="$3" extra="$4" authz cb
-  authz=$(curl -s -o /dev/null -w '%{redirect_url}' \
+  local pid="$1" sub="$2" email="$3" extra="$4" authz cb jar st
+  jar="$(mktemp)"
+  authz=$(curl -s -b "$jar" -c "$jar" -o /dev/null -w '%{redirect_url}' \
     "${BASE_URL}/api/v1/auth/sso/oidc/${pid}/login")
-  [ -z "$authz" ] && { echo "000-no-login-redirect"; return; }
+  [ -z "$authz" ] && { rm -f "$jar"; echo "000-no-login-redirect"; return; }
   cb=$(curl -s -o /dev/null -w '%{redirect_url}' \
     "${authz}&sub=${sub}&email=${email}&${extra}")
-  [ -z "$cb" ] && { echo "000-no-authorize-redirect"; return; }
-  curl -s -o /dev/null -w '%{http_code}' "$cb"
+  [ -z "$cb" ] && { rm -f "$jar"; echo "000-no-authorize-redirect"; return; }
+  st=$(curl -s -b "$jar" -c "$jar" -o /dev/null -w '%{http_code}' "$cb")
+  rm -f "$jar"; echo "$st"
 }
 
 # count of OIDC-source group memberships for external_id=$1 -> integer string
