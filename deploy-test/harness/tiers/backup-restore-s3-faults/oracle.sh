@@ -116,14 +116,18 @@ fi
 ctl "throttle?match=/${BUCKET}/&bps=${BPS}" >/dev/null
 
 begin_test "CONTROL: with the store throttled to 4 MiB/s one 24 MiB object downloads intact inside the ${BULK_TIMEOUT} s bulk timeout"
-t0="$(date +%s.%N)"
+# Elapsed time in milliseconds with bash integer arithmetic only: the
+# release-gate runner image has no bc, which left took empty and failed the
+# window check on a download that was in fact inside it.
+t0_ms=$(( $(date +%s%N) / 1000000 ))
 rm -f "$W/dl"
 c="$(curl -s -o "$W/dl" -w '%{http_code}' --max-time 120 -u "$AUTH" \
   "${BASE}/api/v1/repositories/${SLOW}/download/big/slow-1.bin" 2>/dev/null || echo 000)"
-took="$(echo "$(date +%s.%N) - $t0" | bc)"
+took_ms=$(( $(date +%s%N) / 1000000 - t0_ms ))
+took="$(printf '%d.%03d' $(( took_ms / 1000 )) $(( took_ms % 1000 )))"
 echo "-- one object: HTTP ${c} in ${took}s"
 if [ "$c" = "200" ] && [ "$(sha "$W/dl")" = "$(sha "$W/slow-1.bin")" ] \
-   && [ "$(echo "$took > 3 && $took < $BULK_TIMEOUT" | bc)" = "1" ]; then pass; else
+   && [ "$took_ms" -gt 3000 ] && [ "$took_ms" -lt $(( BULK_TIMEOUT * 1000 )) ]; then pass; else
   infra_fail "one throttled object: HTTP ${c} in ${took}s (want 200, the right bytes, 3s < t < ${BULK_TIMEOUT}s); the store is not slow enough or too slow for the gate below to mean anything"
 fi
 

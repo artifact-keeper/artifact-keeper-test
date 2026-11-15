@@ -57,7 +57,46 @@ finish_case(){ if [ "$FAILS" -eq 0 ]; then pass; else fail "$1" "$DETAIL"; fi; }
 started_at(){ docker inspect "$BACKEND_CTR" --format '{{.State.StartedAt}}' 2>/dev/null || true; }
 running(){ [ "$(docker inspect "$BACKEND_CTR" --format '{{.State.Running}}' 2>/dev/null)" = "true" ]; }
 cg_read(){ docker exec "$BACKEND_CTR" cat "/sys/fs/cgroup/$1" 2>/dev/null || true; }
-anon_bytes(){ cg_read memory.stat | awk '/^anon /{print $2}'; }
+# The backend's memory cgroup is read through the version the daemon runs.
+# cgroup v2 (this host's podman, most docker hosts) has memory.max,
+# memory.swap.max and an `anon` line in memory.stat. cgroup v1 (the
+# release-gate dind runners: an EL8 4.18 kernel, `docker info` says Cgroup
+# Version: 1) has memory/memory.limit_in_bytes, memory/memory.memsw.limit_in_bytes
+# (memory plus swap) and `total_rss` in memory/memory.stat; there is no
+# memory.max, so a v2-only read came back empty and the tier was reported as
+# uncapped although the kernel enforced the cap (OOMKilled=true at the limit).
+CG_VER=""
+cg_detect(){
+  if [ -n "$(cg_read memory.max)" ]; then CG_VER=2
+  elif [ -n "$(cg_read memory/memory.limit_in_bytes)" ]; then CG_VER=1
+  else CG_VER=""; fi
+}
+# mem_max: the cap in bytes, or "max" when there is none (v1 reports no cap as
+# a page-rounded LONG_MAX, anything at or above 2^62 here).
+mem_max(){
+  local v
+  case "$CG_VER" in
+    2) cg_read memory.max | tr -d '[:space:]' ;;
+    1) v="$(cg_read memory/memory.limit_in_bytes | tr -d '[:space:]')"
+       if [ -n "$v" ] && [ "${#v}" -ge 19 ]; then echo max; else echo "$v"; fi ;;
+  esac
+}
+# swap_max: the swap the container may use, in bytes ("?" when unreadable).
+swap_max(){
+  local m s
+  case "$CG_VER" in
+    2) s="$(cg_read memory.swap.max | tr -d '[:space:]')"; echo "${s:-?}" ;;
+    1) m="$(mem_max)"; s="$(cg_read memory/memory.memsw.limit_in_bytes | tr -d '[:space:]')"
+       if [ -n "$s" ] && [ "$m" != "max" ] && [ "${#s}" -lt 19 ]; then echo $(( s - m )); else echo "${s:-?}"; fi ;;
+    *) echo "?" ;;
+  esac
+}
+anon_bytes(){
+  case "$CG_VER" in
+    2) cg_read memory.stat | awk '/^anon /{print $2}' ;;
+    1) cg_read memory/memory.stat | awk '/^total_rss /{print $2}' ;;
+  esac
+}
 rchar(){ docker exec "$BACKEND_CTR" cat /proc/1/io 2>/dev/null | awk '/^rchar:/{print $2}'; }
 
 # Peak anonymous memory of the backend while a case runs, sampled every
@@ -94,13 +133,13 @@ wait_healthy(){ # [secs]
 # of a case. When it was OOM-killed (or died), say so, then start it again so
 # the next case is judged on its own.
 CASE_STARTED=""; CASE_MAX=""
-case_start(){ CASE_STARTED="$(started_at)"; CASE_MAX="$(cg_read memory.max | tr -d '[:space:]')"; sample_start; }
+case_start(){ CASE_STARTED="$(started_at)"; CASE_MAX="$(mem_max)"; sample_start; }
 case_survived(){ # <label>; returns 1 (and records a gate failure) if it died
   local peak st
   peak="$(sample_stop)"
   st="$(docker inspect "$BACKEND_CTR" --format 'running={{.State.Running}} oomkilled={{.State.OOMKilled}} exit={{.State.ExitCode}}' 2>/dev/null)"
   if running && [ "$(started_at)" = "$CASE_STARTED" ]; then
-    note "$1: backend stayed up under memory.max=$(cg_read memory.max) (sampled peak anon ${peak} MiB)"
+    note "$1: backend stayed up under memory.max=$(mem_max) (sampled peak anon ${peak} MiB)"
     return 0
   fi
   fail_g "$1: the backend died during the case (${st}; last sampled anon ${peak} MiB, memory.max ${CASE_MAX})"
@@ -162,17 +201,27 @@ begin_suite "bounded-memory-streaming"
 begin_test "setup: admin login, the memory cap is in force, fixtures"
 login
 if [ -z "$TOK" ]; then infra_fail "admin login failed at $BASE"; end_suite; fi
-MAX="$(cg_read memory.max | tr -d '[:space:]')"
-SWAPMAX="$(cg_read memory.swap.max | tr -d '[:space:]')"
+cg_detect
+MAX="$(mem_max)"
+SWAPMAX="$(swap_max)"
+# The cap the daemon was asked for (profiles/limits.memory.yml mem_limit) must
+# be the cap the kernel holds the container to: both are bytes and must agree.
+HC_MEM="$(docker inspect "$BACKEND_CTR" --format '{{.HostConfig.Memory}}' 2>/dev/null || true)"
+if [ -z "$CG_VER" ]; then
+  infra_fail "the backend's memory cgroup is unreadable (neither /sys/fs/cgroup/memory.max (v2) nor /sys/fs/cgroup/memory/memory.limit_in_bytes (v1) exists in ${BACKEND_CTR}; HostConfig.Memory=${HC_MEM:-?}): the cap cannot be verified"; end_suite
+fi
 if [ -z "$MAX" ] || [ "$MAX" = "max" ]; then
-  infra_fail "the backend has no memory limit (memory.max='${MAX}'); profiles/limits.memory.yml was not applied"; end_suite
+  infra_fail "the backend has no memory limit (cgroup v${CG_VER} memory limit='${MAX}', HostConfig.Memory=${HC_MEM:-?}); profiles/limits.memory.yml was not applied"; end_suite
+fi
+if [ "$HC_MEM" != "$MAX" ]; then
+  infra_fail "the backend's cgroup v${CG_VER} memory limit (${MAX}) is not the cap the daemon was given (HostConfig.Memory=${HC_MEM:-?}); the daemon cannot enforce mem_limit here"; end_suite
 fi
 SUF="${DTF_SLOT}x${RUN_ID##*-}"
 head -c $((BIG_MIB * 1048576)) /dev/urandom > "$W/big.bin"
 BIG_SHA="$(sha_of "$W/big.bin")"
 head -c $((WHEEL_MIB * 1048576)) /dev/urandom > "$W/mid.bin"
 head -c 1048576 /dev/urandom > "$W/small.bin"
-pass "memory.max=${MAX} ($(mib "$MAX") MiB), memory.swap.max=${SWAPMAX:-?}; fixtures ${BIG_MIB} MiB and ${WHEEL_MIB} MiB generated"
+pass "cgroup v${CG_VER}: memory limit ${MAX} ($(mib "$MAX") MiB, = HostConfig.Memory), swap ${SWAPMAX:-?}; fixtures ${BIG_MIB} MiB and ${WHEEL_MIB} MiB generated"
 
 # -----------------------------------------------------------------------------
 begin_test "FIX #5130: the backend reports jemalloc as its global allocator at startup"
@@ -399,7 +448,7 @@ if [ "${BK_STATUS:-}" != "completed" ] && [ -z "$SETUP_ERR" ]; then
   docker stop "$BACKEND_CTR" >/dev/null 2>&1
   docker update --memory "$CAP" --memory-swap "$CAP" "$BACKEND_CTR" >/dev/null 2>&1
   restart_backend
-  [ "$(cg_read memory.max | tr -d '[:space:]')" = "$MAX" ] || note "memory.max after re-capping: $(cg_read memory.max)"
+  [ "$(mem_max)" = "$MAX" ] || note "memory limit after re-capping: $(mem_max)"
   [ "$BK_STATUS" = "completed" ] && RESTORE_BK="$BK_ID"
 fi
 if [ -z "$RESTORE_BK" ] || [ "${BK_STATUS:-}" != "completed" ]; then

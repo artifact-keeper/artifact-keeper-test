@@ -12,9 +12,11 @@
 # A tier that proves a path streams (memory bounded by a chunk, not by the
 # object) sizes its fixtures so the total the buffering code would hold is
 # well above the cap, while the streaming code stays far below it. The
-# backend's own cgroup counters are readable from inside the container
-# (/sys/fs/cgroup/memory.max, memory.peak, memory.events) for the oracle's
-# notes.
+# backend's own cgroup counters are readable from inside the container for
+# the oracle's notes: /sys/fs/cgroup/memory.max, memory.stat on cgroup v2, and
+# /sys/fs/cgroup/memory/memory.limit_in_bytes, memory.stat on cgroup v1 (the
+# release-gate dind runners). An oracle that checks the cap reads whichever
+# exists and compares it with `docker inspect` HostConfig.Memory.
 #
 # LIMITS_MEMORY: a compose size (e.g. 768m, 1g). A tier exports it from its
 # manifest to change the default.
