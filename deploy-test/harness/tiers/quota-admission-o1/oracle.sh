@@ -38,7 +38,8 @@ psql_q() {
 # returns 0 only when the whole flow succeeded. A quota rejection can
 # legitimately surface as 413 at the session POST (unlocked preflight,
 # pre-existing status) or as 507 at complete (the locked ledger-reading
-# admission added by #2516/S2), so callers accept either.
+# admission added by #2516/S2), or from 1.11.14 as 403 QUOTA_EXCEEDED (backend
+# #5915), so callers accept any of them through quota_refused.
 upload_sized() { # <path> <size-bytes>
   local path="$1" size="$2" body sha sid
   body="$(head -c "$size" /dev/zero | tr '\0' 'a')"
@@ -50,17 +51,34 @@ upload_sized() { # <path> <size-bytes>
     -d "{\"repository_key\":\"${REPO}\",\"artifact_path\":\"${path}\",\"artifact_name\":\"$(basename "$path")\",\"artifact_version\":\"1.0.0\",\"total_size\":${size},\"checksum_sha256\":\"${sha}\",\"chunk_size\":8388608}" \
     2>/dev/null) || { UPLOAD_CODE=000; return 1; }
   UPLOAD_CODE="$(echo "$resp" | tail -n1)"
-  sid="$(echo "$resp" | head -n -1 | jq -r '.session_id // empty' 2>/dev/null || true)"
+  UPLOAD_BODY="$(echo "$resp" | head -n -1)"
+  sid="$(echo "$UPLOAD_BODY" | jq -r '.session_id // empty' 2>/dev/null || true)"
   [ -n "$sid" ] || return 1
   UPLOAD_STAGE="chunk"
-  curl -s -o /dev/null -X PATCH "${BASE_URL}/api/v1/uploads/${sid}" -H "$(auth_header)" \
+  resp=$(curl -s -w '\n%{http_code}' -X PATCH "${BASE_URL}/api/v1/uploads/${sid}" -H "$(auth_header)" \
     -H "Content-Range: bytes 0-$((size - 1))/${size}" \
     -H 'Content-Type: application/octet-stream' \
-    --data-binary "$body" 2>/dev/null || { UPLOAD_CODE=000; return 1; }
+    --data-binary "$body" 2>/dev/null) || { UPLOAD_CODE=000; return 1; }
+  UPLOAD_CODE="$(echo "$resp" | tail -n1)"
+  UPLOAD_BODY="$(echo "$resp" | head -n -1)"
+  case "$UPLOAD_CODE" in 2??) ;; *) return 1 ;; esac
   UPLOAD_STAGE="complete"
-  UPLOAD_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-    "${BASE_URL}/api/v1/uploads/${sid}/complete" -H "$(auth_header)" 2>/dev/null) || UPLOAD_CODE=000
+  resp=$(curl -s -w '\n%{http_code}' -X PUT \
+    "${BASE_URL}/api/v1/uploads/${sid}/complete" -H "$(auth_header)" 2>/dev/null) || { UPLOAD_CODE=000; return 1; }
+  UPLOAD_CODE="$(echo "$resp" | tail -n1)"
+  UPLOAD_BODY="$(echo "$resp" | head -n -1)"
   [ "$UPLOAD_CODE" = "200" ]
+}
+
+# quota_refused: the failed upload was a quota refusal: 413 at the session
+# preflight or 507 at the locked complete admission (through 1.11.13), or, from
+# 1.11.14 (backend #5915), 403 with code QUOTA_EXCEEDED at any stage. A 403
+# with any other code is a permission refusal and does not count.
+quota_refused() {
+  [ "$UPLOAD_CODE" = "507" ] && return 0
+  [ "$UPLOAD_STAGE" = "session" ] && [ "$UPLOAD_CODE" = "413" ] && return 0
+  [ "$UPLOAD_CODE" = "403" ] && \
+    [ "$(echo "${UPLOAD_BODY:-}" | jq -r '.code // empty' 2>/dev/null)" = "QUOTA_EXCEEDED" ]
 }
 
 ledger_hosted() {
@@ -98,15 +116,15 @@ else
 fi
 
 # --- (O1-ADMIT) admission is served by the counters, not a live re-SUM -------
-begin_test "O1-ADMIT: counters=quota-full + live tables under quota -> next upload 507"
+begin_test "O1-ADMIT: counters=quota-full + live tables under quota -> next upload refused (507, or 403 QUOTA_EXCEEDED from 1.11.14)"
 psql_q "UPDATE repository_usage_ledger SET hosted_bytes = ${QUOTA} WHERE repository_id = (SELECT id FROM repositories WHERE key = '${REPO}');" >/dev/null
 if upload_sized "q/x-400.bin" 400; then
   fail "upload was ADMITTED although the maintained counters are quota-full (pre-fix admission re-SUMs the live tables and ignores the ledger)"
 else
-  if [ "$UPLOAD_CODE" = "507" ] || { [ "$UPLOAD_STAGE" = "session" ] && [ "$UPLOAD_CODE" = "413" ]; }; then
+  if quota_refused; then
     pass "rejected (HTTP ${UPLOAD_CODE} at ${UPLOAD_STAGE}) off the O(1) counters"
   else
-    fail "upload failed at ${UPLOAD_STAGE} with HTTP ${UPLOAD_CODE}, expected quota rejection (413 session / 507 complete)"
+    fail "upload failed at ${UPLOAD_STAGE} with HTTP ${UPLOAD_CODE}, expected quota rejection (413 session / 507 complete / 403 QUOTA_EXCEEDED)" "${UPLOAD_BODY:0:300}"
   fi
 fi
 # Cleanup any admitted probe row + reset counters to live truth so the
@@ -126,10 +144,10 @@ begin_test "ENFORCE-REJECT: over-quota 200-byte upload (900+200>1000) -> quota r
 if upload_sized "q/c-200.bin" 200; then
   fail "over-quota upload was ADMITTED — a fast admission that leaks past the quota is worse than the slow one"
 else
-  if [ "$UPLOAD_CODE" = "507" ] || { [ "$UPLOAD_STAGE" = "session" ] && [ "$UPLOAD_CODE" = "413" ]; }; then
+  if quota_refused; then
     pass "over-quota upload rejected (HTTP ${UPLOAD_CODE} at ${UPLOAD_STAGE})"
   else
-    fail "over-quota upload failed at ${UPLOAD_STAGE} with HTTP ${UPLOAD_CODE}, expected quota rejection (413 session / 507 complete)"
+    fail "over-quota upload failed at ${UPLOAD_STAGE} with HTTP ${UPLOAD_CODE}, expected quota rejection (413 session / 507 complete / 403 QUOTA_EXCEEDED)" "${UPLOAD_BODY:0:300}"
   fi
 fi
 

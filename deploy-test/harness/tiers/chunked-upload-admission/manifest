@@ -21,7 +21,9 @@
 #                         completes 200 and downloads byte-identical.
 #   (FIX quota)           the same writer, sending the replication header, opens
 #                         a session over the quota: refused (413 at session
-#                         create, or 507 at completion if create is admitted).
+#                         create, or 507 at completion if create is admitted;
+#                         from 1.11.14, backend #5915, 403 QUOTA_EXCEEDED at any
+#                         stage, while a 403 with another code fails).
 #   (FIX quota residue)   afterwards no artifact row and no stored object hold
 #                         the refused bytes, and the path downloads 404.
 #   (CONTROL trusted)     the same over-quota replication request from an

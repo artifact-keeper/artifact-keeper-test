@@ -14,7 +14,10 @@
 #         body, and the monolithic ?digest= form) streamed the body until it
 #         crossed MAX_UPLOAD_SIZE; a client that declared more than it sent
 #         waited for the stall watchdog. The declared length is now checked
-#         first, as PATCH already did.
+#         first, as PATCH already did. The 413's OCI code is
+#         BLOB_UPLOAD_INVALID through 1.11.13 and SIZE_INVALID with detail
+#         {content_length, limit_bytes} from 1.11.14 (#5912, backend #5915);
+#         the oracle accepts either.
 #   #4664 (PR #4686): the outer API limiter overwrote the login limiter's
 #         429 headers with its own X-RateLimit-Limit: 10000.
 #   #4671 (PR #4684): POST /api/v1/plugins/install/local resolved the path on
