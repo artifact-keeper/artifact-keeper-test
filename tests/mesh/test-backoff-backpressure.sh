@@ -15,7 +15,7 @@
 #         failure must not poison the whole fan-out).
 #
 # We piggy-back on the existing degradation flow used by
-# test-peer-degradation-recovery.sh: a peer pointing at a closed port is
+# test-peer-degradation-recovery.sh: a peer pointing at an unresolvable URL is
 # considered "broken", and a peer pointing at $PEER1_URL is "healthy".
 #
 # Skip cleanly on clusters without federation enabled (404/501 on
@@ -42,7 +42,16 @@ POLICY_NAME="fed-bp-policy-${RUN_ID}"
 HEALTHY_ID=""
 BROKEN_ID=""
 POLICY_ID=""
-DEAD_URL="http://127.0.0.1:1"
+# The "broken" peer must be a URL the backend ACCEPTS but cannot reach.
+# Loopback (http://127.0.0.1:1) is not one: peer endpoint URLs pass the
+# outbound address policy, which refuses loopback with a 400 and offers no
+# setting to admit it (artifact-keeper#1868, every release since 1.2.1), so
+# the broken peer was never registered and the steps below never ran. A name
+# under the reserved `.invalid` TLD (RFC 6761) never resolves, so it is
+# accepted at registration (a down peer can still be registered) and every
+# transfer or probe to it fails at name resolution, before any connect.
+# Override with MESH_DEAD_PEER_URL.
+DEAD_URL="${MESH_DEAD_PEER_URL:-http://ak-dead-peer.invalid:1}"
 DEGRADE_TIMEOUT="${BP_DEGRADE_TIMEOUT:-30}"
 RECOVERY_TIMEOUT="${BP_RECOVERY_TIMEOUT:-60}"
 
@@ -85,17 +94,17 @@ else
   fail "healthy peer registration failed: HTTP ${status}"
 fi
 
-begin_test "Register broken peer pointing at closed port"
+begin_test "Register broken peer pointing at an unresolvable URL"
 payload="{\"name\":\"${BROKEN_PEER}\",\"endpoint_url\":\"${DEAD_URL}\",\"api_key\":\"fed-test-key\"}"
-if resp=$(api_post "/api/v1/peers" "$payload" 2>/dev/null); then
-  BROKEN_ID=$(echo "$resp" | jq -r '.id // empty')
+if api_post_capture "/api/v1/peers" "$payload"; then
+  BROKEN_ID=$(printf '%s' "$API_BODY" | jq -r '.id // empty')
   if [ -n "$BROKEN_ID" ] && [ "$BROKEN_ID" != "null" ]; then
     pass
   else
     fail "broken peer created but no id"
   fi
 else
-  fail "broken peer registration failed"
+  fail "broken peer registration failed: HTTP ${API_STATUS} ${API_BODY:0:200}"
 fi
 
 # ---------- 12.5: degraded -> backoff -> recovery ----------
