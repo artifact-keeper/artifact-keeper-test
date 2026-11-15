@@ -90,6 +90,11 @@ on:
         required: false
         type: string
         default: ''
+      scanner_adapter_tag:
+        description: 'Scanner-adapter image tag for the scanner-adapter-features-1.12.0 DTF tiers. Empty = backend_tag (the sha-<7> adapter Docker Publish builds from the same commit). The adapter has its own VERSION, so a backend release tag (X.Y.Z) names no adapter image: pass the adapter''s tag then.'
+        required: false
+        type: string
+        default: ''
       run_smoke_with_deps:
         description: |
           Run the clean-install-smoke-with-deps variant (issue #53).
@@ -127,6 +132,11 @@ on:
         default: 'main'
       cli_tag:
         description: 'ak CLI release for cli-smoke, such as v1.11.0. Empty = the latest release.'
+        required: false
+        type: string
+        default: ''
+      scanner_adapter_tag:
+        description: 'Scanner-adapter image tag for the scanner-adapter-features-1.12.0 DTF tiers. Empty = backend_tag (the sha-<7> adapter Docker Publish builds from the same commit). The adapter has its own VERSION, so a backend release tag (X.Y.Z) names no adapter image: pass the adapter''s tag then.'
         required: false
         type: string
         default: ''
@@ -218,6 +228,7 @@ jobs:
           CLI_TAG: ${{ inputs.cli_tag }}
           TEST_SUITE: ${{ inputs.test_suite }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
+          SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
         run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
@@ -3025,6 +3036,7 @@ jobs:
           CLI_TAG: ${{ inputs.cli_tag }}
           TEST_SUITE: ${{ inputs.test_suite }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
+          SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
         run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
@@ -3172,6 +3184,7 @@ jobs:
           CLI_TAG: ${{ inputs.cli_tag }}
           TEST_SUITE: ${{ inputs.test_suite }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
+          SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
         run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
@@ -4085,12 +4098,10 @@ jobs:
   #     reason:  scanners.trivy, so the adapter (or the cache-partition
   #              tier's trivy server) downloads the Trivy DB from ghcr, like
   #              supply-chain. Their red/green axis is the scanner-adapter
-  #              image (#5948, #5943, #5909, #5944), and this job runs the
-  #              published adapter :1, which moves only in the post-gate
-  #              promotion: until a 1.12.0 adapter is promoted to :1 these
-  #              FIX cases are expected red here on a 1.12.0 candidate.
-  #              Promote the group once the job is given the candidate's
-  #              adapter digest.
+  #              image (#5948, #5943, #5909, #5944), so this group runs the
+  #              candidate's adapter (inputs.scanner_adapter_tag, default
+  #              backend_tag), not the published :1. New in 1.12.0; promote
+  #              it after it holds green on two candidates.
   #   mcp-1.12.0 (mcp-publish-resolve-1120):
   #     reason:  the #5702 case (20 publishes straight after a pull-through)
   #              races the catalog commit; it is discriminating on the
@@ -4145,17 +4156,24 @@ jobs:
           # cached layer analysis out of another's (#5943), an image over
           # SCANNER_MAX_IMAGE_BYTES is refused and recorded not scanned
           # (#5909), and per-client limits, fair queueing, a background band
-          # and queue metrics (#5944). Red on every 1.11.x adapter. See the
-          # waiver above for the adapter image this job runs.
+          # and queue metrics (#5944). Red on every 1.11.x adapter.
+          # `adapter: candidate` runs the candidate's own adapter
+          # (inputs.scanner_adapter_tag, default backend_tag), not :1.
           - group: scanner-adapter-features-1.12.0
             tiers: scanner-adapter-on-demand scanner-adapter-cache-partition scanner-adapter-max-image-size scanner-adapter-fair-queue
+            adapter: candidate
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
       TIERS_LIST: ${{ matrix.tiers }}
       # Published adapter image (major tag) + the org trivy-db mirror the
       # k8s gate already uses (#301), instead of the local-build defaults.
-      SCANNER_ADAPTER_IMAGE: ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:1
+      # A group marked `adapter: candidate` runs the candidate's own adapter
+      # instead: inputs.scanner_adapter_tag, or backend_tag when that is empty
+      # (Docker Publish tags the adapter it builds from a commit sha-<7>, the
+      # same tag release-candidate.yml passes as backend_tag). Its red/green
+      # axis is the adapter, and :1 moves only in the post-gate promotion.
+      SCANNER_ADAPTER_IMAGE: ${{ matrix.adapter == 'candidate' && format('ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:{0}', inputs.scanner_adapter_tag || inputs.backend_tag) || 'ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:1' }}
       TRIVY_DB_REPOSITORY: ghcr.io/artifact-keeper/trivy-db
       # Authenticated DB pull so the adapter's trivy is not at the mercy
       # of ghcr anonymous-token throttling (see waiver above). The DTF
@@ -4416,6 +4434,7 @@ jobs:
           CLI_TAG: ${{ inputs.cli_tag }}
           TEST_SUITE: ${{ inputs.test_suite }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
+          SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
         run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
