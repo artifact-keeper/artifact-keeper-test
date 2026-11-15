@@ -1,0 +1,14 @@
+# Tier-local compose override for scan-queue-hosted-ahead-of-backfill
+# (artifact-keeper#6032, #6033). Layered on compose.base.yml, storage.filesystem,
+# upstreams.mock-files and limits.scan-one-permit (MAX_CONCURRENT_SCAN_EXTRACTIONS
+# =1) when the oracle recreates the backend for a phase. The durable scan queue
+# on, the in-process worker on or off per phase. SCAN_WORKER_CONCURRENCY and
+# SCAN_QUEUE_BACKFILL_AGING_SECS are NOT set here (the other overlays add them),
+# so the #6033 phase really runs with SCAN_WORKER_CONCURRENCY unset.
+services:
+  backend:
+    environment:
+      SCAN_QUEUE_ENABLED: "true"
+      SCAN_WORKER_ENABLED: "${DTF_SQ_WORKER:?set DTF_SQ_WORKER}"
+    logging:
+      driver: json-file

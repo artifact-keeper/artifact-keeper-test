@@ -1,0 +1,5 @@
+# A short backfill aging window for the #6032 aging phase (default 600 s).
+services:
+  backend:
+    environment:
+      SCAN_QUEUE_BACKFILL_AGING_SECS: "${DTF_SQ_AGING:?set DTF_SQ_AGING}"
