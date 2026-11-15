@@ -9,7 +9,8 @@
 #
 # Gates:
 #   CONTROL quota         non-admin chunked upload within quota -> 200 + download
-#   FIX quota             non-admin + replication header over quota -> 413/507
+#   FIX quota             non-admin + replication header over quota -> 413/507,
+#                         or 403 QUOTA_EXCEEDED from 1.12.0 (backend #5915)
 #   FIX quota residue     no artifact row, no stored object, download 404
 #   CONTROL trusted       admin + replication header over quota -> 200
 #   FIX quarantine        chunked upload into a held repo -> quarantined, 409
@@ -69,11 +70,13 @@ chunked_upload() {
   sid="$(echo "$UPLOAD_BODY" | jq -r '.session_id // empty' 2>/dev/null || true)"
   [ -n "$sid" ] || return 1
   UPLOAD_STAGE="chunk"
-  UPLOAD_CODE=$(curl -s $CURL_TIMEOUT -o /dev/null -w '%{http_code}' -X PATCH \
+  resp=$(curl -s $CURL_TIMEOUT -w '\n%{http_code}' -X PATCH \
     "${BASE_URL}/api/v1/uploads/${sid}" -H "Authorization: Bearer ${tok}" "${rh[@]}" \
     -H "Content-Range: bytes 0-$((size - 1))/${size}" \
     -H 'Content-Type: application/octet-stream' \
-    --data-binary "@${file}" 2>/dev/null) || UPLOAD_CODE=000
+    --data-binary "@${file}" 2>/dev/null) || { UPLOAD_CODE=000; return 1; }
+  UPLOAD_CODE="$(echo "$resp" | tail -n1)"
+  UPLOAD_BODY="$(echo "$resp" | head -n -1)"
   case "$UPLOAD_CODE" in 2??) ;; *) return 1 ;; esac
   UPLOAD_STAGE="complete"
   resp=$(curl -s $CURL_TIMEOUT -w '\n%{http_code}' -X PUT \
@@ -82,6 +85,15 @@ chunked_upload() {
   UPLOAD_CODE="$(echo "$resp" | tail -n1)"
   UPLOAD_BODY="$(echo "$resp" | head -n -1)"
   [ "$UPLOAD_CODE" = "200" ]
+}
+
+# quota_refused_403: the last stage answered the 1.12.0 quota refusal, 403
+# {"code":"QUOTA_EXCEEDED"} (backend #5915; checked before the body is read,
+# so at any stage). A 403 with any other code is a permission refusal and
+# does not count.
+quota_refused_403() {
+  [ "$UPLOAD_CODE" = "403" ] && \
+    [ "$(echo "$UPLOAD_BODY" | jq -r '.code // empty' 2>/dev/null)" = "QUOTA_EXCEEDED" ]
 }
 
 # download <token> <repo> <path> <outfile> -> echoes the HTTP code
@@ -173,15 +185,17 @@ fi
 OVER_PATH="q/over-repl-2000.bin"
 OVER_MARK="cua-over-${SUF}-$$-"
 make_body "$W/over.bin" 2000 "$OVER_MARK"
-begin_test "FIX quota: non-admin chunked upload over the quota with x-artifact-keeper-replication: true -> 413 at create (or 507 at completion)"
+begin_test "FIX quota: non-admin chunked upload over the quota with x-artifact-keeper-replication: true -> 413 at create (or 507 at completion; 403 QUOTA_EXCEEDED from 1.12.0)"
 if chunked_upload "$W_TOKEN" "$QREPO" "$OVER_PATH" "$W/over.bin" repl; then
-  fail "over-quota chunked upload was ADMITTED for a non-admin session that only set the replication header (want 413 at session create or 507 at completion; chunked uploads apply the quota unless the session is a trusted replication session)"
+  fail "over-quota chunked upload was ADMITTED for a non-admin session that only set the replication header (want 413 at session create, 507 at completion, or 403 QUOTA_EXCEEDED from 1.12.0; chunked uploads apply the quota unless the session is a trusted replication session)"
 elif [ "$UPLOAD_STAGE" = "session" ] && [ "$UPLOAD_CODE" = "413" ]; then
   pass "refused at session create (HTTP 413)"
 elif [ "$UPLOAD_STAGE" = "complete" ] && [ "$UPLOAD_CODE" = "507" ]; then
   pass "refused at completion (HTTP 507)"
+elif quota_refused_403; then
+  pass "refused at ${UPLOAD_STAGE} (HTTP 403 QUOTA_EXCEEDED)"
 else
-  fail "upload failed at ${UPLOAD_STAGE} with HTTP ${UPLOAD_CODE}, expected a quota refusal (413 create / 507 complete)" "${UPLOAD_BODY:0:300}"
+  fail "upload failed at ${UPLOAD_STAGE} with HTTP ${UPLOAD_CODE}, expected a quota refusal (413 create / 507 complete / 403 QUOTA_EXCEEDED)" "${UPLOAD_BODY:0:300}"
 fi
 
 begin_test "FIX quota residue: no artifact row, no stored object, download 404 for the refused upload"

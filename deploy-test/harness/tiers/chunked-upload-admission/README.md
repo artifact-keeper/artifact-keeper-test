@@ -16,7 +16,7 @@ admits writes the same way the native single-request routes do:
 | Gate | Kind | Expectation |
 |---|---|---|
 | CONTROL quota | control | non-admin chunked upload within the quota completes 200 and downloads byte-identical |
-| FIX quota | fix | non-admin writer with the replication header, over the quota: 413 at session create (or 507 at completion) |
+| FIX quota | fix | non-admin writer with the replication header, over the quota: 413 at session create (or 507 at completion); from 1.12.0 (backend #5915) 403 with `code` `QUOTA_EXCEEDED`, while a 403 with any other code still fails |
 | FIX quota residue | fix | no artifact row, no stored object with the refused bytes, download 404 |
 | CONTROL trusted | control | the same over-quota replication request from an administrator is admitted |
 | FIX quarantine | fix | chunked upload into a quarantine-enabled repository: listing and DB `quarantined`, download 409 |

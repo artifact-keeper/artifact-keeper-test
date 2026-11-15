@@ -193,9 +193,12 @@ u="$(used_of "$DQ")"
 make_image qb 100000 >/dev/null
 c="$(blob_up "$DQ" qb "$W/qb.l1")"
 denied="$(jqr '.errors[0].code // empty' < "$W/blob.resp")"
+# From 1.12.0 (backend #5915) the refusal is 403 DENIED; the quota figures in
+# errors[0].detail (limit_bytes) tell it apart from a permission DENIED.
+qlimit="$(jqr '.errors[0].detail.limit_bytes // empty' < "$W/blob.resp")"
 note "image A ${A_BYTES} bytes -> usage ${u}; image B 100000-byte layer -> ${c} ${denied}"
-if [ "$c" != "507" ] || [ "$denied" != "DENIED" ]; then
-  fail_g "a layer taking usage from ${u} past the ${QUOTA}-byte quota answered ${c} ${denied}, expected 507 DENIED"
+if [ "$denied" != "DENIED" ] || { [ "$c" != "507" ] && { [ "$c" != "403" ] || [ "$qlimit" != "$QUOTA" ]; }; }; then
+  fail_g "a layer taking usage from ${u} past the ${QUOTA}-byte quota answered ${c} ${denied} (detail.limit_bytes=${qlimit:-absent}), expected 507 DENIED, or from 1.12.0 403 DENIED with detail.limit_bytes=${QUOTA}"
 fi
 finish_case "the Docker quota is not enforced at the image's real bytes"
 
