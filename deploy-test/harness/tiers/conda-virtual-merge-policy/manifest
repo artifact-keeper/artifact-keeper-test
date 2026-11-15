@@ -31,6 +31,15 @@
 #        requests could deadlock the shared metadata budget. (Also introduced
 #        and fixed within 1.11.0: a control on 1.10.0, which has no #4051.)
 #
+# SINCE 1.12.0 (artifact-keeper#5621, PR #5809): a member that is unavailable
+#        (upstream 5xx, transport error, past the member deadline) is left out
+#        of the conda repodata.json / channeldata.json merge and the healthy
+#        merge is served 200 with X-AK-Partial-Members naming it,
+#        Cache-Control: no-store and Warning: 199, partial opt-in or not; the
+#        strict 502 now applies only to a member whose document cannot be used
+#        (the over-ceiling case). On main the 500-member case asserts that;
+#        release/1.11.x keeps the 502.
+#
 # RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
 #
 # RATE_LIMIT_ENABLED=false: one admin login then ~40 calls back to back.
