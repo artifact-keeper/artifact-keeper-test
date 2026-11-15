@@ -24,6 +24,10 @@
 #   (FIX)     PUT declaring Content-Length 2 MiB, 4 KiB sent, FIN -> 413
 #             "Object exceeds the maximum allowed size of 1048576 bytes"; a
 #             full 2 MiB PUT -> 413; the object is not downloadable.
+#             From 1.11.14 and 1.12.0 the router-wide pre-body check
+#             (artifact-keeper#5912) refuses first, so the body is the JSON
+#             refusal {code: PAYLOAD_TOO_LARGE, limit_bytes: 1048576,
+#             content_length: 2097152}; the oracle accepts either shape.
 #             RED on 1.11.1: the short body is read and answers 408
 #             incomplete_body. RED on 1.10.0: the full 2 MiB object is
 #             accepted (200) and stored.
