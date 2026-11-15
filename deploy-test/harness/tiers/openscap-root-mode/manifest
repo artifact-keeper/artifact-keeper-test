@@ -1,0 +1,27 @@
+# DTF tier manifest: openscap-root-mode
+#   (artifact-keeper#6000, fixed on main for 1.12.0)
+# Profile-set: filesystem + scanners.openscap-root: the OpenSCAP sidecar
+# started as root with OPENSCAP_RUN_AS_ROOT=true, cap_add DAC_READ_SEARCH and
+# the runtime's default seccomp profile (no seccomp=unconfined), which is the
+# configuration that makes stock Docker evaluate images.
+# LOCAL-ONLY, same fixtures as openscap-evaluates-image-rootfs.
+#
+# THE BUG: see openscap-evaluates-image-rootfs. This tier proves the opt-in
+# root mode the maintainer asked for: the wrapper evaluates the image with no
+# user namespace (each oscap child drops to UID 1001 with CAP_SYS_CHROOT and
+# CAP_DAC_READ_SEARCH and no_new_privs), so it works where user namespaces are
+# blocked. The wrapper's unit tests cover the blocked-namespace refusal.
+#
+# THE GATES: the openscap-evaluates-image-rootfs oracle's cases (CONTROL:
+# three images push, the clean image's row has neither deliberate break; FIX:
+# the noncompliant image's findings name its /etc/shadow mode and GID-0
+# group, Debian and RPM are not_applicable), plus FIX: the sidecar logged
+# isolation=root for the evaluated images. RED on main before the fix (the
+# pre-fix wrapper evaluates its own filesystem and never logs an isolation
+# mode), GREEN after it with the fixed backend and OpenSCAP images together.
+#
+# RATE_LIMIT_ENABLED=false: registry pushes and scan polls back to back.
+COVERS="6000"
+PROFILES="storage.filesystem scanners.openscap-root"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

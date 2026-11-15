@@ -19,6 +19,11 @@ source "$COMMON_SH"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SIDECAR="ak-dtf${DTF_SLOT}-openscap"
+# How the sidecar is expected to root oscap's probes in the unpacked tree:
+# `userns` (this tier: a non-root sidecar allowed user namespaces) or `root`
+# (openscap-root-mode: OPENSCAP_RUN_AS_ROOT with user namespaces blocked).
+EXPECT_ISOLATION="${OSCAP_EXPECT_ISOLATION:-userns}"
+SUITE_NAME="${OSCAP_SUITE_NAME:-openscap-evaluates-image-rootfs}"
 SCAN_WAIT=300
 R_SHADOW="xccdf_org.ssgproject.content_rule_file_permissions_etc_shadow"
 R_GID0="xccdf_org.ssgproject.content_rule_groups_no_zero_gid_except_root"
@@ -109,7 +114,7 @@ scan_now(){ # artifact_id -> prints the row after the scan settles
 }
 has_rule(){ grep -qx "$2" <<<"$1"; }
 
-begin_suite "openscap-evaluates-image-rootfs"
+begin_suite "$SUITE_NAME"
 auth_admin
 
 # =============================================================================
@@ -194,5 +199,14 @@ row="$(oscap_row "${A_RPM:-none}")"
 note "rpm: status|findings|error = ${row:-none}"
 [ "${row%%|*}" = "not_applicable" ] || fail_g "RPM openscap row '${row:-none}', expected not_applicable (pre-fix: completed with the sidecar's findings)"
 finish_case "OpenSCAP graded an RPM package"
+
+# =============================================================================
+begin_test "FIX #6000: the sidecar evaluated the images with isolation=${EXPECT_ISOLATION}"
+reset_case
+health="$(docker exec "$SIDECAR" python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8091/health').read().decode())" 2>/dev/null || true)"
+n="$(jqr ".evaluations.${EXPECT_ISOLATION} // 0" <<<"$health")"
+note "sidecar /health evaluations: $(jqr '.evaluations // "none"' <<<"$health" | tr -d '\n ') run_as_root=$(jqr '.run_as_root' <<<"$health")"
+[ "${n:-0}" -ge 2 ] 2>/dev/null || fail_g "expected at least two scans evaluated with isolation=${EXPECT_ISOLATION} (the two RHEL images); the pre-fix wrapper never enters the image and reports no evaluations"
+finish_case "the sidecar did not evaluate the images the expected way"
 
 end_suite
