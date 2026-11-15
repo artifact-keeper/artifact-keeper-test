@@ -1,4 +1,4 @@
-# DTF tier manifest: protobuf-buf-cli-hosted  (artifact-keeper#5066, #5117; fix PR #5074)
+# DTF tier manifest: protobuf-buf-cli-hosted  (artifact-keeper#5066, #5117, #6028; fix PR #5074)
 # Profile-set: filesystem + client.buf (the real bufbuild/buf 1.72.0 CLI, and
 # caddy-bsr: a plain-HTTP caddy:2 aliased bsr.dtf.local whose root is
 # rewritten onto /proto/pb-buf/, the hosted repository the oracle creates).
@@ -30,8 +30,12 @@
 #                pushed is answered to a JSON caller in the JSON shape.
 #                RED on main before #5074: the first buf call fails (415), so
 #                nothing is pushed and every later case fails.
-#   (CONTROL)    must hold on BOTH images: an anonymous call through the proxy
-#                is the backend's 401 (setup), and buf push with no token is
+#   (FIX #6028)  with no token at all, the consumer of acme/orders resolves
+#                the chain from the public repository and builds. RED before
+#                #6028: every BSR read is a POST and was refused by the
+#                anonymous-write gate (401).
+#   (CONTROL)    must hold on BOTH images: an anonymous write RPC through the
+#                proxy is the backend's 401 (setup), and buf push with no token is
 #                refused and stores nothing; the JSON codec answers as before --
 #                Upload (digest type sha256), GetModules (name owner/module, a
 #                missing module omitted from a 200), Download by label.
@@ -40,4 +44,4 @@
 PROFILES="storage.filesystem client.buf"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
-COVERS="5066 5117"
+COVERS="5066 5117 6028"
