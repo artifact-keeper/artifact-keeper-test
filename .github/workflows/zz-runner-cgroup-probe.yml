@@ -1,0 +1,55 @@
+name: Runner tier proof (throwaway, do not merge)
+on:
+  pull_request:
+    paths: ['.github/workflows/zz-runner-cgroup-probe.yml']
+permissions:
+  contents: read
+  packages: read
+jobs:
+  tiers:
+    runs-on: ak-docker-runners
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: s3-faults
+            tiers: backup-restore-s3-faults
+            limit: ''
+          - group: bounded-memory
+            tiers: bounded-memory-streaming
+            limit: ''
+          # Negative control: no cap (mem_limit 0) must stay INFRA (exit 11).
+          - group: bounded-memory-uncapped
+            tiers: bounded-memory-streaming
+            limit: '0'
+    env:
+      BACKEND_TAG: sha-15e1a48
+      BACKEND_DIGEST: sha256:f58fa0dbafed1743c42a6ebe62aa6720f638067ab428fe5d8dbcc7cb80f48a15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Runner facts
+        run: |
+          docker info 2>/dev/null | grep -E 'Cgroup|Kernel Version' || true
+          command -v bc || echo "bc: not installed"
+      - name: Authenticate docker to ghcr
+        env:
+          GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x deploy-test/harness/ghcr-docker-auth.sh
+          ./deploy-test/harness/ghcr-docker-auth.sh
+      - name: Run ${{ matrix.tiers }}
+        run: |
+          IMG="ghcr.io/artifact-keeper/artifact-keeper-backend:${BACKEND_TAG}@${BACKEND_DIGEST}"
+          chmod +x deploy-test/harness/run-tiers.sh deploy-test/harness/run.sh
+          if [ -n "${{ matrix.limit }}" ]; then export LIMITS_MEMORY="${{ matrix.limit }}"; fi
+          rc=0; ./deploy-test/harness/run-tiers.sh --backend-image "${IMG}" ${{ matrix.tiers }} || rc=$?
+          echo "run-tiers rc=${rc}"
+          if [ "${{ matrix.group }}" = "bounded-memory-uncapped" ]; then
+            grep -q 'INFRA/SETUP FAILURE (oracle exit 11)' deploy-test/results/*.log 2>/dev/null || true
+            [ "$rc" -ne 0 ] || { echo "::error::uncapped run was not red"; exit 1; }
+            echo "negative control: uncapped backend is red (rc=${rc}) as required"; exit 0
+          fi
+          exit "$rc"
