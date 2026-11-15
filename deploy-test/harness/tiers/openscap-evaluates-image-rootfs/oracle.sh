@@ -200,6 +200,10 @@ note "rpm: status|findings|error = ${row:-none}"
 [ "${row%%|*}" = "not_applicable" ] || fail_g "RPM openscap row '${row:-none}', expected not_applicable (pre-fix: completed with the sidecar's findings)"
 finish_case "OpenSCAP graded an RPM package"
 
+# openscap-root-mode sources this oracle with OSCAP_SOURCED=1 and asserts
+# the isolation case itself, so its own FIX case is in its own tier dir.
+[ -n "${OSCAP_SOURCED:-}" ] && return 0
+
 # =============================================================================
 begin_test "FIX #6000: the sidecar evaluated the images with isolation=${EXPECT_ISOLATION}"
 reset_case
