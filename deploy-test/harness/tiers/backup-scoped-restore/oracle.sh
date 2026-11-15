@@ -113,7 +113,7 @@ fi
 # =============================================================================
 # FIX: the archive holds only the scope
 # =============================================================================
-begin_test "FIX(#5884): the scoped archive holds IN's repository row and only the download of IN's artifact"
+begin_test "FIX #5884: the scoped archive holds IN's repository row and only the download of IN's artifact"
 got_repos="$(jq -r '.[].key' "$REPOS_JSON" 2>/dev/null | grep -c . )"
 has_out="$(jq -r --arg k "$OUT" '[.[] | select(.key == $k)] | length' "$REPOS_JSON" 2>/dev/null)"
 has_in="$(jq -r --arg k "$IN" '[.[] | select(.key == $k)] | length' "$REPOS_JSON" 2>/dev/null)"
@@ -125,7 +125,7 @@ fi
 # =============================================================================
 # FIX: the restore brings back IN and nothing else
 # =============================================================================
-begin_test "FIX(#5884): after OUT and IN are deleted, restoring IN's backup answers completed, brings IN back with its bytes, and leaves OUT deleted"
+begin_test "FIX #5884: after OUT and IN are deleted, restoring IN's backup answers completed, brings IN back with its bytes, and leaves OUT deleted"
 DEL_ERR=""
 for key in "$OUT" "$IN"; do
   delete_repository_and_wait "$A" "$ADMIN_TOKEN" "$key" 120 \

@@ -27,6 +27,7 @@
 #                       OUT stays deleted. Pre-fix: OUT comes back, empty.
 #
 # RATE_LIMIT_ENABLED=false: admin calls back to back.
+COVERS="5884"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
