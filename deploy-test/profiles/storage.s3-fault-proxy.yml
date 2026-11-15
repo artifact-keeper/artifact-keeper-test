@@ -1,0 +1,60 @@
+# =============================================================================
+# profiles/storage.s3-fault-proxy.yml — additive overlay: a fault-injecting
+# proxy between the backend and MinIO
+# =============================================================================
+# Layers ON TOP OF profiles/storage.s3.yml (do NOT use standalone). It:
+#   * ADDS    `s3-fault-proxy` (python:3.12-slim running the tier fixture
+#             harness/tiers/backup-restore-s3-faults/fixtures/s3_fault_proxy.py),
+#             relaying :9100 to minio:9000;
+#   * PATCHES backend.environment S3_ENDPOINT to the proxy, so every object
+#             call the backend makes goes through it;
+#   * PUBLISHES the proxy's control endpoint (:9101) on
+#             127.0.0.1:${TRIVY_PORT} (the spare per-slot port; never combined
+#             with another profile that publishes it).
+#
+# The oracle drives the proxy over that control port: hold the n-th GET of a
+# key until released (to change a backup archive between a restore's verify
+# pass and its write pass), or throttle the responses of matching GETs (a slow
+# store). With no control call the proxy is a plain relay. MinIO itself stays
+# reachable at minio:9000 for the oracle's `mc` container.
+#
+# Usage (tier manifest): PROFILES="storage.s3 storage.s3-fault-proxy".
+# =============================================================================
+services:
+  s3-fault-proxy:
+    image: python:3.12-slim
+    container_name: ak-dtf${DTF_SLOT}-s3-fault-proxy
+    command: ["python3", "-u", "/app/s3_fault_proxy.py"]
+    environment:
+      PROXY_PORT: "9100"
+      CONTROL_PORT: "9101"
+      UPSTREAM_HOST: minio
+      UPSTREAM_PORT: "9000"
+    volumes:
+      - "${DTF_DIR}/harness/tiers/backup-restore-s3-faults/fixtures/s3_fault_proxy.py:/app/s3_fault_proxy.py:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this.
+    security_opt:
+      - label=disable
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${TRIVY_PORT:?set TRIVY_PORT}:9101"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9101/__readyz',timeout=2).read()==b'ok' else 1)\""
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      s3-fault-proxy:
+        condition: service_healthy
+    environment:
+      S3_ENDPOINT: http://s3-fault-proxy:9100
+      S3_BULK_TIMEOUT_SECS: ${S3_BULK_TIMEOUT_SECS:-1800}
