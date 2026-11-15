@@ -164,9 +164,12 @@ mk(){ # <key> <format> <type> -> prints the new repository id
     | jqr '.id // empty'
 }
 # put_file <url> <file> [auth-header] -> HTTP code
+# Uploads stream from disk with -T. `--data-binary @file` reads the whole file
+# into curl's memory first, and on the release-gate runners curl died on the
+# 1 GiB fixtures ("option --data-binary: out of memory") before sending a byte.
 put_file(){
-  curl -s -o "$W/put.out" -w '%{http_code}' --max-time 900 -X PUT -H "${3:-$BASIC}" \
-    -H 'Content-Type: application/octet-stream' --data-binary @"$2" "$1" || true
+  curl -s -o "$W/put.out" -w '%{http_code}' --max-time 900 -T "$2" -H "${3:-$BASIC}" \
+    -H 'Content-Type: application/octet-stream' "$1" || true
 }
 # parallel_get <label> <url> <want-sha> [auth-header]: PARALLEL rate-limited
 # GETs at once, so each response is in flight at the same time as the others.
@@ -299,16 +302,24 @@ oci_session(){
 }
 # oci_put <file> <digest> -> sets OCI_CODE, OCI_POST (secs to last byte sent),
 # OCI_TOTAL, OCI_RCHAR (bytes the backend process read during the PUT)
+# %{time_posttransfer} is curl 8.10+; the runners ship 8.5, which rejects it
+# and shifts the other fields. Without it OCI_POST is "?" (it is only a note).
+if curl -s -o /dev/null -w '%{time_posttransfer}' file:///dev/null 2>&1 | grep -q 'unknown'; then
+  CURL_POST_FMT='?'
+else
+  CURL_POST_FMT='%{time_posttransfer}'
+fi
 oci_put(){
   local loc sep r0 r1 out
   OCI_CODE=000; OCI_POST=""; OCI_TOTAL=""; OCI_RCHAR=""
   loc="$(oci_session)" || return 0
   case "$loc" in *\?*) sep='&' ;; *) sep='?' ;; esac
   r0="$(rchar)"
-  out="$(curl -s -o "$W/oci.out" -w '%{http_code} %{time_posttransfer} %{time_total}' --max-time 900 -X PUT \
-    -H "$BASIC" -H 'Content-Type: application/octet-stream' --data-binary @"$1" "${loc}${sep}digest=$2" || true)"
+  out="$(curl -s -o "$W/oci.out" -w "%{http_code} ${CURL_POST_FMT} %{time_total}" --max-time 900 -T "$1" \
+    -H "$BASIC" -H 'Content-Type: application/octet-stream' "${loc}${sep}digest=$2" || true)"
   r1="$(rchar)"
   read -r OCI_CODE OCI_POST OCI_TOTAL <<<"$out"
+  [ -n "$OCI_CODE" ] || OCI_CODE=000
   [ -n "$r0" ] && [ -n "$r1" ] && OCI_RCHAR=$(( r1 - r0 ))
 }
 
@@ -347,10 +358,13 @@ finish_case "a layer larger than the cap could not be pushed and pulled"
 
 begin_test "FIX #5133: finalizing that whole-body PUT did not re-read the layer (backend read < 1/8 of it; pre-fix about 2x)"
 reset_case
-if [ -z "$OCI_RCHAR" ]; then
+if [ "$OCI_CODE" != "201" ]; then
+  # Without a completed PUT the backend read nothing, and rchar would pass.
+  fail_g "the whole-body PUT did not complete (${OCI_CODE}), so there was no finalize to measure"
+elif [ -z "$OCI_RCHAR" ]; then
   fail_g "could not read /proc/1/io of the backend around the PUT"
 else
-  note "backend read $(mib "$OCI_RCHAR") MiB (rchar) while finalizing a ${BIG_MIB} MiB layer; response $(awk -v t="${OCI_TOTAL:-0}" -v p="${OCI_POST:-0}" 'BEGIN{printf "%.2f", t-p}') s after the last body byte"
+  note "backend read $(mib "$OCI_RCHAR") MiB (rchar) while finalizing a ${BIG_MIB} MiB layer; response $( [ "$OCI_POST" = "?" ] && echo "at ${OCI_TOTAL}s (curl < 8.10: no last-byte time)" || awk -v t="${OCI_TOTAL:-0}" -v p="${OCI_POST:-0}" 'BEGIN{printf "%.2f s after the last body byte", t-p}')"
   [ "$OCI_RCHAR" -lt $(( BIG_MIB * 1048576 / 8 )) ] || \
     fail_g "the backend re-read $(mib "$OCI_RCHAR") MiB of the ${BIG_MIB} MiB layer before answering the final PUT (rehash/concat of a whole-body upload)"
 fi
