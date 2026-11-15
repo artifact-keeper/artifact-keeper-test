@@ -6,7 +6,7 @@
 # when its endpoint becomes unreachable and then comes back online.
 #
 # The test does not literally drop network -- instead, it registers a
-# peer pointing at a closed port to force the health probe into a degraded
+# peer pointing at an unresolvable URL to force the health probe into a degraded
 # state, then re-points the peer URL at a live endpoint and waits for
 # recovery.
 #
@@ -29,20 +29,29 @@ BASE_URL="$MAIN_URL"
 auth_admin
 
 PEER_NAME="fed-degraded-${RUN_ID}"
-DEAD_URL="http://127.0.0.1:1"   # port 1 is reserved + closed
+# The "broken" peer must be a URL the backend ACCEPTS but cannot reach.
+# Loopback (http://127.0.0.1:1) is not one: peer endpoint URLs pass the
+# outbound address policy, which refuses loopback with a 400 and offers no
+# setting to admit it (artifact-keeper#1868, every release since 1.2.1), so
+# the broken peer was never registered and the steps below never ran. A name
+# under the reserved `.invalid` TLD (RFC 6761) never resolves, so it is
+# accepted at registration (a down peer can still be registered) and every
+# transfer or probe to it fails at name resolution, before any connect.
+# Override with MESH_DEAD_PEER_URL.
+DEAD_URL="${MESH_DEAD_PEER_URL:-http://ak-dead-peer.invalid:1}"
 PEER_ID=""
 
 begin_test "Register peer pointing at unreachable URL"
 payload="{\"name\":\"${PEER_NAME}\",\"endpoint_url\":\"${DEAD_URL}\",\"api_key\":\"fed-test-key\"}"
-if resp=$(api_post "/api/v1/peers" "$payload" 2>/dev/null); then
-  PEER_ID=$(echo "$resp" | jq -r '.id // empty')
+if api_post_capture "/api/v1/peers" "$payload"; then
+  PEER_ID=$(printf '%s' "$API_BODY" | jq -r '.id // empty')
   if [ -n "$PEER_ID" ] && [ "$PEER_ID" != "null" ]; then
     pass
   else
-    fail "peer created but no id: ${resp:0:200}"
+    fail "peer created but no id: ${API_BODY:0:200}"
   fi
 else
-  fail "peer registration failed"
+  fail "peer registration failed: HTTP ${API_STATUS} ${API_BODY:0:200}"
 fi
 
 begin_test "Peer transitions to degraded within 30s"
