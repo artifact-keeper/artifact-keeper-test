@@ -1,0 +1,52 @@
+# =============================================================================
+# profiles/client.buf.yml - the real buf CLI against a hosted protobuf repo
+# =============================================================================
+# `buf` derives a registry's base URL from the first segment of a module name
+# (`<host>/<owner>/<module>`, exactly three segments) and appends the Connect
+# RPC path, so it can only reach a hosted repository whose BSR routes are
+# served at a host's root. The backend serves them under /proto/<repo>/, so a
+# reverse proxy has to map a hostname's root onto one repository; that is the
+# documented way to point buf at a hosted repository (artifact-keeper#5066).
+#
+# This overlay ADDS two services:
+#   * caddy-bsr  - caddy:2 on plain HTTP :80, aliased `bsr.dtf.local`, that
+#                  rewrites every request to /proto/pb-buf<uri> on the backend
+#                  (fixtures/Caddyfile of the protobuf-buf-cli-hosted tier).
+#                  The repository key `pb-buf` is fixed: the tier creates it.
+#   * client-buf - the real bufbuild/buf CLI (1.72.0), idling so the oracle can
+#                  `docker exec` into it. It speaks Connect with the binary
+#                  protobuf codec. TLS is switched off through its own
+#                  config (BUF_CONFIG_DIR, written by the oracle).
+#
+# Required vars (exported by run.sh): DTF_SLOT, DTF_DIR.
+# =============================================================================
+services:
+  caddy-bsr:
+    image: caddy:2
+    container_name: ak-dtf${DTF_SLOT}-caddy-bsr
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - "${DTF_DIR}/harness/tiers/protobuf-buf-cli-hosted/fixtures/Caddyfile:/etc/caddy/Caddyfile:ro"
+    # The bind-mounted fixture is unreadable to the container on an
+    # SELinux-enforcing host without this.
+    security_opt:
+      - label=disable
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      dtf:
+        aliases:
+          - bsr.dtf.local
+
+  client-buf:
+    image: bufbuild/buf:1.72.0
+    container_name: ak-dtf${DTF_SLOT}-client-buf
+    # The stock entrypoint is the buf binary; override so the container idles
+    # and the oracle can `docker exec` arbitrary shell into it.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep infinity"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dtf]
