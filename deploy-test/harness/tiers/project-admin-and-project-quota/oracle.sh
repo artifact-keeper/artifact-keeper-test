@@ -312,6 +312,73 @@ printf '%s' "$b2" | grep -q "Project storage quota exceeded" || gate "the refusa
 [ "$inb" = "0" ] || gate "${inb} artifact(s) stored in B"
 finish_case "the project quota is not enforced across its repositories"
 
+# post_len TOKEN PATH FILE -> HTTP code of a POST with the file as its body
+# (curl declares its Content-Length); body in $WORK/body. Empty TOKEN: anonymous.
+post_len() {
+  local -a args=(-s "${CURL_TIMEOUT_ARGS[@]}" -X POST -o "$WORK/body" -w '%{http_code}'
+                 -H 'Content-Type: application/octet-stream' --data-binary "@$3")
+  [ -n "$1" ] && args+=(-H "Authorization: Bearer $1")
+  : > "$WORK/body"
+  curl "${args[@]}" "${BASE_URL}$2" 2>/dev/null || echo 000
+}
+# put_len: put_file with an optional (empty = anonymous) token.
+put_len() {
+  local -a args=(-s "${CURL_TIMEOUT_ARGS[@]}" -X PUT -o "$WORK/body" -w '%{http_code}'
+                 -H 'Content-Type: application/octet-stream' --data-binary "@$3")
+  [ -n "$1" ] && args+=(-H "Authorization: Bearer $1")
+  : > "$WORK/body"
+  curl "${args[@]}" "${BASE_URL}$2" 2>/dev/null || echo 000
+}
+# no_quota_figures LABEL: the last body carries none of a quota refusal's fields.
+no_quota_figures() {
+  local f
+  for f in QUOTA_EXCEEDED limit_bytes used_bytes '"scope"' '"repository"' '"project"'; do
+    if body | grep -qF -- "$f"; then gate "$1: the refusal carries ${f}: $(snip)"; fi
+  done
+}
+
+begin_test "FIX #5912: an over-quota upload from a caller who cannot write the public repository gets the permission refusal, never the quota figures (REST and /v2)"
+reset_case
+# Two PUBLIC repositories in the quota project of the case above (8192 B cap,
+# 5 KiB already used), so a declared 5 KiB does not fit. U2 holds no grant:
+# it may read a public repository but not write it.
+PUBG="parpubg-${SLOT}-${SUF}"; PUBD="parpubd-${SLOT}-${SUF}"
+for spec in "$PUBG:generic" "$PUBD:docker"; do
+  k="${spec%%:*}"; f="${spec##*:}"
+  c="$(req POST /api/v1/repositories "$ADMIN_TOKEN" "$(jq -nc --arg k "$k" --arg f "$f" --arg p "$QP_ID" \
+    '{key:$k,name:$k,format:$f,repo_type:"local",is_public:true,project_id:$p}')")"
+  is_2xx "$c" || gate "create public ${k}: ${c} $(snip)"
+done
+rest_path="/api/v1/repositories/${PUBG}/artifacts/nw.bin"
+oci_path="/v2/${PUBD}/img/blobs/uploads/"
+# The reader: 403 FORBIDDEN (REST) / 403 DENIED (/v2), as on 1.11.x.
+c="$(put_len "$U2_T" "$rest_path" "$WORK/k5")"; q="$(jr '.code // empty')"
+note "reader REST PUT: ${c} ${q} $(snip | head -c 160)"
+[ "$c" = "403" ] && [ "$q" = "FORBIDDEN" ] || gate "reader REST PUT answered ${c} ${q} (expected 403 FORBIDDEN)"
+no_quota_figures "reader REST PUT"
+c="$(post_len "$U2_T" "$oci_path" "$WORK/k5")"; q="$(jr '.errors[0].code // empty')"
+note "reader /v2 blob upload: ${c} ${q} $(snip | head -c 160)"
+[ "$c" = "403" ] && [ "$q" = "DENIED" ] || gate "reader /v2 blob upload answered ${c} ${q} (expected 403 DENIED)"
+no_quota_figures "reader /v2 blob upload"
+# Anonymous: 401 on both.
+c="$(put_len "" "$rest_path" "$WORK/k5")"; note "anonymous REST PUT: ${c} $(snip | head -c 120)"
+[ "$c" = "401" ] || gate "anonymous REST PUT answered ${c} (expected 401)"
+no_quota_figures "anonymous REST PUT"
+c="$(post_len "" "$oci_path" "$WORK/k5")"; note "anonymous /v2 blob upload: ${c} $(snip | head -c 120)"
+[ "$c" = "401" ] || gate "anonymous /v2 blob upload answered ${c} (expected 401)"
+no_quota_figures "anonymous /v2 blob upload"
+# Control: a caller who may write still gets the quota refusal.
+c="$(put_len "$ADMIN_TOKEN" "$rest_path" "$WORK/k5")"; q="$(jr '.code // empty')"
+note "admin REST PUT: ${c} ${q}"
+quota_refused "$c" "$q" || gate "admin REST PUT over the project quota answered ${c} ${q}"
+c="$(post_len "$ADMIN_TOKEN" "$oci_path" "$WORK/k5")"
+q="$(jr '.errors[0].code // empty')"; sc="$(jr '.errors[0].detail.scope // empty')"
+note "admin /v2 blob upload: ${c} ${q} scope=${sc}"
+[ "$c" = "403" ] && [ "$q" = "DENIED" ] && [ "$sc" = "project" ] || gate "admin /v2 blob upload over the project quota answered ${c} ${q} scope=${sc}"
+inn="$(db "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key IN ('${PUBG}','${PUBD}') AND NOT a.is_deleted")"
+[ "$inn" = "0" ] || gate "${inn} artifact(s) stored"
+finish_case "a caller who cannot write is told the repository's quota and usage"
+
 begin_test "CONTROL: an npm publish into an npm repository outside any project succeeds"
 reset_case
 is_2xx "$(mkrepo "$ADMIN_TOKEN" "$NF" npm)" || gate "create ${NF}: $(snip)"
