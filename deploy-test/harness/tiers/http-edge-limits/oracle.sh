@@ -151,7 +151,12 @@ else
 fi
 finish_case "PATCH must keep refusing an over-limit declared length"
 
-begin_test "#4672: POST blobs/uploads/ (?digest= and session-create) declaring ${OVER} bytes is 413 BLOB_UPLOAD_INVALID within 2 s, before the body is sent"
+# The 413 carries OCI code BLOB_UPLOAD_INVALID through 1.11.13. From 1.11.14
+# (artifact-keeper#5912, backend #5915) MAX_UPLOAD_SIZE is checked on
+# Content-Length before the body is read and the /v2 refusal is SIZE_INVALID
+# with detail {content_length, limit_bytes}; that form must report this
+# request's declared length and the profile's limit. Either code passes.
+begin_test "#4672: POST blobs/uploads/ (?digest= and session-create) declaring ${OVER} bytes is 413 BLOB_UPLOAD_INVALID (SIZE_INVALID from 1.11.14) within 2 s, before the body is sent"
 reset_case
 BIG_D="sha256:$(head -c "$OVER" /dev/zero | sha256sum | awk '{print $1}')"
 sessions_before="$(psql_q "SELECT COUNT(*) FROM oci_upload_sessions")"
@@ -163,7 +168,16 @@ for form in "monolithic:/v2/${R_OCI}/edge/blobs/uploads/?digest=${BIG_D}" "sessi
     fail_g "${what} start answered '${st}' within 8 s, expected an immediate 413"
   else
     awk -v s="$secs" 'BEGIN{exit !(s <= 2)}' || fail_g "${what} 413 took ${secs}s, expected within 2 s"
-    case "$body" in *BLOB_UPLOAD_INVALID*) ;; *) fail_g "${what} 413 body lacks BLOB_UPLOAD_INVALID";; esac
+    code0="$(jqr '.errors[0].code // empty' <<<"$body")"
+    case "$code0" in
+      BLOB_UPLOAD_INVALID) ;;
+      SIZE_INVALID)
+        d_len="$(jqr '.errors[0].detail.content_length // empty' <<<"$body")"
+        d_lim="$(jqr '.errors[0].detail.limit_bytes // empty' <<<"$body")"
+        [ "$d_len" = "$OVER" ] && [ "$d_lim" = "$MAX_UPLOAD" ] \
+          || fail_g "${what} 413 SIZE_INVALID detail is content_length=${d_len:-<none>} limit_bytes=${d_lim:-<none>}, expected ${OVER} and ${MAX_UPLOAD}" ;;
+      *) fail_g "${what} 413 body code is '${code0:-<none>}', expected BLOB_UPLOAD_INVALID or SIZE_INVALID" ;;
+    esac
   fi
 done
 blob_n="$(psql_q "SELECT COUNT(*) FROM oci_blobs WHERE digest = '${BIG_D}'")"
