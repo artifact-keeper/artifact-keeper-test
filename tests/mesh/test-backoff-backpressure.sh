@@ -75,8 +75,36 @@ else
   fail "could not create local repo"
 fi
 
+MAIN_TOKEN="$ADMIN_TOKEN"
+
+begin_test "Create matching repo on healthy peer"
+export BASE_URL="$PEER1_URL"
+auth_admin
+PEER_TOKEN="$ADMIN_TOKEN"
+if create_local_repo "$REPO_KEY" "generic"; then
+  pass
+else
+  fail "could not create repo on healthy peer"
+fi
+export BASE_URL="$MAIN_URL"; export ADMIN_TOKEN="$MAIN_TOKEN"
+
 begin_test "Register healthy peer"
-payload="{\"name\":\"${HEALTHY_PEER}\",\"endpoint_url\":\"${PEER1_URL}\",\"api_key\":\"fed-test-key\"}"
+# The healthy peer needs a credential it accepts: main's sync worker pushes
+# with this key, and a placeholder like "fed-test-key" is answered 401, so the
+# artifact never arrives and the 12.7 check below ends in a timing skip (same
+# token minting as test-peer-failover.sh and test-artifact-sync.sh).
+HEALTHY_KEY=""
+export BASE_URL="$PEER1_URL"; export ADMIN_TOKEN="$PEER_TOKEN"
+if resp=$(api_post "/api/v1/auth/tokens" \
+    "{\"name\":\"fed-bp-key-${RUN_ID}\",\"scopes\":[\"read:artifacts\",\"write:artifacts\"]}" 2>/dev/null); then
+  HEALTHY_KEY=$(printf '%s' "$resp" | jq -r '.token // empty') || true
+fi
+export BASE_URL="$MAIN_URL"; export ADMIN_TOKEN="$MAIN_TOKEN"
+if [ -z "$HEALTHY_KEY" ] || [ "$HEALTHY_KEY" = "null" ]; then
+  HEALTHY_KEY="$PEER_TOKEN"
+fi
+payload=$(jq -nc --arg n "$HEALTHY_PEER" --arg u "$PEER1_URL" --arg k "$HEALTHY_KEY" \
+  '{name: $n, endpoint_url: $u, api_key: $k}')
 status=$(curl -s -o "${WORK_DIR}/healthy.json" -w '%{http_code}' $CURL_TIMEOUT \
   -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
   -d "$payload" "${BASE_URL}/api/v1/peers" 2>/dev/null) || status=000
@@ -229,9 +257,7 @@ else
   api_post "/api/v1/peers/${HEALTHY_ID}/sync" "" > /dev/null 2>&1 || true
 
   ORIG_BASE="$BASE_URL"; ORIG_TOK="$ADMIN_TOKEN"
-  export BASE_URL="$PEER1_URL"
-  auth_admin || true
-  create_local_repo "$REPO_KEY" "generic" > /dev/null 2>&1 || true
+  export BASE_URL="$PEER1_URL"; export ADMIN_TOKEN="$PEER_TOKEN"
 
   elapsed=0
   synced=false
