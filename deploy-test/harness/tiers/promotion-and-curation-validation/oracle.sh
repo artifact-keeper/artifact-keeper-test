@@ -120,8 +120,24 @@ for f in u1 u2 u3; do [ -n "$(upload "$UP" "f/${f}.txt" "$W/${f}.txt")" ] || fai
 for v in A_G1 A_G2 A_G3 A_N1; do [ -n "${!v}" ] || fail_g "upload for ${v} returned no artifact id"; done
 # min_health_score 0 always passes: the gate EXISTS, so evaluation has to
 # read the artifact's health score, which is what the fault below breaks.
-st="$(call POST /api/v1/quality/gates "{\"name\":\"${P}-gate\",\"repository_id\":\"${ID_G}\",\"min_health_score\":0,\"enforce_on_promotion\":true,\"action\":\"block\"}" "$W/gate.json")"
+# From 1.12 (#4994) a gate created without accepted_grade_status defaults to
+# `rated` and also refuses a repository that is not fully assessed; this
+# generic staging repository is never scanned, so it stays `unrated` and the
+# default gate would refuse every promotion. `any` keeps the gate on the
+# score alone, which is what the 1.11 gate this tier was written for did.
+# Older backends do not know the field, so it is only sent from 1.12 on
+# ("unknown" sends it too: 1.11 ignores unknown fields).
+GATE_EXTRA=""
+BACKEND_VER="$(get_backend_version)"
+if [ "$BACKEND_VER" = "unknown" ] || version_ge "$BACKEND_VER" "1.12.0"; then
+  GATE_EXTRA=",\"accepted_grade_status\":\"any\""
+fi
+st="$(call POST /api/v1/quality/gates "{\"name\":\"${P}-gate\",\"repository_id\":\"${ID_G}\",\"min_health_score\":0,\"enforce_on_promotion\":true,\"action\":\"block\"${GATE_EXTRA}}" "$W/gate.json")"
 [ "$st" = "200" ] || [ "$st" = "201" ] || fail_g "quality gate -> HTTP ${st} $(head -c 200 "$W/gate.json")"
+if [ -n "$GATE_EXTRA" ] && [ "$BACKEND_VER" != "unknown" ]; then
+  [ "$(jqr '.accepted_grade_status' < "$W/gate.json")" = "any" ] \
+    || fail_g "quality gate was not stored with accepted_grade_status any: $(head -c 300 "$W/gate.json")"
+fi
 hs_ready(){ [ "$(psql_q "SELECT count(*) FROM artifact_health_scores WHERE artifact_id IN ('${A_G1}','${A_G2}','${A_G3}')" | tr -d '[:space:]')" = "3" ]; }
 wait_until "health scores" 30 hs_ready || fail_g "health scores never appeared"
 
