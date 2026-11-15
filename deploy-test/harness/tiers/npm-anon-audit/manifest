@@ -15,23 +15,42 @@
 # (is_anonymous_readable_format_post and is_non_mutating_format_post).
 # Repository visibility is unchanged: a private repo still refuses anonymous.
 #
+# THE 1.12.0 CONTRACT CHANGE (#5631, fixed by #5778)
+# Below 1.12.0 a hosted repo, and a Remote whose upstream is unreachable,
+# answered the audit routes with an empty report (200 {}), which npm prints as
+# "found 0 vulnerabilities": a false clean result. From 1.12.0 a hosted repo
+# answers 501 {"error":"npm audit is not available through repository ..."}
+# and an unreachable Remote answers 503 {"error":"npm audit could not be
+# performed ..."}. The oracle reads the backend version from /health and
+# asserts the contract of that version; #4317 is about the route not REFUSING
+# the caller, so the honest 501/503 is a pass there and 401/403 is a fail.
+#
 # Oracle (oracle.sh, RELEASE_GATE=1):
-#   (FIX)     RED on 1.11.2: anonymous bulk + quick on a public hosted npm repo
-#             and on a public remote npm repo answer 200 with the npm JSON
-#             shape; a non-admin user with no write answers 200 on the public
-#             repo and, with a read grant, on a private repo; a real anonymous
+#   (FIX #4317) RED on 1.11.2: anonymous bulk + quick on a public hosted npm
+#             repo and on a public remote npm repo are not refused; a non-admin
+#             user with no write is not refused on the public repo nor, with a
+#             read grant, on a private repo. "Not refused" is 200 + npm JSON
+#             below 1.12.0 and 501 (hosted) / 503 (remote, no egress) with the
+#             JSON error above from 1.12.0. Below 1.12.0 a real anonymous
 #             `npm audit` against the public repo exits 0.
-#   (CONTROL) true on BOTH images: anonymous bulk + quick on a PRIVATE npm repo
-#             are refused (401, the unauthenticated challenge); admin bulk +
-#             quick work on public and private; anonymous publish (PUT) and an
-#             anonymous POST one segment past the audit route stay 401; the
-#             real anonymous `npm install` from the public repo succeeds.
+#   (FIX #5631) from 1.12.0: a real anonymous `npm audit` against the public
+#             hosted repo exits non-zero with "not available through
+#             repository", never "found 0 vulnerabilities" and never an auth
+#             refusal.
+#   (CONTROL) true on every image: anonymous bulk + quick on a PRIVATE npm
+#             repo are refused (401, the unauthenticated challenge); admin bulk
+#             + quick are not refused on public and private (same per-version
+#             answer as above); anonymous publish (PUT) and an anonymous POST
+#             one segment past the audit route stay 401; the real anonymous
+#             `npm install` from the public repo succeeds.
 #
 # UPSTREAM_ALLOW_PRIVATE_IPS stays at the base default (false): the remote
 # repo's upstream is an unresolvable `.invalid` host, so its audit falls back
-# to the handler's built-in empty report; nothing is ever fetched.
+# to the empty report (< 1.12.0) or answers 503 (>= 1.12.0); nothing is ever
+# fetched.
 # RATE_LIMIT_ENABLED=false: ~40 calls incl. Basic-auth bcrypt; keep parity with
 # the other API tiers so a re-run under load never throttles a probe into a 429.
+COVERS="4317 5631"
 PROFILES="storage.filesystem client.npm"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
