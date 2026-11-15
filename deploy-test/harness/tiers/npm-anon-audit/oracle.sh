@@ -17,10 +17,20 @@
 # 401 is the correct refusal here, not an authz denial).
 #
 # The handlers (api/handlers/npm.rs security_advisories_bulk /
-# security_audits_quick) answer a hosted repo with the built-in empty report
-# ({} for bulk; {actions,advisories,muted,metadata} for quick) and proxy a
-# Remote upstream, falling back to the same empty report when the upstream is
-# unreachable (the remote here points at an unresolvable `.invalid` host).
+# security_audits_quick) answer differently by backend version:
+#   < 1.12.0  a hosted repo gets the built-in empty report ({} for bulk;
+#             {actions,advisories,muted,metadata} for quick), and a Remote
+#             proxies its upstream, falling back to the same empty report when
+#             the upstream is unreachable. That empty report is a false
+#             "0 vulnerabilities" (artifact-keeper#5631).
+#   >= 1.12.0 (#5778, fixing #5631) a hosted repo answers
+#             501 {"error":"npm audit is not available through repository ..."}
+#             and a Remote whose upstream is unreachable answers
+#             503 {"error":"npm audit could not be performed ..."}.
+# The #4317 question is only whether the route REFUSES the caller, so on
+# >= 1.12.0 the honest 501/503 is the pass and a 401/403 (or anything else) is
+# the fail. The remote here points at an unresolvable `.invalid` host, so it is
+# always the 503 arm in DTF.
 #
 # Cases: see the manifest. run.sh exports BASE_URL, DB_CONTAINER,
 # ADMIN_USER/ADMIN_PASS, RUN_ID, DTF_SLOT, RELEASE_GATE=1, COMMON_SH.
@@ -73,17 +83,42 @@ shape_ok() {
   else jq -e 'type == "object" and has("advisories") and has("metadata")' "$WORK/last" >/dev/null 2>&1; fi
 }
 
-# expect_audit_ok LABEL REPO [curl auth args...]: both kinds 200 + JSON shape.
+# Backend version decides the expected audit answer (see the header).
+AUDIT_HONEST_MIN="1.12.0"
+BACKEND_VER="$(get_backend_version)"
+audit_honest() { [ "$BACKEND_VER" != "unknown" ] && version_ge "$BACKEND_VER" "$AUDIT_HONEST_MIN"; }
+
+# honest_ok KIND_OF_REPO CODE: the >= 1.12.0 answer for a route that was NOT
+# refused. hosted -> 501 + JSON error "not available through repository";
+# remote (unreachable upstream) -> 503 + JSON error "could not be performed".
+honest_ok() {
+  local rkind="$1" c="$2" want_code want_msg
+  if [ "$rkind" = "remote" ]; then want_code=503; want_msg="could not be performed"
+  else want_code=501; want_msg="not available through repository"; fi
+  [ "$c" = "$want_code" ] || return 1
+  jq -e --arg m "$want_msg" '(.error | type == "string") and (.error | contains($m))' "$WORK/last" >/dev/null 2>&1
+}
+
+# expect_audit_ok LABEL hosted|remote REPO [curl auth args...]: the route is
+# not refused for this caller, for both kinds. Below 1.12.0 that is 200 + the
+# npm JSON shape; from 1.12.0 it is the honest 501/503 JSON error.
 expect_audit_ok() {
-  local label="$1" repo="$2"; shift 2
+  local label="$1" rkind="$2" repo="$3"; shift 3
   local k c bad=""
   for k in bulk quick; do
     c="$(audit_post "$k" "$repo" "$@")"
     echo "-- ${label} POST ${k} /npm/${repo} -> ${c}: $(last)"
-    if [ "$c" != "200" ]; then bad="${bad} ${k}=${c}"
+    if audit_honest; then
+      honest_ok "$rkind" "$c" || bad="${bad} ${k}=${c}"
+    elif [ "$c" != "200" ]; then bad="${bad} ${k}=${c}"
     elif ! shape_ok "$k"; then bad="${bad} ${k}=200-but-not-npm-json"; fi
   done
-  if [ -z "$bad" ]; then pass; else fail "${label} audit refused or malformed:${bad}"; fi
+  if [ -z "$bad" ]; then pass
+  elif audit_honest; then
+    local want="501 'not available through repository'"
+    [ "$rkind" = "remote" ] && want="503 'could not be performed'"
+    fail "${label} audit refused or wrong answer:${bad} (backend ${BACKEND_VER} >= ${AUDIT_HONEST_MIN}: want ${want} JSON error, never 401/403)"
+  else fail "${label} audit refused or malformed:${bad}"; fi
 }
 
 npm_sh() { docker exec -i "$NPM_CTR" bash -s 2>&1; }
@@ -104,7 +139,9 @@ auth_admin
 # =============================================================================
 begin_test "SETUP: npm client, repositories, read-only user, published package"
 SETUP_ERR=""
-docker exec "$NPM_CTR" npm --version >/dev/null 2>&1 || SETUP_ERR="npm missing in ${NPM_CTR};"
+echo "-- backend version ${BACKEND_VER}: $(audit_honest && echo "honest audit contract (>= ${AUDIT_HONEST_MIN}, #5631)" || echo "empty-report audit contract (< ${AUDIT_HONEST_MIN})")"
+[ "$BACKEND_VER" != "unknown" ] || SETUP_ERR="backend version unknown from ${BASE_URL}/health;"
+docker exec "$NPM_CTR" npm --version >/dev/null 2>&1 || SETUP_ERR="${SETUP_ERR} npm missing in ${NPM_CTR};"
 PUB_ID="$(repo_create "$PUB" local true)";              [ -n "$PUB_ID" ]  || SETUP_ERR="${SETUP_ERR} create ${PUB};"
 PRIV_ID="$(repo_create "$PRIV" local false)";           [ -n "$PRIV_ID" ] || SETUP_ERR="${SETUP_ERR} create ${PRIV};"
 REM_ID="$(repo_create "$REM" remote true "$UPSTREAM")"; [ -n "$REM_ID" ]  || SETUP_ERR="${SETUP_ERR} create ${REM};"
@@ -136,17 +173,19 @@ fi
 # =============================================================================
 # FIX #4317: anonymous audit on PUBLIC npm repositories
 # =============================================================================
-begin_test "FIX #4317: anonymous bulk + quick audit on the PUBLIC hosted repo -> 200 npm JSON"
-expect_audit_ok "anon" "$PUB"
+# Expected answer per backend: < 1.12.0 200 npm JSON; >= 1.12.0 501 (hosted)
+# or 503 (remote, no egress) JSON error. Either way: never 401/403.
+begin_test "FIX #4317: anonymous bulk + quick audit on the PUBLIC hosted repo is not refused (200 npm JSON; 501 honest error from 1.12.0)"
+expect_audit_ok "anon" hosted "$PUB"
 
-begin_test "FIX #4317: anonymous bulk + quick audit on the PUBLIC remote repo -> 200 npm JSON"
-expect_audit_ok "anon" "$REM"
+begin_test "FIX #4317: anonymous bulk + quick audit on the PUBLIC remote repo is not refused (200 npm JSON; 503 upstream-unavailable from 1.12.0)"
+expect_audit_ok "anon" remote "$REM"
 
-begin_test "FIX #4317: non-admin user without write, PUBLIC hosted repo -> 200 (was 403: audit classed as a write)"
-expect_audit_ok "user(no-grants)" "$PUB" -u "${RO_USER}:${RO_PASS}"
+begin_test "FIX #4317: non-admin user without write, PUBLIC hosted repo is not refused (was 403: audit classed as a write)"
+expect_audit_ok "user(no-grants)" hosted "$PUB" -u "${RO_USER}:${RO_PASS}"
 
-begin_test "FIX #4317: non-admin user with a READ grant on the PRIVATE repo -> 200 (was 403)"
-expect_audit_ok "user(read)" "$PRIV" -u "${RO_USER}:${RO_PASS}"
+begin_test "FIX #4317: non-admin user with a READ grant on the PRIVATE repo is not refused (was 403)"
+expect_audit_ok "user(read)" hosted "$PRIV" -u "${RO_USER}:${RO_PASS}"
 
 # =============================================================================
 # CONTROLS: the fix did not open private repos or npm writes
@@ -161,11 +200,11 @@ for k in bulk quick; do
 done
 if [ -z "$bad" ]; then pass; else fail "private repo answered an anonymous audit:${bad}"; fi
 
-begin_test "CONTROL: admin bulk + quick audit on the PUBLIC hosted repo -> 200"
-expect_audit_ok "admin" "$PUB" -u "$AUTH"
+begin_test "CONTROL: admin bulk + quick audit on the PUBLIC hosted repo is not refused (200; 501 from 1.12.0)"
+expect_audit_ok "admin" hosted "$PUB" -u "$AUTH"
 
-begin_test "CONTROL: admin bulk + quick audit on the PRIVATE repo -> 200"
-expect_audit_ok "admin" "$PRIV" -u "$AUTH"
+begin_test "CONTROL: admin bulk + quick audit on the PRIVATE repo is not refused (200; 501 from 1.12.0)"
+expect_audit_ok "admin" hosted "$PRIV" -u "$AUTH"
 
 begin_test "CONTROL: anonymous publish (PUT) and an anonymous POST past the audit route stay 401"
 c1="$(code -X PUT -H 'Content-Type: application/json' -d '{"name":"dtfanon","versions":{}}' "${BASE_URL}/npm/${PUB}/dtfanon")"
@@ -194,14 +233,32 @@ if printf '%s\n' "$INST_OUT" | grep -q '^rc=0' && printf '%s\n' "$INST_OUT" | gr
   fail "anonymous npm install from public repo failed"
 fi
 
-begin_test "FIX #4317: real anonymous 'npm audit' against the PUBLIC repo exits 0"
 AUD_OUT="$(npm_sh <<SH
 cd ${CONS} && npm audit --cache ${CONS}/cache --loglevel http; echo "rc=\$?"
 SH
 )"
-printf '%s\n' "$AUD_OUT" | tail -12 | sed 's/^/   | /'
-if printf '%s\n' "$AUD_OUT" | grep -q '^rc=0' && printf '%s\n' "$AUD_OUT" | grep -q 'found 0 vulnerabilities'; then pass; else
-  fail "anonymous npm audit failed: $(printf '%s\n' "$AUD_OUT" | grep -iE 'error|401|rc=' | head -4 | tr '\n' ' ')"
+aud_grep() { printf '%s\n' "$AUD_OUT" | grep -q "$@"; }
+if audit_honest; then
+  # #5631: a hosted repo holds no advisory data, so `npm audit` must fail and
+  # say so; a clean "found 0 vulnerabilities" is the false-negative the fix
+  # removed. #4317: the failure must not be an auth refusal.
+  begin_test "FIX #5631: real anonymous 'npm audit' against the PUBLIC hosted repo exits non-zero with 'not available through repository', never 'found 0 vulnerabilities'"
+  printf '%s\n' "$AUD_OUT" | tail -12 | sed 's/^/   | /'
+  bad=""
+  aud_grep '^rc=0$' && bad="${bad} exited 0;"
+  aud_grep '^rc=' || bad="${bad} no exit code captured;"
+  aud_grep 'found 0 vulnerabilities' && bad="${bad} printed 'found 0 vulnerabilities' (false clean report);"
+  aud_grep 'not available through repository' || bad="${bad} no 'not available through repository' message;"
+  aud_grep -iE 'Unable to authenticate|E401|E403| 401 | 403 ' && bad="${bad} auth refusal (#4317);"
+  if [ -z "$bad" ]; then pass; else
+    fail "npm audit on a hosted repo did not fail honestly:${bad} $(printf '%s\n' "$AUD_OUT" | grep -iE 'error|rc=' | head -4 | tr '\n' ' ')"
+  fi
+else
+  begin_test "FIX #4317: real anonymous 'npm audit' against the PUBLIC repo exits 0"
+  printf '%s\n' "$AUD_OUT" | tail -12 | sed 's/^/   | /'
+  if aud_grep '^rc=0' && aud_grep 'found 0 vulnerabilities'; then pass; else
+    fail "anonymous npm audit failed: $(printf '%s\n' "$AUD_OUT" | grep -iE 'error|401|rc=' | head -4 | tr '\n' ' ')"
+  fi
 fi
 
 end_suite
