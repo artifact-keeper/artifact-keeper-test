@@ -3950,6 +3950,19 @@ jobs:
           # #5856). Same 1.12.0-only rule. Required.
           - group: fixes-1.12.0-backup-fresh-server
             tiers: backup-restore-fresh-server
+          # 1.12.1 fix coverage, each red on 1.12.0 and green on the fix. The
+          # scan queue claims hosted upload and pushed-image scans ahead of a
+          # fail-open proxy backlog, with aging, and an unset
+          # SCAN_WORKER_CONCURRENCY follows MAX_CONCURRENT_SCAN_EXTRACTIONS
+          # (scan-queue-hosted-ahead-of-backfill, #6032 #6033; mock-files npm
+          # upstream, bundled Grype, about 6 min green); every presigned
+          # redirect download is counted by TRANSFER_QUOTA_BYTES
+          # (transfer-quota-redirect-downloads, #6035; storage.s3 +
+          # storage.s3-presigned + limits.transfer-quota + mock-files). Both
+          # carry a 1.12.1 version floor, so a 1.12.0 candidate records them
+          # NOT APPLICABLE. Local containers only, so required.
+          - group: fixes-1.12.1
+            tiers: scan-queue-hosted-ahead-of-backfill transfer-quota-redirect-downloads
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

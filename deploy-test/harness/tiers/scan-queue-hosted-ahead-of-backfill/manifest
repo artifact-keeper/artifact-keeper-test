@@ -1,0 +1,53 @@
+# DTF tier manifest: scan-queue-hosted-ahead-of-backfill
+#   (artifact-keeper#6032, #6033; fixed for 1.12.1, version floor 1.12.1)
+# Profile-set: filesystem + upstreams.mock-files (a stdlib-python upstream the
+# oracle fills with npm packages) + limits.scan-one-permit
+# (MAX_CONCURRENT_SCAN_EXTRACTIONS=1). LOCAL-ONLY: verdicts come from the
+# backend image's bundled Grype and its seeded DB. The oracle recreates only
+# the backend (same postgres, data volume and mock) for each phase with
+# fixtures/scan-queue.yml (SCAN_QUEUE_ENABLED=true, the worker on or off), and
+# per phase fixtures/worker-concurrency.yml and fixtures/backfill-aging.yml.
+#
+# THE BUGS
+# #6032  With the durable scan queue on, hosted scans (hosted_upload,
+#        hosted_image) sat at priority 10, below every fail_open/record_only
+#        proxy scan (proxy_file, 50), with no aging: a burst of cold proxy
+#        fetches held back every upload and push verdict until the proxy
+#        backlog was empty. Since the fix hosted scans are claimed ahead of
+#        younger backfill, and a backfill job counts as queued
+#        SCAN_QUEUE_BACKFILL_AGING_SECS (default 600) later than it was, so it
+#        still goes ahead of hosted scans queued more than the window after it.
+# #6033  SCAN_WORKER_CONCURRENCY unset was a fixed 4 whatever
+#        MAX_CONCURRENT_SCAN_EXTRACTIONS said, so a one-permit pod claimed four
+#        jobs (three held a claim and showed as `running` while they waited).
+#
+# HOW THE ORDER IS MADE DETERMINISTIC: every backlog is queued with the worker
+# OFF (each first pull through the fail_open Remote is served 200 pending and
+# queues one proxy_file job), then the backend is recreated with the worker
+# ON and SCAN_WORKER_CONCURRENCY=1, so jobs run one at a time in claim order
+# and completion timestamps (scan_results.completed_at,
+# proxy_scan_results.scanned_at) are the claim order.
+#
+# THE GATES
+#   (FIX) RED on 1.12.0, GREEN on the fix:
+#     #6032 60 proxy_file jobs queued, then a generic upload and an image push
+#           into scan_on_upload repositories: both hosted verdicts land within
+#           60 s of the new backend being healthy, with at most 1 backlog verdict before
+#           them (pre-fix: all 60 first), and the backlog then drains.
+#     #6032 aging, window 20 s: 3 backfill jobs queued 35 s before a hosted
+#           upload, 3 queued right after it. Verdicts land old backfill, then
+#           the upload, then the new backfill (pre-fix: the upload last; a
+#           "hosted always first" claim: the upload first).
+#     #6033 SCAN_WORKER_CONCURRENCY unset, one extraction permit:
+#           ak_scan_worker_slots_capacity is 1 and no more than 1 scan_queue
+#           row is `running` while a 12-job backlog drains (pre-fix: 4).
+#   (CONTROL) on both images: the backlog fully drains with no proxy_file job
+#           left; SCAN_WORKER_CONCURRENCY=2 reports capacity 2.
+#
+# RATE_LIMIT_ENABLED=false: ~100 pulls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="6032 6033"
+PROFILES="storage.filesystem upstreams.mock-files limits.scan-one-permit"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

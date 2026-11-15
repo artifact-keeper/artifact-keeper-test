@@ -191,6 +191,14 @@ AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN maven_prefixes_no_nesting"
 #   mcp_namespace_grants   Phase 3: mcp_require_namespace_grant
 AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN mcp_registry mcp_registry_proxy mcp_validate mcp_lint mcp_capabilities mcp_holds_route mcp_tombstone mcp_mirror mcp_bundles mcp_namespace_grants"
 
+# 1.12.1 fixes, MAIN-only, version floor 1.12.1 in _feature_min_version, so the
+# 1.12.0 gate (and any main build still reporting 1.12.0) stands them down as
+# NOT APPLICABLE.
+#   scan_queue_hosted_ahead_of_backfill  artifact-keeper#6032
+#   scan_worker_concurrency_default      artifact-keeper#6033
+#   transfer_quota_redirect_metering     artifact-keeper#6035
+AK_BACKEND_BRANCH_MAIN="$AK_BACKEND_BRANCH_MAIN scan_queue_hosted_ahead_of_backfill scan_worker_concurrency_default transfer_quota_redirect_metering"
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------

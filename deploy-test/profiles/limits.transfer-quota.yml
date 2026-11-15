@@ -1,0 +1,15 @@
+# =============================================================================
+# profiles/limits.transfer-quota.yml: the monthly download transfer quota on
+# =============================================================================
+# Patches the backend with TRANSFER_QUOTA_BYTES (100 GiB, far above anything a
+# tier downloads, so nothing is refused): the transfer meter counts the body
+# bytes of every artifact download, and the object size of a presigned
+# redirect when its URL is issued, and GET /api/v1/system/quota reports the
+# month's `transfer_quota.used_bytes`. Each replica adds what it counted to the
+# shared counter every 10 s. A backend that predates the setting ignores it and
+# still boots.
+# =============================================================================
+services:
+  backend:
+    environment:
+      TRANSFER_QUOTA_BYTES: "107374182400"

@@ -1,0 +1,47 @@
+# DTF tier manifest: transfer-quota-redirect-downloads
+#   (artifact-keeper#6035; fixed for 1.12.1, version floor 1.12.1)
+# Profile-set: S3 (MinIO) with presigned redirect downloads (storage.s3 +
+# storage.s3-presigned) + upstreams.mock-files (a stdlib-python upstream the
+# oracle fills with an OCI blob and a PyPI simple index and wheel) +
+# limits.transfer-quota (TRANSFER_QUOTA_BYTES=100 GiB). The control phase
+# recreates only the backend with fixtures/redirect-off.yml.
+#
+# THE BUG
+# #6035  With PRESIGNED_DOWNLOADS_ENABLED and a signing backend, several
+#        download routes answered a presigned redirect without adding the
+#        object size to the transfer meter: the repository download API, an
+#        OCI blob of a virtual repository's local member, an OCI blob already
+#        in a remote repository's proxy cache, and every proxy-cache redirect
+#        (PyPI remote cache hits among them). A client could download past
+#        TRANSFER_QUOTA_BYTES on those routes.
+#
+# THE GATES (each download is measured alone: transfer_quota.used_bytes from
+# GET /api/v1/system/quota before it, then polled until it has grown by the
+# object size or 25 s pass; the growth must be at least the object size and
+# at most the size plus 128 KiB, so a missed count and a double count both
+# fail)
+#   (FIX)     RED on 1.12.0, GREEN on the fix. Redirects on; each answer must
+#             be a 302/307 with `X-Artifact-Storage: redirect-*` and an empty
+#             body:
+#             GET /api/v1/repositories/<generic>/download/<path>
+#             GET /v2/<virtual>/img/blobs/<digest> (a local member's blob)
+#             GET /v2/<remote>/img/blobs/<digest> (cached by a first pull)
+#             GET /pypi/<remote>/simple/<project>/<wheel> (cached likewise)
+#   (CONTROL) on both images:
+#             GET /v2/<local>/img/blobs/<digest> redirected (counted before
+#             the fix too); and with redirects off, the same five downloads
+#             stream 200 with the exact bytes and count the same sizes.
+#
+# DEPLOYMENT SETTINGS this tier provisions (and needs from any deployment it
+# is pointed at): STORAGE_BACKEND=s3, PRESIGNED_DOWNLOADS_ENABLED=true,
+# S3_REDIRECT_DOWNLOADS=true, S3_PUBLIC_ENDPOINT, TRANSFER_QUOTA_BYTES. A
+# deployment without a transfer quota or without redirects is a FAIL under
+# RELEASE_GATE=1 (this profile set provisions both) and a SKIP outside it.
+#
+# RATE_LIMIT_ENABLED=false: quota polls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="6035"
+PROFILES="storage.s3 storage.s3-presigned upstreams.mock-files limits.transfer-quota"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

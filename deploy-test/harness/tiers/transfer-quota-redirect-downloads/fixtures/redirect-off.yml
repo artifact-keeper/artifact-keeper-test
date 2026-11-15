@@ -1,0 +1,9 @@
+# Tier-local compose override for transfer-quota-redirect-downloads
+# (artifact-keeper#6035): the control phase recreates the backend with
+# presigned redirect downloads OFF, on the same MinIO store, so every download
+# below streams through the backend and the meter counts its body bytes.
+services:
+  backend:
+    environment:
+      PRESIGNED_DOWNLOADS_ENABLED: "false"
+      S3_REDIRECT_DOWNLOADS: "false"

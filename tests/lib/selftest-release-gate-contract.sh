@@ -413,6 +413,18 @@ run_case "no gate + version-gated skip -> graceful skip, exit 0" 0 "${WORK}/suit
   "NOT APPLICABLE TO THIS VERSION" "INFRA/SETUP FAILURE" \
   BASE_URL="$STUB_URL"
 
+# AK_BACKEND_VERSION_OVERRIDE: a fix image that still reports the previous
+# version runs its gated tests when the operator sets the override locally...
+run_case "gate + override at the floor -> gated test runs, exit 0" 0 "${WORK}/suite-feature.sh" \
+  "1 passed, 0 failed, 0 skipped" "NOT APPLICABLE" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1 AK_BACKEND_VERSION_OVERRIDE="$FEATURE_FLOOR"
+
+# ... and a release-gate CI run ignores it, so the gate always judges the
+# version the candidate reports.
+run_case "gate in CI + override -> ignored, not applicable" 0 "${WORK}/suite-feature.sh" \
+  "AK_BACKEND_VERSION_OVERRIDE is ignored in a release-gate CI run" "1 passed" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1 GITHUB_ACTIONS=true AK_BACKEND_VERSION_OVERRIDE="$FEATURE_FLOOR"
+
 stop_stub
 
 echo ""

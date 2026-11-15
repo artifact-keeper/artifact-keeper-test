@@ -261,6 +261,24 @@ BACKEND_VERSION_PROBE_TIMEOUT="${BACKEND_VERSION_PROBE_TIMEOUT:-5}"
 # would read correctly and do nothing. The fail-closed decision therefore lives
 # in require_feature, which runs in the caller's own shell.
 get_backend_version() {
+  # AK_BACKEND_VERSION_OVERRIDE: validate a fix image ahead of its version bump.
+  # A fix for X.Y.Z usually merges while the backend still reports the previous
+  # version (release-prep bumps it), so the companion tests gated at X.Y.Z
+  # would stand down as NOT APPLICABLE on the very image that carries the fix.
+  # Setting the override makes every require_feature decision in the process use
+  # that version instead of /health. It is refused inside GitHub Actions under
+  # RELEASE_GATE=1, so a gate run always judges the version the candidate
+  # reports. The warning goes to stderr: stdout is the captured value.
+  if [ -z "$BACKEND_VERSION" ] && [ -n "${AK_BACKEND_VERSION_OVERRIDE:-}" ]; then
+    if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ "${RELEASE_GATE:-0}" = "1" ]; then
+      echo "  WARN: AK_BACKEND_VERSION_OVERRIDE is ignored in a release-gate CI run; probing ${BASE_URL}/health" >&2
+    elif ! [[ "$AK_BACKEND_VERSION_OVERRIDE" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+      echo "  WARN: AK_BACKEND_VERSION_OVERRIDE='${AK_BACKEND_VERSION_OVERRIDE}' is not a version (X.Y.Z); ignored, probing ${BASE_URL}/health" >&2
+    else
+      echo "  WARN: backend version taken from AK_BACKEND_VERSION_OVERRIDE=${AK_BACKEND_VERSION_OVERRIDE}, not from /health" >&2
+      BACKEND_VERSION="$AK_BACKEND_VERSION_OVERRIDE"
+    fi
+  fi
   if [ -z "$BACKEND_VERSION" ]; then
     local _attempt _probe
     for _attempt in $(seq 1 "$BACKEND_VERSION_PROBE_ATTEMPTS"); do
@@ -483,6 +501,24 @@ _feature_min_version() {
     # absent. Phase 2/3 tokens share the floor for the same reason; raise a
     # floor here if a capability ships on a line whose version says otherwise.
     "mcp_registry"|"mcp_registry_proxy"|"mcp_validate"|"mcp_lint"|"mcp_capabilities"|"mcp_holds_route"|"mcp_tombstone"|"mcp_mirror"|"mcp_bundles"|"mcp_namespace_grants") echo "1.11.3" ;;
+    # 1.12.1 fixes. The fix images report 1.12.0 until release-prep bumps the
+    # version, so validate them with AK_BACKEND_VERSION_OVERRIDE=1.12.1 (see
+    # get_backend_version); the 1.12.0 gate stands these tiers down as NOT
+    # APPLICABLE.
+    # scan_queue_hosted_ahead_of_backfill: with SCAN_QUEUE_ENABLED, hosted
+    # upload and pushed-image scans are claimed ahead of a fail-open proxy
+    # backlog, which ages (SCAN_QUEUE_BACKFILL_AGING_SECS) so it still drains
+    # (artifact-keeper#6032). Gates
+    # deploy-test/harness/tiers/scan-queue-hosted-ahead-of-backfill.
+    "scan_queue_hosted_ahead_of_backfill") echo "1.12.1" ;;
+    # scan_worker_concurrency_default: SCAN_WORKER_CONCURRENCY unset means
+    # MAX_CONCURRENT_SCAN_EXTRACTIONS, not a fixed 4 (artifact-keeper#6033).
+    # Same tier.
+    "scan_worker_concurrency_default") echo "1.12.1" ;;
+    # transfer_quota_redirect_metering: every presigned redirect download adds
+    # the object size to the TRANSFER_QUOTA_BYTES meter (artifact-keeper#6035).
+    # Gates deploy-test/harness/tiers/transfer-quota-redirect-downloads.
+    "transfer_quota_redirect_metering") echo "1.12.1" ;;
     *) return 1 ;;
   esac
 }

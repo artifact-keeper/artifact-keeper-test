@@ -1,0 +1,7 @@
+# SCAN_WORKER_CONCURRENCY set explicitly (the #6032 ordering phases use 1, so
+# the claim order is the completion order on every image; the #6033 control
+# uses 2).
+services:
+  backend:
+    environment:
+      SCAN_WORKER_CONCURRENCY: "${DTF_SQ_CONCURRENCY:?set DTF_SQ_CONCURRENCY}"
