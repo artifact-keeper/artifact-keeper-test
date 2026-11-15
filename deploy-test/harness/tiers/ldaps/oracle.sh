@@ -14,6 +14,9 @@
 #   secure-by-default (false + no CA) REJECTS the self-signed bind, while
 #   skip=true OR the correct CA lets it SUCCEED. Same server/user/creds across
 #   the pair — the ONLY difference is the per-provider TLS option.
+#   Each provider that signs in uses its own directory user (#5483 binds an
+#   account to the provider that created it); a seventh case asserts that
+#   binding for the same DN through a second provider.
 #
 # Appended cases (see the manifest): #4648, #4638 (1.11.2), #3505, #4475 and
 # #3904 (1.11.0) against the same LDAP server, a SAML provider created through
@@ -36,6 +39,18 @@ LDAP_BIND_PW="adminpass"
 LDAP_BASE="dc=dtf,dc=local"
 LDAP_USER="alice"
 LDAP_USER_PW="alicepass"
+# #5483 (1.12.0, 1.11.14): a federated account is bound to the provider that
+# created it, so the same DN signing in through a second provider is a second
+# account, and its username collides with the first one (409). Each provider
+# that must sign in successfully therefore gets its own directory user: alice
+# through the skip=true provider, CA_USER through the CA provider, NEG_USER
+# through the negative provider once it is flipped. Their passwords are drawn
+# at run time and the entries are added after the static seed below.
+CA_USER="bob"
+NEG_USER="carol"
+rand_pw(){ printf 'Dtf-%s' "$(od -An -N9 -tx1 /dev/urandom | tr -d ' \n')"; }
+CA_USER_PW="$(rand_pw)"
+NEG_USER_PW="$(rand_pw)"
 CA_PEM="$(cat "${DTF_DIR}/harness/tiers/ldaps/fixtures/ca.crt")"
 
 begin_suite "ldaps-per-provider-tls-2782"
@@ -79,12 +94,12 @@ create_provider() {
   printf '%s\t%s' "$id" "$out"
 }
 
-# ldap_login PROVIDER_ID [PASSWORD] -> echoes HTTP status
+# ldap_login PROVIDER_ID [PASSWORD] [USERNAME] -> echoes HTTP status
 ldap_login() {
-  local id="$1" pw="${2:-$LDAP_USER_PW}"
+  local id="$1" pw="${2:-$LDAP_USER_PW}" user="${3:-$LDAP_USER}"
   curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
     -X POST -H "Content-Type: application/json" \
-    -d "$(jq -n --arg u "$LDAP_USER" --arg p "$pw" '{username:$u, password:$p}')" \
+    -d "$(jq -n --arg u "$user" --arg p "$pw" '{username:$u, password:$p}')" \
     "${BASE_URL}/api/v1/auth/sso/ldap/${id}/login" 2>/dev/null || echo "000"
 }
 
@@ -100,14 +115,33 @@ db_provider_cols() {
 # ---------------------------------------------------------------------------
 # Seed the test user into LDAP (idempotent).
 # ---------------------------------------------------------------------------
-begin_test "Seed uid=${LDAP_USER} into LDAPS server"
+begin_test "Seed uid=${LDAP_USER}, uid=${CA_USER} and uid=${NEG_USER} into LDAPS server"
 seed_out=$(docker exec -i "$LDAP_CONTAINER" ldapadd -x -H ldap://localhost:389 \
   -D "$LDAP_BIND_DN" -w "$LDAP_BIND_PW" < "${DTF_DIR}/harness/tiers/ldaps/fixtures/seed.ldif" 2>&1)
 # Success, or already present from a prior attempt in the same slot.
-if printf '%s' "$seed_out" | grep -qiE 'adding new entry|Already exists'; then
+if ! printf '%s' "$seed_out" | grep -qiE 'adding new entry|Already exists'; then
+  fail "could not seed LDAP user (ldapadd output)" "$seed_out"
+  end_suite
+fi
+# The per-provider users (#5483), with their run-time passwords. -c keeps
+# going past an entry left by an earlier attempt in the same slot; such an
+# entry gets this run's password below.
+seed2_out=$({
+  for pair in "${CA_USER}:${CA_USER_PW}" "${NEG_USER}:${NEG_USER_PW}"; do
+    u="${pair%%:*}"; p="${pair#*:}"
+    printf 'dn: uid=%s,ou=people,%s\nobjectClass: inetOrgPerson\nuid: %s\ncn: %s\nsn: Example\nmail: %s@dtf.local\nuserPassword: %s\n\n' \
+      "$u" "$LDAP_BASE" "$u" "$u" "$u" "$p"
+  done
+} | docker exec -i "$LDAP_CONTAINER" ldapadd -c -x -H ldap://localhost:389 -D "$LDAP_BIND_DN" -w "$LDAP_BIND_PW" 2>&1)
+for pair in "${CA_USER}:${CA_USER_PW}" "${NEG_USER}:${NEG_USER_PW}"; do
+  u="${pair%%:*}"; p="${pair#*:}"
+  docker exec "$LDAP_CONTAINER" ldappasswd -x -H ldap://localhost:389 -D "$LDAP_BIND_DN" -w "$LDAP_BIND_PW" \
+    -s "$p" "uid=${u},ou=people,${LDAP_BASE}" >/dev/null 2>&1
+done
+if printf '%s' "$seed2_out" | grep -qiE "adding new entry \"uid=${NEG_USER},|Already exists"; then
   pass
 else
-  fail "could not seed LDAP user (ldapadd output)" "$seed_out"
+  fail "could not seed the per-provider LDAP users (ldapadd output)" "$seed2_out"
   end_suite
 fi
 
@@ -149,7 +183,7 @@ NEG_ID="${res%%$'\t'*}"
 if [ -z "$NEG_ID" ]; then
   fail "could not create negative provider" "${res#*$'\t'}"
 else
-  neg_status=$(ldap_login "$NEG_ID")
+  neg_status=$(ldap_login "$NEG_ID" "$NEG_USER_PW" "$NEG_USER")
   if [ "$neg_status" != "200" ]; then
     pass   # rejected (401/500/502) — untrusted self-signed cert, as designed
   else
@@ -185,7 +219,7 @@ CA_ID="${res%%$'\t'*}"
 if [ -z "$CA_ID" ]; then
   fail "could not create ca_certificate provider" "${res#*$'\t'}"
 else
-  ca_status=$(ldap_login "$CA_ID")
+  ca_status=$(ldap_login "$CA_ID" "$CA_USER_PW" "$CA_USER")
   if [ "$ca_status" = "200" ]; then
     pass
   else
@@ -204,7 +238,7 @@ else
   curl -s -o /dev/null -X PUT -H "$(auth_header)" -H "Content-Type: application/json" \
     -d '{"insecure_skip_verify":true}' \
     "${BASE_URL}/api/v1/admin/sso/ldap/${NEG_ID}" 2>/dev/null
-  flip_status=$(ldap_login "$NEG_ID")
+  flip_status=$(ldap_login "$NEG_ID" "$NEG_USER_PW" "$NEG_USER")
   if [ "$flip_status" = "200" ]; then
     pass
   else
@@ -228,6 +262,43 @@ else
   else
     # A non-200 that is not 401 still means "rejected"; accept but note it.
     pass
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Test 7 — #5483: alice, bound to the skip=true provider, signs in through the
+# CA provider (same directory, same DN). On a backend with provider binding
+# (users.auth_provider_id, migration 350: 1.12.0 and 1.11.14) that is a second
+# account whose username collides: 409, and alice's account stays bound to
+# the skip=true provider. Before it, the DN alone found the same account: 200.
+# The gate is the column, not the reported version, because release/1.11.x
+# images built before the 1.11.14 version bump already carry migration 350.
+# ---------------------------------------------------------------------------
+begin_test "#5483: the same DN through a second LDAP provider is not the first provider's account"
+if [ -z "${POS_ID:-}" ] || [ -z "${CA_ID:-}" ]; then
+  fail "the skip=true or the CA provider was not created"
+else
+  has_binding=$(docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
+    "SELECT count(*) FROM information_schema.columns WHERE table_name='users' AND column_name='auth_provider_id';" \
+    2>/dev/null | tr -d '[:space:]')
+  cross_status=$(ldap_login "$CA_ID")
+  if [ "$has_binding" = "1" ]; then
+    bound=$(docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
+      "SELECT count(*) || '|' || coalesce(string_agg(auth_provider_id::text, ','), '') FROM users WHERE username='${LDAP_USER}';" \
+      2>/dev/null | tr -d '[:space:]')
+    echo "   provider binding present: alice through the CA provider -> ${cross_status}; users named alice: ${bound}"
+    if [ "$cross_status" = "409" ] && [ "$bound" = "1|${POS_ID}" ]; then
+      pass
+    else
+      fail "expected 409 and one alice account bound to the skip=true provider (${POS_ID}), got ${cross_status} and '${bound}'"
+    fi
+  else
+    echo "   no provider binding (pre-#5483): alice through the CA provider -> ${cross_status}"
+    if [ "$cross_status" = "200" ]; then
+      pass
+    else
+      fail "expected 200 (the DN finds the same account before #5483), got ${cross_status}"
+    fi
   fi
 fi
 
