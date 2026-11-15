@@ -143,7 +143,22 @@ python3 -I "${FX}/short_body.py" 127.0.0.1 "$HTTP_PORT" PUT "/lfs/${REPO[gitlfs]
 CODE="$(head -1 "${W}/short")"; BODY="$(tail -n +2 "${W}/short")"
 note "LFS PUT declaring 2 MiB, 4 KiB sent, FIN -> ${CODE} ${BODY:0:120}"
 [ "$CODE" = "413" ] || fail_g "the declared-oversize LFS PUT answered ${CODE}, expected 413 before the body is read"
-grep -q "Object exceeds the maximum allowed size of ${LIMIT} bytes" <<<"$BODY" || fail_g "the refusal does not name the ${LIMIT}-byte object limit"
+# The refusal names the limit in one of two shapes. Through 1.11.13 the LFS
+# handler's own declared-length check answers {"message": "Object exceeds the
+# maximum allowed size of N bytes"}. From 1.11.14 and 1.12.0 the router-wide
+# pre-body check (artifact-keeper#5912) answers first with the JSON refusal
+# {code: PAYLOAD_TOO_LARGE, limit_bytes: N, content_length: <declared>}. The
+# 413 on a body cut short is what proves the body was not read (an image that
+# reads it answers 408 incomplete_body); this only checks which limit it cites.
+if grep -q "Object exceeds the maximum allowed size of ${LIMIT} bytes" <<<"$BODY"; then
+  note "the refusal is the LFS handler's (names ${LIMIT} bytes)"
+elif [ "$(jqr '.code' <<<"$BODY")" = "PAYLOAD_TOO_LARGE" ] \
+  && [ "$(jqr '.limit_bytes' <<<"$BODY")" = "$LIMIT" ] \
+  && [ "$(jqr '.content_length' <<<"$BODY")" = "2097152" ]; then
+  note "the refusal is the pre-body upload-size check (limit_bytes ${LIMIT}, content_length 2097152)"
+else
+  fail_g "the refusal does not name the ${LIMIT}-byte object limit"
+fi
 send -X PUT -u "admin:${ADMIN_PASS}" -H 'Content-Type: application/octet-stream' --data-binary @"${W}/big.bin" \
   "${BASE}/lfs/${REPO[gitlfs]}/objects/${BIG_OID}"
 note "LFS PUT 2 MiB in full -> ${CODE} ${BODY:0:120}"
