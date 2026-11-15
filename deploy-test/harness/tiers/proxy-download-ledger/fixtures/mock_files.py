@@ -21,6 +21,9 @@
 #                                      n and a short body, whatever is stored
 #                                      (0 clears). An S3 bucket without list
 #                                      permission answers 403 for a missing key.
+#                                      Optional &challenge=<v>: also send
+#                                      `WWW-Authenticate: <v>` with it (an OCI
+#                                      registry's Bearer challenge).
 #   GET  /__requests?path=<p>          {"path", "get", "head", "conditional"}:
 #                                      requests seen for <p> (any status).
 #   GET  /__log                        every request seen, one per line:
@@ -52,6 +55,7 @@ LOCK = threading.Lock()
 FILES = {}    # path -> (body, ctype, etag)
 DELAYS = {}   # path -> ms
 STATUS = {}   # path -> forced status code
+CHALLENGE = {}  # path -> WWW-Authenticate sent with the forced status
 COUNTS = {}   # path -> {"get": n, "head": n, "conditional": n}
 LOG = []
 
@@ -92,11 +96,13 @@ class Handler(BaseHTTPRequestHandler):
             entry = FILES.get(p)
             delay = DELAYS.get(p, 0)
             forced = STATUS.get(p, 0)
+            challenge = CHALLENGE.get(p)
         if delay and not head:
             time.sleep(delay / 1000.0)
         if forced:
             code = forced
-            self._send(forced, b'{"errors":[{"detail":"forced status"}]}', "application/json", head=head)
+            extra = {"WWW-Authenticate": challenge} if challenge else None
+            self._send(forced, b'{"errors":[{"detail":"forced status"}]}', "application/json", extra, head=head)
         elif entry is None:
             code = 404
             self._send(404, b'{"errors":[{"detail":"not found"}]}', "application/json", head=head)
@@ -163,11 +169,16 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/__status":
             p = q.get("path", [""])[0]
             code = int(q.get("code", ["0"])[0])
+            challenge = q.get("challenge", [""])[0]
             with LOCK:
                 if code:
                     STATUS[p] = code
                 else:
                     STATUS.pop(p, None)
+                if code and challenge:
+                    CHALLENGE[p] = challenge
+                else:
+                    CHALLENGE.pop(p, None)
             return self._json(200, {"path": p, "code": code})
         return self._json(404, {"error": "unknown control endpoint"})
 
