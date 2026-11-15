@@ -37,6 +37,12 @@ code_to_file() { # URL OUTFILE [curl args...]
 }
 is_2xx() { case "$1" in 2??) return 0 ;; *) return 1 ;; esac; }
 jcode() { jq -r '.code // .errors[0].code // empty' "$1" 2>/dev/null; }
+# quota_status_ok <status> <body file>: the status of a quota refusal. 507 on
+# the 1.11 line; from 1.12.0 (backend #5915) 403. The callers also check the
+# body code (QUOTA_EXCEEDED, or DENIED with the quota's limit_bytes in the OCI
+# detail), so a 403 permission refusal does not pass.
+quota_status_ok() { [ "$1" = "507" ] || [ "$1" = "403" ]; }
+oci_quota_detail() { jq -r '.errors[0].detail.limit_bytes // empty' "$1" 2>/dev/null; }
 rows_in() { psqlq "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '$1' AND NOT a.is_deleted"; }
 AUTHZ=()
 mk_repo() { # KEY FORMAT TYPE [extra-json-fields] -> code
@@ -71,9 +77,9 @@ head -c 1024 /dev/urandom > "${WORK}/small.bin"
 # =============================================================================
 # #4422: quota on native publishes
 # =============================================================================
-begin_test "CONTROL: an 8 KiB generic upload into a 4096-byte quota repository is 507 QUOTA_EXCEEDED (enforced before 1.11.0 too)"
+begin_test "CONTROL: an 8 KiB generic upload into a 4096-byte quota repository is 507 QUOTA_EXCEEDED (403 from 1.12.0; enforced before 1.11.0 too)"
 c="$(code_to_file "${BASE_URL}/api/v1/repositories/${QG}/artifacts/big.bin" "${WORK}/gen.json" -X PUT "${AUTHZ[@]}" --data-binary "@${WORK}/big.bin")"
-if [ "$c" = "507" ] && [ "$(jcode "${WORK}/gen.json")" = "QUOTA_EXCEEDED" ] && [ "$(rows_in "$QG")" = "0" ]; then pass; else
+if quota_status_ok "$c" && [ "$(jcode "${WORK}/gen.json")" = "QUOTA_EXCEEDED" ] && [ "$(rows_in "$QG")" = "0" ]; then pass; else
   fail "generic PUT=${c} code=$(jcode "${WORK}/gen.json") rows=$(rows_in "$QG")" "$(head -c 300 "${WORK}/gen.json")"
 fi
 
@@ -85,20 +91,20 @@ if [ "$c" = "201" ] && [ "$d" = "200" ] && cmp -s "${WORK}/mvn-small.out" "${WOR
 fi
 MVN_ROWS_BEFORE="$(rows_in "$QM")"
 
-begin_test "#4422 maven: an 8 KiB jar that would pass the quota is 507 QUOTA_EXCEEDED and adds no artifacts row"
+begin_test "#4422 maven: an 8 KiB jar that would pass the quota is 507 (403 from 1.12.0) QUOTA_EXCEEDED and adds no artifacts row"
 c="$(code_to_file "${BASE_URL}/maven/${QM}/com/example/qnr/big/1.0/big-1.0.jar" "${WORK}/mvn-big.json" -X PUT "${AUTHZ[@]}" --data-binary "@${WORK}/big.bin")"
-if [ "$c" = "507" ] && [ "$(jcode "${WORK}/mvn-big.json")" = "QUOTA_EXCEEDED" ] && [ "$(rows_in "$QM")" = "$MVN_ROWS_BEFORE" ]; then pass; else
+if quota_status_ok "$c" && [ "$(jcode "${WORK}/mvn-big.json")" = "QUOTA_EXCEEDED" ] && [ "$(rows_in "$QM")" = "$MVN_ROWS_BEFORE" ]; then pass; else
   fail "maven PUT=${c} code=$(jcode "${WORK}/mvn-big.json") rows ${MVN_ROWS_BEFORE} -> $(rows_in "$QM"). Pre-#4422 the native Maven handler never ran quota admission" "$(head -c 300 "${WORK}/mvn-big.json")"
 fi
 
-begin_test "#4422 conan: an 8 KiB recipe file into the capped repository is 507 QUOTA_EXCEEDED and leaves no row"
+begin_test "#4422 conan: an 8 KiB recipe file into the capped repository is 507 (403 from 1.12.0) QUOTA_EXCEEDED and leaves no row"
 c="$(code_to_file "${BASE_URL}/conan/${QC}/v2/conans/qnrbig/1.0/_/_/revisions/4422aaaabbbbccccddddeeeeffff0000/files/conanfile.py" "${WORK}/conan.json" \
       -X PUT "${AUTHZ[@]}" --data-binary "@${WORK}/big.bin")"
-if [ "$c" = "507" ] && [ "$(jcode "${WORK}/conan.json")" = "QUOTA_EXCEEDED" ] && [ "$(rows_in "$QC")" = "0" ]; then pass; else
+if quota_status_ok "$c" && [ "$(jcode "${WORK}/conan.json")" = "QUOTA_EXCEEDED" ] && [ "$(rows_in "$QC")" = "0" ]; then pass; else
   fail "conan PUT=${c} code=$(jcode "${WORK}/conan.json") rows=$(rows_in "$QC")" "$(head -c 300 "${WORK}/conan.json")"
 fi
 
-begin_test "#4422 cargo: publishing an 8 KiB crate into the capped repository is 507 QUOTA_EXCEEDED and leaves no row"
+begin_test "#4422 cargo: publishing an 8 KiB crate into the capped repository is 507 (403 from 1.12.0) QUOTA_EXCEEDED and leaves no row"
 mkdir -p "${WORK}/crate/qnrbig-0.1.0/src"
 printf '[package]\nname = "qnrbig"\nversion = "0.1.0"\n' > "${WORK}/crate/qnrbig-0.1.0/Cargo.toml"
 printf 'pub fn f() {}\n' > "${WORK}/crate/qnrbig-0.1.0/src/lib.rs"
@@ -112,17 +118,18 @@ crate = open(sys.argv[1], "rb").read()
 open(sys.argv[2], "wb").write(struct.pack("<I", len(meta)) + meta + struct.pack("<I", len(crate)) + crate)
 PY
 c="$(code_to_file "${BASE_URL}/cargo/${QK}/api/v1/crates/new" "${WORK}/cargo.json" -X PUT "${AUTHZ[@]}" --data-binary "@${WORK}/cargo.pay")"
-if [ "$c" = "507" ] && [ "$(jcode "${WORK}/cargo.json")" = "QUOTA_EXCEEDED" ] && [ "$(rows_in "$QK")" = "0" ]; then pass; else
+if quota_status_ok "$c" && [ "$(jcode "${WORK}/cargo.json")" = "QUOTA_EXCEEDED" ] && [ "$(rows_in "$QK")" = "0" ]; then pass; else
   fail "cargo publish=${c} code=$(jcode "${WORK}/cargo.json") rows=$(rows_in "$QK")" "$(head -c 300 "${WORK}/cargo.json")"
 fi
 
-begin_test "#4422 docker: an 8 KiB blob push into the capped repository is 507 with the registry envelope code DENIED and no oci_blobs row"
+begin_test "#4422 docker: an 8 KiB blob push into the capped repository is 507 (403 with the quota detail from 1.12.0) with the registry envelope code DENIED and no oci_blobs row"
 DBIG="sha256:$(sha256sum "${WORK}/big.bin" | cut -d' ' -f1)"
 c="$(code_to_file "${BASE_URL}/v2/${QD}/app/blobs/uploads/?digest=${DBIG}" "${WORK}/oci.json" -X POST "${AUTHZ[@]}" \
       -H 'Content-Type: application/octet-stream' --data-binary "@${WORK}/big.bin")"
 OB="$(psqlq "SELECT count(*) FROM oci_blobs b JOIN repositories r ON r.id = b.repository_id WHERE r.key = '${QD}'")"
-if [ "$c" = "507" ] && [ "$(jcode "${WORK}/oci.json")" = "DENIED" ] && [ "$OB" = "0" ]; then pass; else
-  fail "blob push=${c} code=$(jcode "${WORK}/oci.json") oci_blobs rows=${OB}" "$(head -c 300 "${WORK}/oci.json")"
+if [ "$(jcode "${WORK}/oci.json")" = "DENIED" ] && [ "$OB" = "0" ] && \
+   { [ "$c" = "507" ] || { [ "$c" = "403" ] && [ "$(oci_quota_detail "${WORK}/oci.json")" = "$QUOTA" ]; }; }; then pass; else
+  fail "blob push=${c} code=$(jcode "${WORK}/oci.json") detail.limit_bytes=$(oci_quota_detail "${WORK}/oci.json") oci_blobs rows=${OB}" "$(head -c 300 "${WORK}/oci.json")"
 fi
 
 begin_test "#4422 docker: a manifest declaring a layer of size -1 is 400 MANIFEST_INVALID (descriptor sizes feed the usage ledger); the same manifest with the real size is 201"

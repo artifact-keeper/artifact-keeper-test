@@ -15,7 +15,8 @@
 #             row); a PATCH that omits both (it only renames) leaves them
 #             untouched; with a 1000-byte quota a 600-byte upload is admitted
 #             and a second 600-byte upload is refused (413 at the session or
-#             507 at complete). Green on both images.
+#             507 at complete; 403 QUOTA_EXCEEDED from 1.12.0, backend #5915).
+#             Green on both images.
 #   (FIX)     {"quota_bytes": null} clears the quota (response and row) while
 #             the omitted description stays; the 600-byte upload refused
 #             before is then admitted. RED on 1.11.9 (quota stays 1000, upload

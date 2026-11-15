@@ -14,15 +14,16 @@
 #   1. A repo can be created with a low quota_bytes value.
 #   2. An upload that keeps storage_used_bytes <= quota_bytes is accepted.
 #   3. An upload that would push storage_used_bytes past quota_bytes is
-#      rejected with a documented client-error status (413 Payload Too Large
-#      or 422 Unprocessable Entity; backend may return either depending on
-#      whether it surfaces the size-check at the body-parse stage or after
-#      the service-layer check_quota method).
+#      rejected with a documented quota status: 403 with the JSON error code
+#      QUOTA_EXCEEDED (1.12.0 and later, artifact-keeper#5915), 507 (the 1.11
+#      line), or 413 / 422 if the check fires at the body-parse stage.
+#      A 403 without the QUOTA_EXCEEDED code is a permission refusal, not a
+#      quota refusal, and fails the test.
 #
 # This pins the enforcement contract without coupling to a specific service
 # implementation detail. If a future release reclassifies the quota error
 # (e.g. switches from 413 -> 422), this test stays green as long as it is
-# still a documented 4xx and not a silent 2xx or a 500.
+# still a documented quota status and not a silent 2xx or a 500.
 #
 # Skip behavior: if the create call refuses the quota_bytes field (400/422)
 # or the POST returns 404/501, the whole suite skips so a 1.1.x backend
@@ -101,24 +102,39 @@ assert_http_2xx "$UNDER_STATUS" "under-quota upload should succeed; got ${UNDER_
 
 # -------------------------------------------------------------------------
 # 6.4.b: An upload that would exceed the quota is rejected with a
-# documented 4xx/5xx. The backend's AppError::QuotaExceeded maps to 507
-# INSUFFICIENT_STORAGE (see backend error.rs:95). 413 (Payload Too Large)
-# and 422 (Unprocessable Entity) are also defensible classifications if
-# the check fires earlier in the request pipeline. We accept only those
-# three; a generic 400 is too imprecise for a quota signal and is
-# rejected so the test surfaces classification drift.
+# documented quota status:
+#   403 + {"code":"QUOTA_EXCEEDED"}  1.12.0 and later (artifact-keeper#5915:
+#                                    a quota refusal is a 4xx, checked on
+#                                    Content-Length before the body is read)
+#   507                              the 1.11 line (AppError::QuotaExceeded)
+#   413 / 422                        defensible if the check fires earlier
+# A 403 with any other code (or no JSON code) is an authorization refusal
+# and FAILS, so this test cannot mask an authz regression. A generic 400 is
+# too imprecise for a quota signal and is rejected so the test surfaces
+# classification drift.
 # -------------------------------------------------------------------------
 
 begin_test "Upload over quota (${OVER_BYTES} bytes > ${QUOTA_BYTES}) must be rejected"
 dd if=/dev/zero of="${WORK_DIR}/over.bin" bs=1 count="$OVER_BYTES" 2>/dev/null
-OVER_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+OVER_BODY_FILE="${WORK_DIR}/over-resp.json"
+OVER_STATUS=$(curl -s -o "$OVER_BODY_FILE" -w '%{http_code}' $CURL_TIMEOUT \
   -X PUT -H "$(auth_header)" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@${WORK_DIR}/over.bin" \
   "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/over.bin" 2>/dev/null) || OVER_STATUS="000"
+OVER_CODE=$(jq -r '.code // empty' < "$OVER_BODY_FILE" 2>/dev/null || true)
 case "$OVER_STATUS" in
+  403)
+    if [ "$OVER_CODE" = "QUOTA_EXCEEDED" ]; then
+      # 1.12.0+: the quota refusal is 403 QUOTA_EXCEEDED.
+      pass
+    else
+      body=$(head -c 400 "$OVER_BODY_FILE" 2>/dev/null || true)
+      fail "over-quota upload returned HTTP 403 with code '${OVER_CODE}', not QUOTA_EXCEEDED: an authorization refusal, not a quota refusal (body: ${body})"
+    fi
+    ;;
   507)
-    # 507 is the backend's documented quota-exceeded mapping.
+    # 507 is the 1.11 line's quota-exceeded mapping.
     pass
     ;;
   413|422)
@@ -129,7 +145,7 @@ case "$OVER_STATUS" in
     fail "over-quota upload was accepted (HTTP ${OVER_STATUS}); quota enforcement broken"
     ;;
   *)
-    fail "over-quota upload returned unexpected HTTP ${OVER_STATUS}; expected 413, 422, or 507"
+    fail "over-quota upload returned unexpected HTTP ${OVER_STATUS}; expected 403 QUOTA_EXCEEDED, 413, 422, or 507"
     ;;
 esac
 

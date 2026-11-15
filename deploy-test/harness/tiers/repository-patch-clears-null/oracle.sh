@@ -56,7 +56,8 @@ seed() {
 # Chunked upload (the quota-gated write path, as in quota-admission-o1):
 # POST session -> PATCH one chunk -> PUT complete. UPLOAD_STAGE/UPLOAD_CODE;
 # returns 0 only when the whole flow succeeded. A quota refusal is 413 at the
-# session preflight or 507 at the locked admission on complete.
+# session preflight or 507 at the locked admission on complete (the 1.11
+# line), or 403 QUOTA_EXCEEDED from 1.12.0 (backend #5915).
 upload_sized() { # <path> <size-bytes>
   local path="$1" size="$2" body sha sid r
   body="$(head -c "$size" /dev/zero | tr '\0' 'a')"
@@ -67,19 +68,34 @@ upload_sized() { # <path> <size-bytes>
     -d "{\"repository_key\":\"${REPO}\",\"artifact_path\":\"${path}\",\"artifact_name\":\"$(basename "$path")\",\"artifact_version\":\"1.0.0\",\"total_size\":${size},\"checksum_sha256\":\"${sha}\",\"chunk_size\":8388608}" \
     2>/dev/null) || { UPLOAD_CODE=000; return 1; }
   UPLOAD_CODE="$(echo "$r" | tail -n1)"
-  sid="$(echo "$r" | head -n -1 | jq -r '.session_id // empty' 2>/dev/null || true)"
+  UPLOAD_BODY="$(echo "$r" | head -n -1)"
+  sid="$(echo "$UPLOAD_BODY" | jq -r '.session_id // empty' 2>/dev/null || true)"
   [ -n "$sid" ] || return 1
   UPLOAD_STAGE="chunk"
-  curl -s -o /dev/null -X PATCH "${BASE_URL}/api/v1/uploads/${sid}" -H "$(auth_header)" \
+  r=$(curl -s -w '\n%{http_code}' -X PATCH "${BASE_URL}/api/v1/uploads/${sid}" -H "$(auth_header)" \
     -H "Content-Range: bytes 0-$((size - 1))/${size}" \
     -H 'Content-Type: application/octet-stream' \
-    --data-binary "$body" 2>/dev/null || { UPLOAD_CODE=000; return 1; }
+    --data-binary "$body" 2>/dev/null) || { UPLOAD_CODE=000; return 1; }
+  UPLOAD_CODE="$(echo "$r" | tail -n1)"
+  UPLOAD_BODY="$(echo "$r" | head -n -1)"
+  case "$UPLOAD_CODE" in 2??) ;; *) return 1 ;; esac
   UPLOAD_STAGE="complete"
-  UPLOAD_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-    "${BASE_URL}/api/v1/uploads/${sid}/complete" -H "$(auth_header)" 2>/dev/null) || UPLOAD_CODE=000
+  r=$(curl -s -w '\n%{http_code}' -X PUT \
+    "${BASE_URL}/api/v1/uploads/${sid}/complete" -H "$(auth_header)" 2>/dev/null) || { UPLOAD_CODE=000; return 1; }
+  UPLOAD_CODE="$(echo "$r" | tail -n1)"
+  UPLOAD_BODY="$(echo "$r" | head -n -1)"
   [ "$UPLOAD_CODE" = "200" ]
 }
-quota_refused() { [ "$UPLOAD_CODE" = "507" ] || { [ "$UPLOAD_STAGE" = "session" ] && [ "$UPLOAD_CODE" = "413" ]; }; }
+# quota_refused: the failed upload was a quota refusal: 413 at the session
+# preflight or 507 at the locked complete admission (the 1.11 line), or, from
+# 1.12.0 (backend #5915), 403 with code QUOTA_EXCEEDED at any stage. A 403
+# with any other code is a permission refusal and does not count.
+quota_refused() {
+  [ "$UPLOAD_CODE" = "507" ] && return 0
+  [ "$UPLOAD_STAGE" = "session" ] && [ "$UPLOAD_CODE" = "413" ] && return 0
+  [ "$UPLOAD_CODE" = "403" ] && \
+    [ "$(echo "${UPLOAD_BODY:-}" | jq -r '.code // empty' 2>/dev/null)" = "QUOTA_EXCEEDED" ]
+}
 
 begin_suite "repository-patch-clears-null"
 
@@ -120,7 +136,7 @@ if upload_sized "p/a-600.bin" 600; then
   elif quota_refused; then
     pass "refused with HTTP ${UPLOAD_CODE} at ${UPLOAD_STAGE}"
   else
-    fail "the second upload failed at ${UPLOAD_STAGE} with HTTP ${UPLOAD_CODE}, expected a quota refusal (413 session / 507 complete)"
+    fail "the second upload failed at ${UPLOAD_STAGE} with HTTP ${UPLOAD_CODE}, expected a quota refusal (413 session / 507 complete / 403 QUOTA_EXCEEDED)" "${UPLOAD_BODY:0:300}"
   fi
 else
   fail "the first 600-byte upload failed at ${UPLOAD_STAGE} (HTTP ${UPLOAD_CODE})"

@@ -12,7 +12,9 @@
 #   quota_bytes without a single refusal. The fix preflights before the bytes
 #   are written and admits under the quota lock in the INSERT transaction: a
 #   refusal is 507 {"code":"QUOTA_EXCEEDED"} (the registry envelope `DENIED`
-#   for docker) and leaves no row. Manifests are charged 0 but a descriptor
+#   for docker) and leaves no row. From 1.12.0 (backend #5915) the status is
+#   403 with the same code; the docker `DENIED` then carries the quota's
+#   limit_bytes in errors[0].detail, which tells it from a permission DENIED. Manifests are charged 0 but a descriptor
 #   with a negative or absurd size is now 400 MANIFEST_INVALID (it feeds the
 #   usage ledger).
 # * #4307: N parallel `POST /api/v1/curation/repos/{key}/versions` on one
@@ -29,12 +31,12 @@
 # (inserted through DB_CONTAINER) and a GPG signing key with metadata signing
 # on. The remote's upstream is never fetched.
 #
-# Gates: (CONTROL) a generic upload over the quota is 507 (enforced before
+# Gates: (CONTROL) a generic upload over the quota is 507/403 (enforced before
 # 1.11.0 too) and a native Maven upload under the quota is 201; a curated
 # version publishes, and its repomd.xml.asc verifies with gpg over
 # repomd.xml with the served key (both images). (FIX) over-quota Maven,
-# Conan, Cargo uploads answer 507 QUOTA_EXCEEDED and leave no artifacts row;
-# an over-quota docker blob answers 507 DENIED and leaves no oci_blobs row;
+# Conan, Cargo uploads answer 507/403 QUOTA_EXCEEDED and leave no artifacts row;
+# an over-quota docker blob answers 507/403 DENIED and leaves no oci_blobs row;
 # a manifest declaring a layer size of -1 is 400 MANIFEST_INVALID; four
 # rounds of 16 parallel version creates are all 201 with 64 distinct
 # numbers; four parallel publishes of one version give exactly one 200 and

@@ -60,6 +60,10 @@ snip() { body | head -c 300 | tr '\n' ' ' || true; }
 jr() { body | jq -r "$1" 2>/dev/null || true; }
 is_2xx() { case "$1" in 2??) return 0 ;; *) return 1 ;; esac; }
 is_denied() { case "$1" in 403|404) return 0 ;; *) return 1 ;; esac; }
+# quota_refused <status> <body code>: a storage-quota refusal. 507 on the 1.11
+# line; from 1.12.0 (backend #5915) 403 with code QUOTA_EXCEEDED. A 403 with
+# any other code is a permission refusal and does not count.
+quota_refused() { [ "$1" = "507" ] || { [ "$1" = "403" ] && [ "$2" = "QUOTA_EXCEEDED" ]; }; }
 db() { docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -Atc "$1" 2>/dev/null || echo "?"; }
 rid() { db "SELECT id FROM repositories WHERE key = '$1'"; }
 # random (incompressible) file of N bytes
@@ -292,18 +296,18 @@ note "outside-project uploads: ${c1} ${c2}"
 { is_2xx "$c1" && is_2xx "$c2"; } || gate "uploads outside a project answered ${c1}/${c2}"
 finish_case "plain uploads are broken"
 
-begin_test "FIX #2474: the project quota (8192 B) is enforced across two member repositories: second 5 KiB upload 507"
+begin_test "FIX #2474: the project quota (8192 B) is enforced across two member repositories: second 5 KiB upload 507 (403 QUOTA_EXCEEDED from 1.12.0)"
 reset_case
 QP_ID="$(mkproj "$QPKEY" 8192)"
 [ -n "$QP_ID" ] || gate "quota project create: $(snip)"
 is_2xx "$(mkrepo "$ADMIN_TOKEN" "$QA" generic "$QP_ID" 1048576)" || gate "create ${QA}: $(snip)"
 is_2xx "$(mkrepo "$ADMIN_TOKEN" "$QB" generic "$QP_ID" 1048576)" || gate "create ${QB}: $(snip)"
 c1="$(upload "$ADMIN_TOKEN" "$QA" a.bin "$WORK/k5")"
-c2="$(upload "$ADMIN_TOKEN" "$QB" b.bin "$WORK/k5")"; b2="$(snip)"
+c2="$(upload "$ADMIN_TOKEN" "$QB" b.bin "$WORK/k5")"; b2="$(snip)"; q2="$(jr '.code // empty')"
 inb="$(db "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '${QB}' AND NOT a.is_deleted")"
 note "A: ${c1}; B: ${c2} ${b2}; live artifacts in B: ${inb}"
 is_2xx "$c1" || gate "the first upload (under the cap) answered ${c1}"
-[ "$c2" = "507" ] || gate "the second upload (over the project cap, under the repo cap) answered ${c2}"
+quota_refused "$c2" "$q2" || gate "the second upload (over the project cap, under the repo cap) answered ${c2} ${q2}"
 printf '%s' "$b2" | grep -q "Project storage quota exceeded" || gate "the refusal is not 'Project storage quota exceeded'"
 [ "$inb" = "0" ] || gate "${inb} artifact(s) stored in B"
 finish_case "the project quota is not enforced across its repositories"
@@ -317,7 +321,7 @@ note "npm publish outside project: ${c} $(snip | head -c 120)"
 is_2xx "$c" || gate "npm publish answered ${c}"
 finish_case "npm publish is broken"
 
-begin_test "FIX #2475: an npm publish over the project quota is refused 507 and nothing is stored"
+begin_test "FIX #2475: an npm publish over the project quota is refused 507 (403 QUOTA_EXCEEDED from 1.12.0) and nothing is stored"
 reset_case
 QN_ID="$(mkproj "$QNKEY" 4096)"
 [ -n "$QN_ID" ] || gate "npm quota project create: $(snip)"
@@ -326,10 +330,10 @@ is_2xx "$(mkrepo "$ADMIN_TOKEN" "$NP" npm "$QN_ID")" || gate "create ${NP}: $(sn
 rnd "$WORK/k3" 3500
 c0="$(upload "$ADMIN_TOKEN" "$NG" fill.bin "$WORK/k3")"; is_2xx "$c0" || gate "filler upload answered ${c0}"
 npm_payload "$NPM_PKG" "$WORK/pub.json" 1500
-c="$(put_file "$ADMIN_TOKEN" "/npm/${NP}/${NPM_PKG}" "$WORK/pub.json" application/json)"; b="$(snip)"
+c="$(put_file "$ADMIN_TOKEN" "/npm/${NP}/${NPM_PKG}" "$WORK/pub.json" application/json)"; b="$(snip)"; q="$(jr '.code // empty')"
 inp="$(db "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id = a.repository_id WHERE r.key = '${NP}' AND NOT a.is_deleted")"
 note "npm publish over the project cap: ${c} ${b}; artifacts in ${NP}: ${inp}"
-[ "$c" = "507" ] || gate "npm publish over the project quota answered ${c}"
+quota_refused "$c" "$q" || gate "npm publish over the project quota answered ${c} ${q}"
 printf '%s' "$b" | grep -q "Project storage quota exceeded" || gate "the refusal is not 'Project storage quota exceeded'"
 [ "$inp" = "0" ] || gate "${inp} artifact(s) stored"
 finish_case "npm publish bypasses the storage quota"
