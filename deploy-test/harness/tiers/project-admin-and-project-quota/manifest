@@ -50,7 +50,7 @@
 #     it. A user with no grant (who may read the public repository) gets 403
 #     FORBIDDEN on the repository artifact API and 403 DENIED on a /v2 blob
 #     upload; an anonymous caller gets 401 on both. Neither body carries
-#     QUOTA_EXCEEDED, limit_bytes, used_bytes, scope or project. The quota
+#     QUOTA_EXCEEDED, limit_bytes, used_bytes, scope, repository or project. The quota
 #     pre-check answered them 403 QUOTA_EXCEEDED with the project's figures.
 #     Control: the global admin still gets the quota refusal (403 DENIED with
 #     detail.scope=project on /v2, refused before the body from 1.12.0).

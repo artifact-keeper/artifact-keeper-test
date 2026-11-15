@@ -332,7 +332,7 @@ put_len() {
 # no_quota_figures LABEL: the last body carries none of a quota refusal's fields.
 no_quota_figures() {
   local f
-  for f in QUOTA_EXCEEDED limit_bytes used_bytes '"scope"' '"project"'; do
+  for f in QUOTA_EXCEEDED limit_bytes used_bytes '"scope"' '"repository"' '"project"'; do
     if body | grep -qF -- "$f"; then gate "$1: the refusal carries ${f}: $(snip)"; fi
   done
 }
