@@ -1,0 +1,50 @@
+# DTF tier manifest: openscap-evaluates-image-rootfs
+#   (artifact-keeper#6000, fixed on main for 1.12.0)
+# Profile-set: filesystem + scanners.openscap (the OpenSCAP wrapper sidecar,
+# OPENSCAP_IMAGE, sharing the backend's scan workspace read-only, as in the
+# stock compose file). LOCAL-ONLY: the base layer of the test images is a
+# `docker export` of the running sidecar (a UBI 9 system), filtered to /etc,
+# /usr/lib/os-release and the rpmdb, so nothing is pulled.
+#
+# THE BUG
+# #6000  Every OpenSCAP scan evaluated the OpenSCAP sidecar's own filesystem.
+#        The backend wrote the artifact's raw bytes (for an image, the
+#        manifest JSON) into the workspace as one file; the wrapper found no
+#        etc/ there, so oscap's probes ran against the sidecar's `/`, and the
+#        findings were the same whatever the artifact. RPM and DEB packages
+#        were "scanned" the same way. The default profile
+#        (content_profile_standard) is in no shipped datastream and was
+#        silently replaced by anssi_bp28_enhanced.
+#        Fixed: the backend unpacks the image's layers into a root filesystem
+#        and the wrapper evaluates it with OSCAP_PROBE_ROOT; packages and
+#        images no shipped datastream describes are not_applicable; the
+#        default is CIS Level 1 - Server and an unknown profile is an error.
+#
+# THE GATES
+#   (CONTROL) every image: three test images push (two layers each for RHEL,
+#     one for Debian); the clean RHEL 9 image gets a terminal openscap row
+#     without file_permissions_etc_shadow or groups_no_zero_gid_except_root.
+#   (FIX) #6000, RED on main before the fix (and 1.11.x), GREEN after it:
+#     * the noncompliant image (its top layer sets /etc/shadow 0644 and adds a
+#       second GID-0 group) is completed WITH both findings, and its findings
+#       differ from the clean image's (pre-fix: both images get the sidecar's
+#       identical findings, neither rule among them);
+#     * an image whose os-release is Debian 12 is not_applicable and the
+#       reason names it (pre-fix: completed);
+#     * an .rpm uploaded to a generic repository is not_applicable (pre-fix:
+#       completed with the sidecar's findings).
+#
+# GREEN needs the fixed backend AND the fixed OpenSCAP image together
+# (OPENSCAP_IMAGE=<fixed>): the fixed backend refuses a pre-fix wrapper's
+# answer (it carries no scan status) and fails those scans.
+#
+# NOT GATED: the default/unknown-profile handling (no profile is visible in
+# scan_results; the backend and wrapper unit tests cover it), ownership-rule
+# exclusion, and the Docker-runtime path where user namespaces are blocked
+# (this profile runs the sidecar seccomp=unconfined; see the profile).
+#
+# RATE_LIMIT_ENABLED=false: registry pushes and scan polls back to back.
+COVERS="6000"
+PROFILES="storage.filesystem scanners.openscap"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
