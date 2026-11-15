@@ -1,0 +1,55 @@
+# =============================================================================
+# profiles/scanners.openscap.yml — scanners dimension = openscap (compliance)
+# =============================================================================
+# Stands up the OpenSCAP wrapper sidecar (artifact-keeper docker/Dockerfile.openscap,
+# scripts/openscap-wrapper.py) the way docker-compose.yml wires it, and points
+# the backend at it:
+#   * openscap — the wrapper on :8091. It reads the backend's scan workspace
+#                READ-ONLY from the shared volume, exactly as in the stock
+#                compose file.
+#   * backend  — OPENSCAP_URL registers the OpenSCAP scanner; the shared
+#                volume is mounted read-write at SCAN_WORKSPACE_PATH.
+#
+# seccomp=unconfined on the sidecar: since artifact-keeper#6000 the wrapper
+# evaluates the unpacked image root with OSCAP_PROBE_ROOT, and oscap 1.3's
+# probes chroot(2) into it. The sidecar runs as a non-root UID, so it starts
+# oscap in a user namespace. Rootless podman's default seccomp profile allows
+# unshare(CLONE_NEWUSER); Docker's blocks it for a process without
+# CAP_SYS_ADMIN, which on a Docker host would make every scan not_applicable
+# ("user namespaces are blocked"). Unconfined keeps the tier meaning the same
+# on both runtimes. The pre-fix wrapper never needs it.
+#
+# Required vars (run.sh exports them): DTF_SLOT.
+# Optional: OPENSCAP_IMAGE (default ghcr.io/artifact-keeper/artifact-keeper-openscap:main).
+# =============================================================================
+services:
+  openscap:
+    image: ${OPENSCAP_IMAGE:-ghcr.io/artifact-keeper/artifact-keeper-openscap:main}
+    container_name: ak-dtf${DTF_SLOT}-openscap
+    volumes:
+      - dtf_scanws:/scan-workspace:ro
+    security_opt:
+      - seccomp=unconfined
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/health')"]
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 24
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openscap:
+        condition: service_healthy
+    environment:
+      OPENSCAP_URL: http://openscap:8091
+      SCAN_WORKSPACE_PATH: /scan-workspace
+    volumes:
+      - dtf_scanws:/scan-workspace
+
+volumes:
+  dtf_scanws:
+    name: ak-dtf${DTF_SLOT}_scanws

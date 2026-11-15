@@ -1,0 +1,49 @@
+# =============================================================================
+# profiles/scanners.openscap-root.yml — scanners dimension = openscap, root mode
+# =============================================================================
+# The OpenSCAP wrapper sidecar as scanners.openscap wires it, but in the
+# opt-in root mode of artifact-keeper#6000: started as root with
+# OPENSCAP_RUN_AS_ROOT=true and the runtime's DEFAULT seccomp profile (no
+# seccomp=unconfined). In root mode the wrapper never uses a user namespace:
+# each oscap child drops to UID 1001 with CAP_SYS_CHROOT and
+# CAP_DAC_READ_SEARCH (granted here with cap_add) and no_new_privs. On a
+# Docker host this is exactly the configuration that makes stock Docker work;
+# the oracle checks the sidecar's /health counters to prove the root path ran.
+#
+# Required vars (run.sh exports them): DTF_SLOT.
+# Optional: OPENSCAP_IMAGE (default ghcr.io/artifact-keeper/artifact-keeper-openscap:main).
+# =============================================================================
+services:
+  openscap:
+    image: ${OPENSCAP_IMAGE:-ghcr.io/artifact-keeper/artifact-keeper-openscap:main}
+    container_name: ak-dtf${DTF_SLOT}-openscap
+    user: "0"
+    environment:
+      OPENSCAP_RUN_AS_ROOT: "true"
+    cap_add:
+      - DAC_READ_SEARCH
+    volumes:
+      - dtf_scanws:/scan-workspace:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/health')"]
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 24
+    networks: [dtf]
+
+  backend:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openscap:
+        condition: service_healthy
+    environment:
+      OPENSCAP_URL: http://openscap:8091
+      SCAN_WORKSPACE_PATH: /scan-workspace
+    volumes:
+      - dtf_scanws:/scan-workspace
+
+volumes:
+  dtf_scanws:
+    name: ak-dtf${DTF_SLOT}_scanws
