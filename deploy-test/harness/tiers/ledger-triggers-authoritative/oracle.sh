@@ -21,7 +21,8 @@
 #   Pre-#2992:    ledger absent/0 after the handler upload     -> FAIL.
 #
 # Regression leg (same result on both images): quota admission is unchanged —
-# under-quota enforced upload 201, over-quota 507.
+# under-quota enforced upload 201, over-quota refused (507 through 1.11.13,
+# 403 QUOTA_EXCEEDED from 1.11.14, backend #5915).
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RELEASE_GATE=1,
 # JUNIT_OUTPUT_DIR, COMMON_SH.
@@ -143,28 +144,34 @@ fi
 
 # ---------------------------------------------------------------------------
 # Regression leg (same on both images): quota admission behaviour unchanged —
-# under-quota enforced upload 201, over-quota 507.
+# under-quota enforced upload 201, over-quota refused: 507 through 1.11.13,
+# 403 {"code":"QUOTA_EXCEEDED"} from 1.11.14 (artifact-keeper#5915). A 403
+# with any other code is an authorization refusal and fails.
 # ---------------------------------------------------------------------------
-begin_test "regression: enforced quota admission unchanged (201 under, 507 over)"
+begin_test "regression: enforced quota admission unchanged (201 under, 507 or 403 QUOTA_EXCEEDED over)"
 
 QREPO="ledgerq$SUF"
 mkrepo "$QREPO" generic >/dev/null
 QRID=$(repo_id "$QREPO")
 psql_q "UPDATE repositories SET quota_bytes=1000 WHERE id='$QRID';" >/dev/null
 
-put_generic(){ # <path> <nbytes> -> http code
+put_generic(){ # <path> <nbytes> -> http code; body in $W_QBODY
   head -c "$2" /dev/zero | tr '\0' 'x' | \
-    curl -s -o /dev/null -w '%{http_code}' -X PUT "$BASE/api/v1/repositories/$QREPO/artifacts/$1" \
+    curl -s -o "$W_QBODY" -w '%{http_code}' -X PUT "$BASE/api/v1/repositories/$QREPO/artifacts/$1" \
       "${AUTH[@]}" -H 'Content-Type: application/octet-stream' --data-binary @-
 }
+W_QBODY="$(mktemp)"
 C1=$(put_generic "ok.bin" 600)
 C2=$(put_generic "over.bin" 600)
-echo "-- under-quota PUT -> $C1 ; over-quota PUT -> $C2"
+C2_CODE=$(jq -r '.code // empty' < "$W_QBODY" 2>/dev/null || true)
+rm -f "$W_QBODY"
+echo "-- under-quota PUT -> $C1 ; over-quota PUT -> $C2 ${C2_CODE}"
 
-if { [ "$C1" = "200" ] || [ "$C1" = "201" ]; } && [ "$C2" = "507" ]; then
+if { [ "$C1" = "200" ] || [ "$C1" = "201" ]; } && \
+   { [ "$C2" = "507" ] || { [ "$C2" = "403" ] && [ "$C2_CODE" = "QUOTA_EXCEEDED" ]; }; }; then
   pass
 else
-  fail "quota admission behaviour changed (under=$C1 expected 201, over=$C2 expected 507)"
+  fail "quota admission behaviour changed (under=$C1 expected 201, over=$C2 ${C2_CODE} expected 507 or 403 QUOTA_EXCEEDED)"
 fi
 
 end_suite

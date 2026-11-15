@@ -29,10 +29,11 @@
 #   (O1-ADMIT) THE discriminating gate: with the maintained counters set to
 #              quota-full and the live tables well under quota, the next
 #              upload is rejected (413 at the session preflight or 507 at the
-#              locked complete admission). Pre-fix admission re-SUMs the live
+#              locked complete admission; from 1.11.14, backend #5915, 403
+#              QUOTA_EXCEEDED, and a 403 with another code fails). Pre-fix admission re-SUMs the live
 #              tables, ignores the authoritative counters, and ADMITS -> RED.
 #   (ENFORCE)  with counters at truth: a fitting upload -> 200, an over-quota
-#              upload -> 507 (the "fast but leaky" worse-bug guard; GREEN on
+#              upload -> quota refusal (the "fast but leaky" worse-bug guard; GREEN on
 #              both images).
 #   (RELEASE)  deleting an artifact decrements hosted_bytes in the delete's
 #              own transaction (mig-182 trigger) and the freed space is

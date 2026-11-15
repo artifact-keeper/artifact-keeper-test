@@ -20,7 +20,8 @@
 #          the destination; repository admin alone is a 403.
 #   #2474  projects.quota_bytes was stored but ignored. Upload admission now
 #          checks the project aggregate: 507 QUOTA_EXCEEDED "Project storage
-#          quota exceeded".
+#          quota exceeded" (403 QUOTA_EXCEEDED from 1.11.14, backend #5915; a
+#          403 with another code is a permission refusal and fails).
 #   #2475  npm publish skipped the quota check entirely; it is now admitted
 #          against the repository and project quotas.
 #
@@ -38,7 +39,8 @@
 #     owner role, access ends when the membership is removed; another
 #     project's key prefix 400; reassignment by a repository admin 403; the
 #     second upload across two member repositories 507 with the project
-#     message; npm publish over the project quota 507.
+#     message; npm publish over the project quota 507 (both 403
+#     QUOTA_EXCEEDED from 1.11.14).
 #
 # RATE_LIMIT_ENABLED=false: four principals, ~70 back-to-back calls.
 PROFILES="storage.filesystem"

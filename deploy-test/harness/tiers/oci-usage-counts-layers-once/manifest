@@ -25,7 +25,9 @@
 #                    while the manifest rows keep the image size for listings;
 #                    a 240000-byte quota admits a 150094-byte image (and a
 #                    second tag of it) at its real bytes and refuses the next
-#                    100000-byte layer with 507 DENIED.
+#                    100000-byte layer with 507 DENIED (from 1.11.14, backend
+#                    #5915: 403 DENIED carrying the quota's limit_bytes in
+#                    errors[0].detail; a bare 403 DENIED fails).
 #              #4505 a Docker virtual created with member_repos [the pushed
 #                    repository] answers member_storage_used_bytes == blob
 #                    bytes in the create response, equal to the next GET, and
