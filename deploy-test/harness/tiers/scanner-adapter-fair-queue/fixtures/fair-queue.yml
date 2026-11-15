@@ -1,0 +1,20 @@
+# Overlay the oracle recreates the adapter with (on top of compose.base +
+# storage.filesystem + scanners.trivy), once per configuration (#5944):
+#   DTF_FQ_SLOTS        SCANNER_MAX_CONCURRENT_SCANS (global scan slots)
+#   DTF_FQ_LIMITS       SCANNER_CLIENT_LIMITS_FILE inside the container
+#                       (/dtf-fq/limits-*.json), empty = no limits file
+#   DTF_FQ_METRICS_ADDR SCANNER_METRICS_ADDR, empty = no metrics listener
+#   DTF_FQ_FIXTURES     this fixtures directory (absolute), mounted read-only
+# SCANNER_BACKGROUND_MAX_WAIT stays at its default of 30m, set explicitly so a
+# change of the default cannot make the priority case pass by starvation.
+services:
+  trivy:
+    environment:
+      SCANNER_MAX_CONCURRENT_SCANS: ${DTF_FQ_SLOTS:?set by the oracle}
+      SCANNER_CLIENT_LIMITS_FILE: ${DTF_FQ_LIMITS:-}
+      SCANNER_METRICS_ADDR: ${DTF_FQ_METRICS_ADDR:-}
+      SCANNER_BACKGROUND_MAX_WAIT: 30m
+    volumes:
+      - ${DTF_FQ_FIXTURES:?set by the oracle}:/dtf-fq:ro
+    security_opt:
+      - label=disable
