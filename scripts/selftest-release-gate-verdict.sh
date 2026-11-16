@@ -22,7 +22,10 @@
 # Also checked, because each is a quieter way for the two signals to drift:
 #   * every job the predicate names is in `collect-results.needs` (an unlisted
 #     `needs.X.result` evaluates empty, so its clause can never fire);
-#   * every job in `collect-results.needs` is in the summary table loop.
+#   * every job in `collect-results.needs` is in the summary table loop;
+#   * teardown runs only when deploy ran and left a run id
+#     (artifact-keeper-test#839), so a skipped deploy does not add a red
+#     cleanup job that says nothing.
 #
 # The checker is exercised against fixtures first (a compliant workflow and
 # one broken copy per rule), so a checker that stops detecting anything turns
@@ -94,6 +97,14 @@ def problems(path):
                 f"({', '.join(where)}, and no job-level continue-on-error: true)"
             )
 
+    # #839: teardown must not run without a namespace to tear down.
+    td = jobs.get("teardown")
+    if td is not None:
+        cond = re.sub(r"\s+", " ", str(td.get("if", "")))
+        for need in ("needs.deploy.result != 'skipped'", "needs.deploy.outputs.run_id != ''"):
+            if need not in cond:
+                out.append(f"teardown runs without `{need}` in its if: (artifact-keeper-test#839)")
+
     for name in sorted(on_predicate - needs):
         out.append(f"predicate names '{name}', which is not in {GATE_JOB}.needs (its clause can never fire)")
     for name in sorted(on_predicate - set(jobs)):
@@ -149,8 +160,8 @@ jobs:
           needs.suite-a.result != 'success'
         run: exit 1
   teardown:
-    needs: [collect-results]
-    if: always()
+    needs: [deploy, collect-results]
+    if: always() && needs.deploy.result != 'skipped' && needs.deploy.outputs.run_id != ''
     continue-on-error: true
     runs-on: x
     steps: [{run: "true"}]
@@ -174,7 +185,14 @@ PY
 python3 - "${WORK}/good.yml" "${WORK}/veto-teardown.yml" <<'PY'
 import sys
 s = open(sys.argv[1]).read()
-s = s.replace("    if: always()\n    continue-on-error: true\n", "    if: always()\n", 1)
+s = s.replace("run_id != ''\n    continue-on-error: true\n", "run_id != ''\n", 1)
+open(sys.argv[2], "w").write(s)
+PY
+# Rule 4 (#839): teardown runs even when deploy was skipped / left no run id.
+python3 - "${WORK}/good.yml" "${WORK}/teardown-unguarded.yml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace("    if: always() && needs.deploy.result != 'skipped' && needs.deploy.outputs.run_id != ''\n", "    if: always()\n", 1)
 open(sys.argv[2], "w").write(s)
 PY
 # Rule 2: the predicate names a job that is not in needs.
@@ -214,6 +232,7 @@ expect "compliant fixture passes"                      0 "${WORK}/good.yml"     
 expect "job outside the verdict without c-o-e vetoes"  1 "${WORK}/veto-outside.yml"         "job 'rogue' can veto"
 expect "needed job off the predicate without c-o-e"    1 "${WORK}/veto-off-predicate.yml"   "job 'soft' can veto"
 expect "post-verdict cleanup without c-o-e vetoes"     1 "${WORK}/veto-teardown.yml"        "job 'teardown' can veto"
+expect "teardown without the deploy/run-id guard"       1 "${WORK}/teardown-unguarded.yml"   "teardown runs without"
 expect "predicate clause on an unlisted job"           1 "${WORK}/predicate-not-needed.yml" "predicate names 'suite-a'"
 expect "needed job missing from the summary"           1 "${WORK}/summary-missing.yml"      "'suite-a' is in collect-results.needs but missing"
 

@@ -4568,10 +4568,25 @@ jobs:
   # continue-on-error keeps the failure visible on the job while the
   # workflow conclusion follows collect-results (artifact-keeper-test#359).
   # A leaked namespace is an ops problem for the runner pool.
+  #
+  # It runs only when there is a namespace to tear down: deploy was not
+  # skipped and reported a run id (artifact-keeper-test#839). When
+  # clean-install-smoke fails, deploy is skipped and its run_id output is
+  # empty; teardown used to run anyway, call the script with `--run-id ""`
+  # and go red with "--run-id is required", a second red job that said
+  # nothing. deploy writes run_id ("Generate run ID") before it creates the
+  # namespace, so an empty run id means nothing was created. With the guard
+  # every failure that remains is a real one on a real namespace.
+  #
+  # continue-on-error stays even with the guard: it is what stops a real
+  # cleanup failure from vetoing a release the verdict already passed (#359).
+  # The job still shows red, so the failure stays visible.
   teardown:
     needs: [deploy, collect-results]
     continue-on-error: true
-    if: (always() && inputs.skip_teardown != true) && (inputs.only_jobs == '' || needs.deploy.result != 'skipped')
+    if: >-
+      always() && inputs.skip_teardown != true &&
+      needs.deploy.result != 'skipped' && needs.deploy.outputs.run_id != ''
     runs-on: ak-e2e-runners
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
