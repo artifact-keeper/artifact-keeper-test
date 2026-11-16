@@ -180,3 +180,8 @@ jobs:
       # a probe pod that cannot start is INFRA (11), /readyz non-200 stays 3.
       - name: Run clean-install-smoke exit-code self-test
         run: bash scripts/tests/test-clean-install-smoke-exit-codes.sh
+
+      # admin-tests' OpenSearch wait (scripts/ci/wait-component-ready.sh,
+      # artifact-keeper-test#841): the chart's selector, no match is INFRA.
+      - name: Run component wait self-test
+        run: bash scripts/ci/selftest-wait-component-ready.sh
