@@ -55,6 +55,8 @@ BYTES="auth-db-outage-${SUF}"
 # Bound every outage wait. The backend's pool acquire timeout is 5s by default
 # (DATABASE_ACQUIRE_TIMEOUT_SECS), so a probe answers within ~5-10s.
 NOTREADY_TIMEOUT=60
+# PermissionService rules-existence cache TTL (backend permission_service.rs).
+PERM_CACHE_TTL=30
 READY_TIMEOUT=120
 
 WORK="$(mktemp -d -t dtf-dbout-XXXXXX)"
@@ -107,6 +109,17 @@ expect_db_unavailable() {
   fi
   if [ "$(retry_after)" != "1" ]; then
     fail "${label}: 503 without Retry-After: 1" "$ev"
+    return
+  fi
+  # Past the 30 s permission rules cache (PermissionService CACHE_TTL) the
+  # visibility middleware's rules lookup is the first query to hit the
+  # outage, so the request never reaches the format handler. Its answer is a
+  # plain-text 503; it must still carry Retry-After: 1 (artifact-keeper#6052,
+  # missing before #6053). Inside the window only the handler's shape passes.
+  if [ "$(( $(date +%s) - WARM_T0 ))" -gt "$PERM_CACHE_TTL" ] \
+     && [ "$(body)" = "permission service temporarily unavailable" ]; then
+    echo "  past the ${PERM_CACHE_TTL}s permission cache: middleware 503 + Retry-After: 1 accepted"
+    pass
     return
   fi
   if [ "$(jq -r --arg m "$DB_MSG" "$filter" "${WORK}/body" 2>/dev/null)" != "ok" ]; then
@@ -324,6 +337,11 @@ begin_test "FIX outage: /v2/token with Basic -> 503 UNAVAILABLE + Retry-After: 1
 C="$(req GET "${BASE_URL}/v2/token?service=artifact-keeper&scope=repository:${REPO}/img:pull" -H "$BASIC_ADMIN")"
 expect_503 "/v2/token Basic" "$C" ra oci
 
+# Holds only while the repo-cache entry warmed above is inside its 60 s TTL.
+# Past it the visibility middleware's own repo lookup fails first and answers
+# 503 + Retry-After: 1 by design (it fails closed: it cannot resolve the
+# repository, so it decides nothing about the credential). A run whose outage
+# detection takes that long would see 503 here, not a regression.
 begin_test "CONTROL outage: a credential rejected before the DB is consulted (too-short X-API-Key) is still 401"
 C="$(req GET "$ART_URL" -H "X-API-Key: short")"
 if [ "$C" = "401" ]; then pass; else fail "too-short X-API-Key during the outage returned ${C}, expected 401" "$(evidence "$C")"; fi
