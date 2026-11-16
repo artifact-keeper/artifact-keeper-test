@@ -4225,6 +4225,25 @@ jobs:
   #   owner:   release-engineering
   #   expires: 2026-10-01 — on/after this date either promote the leg
   #            into dtf-gate or re-justify the waiver in a PR.
+  #
+  # INFRA vs product FAIL (artifact-keeper-test#378). Job-level
+  # continue-on-error cannot see exit codes, so on its own it showed a
+  # registry outage and a real migration regression as the same red leg.
+  # The run step goes through scripts/ci/dtf-advisory-outcome.sh, which
+  # maps run-tiers.sh's aggregate exit code: 10/11 (INFRA, candidate
+  # unjudged) is retried once on the INFRA tiers only, then a
+  # `DTF advisory INFRA` ::warning and the step SUCCEEDS; anything else
+  # is a `DTF advisory product FAIL (advisory, not blocking)` ::error and
+  # the step FAILS, so the leg is red only when the candidate lost.
+  # continue-on-error STAYS on the job, and that is what keeps this leg
+  # advisory: release-candidate.yml (artifact-keeper) certifies only on
+  # `needs.release-gate.result == 'success'`, the conclusion of this
+  # whole called workflow, and per GitHub's workflow syntax docs job-level
+  # continue-on-error "prevents a workflow run from failing when a job
+  # fails". Without it a red leg would fail this workflow and block
+  # certification. It is also kept off the Gate check predicate below.
+  # The mapper is copied out before switch-tests-ref.sh can move the tree
+  # to a release/X.Y.x suite that does not have it.
   # -------------------------------------------------------------------
   dtf-advisory:
     needs: version-set-integrity
@@ -4302,6 +4321,9 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      - name: Keep main's INFRA vs product FAIL mapper (#378) across the tests ref switch
+        run: install -m 0755 scripts/ci/dtf-advisory-outcome.sh "${RUNNER_TEMP}/dtf-advisory-outcome.sh"
+
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
           GH_TOKEN: ${{ github.token }}
@@ -4319,12 +4341,16 @@ jobs:
           ./deploy-test/harness/ghcr-docker-auth.sh
 
       - name: Run DTF advisory tiers (${{ matrix.group }}) against the pinned candidate
+        env:
+          DTF_GROUP: ${{ matrix.group }}
         run: |
           BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
           IMG="ghcr.io/artifact-keeper/artifact-keeper-backend:${BACKEND_TAG_PINNED}"
           chmod +x deploy-test/harness/run-tiers.sh deploy-test/harness/run.sh
           read -r -a TIERS <<< "${TIERS_LIST}"
-          ./deploy-test/harness/run-tiers.sh --backend-image "${IMG}" "${TIERS[@]}"
+          # INFRA (10/11) -> retry once, ::warning, exit 0; anything else ->
+          # ::error, non-zero (see the job header).
+          "${RUNNER_TEMP}/dtf-advisory-outcome.sh" --backend-image "${IMG}" "${TIERS[@]}"
 
       - name: Upload DTF advisory tier results
         if: always()

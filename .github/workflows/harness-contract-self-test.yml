@@ -63,6 +63,8 @@ on:
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
       - 'scripts/ci/**'
+      - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/lib/exit_codes.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
@@ -81,6 +83,8 @@ on:
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
       - 'scripts/ci/**'
+      - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/lib/exit_codes.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -152,3 +156,9 @@ jobs:
       # loudly as INFRA, never silently (#728).
       - name: Run apt install retry helper self-test
         run: bash scripts/ci/selftest-apt-install-retry.sh
+
+      # The dtf-advisory outcome mapper and run-tiers.sh's aggregate exit
+      # code: INFRA is retried once and warned about, a product FAIL is red
+      # (artifact-keeper-test#378).
+      - name: Run dtf-advisory outcome self-test
+        run: bash scripts/ci/selftest-dtf-advisory-outcome.sh

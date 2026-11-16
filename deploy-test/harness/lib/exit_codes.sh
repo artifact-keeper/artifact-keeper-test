@@ -38,7 +38,10 @@
 #                   empty/4xx, a fixture precondition was not met, the backend
 #                   was unreachable. Nothing has been learned about the
 #                   candidate. RED (a required tier that cannot run cannot
-#                   certify) but NEVER labeled a regression.
+#                   certify) but NEVER labeled a regression. run-tiers.sh
+#                   also exits 11 for a GROUP in which some tier was INFRA
+#                   and none FAILed; one FAIL makes the group exit 1
+#                   (artifact-keeper-test#378).
 #
 # Codes 2-7, 10 and 12 are raised by the drivers themselves BEFORE/AROUND the
 # oracle; 11 is the code an ORACLE raises, which is why it must not reuse any
