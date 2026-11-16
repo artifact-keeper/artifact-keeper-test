@@ -3022,8 +3022,11 @@ jobs:
   # measures. Skipping resilience because stress hit its error-rate
   # threshold loses signal on a different failure class.
   #
-  # PARTIALLY SOFT — NAMED WAIVER, restart + storage legs only
-  # (artifact-keeper-test#338).
+  # PARTIALLY SOFT: NAMED WAIVER, storage leg only
+  # (artifact-keeper-test#338). restart left the waiver in #842. The waiver
+  # covers the storage SUITES (the test step's continue-on-error) and nothing
+  # else: the fault-injector detach steps around them are not soft, and a
+  # detach INFRA fails the leg and the gate.
   #
   # History: bafcb7a ("ci: make resilience tests non-blocking on ARC
   # runners", 2026-03-23) put `continue-on-error: true` on this job's only
@@ -3050,12 +3053,20 @@ jobs:
   # So crash/data/network are now GENUINELY BLOCKING — see the
   # matrix-conditional continue-on-error on the test step below.
   #
-  # KNOWN GAP, stated plainly: restart + storage stay soft, and the reasons
-  # are infra debt plus a real harness bug, not product regressions.
-  #   1. The ARC runner ServiceAccount cannot patch deployments/scale in the
-  #      ephemeral namespace, so test-full-reboot.sh cannot scale the backend
-  #      ("Error from server (Forbidden): ... cannot patch resource
-  #      deployments/scale").
+  # restart is BLOCKING too since artifact-keeper-test#842: with the selector
+  # fix (#354) and the runner's deployments/scale grant, all 5 restart
+  # scripts passed with 0 failures and 0 skips in two narrow resilience runs
+  # (43966241690, 43976602208, backend sha-15e1a48). storage stays waived until
+  # its fault suites, real since #842 (EROFS remount, ENOSPC tmpfs), have a
+  # clean record of their own.
+  #
+  # KNOWN GAP, stated plainly: storage stays soft. What kept restart and
+  #   storage soft was infra debt plus a real harness bug, not product
+  #   regressions:
+  #   1. FIXED: the ARC runner ServiceAccount could not patch deployments/scale
+  #      in the ephemeral namespace, so test-full-reboot.sh could not scale the
+  #      backend. ClusterRole arc-e2e-runner now grants deployments/scale, and
+  #      test-full-reboot.sh passed in every run cited above.
   #   2. FIXED (artifact-keeper-test#354): the harness selected backend pods
   #      with `-l app=artifact-keeper-backend`, a label the chart never set,
   #      so kills were vacuous and readiness waits skipped. Selection now
@@ -3066,12 +3077,13 @@ jobs:
   #      selector matched nothing; the test is now test-opensearch-restart.sh.
   # Selector fix (2) will likely surface MORE failures, including in the
   # now-blocking legs, because it also makes some currently-vacuous PASSes
-  # real. That is intended. Nothing here is fixed by this waiver — restart
-  # and storage are simply no longer pretending to be a gate.
+  # real. That is intended. Nothing here is fixed by this waiver; storage is
+  # simply no longer pretending to be a gate.
   #   owner:   release-engineering (@brandon.geraci)
-  #   expires: 2026-10-01 — on/after this date either land the RBAC grant +
-  #            selector fix and drop continue-on-error from the step
-  #            entirely, or re-justify this waiver in a PR.
+  #   expires: 2026-12-01. Exit criterion: two more clean storage runs (every
+  #            storage script green, no INFRA), then drop continue-on-error
+  #            and the storage case from the step. Otherwise re-justify this
+  #            waiver in a PR by that date.
   # -------------------------------------------------------------------
   resilience-tests:
     needs: [deploy, stress-tests]
@@ -3144,13 +3156,14 @@ jobs:
         run: '"${K8S_LIB_DIR}/resilience-fault-injector-detach.sh"'
 
       - name: Run ${{ matrix.category }} resilience tests
-        # Soft for the two waived legs ONLY (artifact-keeper-test#338).
-        # crash, data and network evaluate to false here, so a failure in
+        # Soft for the waived storage leg ONLY (artifact-keeper-test#338;
+        # restart left the waiver in #842).
+        # crash, restart, data and network evaluate to false here, so a failure in
         # those categories fails the step, fails the matrix leg, sets
         # needs.resilience-tests.result to 'failure', and blocks the gate
         # via the clause in collect-results. Do not widen this back to a
         # bare `true` — that is the bug this replaces.
-        continue-on-error: ${{ matrix.category == 'restart' || matrix.category == 'storage' }}
+        continue-on-error: ${{ matrix.category == 'storage' }}
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
           FAILED=0
@@ -3164,7 +3177,7 @@ jobs:
           done
           if [ "$FAILED" -gt 0 ]; then
             case "${{ matrix.category }}" in
-              restart|storage)
+              storage)
                 echo "::warning::${FAILED} resilience test(s) failed in ${{ matrix.category }} (non-blocking: named waiver, artifact-keeper-test#338)"
                 ;;
               *)
