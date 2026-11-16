@@ -32,12 +32,16 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "List users includes new user"
-if resp=$(api_get "/api/v1/users"); then
-  if assert_contains "$resp" "$TEST_USER"; then
+# Every page: on an instance holding prior runs' users the new one need not
+# be on page 1 (artifact-keeper-test#725).
+if fetch_all_pages "/api/v1/users" "${WORK_DIR}/users.json" "$(auth_header)"; then
+  if jq -e --arg u "$TEST_USER" 'any(.items[]; .username == $u)' "${WORK_DIR}/users.json" >/dev/null 2>&1; then
     pass
+  else
+    fail "user ${TEST_USER} is absent from all $(jq '.items | length' "${WORK_DIR}/users.json") listed users"
   fi
 else
-  fail "could not list users"
+  fail "could not list users (HTTP ${FETCH_ALL_STATUS})" "$(head -c 300 "${WORK_DIR}/users.json" 2>/dev/null)"
 fi
 
 # -------------------------------------------------------------------------

@@ -67,6 +67,8 @@ MCP_REPO="mcp-age-${RUN_ID}"
 NPM_REMOTE="mcp-age-npm-remote-${RUN_ID}"
 SERVER="io.github.ak-age/echo-${RUN_ID}"
 SERVER_DETAIL="$(mcp_version_path "$SERVER" "$VER")"
+# Resolver pin (120 s) + baseline serve (60 s) + restore after approval (30 s).
+require_wait_budget 210 "resolver, baseline and restore waits"
 
 # The exact read of the version answers 200 (sets MCP_BODY to the served
 # detail): it is no longer held as resolving.

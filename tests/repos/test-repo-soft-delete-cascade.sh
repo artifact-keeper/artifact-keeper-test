@@ -156,13 +156,18 @@ esac
 # 200/204 with the rows already gone; that path is unchanged.
 DEL_JOB_STATUS=""
 DEL_JOB_URL=""
+# The job poll must end inside run-suite.sh's per-script cap: at the old 120 s
+# default it could only run out by being killed (exit 124) under the 120 s
+# TEST_TIMEOUT of the repo-tests job, never by reaching the verdict below.
+REPO_DELETE_TIMEOUT="${REPO_DELETE_TIMEOUT:-75}"
+require_wait_budget "$REPO_DELETE_TIMEOUT" "repository-deletions job poll (REPO_DELETE_TIMEOUT)"
 if [ "$DEL_STATUS" = "202" ]; then
   DEL_JOB_URL=$(jq -r '.status_url // empty' < "$DEL_BODY" 2>/dev/null || true)
   if [ -z "$DEL_JOB_URL" ]; then
     DEL_JOB_ID=$(jq -r '.id // empty' < "$DEL_BODY" 2>/dev/null || true)
     [ -n "$DEL_JOB_ID" ] && DEL_JOB_URL="/api/v1/repository-deletions/${DEL_JOB_ID}"
   fi
-  DEL_DEADLINE=$(( $(date +%s) + ${REPO_DELETE_TIMEOUT:-120} ))
+  DEL_DEADLINE=$(( $(date +%s) + REPO_DELETE_TIMEOUT ))
   while [ -n "$DEL_JOB_URL" ] && [ "$(date +%s)" -lt "$DEL_DEADLINE" ]; do
     DEL_JOB_STATUS=$(curl -s $CURL_TIMEOUT -H "$(auth_header)" \
       "${BASE_URL}${DEL_JOB_URL}" 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)

@@ -127,3 +127,9 @@ jobs:
       # (artifact-keeper-test#832).
       - name: Run wait-budget self-test
         run: bash tests/lib/selftest-wait-budget.sh
+
+      # fetch_all_pages (tests/lib/common.sh): suites that look for their own
+      # fixture in a paginated listing read every page, not page 1
+      # (artifact-keeper-test#725).
+      - name: Run fetch-all-pages self-test
+        run: bash tests/lib/selftest-fetch-all-pages.sh

@@ -42,6 +42,23 @@ compute_sha256() {
   $sha256cmd "$1" | awk '{print $1}'
 }
 
+# extract_range SRC OFFSET LENGTH OUT: copy LENGTH bytes of SRC starting at byte
+# OFFSET into OUT, in 1 MiB blocks. `dd bs=1` made one read and one write
+# syscall per byte, so the resume step's chunks alone took the whole 120 s
+# TEST_TIMEOUT (artifact-keeper-test#725) while each server request took
+# ~130 ms. GNU dd counts skip/count in bytes with iflag=skip_bytes,count_bytes;
+# elsewhere tail | head does the same in large blocks. Fails unless OUT holds
+# exactly LENGTH bytes.
+extract_range() {
+  local src="$1" off="$2" len="$3" out="$4" got
+  if ! dd if="$src" of="$out" bs=1048576 iflag=skip_bytes,count_bytes \
+      skip="$off" count="$len" 2>/dev/null; then
+    { tail -c +"$(( off + 1 ))" "$src" | head -c "$len" > "$out"; } 2>/dev/null || true
+  fi
+  got=$(wc -c < "$out" | tr -d ' ')
+  [ "$got" = "$len" ]
+}
+
 # ---------------------------------------------------------------------------
 # Setup: create test file and repository
 # ---------------------------------------------------------------------------
@@ -120,16 +137,9 @@ else
     THIS_CHUNK=$(( REMAINING < CHUNK_SIZE ? REMAINING : CHUNK_SIZE ))
     RANGE_END=$(( RANGE_START + THIS_CHUNK - 1 ))
 
-    # Extract chunk from test file. skip is measured in bs-sized (1 MB)
-    # blocks, so chunk i begins at block i*CHUNK_SIZE_MB, not block i.
-    dd if="${WORK_DIR}/testfile.bin" of="${WORK_DIR}/chunks/chunk_${i}" \
-      bs=1048576 skip="$(( i * CHUNK_SIZE_MB ))" count="$CHUNK_SIZE_MB" 2>/dev/null
-    # Truncate last chunk to exact remaining bytes if needed
-    if [ "$THIS_CHUNK" -lt "$CHUNK_SIZE" ]; then
-      truncate -s "$THIS_CHUNK" "${WORK_DIR}/chunks/chunk_${i}" 2>/dev/null || \
-        dd if="${WORK_DIR}/testfile.bin" of="${WORK_DIR}/chunks/chunk_${i}" \
-          bs=1 skip="$RANGE_START" count="$THIS_CHUNK" 2>/dev/null
-    fi
+    # Extract chunk i (bytes RANGE_START..RANGE_END, the last one short).
+    extract_range "${WORK_DIR}/testfile.bin" "$RANGE_START" "$THIS_CHUNK" "${WORK_DIR}/chunks/chunk_${i}" \
+      || echo "  WARN: chunk ${i} extract is not ${THIS_CHUNK} bytes" >&2
 
     CHUNK_HTTP=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X PATCH \
       -H "$(auth_header)" \
@@ -266,8 +276,8 @@ if [ -n "$RESUME_SESSION_ID" ]; then
     THIS_CHUNK=$(( REMAINING < CHUNK_SIZE ? REMAINING : CHUNK_SIZE ))
     RANGE_END=$(( RANGE_START + THIS_CHUNK - 1 ))
 
-    dd if="${WORK_DIR}/testfile.bin" of="${WORK_DIR}/chunks/resume_${i}" \
-      bs=1 skip="$RANGE_START" count="$THIS_CHUNK" 2>/dev/null
+    extract_range "${WORK_DIR}/testfile.bin" "$RANGE_START" "$THIS_CHUNK" "${WORK_DIR}/chunks/resume_${i}" \
+      || echo "  WARN: resume chunk ${i} extract is not ${THIS_CHUNK} bytes" >&2
 
     curl -s -o /dev/null $CURL_TIMEOUT -X PATCH \
       -H "$(auth_header)" \
@@ -291,8 +301,8 @@ if [ -n "$RESUME_SESSION_ID" ]; then
     THIS_CHUNK=$(( REMAINING < CHUNK_SIZE ? REMAINING : CHUNK_SIZE ))
     RANGE_END=$(( RANGE_START + THIS_CHUNK - 1 ))
 
-    dd if="${WORK_DIR}/testfile.bin" of="${WORK_DIR}/chunks/resume_${i}" \
-      bs=1 skip="$RANGE_START" count="$THIS_CHUNK" 2>/dev/null
+    extract_range "${WORK_DIR}/testfile.bin" "$RANGE_START" "$THIS_CHUNK" "${WORK_DIR}/chunks/resume_${i}" \
+      || echo "  WARN: resume chunk ${i} extract is not ${THIS_CHUNK} bytes" >&2
 
     R_HTTP=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X PATCH \
       -H "$(auth_header)" \
