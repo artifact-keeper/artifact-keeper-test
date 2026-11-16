@@ -28,24 +28,31 @@
 #                (default: tests/lib next to this script's repository root)
 set -euo pipefail
 
-component="${1:?usage: wait-component-ready.sh <backend|postgres|opensearch> [timeout-seconds]}"
+# Anything that stops the wait before it can look at a pod is gate infra
+# (exit 11), never a product verdict.
+infra() { echo "::error title=wait-component-ready INFRA::$*" >&2; exit 11; }
+
+component="${1:-}"
 timeout="${2:-120}"
-: "${NAMESPACE:?NAMESPACE is required}"
+[ -n "$component" ] || infra "usage: wait-component-ready.sh <backend|postgres|opensearch> [timeout-seconds]"
+[ -n "${NAMESPACE:-}" ] || infra "NAMESPACE is not set; cannot look for the ${component} pod"
 
 LIB_DIR="${K8S_LIB_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/tests/lib}"
+[ -f "${LIB_DIR}/common.sh" ] && [ -f "${LIB_DIR}/k8s.sh" ] \
+  || infra "common.sh and k8s.sh not found in ${LIB_DIR} (K8S_LIB_DIR)"
 # common.sh needs these for its banner only; nothing here talks to the API.
 export BASE_URL="${BASE_URL:-unused}" RUN_ID="${RUN_ID:-wait-${component}}"
 # shellcheck source=/dev/null
-source "${LIB_DIR}/common.sh"
+source "${LIB_DIR}/common.sh" || infra "could not source ${LIB_DIR}/common.sh"
 # shellcheck source=/dev/null
-source "${LIB_DIR}/k8s.sh"
+source "${LIB_DIR}/k8s.sh" || infra "could not source ${LIB_DIR}/k8s.sh"
 set +e  # the helpers record outcomes themselves; end_suite owns the exit code
 
 case "$component" in
   backend)    selector="$AK_BACKEND_SELECTOR" ;;
   postgres)   selector="$AK_POSTGRES_SELECTOR" ;;
   opensearch) selector="$AK_OPENSEARCH_SELECTOR" ;;
-  *) echo "wait-component-ready: unknown component '${component}'" >&2; exit 2 ;;
+  *) infra "unknown component '${component}'" ;;
 esac
 
 begin_suite "wait-${component}-ready"

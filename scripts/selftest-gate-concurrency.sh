@@ -11,7 +11,8 @@
 #
 #   1. a Release Candidate's full gate and its only_jobs rerun share one group
 #      (never two at once for the same certified tag);
-#   2. no other caller lands in that group (nothing else can replace it);
+#   2. no other caller lands in that group (nothing else can replace it), and
+#      the same holds for release.yml's gate on a stable tag;
 #   3. other full gates on one tag share a group (they still serialize);
 #   4. two narrow dispatches on one tag get distinct groups, distinct from
 #      the full and candidate groups (they never cancel each other);
@@ -39,6 +40,7 @@ import sys
 import yaml
 
 RC = "artifact-keeper/artifact-keeper/.github/workflows/release-candidate.yml@refs/heads/main"
+RC_LINE = "artifact-keeper/artifact-keeper/.github/workflows/release-candidate.yml@refs/heads/release/1.11.x"
 NIGHTLY = "artifact-keeper/artifact-keeper/.github/workflows/nightly-release-gate.yml@refs/heads/main"
 RELEASE = "artifact-keeper/artifact-keeper/.github/workflows/release.yml@refs/tags/v1.12.0"
 REHEARSAL = "artifact-keeper/artifact-keeper/.github/workflows/release-gate-rehearsal.yml@refs/heads/main"
@@ -165,8 +167,10 @@ def problems(path):
         g = lambda *a, **k: group(tmpl, run(*a, **k))
         cand_full = g("sha-1111111", RC, 100)
         cand_rerun = g("sha-1111111", RC, 101, only_jobs="repo-tests dtf-gate/oci")
+        cand_line = g("sha-1111111", RC_LINE, 102)
+        release = g("sha-1111111", RELEASE, 202)
         others_full = [g("sha-1111111", NIGHTLY, 200), g("sha-1111111", DIRECT, 201),
-                       g("sha-1111111", RELEASE, 202), g("sha-1111111", REHEARSAL, 203)]
+                       g("sha-1111111", REHEARSAL, 203)]
         narrow = [g("sha-1111111", DIRECT, 300, only_jobs="resilience-tests", suite="resilience"),
                   g("sha-1111111", DIRECT, 301, only_jobs="resilience-tests", suite="resilience"),
                   g("sha-1111111", DIRECT, 302, suite="admin"),
@@ -177,11 +181,14 @@ def problems(path):
     except ValueError as e:
         return [f"cannot evaluate the group expression: {e}"]
 
-    if cand_full != cand_rerun:
-        out.append(f"rule 1: a candidate's full gate ({cand_full}) and its only_jobs rerun ({cand_rerun}) must share one group")
-    for o in others_full + narrow:
+    if not (cand_full == cand_rerun == cand_line):
+        out.append(f"rule 1: a candidate's full gate ({cand_full}), its only_jobs rerun ({cand_rerun}) and a release-line dispatch ({cand_line}) must share one group")
+    for o in others_full + narrow + [release]:
         if o == cand_full:
             out.append(f"rule 2: a non-candidate run joins the candidate's group {cand_full}")
+    for o in others_full + narrow:
+        if o == release:
+            out.append(f"rule 2: another run joins release.yml's group {release}")
     if len(set(others_full)) != 1:
         out.append(f"rule 3: full gates from other callers on one tag must share a group, got {sorted(set(others_full))}")
     if len(set(narrow)) != len(narrow):
@@ -191,7 +198,7 @@ def problems(path):
             out.append(f"rule 4: narrow run shares the full-gate group {n}")
     if cand_other_tag == cand_full or full_other_tag in others_full:
         out.append("rule 5: runs on distinct tags share a group")
-    for v in [cand_full] + others_full + narrow:
+    for v in [cand_full, release] + others_full + narrow:
         if "sha-1111111" not in v:
             out.append(f"every group must name the backend tag, got {v!r}")
     return out
@@ -220,6 +227,17 @@ concurrency:
   cancel-in-progress: false
 jobs: {}
 YML
+# Fixture: candidate and narrow classes, but release.yml shares the full group.
+cat > "${WORK}/no-release-class.yml" <<'YML'
+concurrency:
+  group: >-
+    release-gate-${{ inputs.backend_tag }}${{
+    startsWith(github.workflow_ref, 'artifact-keeper/artifact-keeper/.github/workflows/release-candidate.yml@') && '-candidate'
+    || (inputs.only_jobs == '' && inputs.test_suite == 'all') && '-full'
+    || format('-narrow-{0}', github.run_id) }}
+  cancel-in-progress: false
+jobs: {}
+YML
 # Fixture: narrow runs keyed per run, but the candidate shares the full group.
 cat > "${WORK}/no-candidate-class.yml" <<'YML'
 concurrency:
@@ -233,4 +251,5 @@ YML
 
 python3 "${WORK}/check.py" "${WORK}/tag-only.yml" "the tag-only group"
 python3 "${WORK}/check.py" "${WORK}/no-candidate-class.yml" "a group without a candidate class"
+python3 "${WORK}/check.py" "${WORK}/no-release-class.yml" "a group without a release.yml class"
 python3 "${WORK}/check.py" "$TARGET" clean

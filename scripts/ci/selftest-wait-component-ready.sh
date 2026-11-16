@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# The grep patterns quote workflow text literally.
+# shellcheck disable=SC2016
 # Self-test for scripts/ci/wait-component-ready.sh (artifact-keeper-test#841),
 # with a stub kubectl so no cluster is needed:
 #
@@ -8,6 +10,7 @@
 #   pod scheduled, never Ready in the budget -> exit 1 (FAIL)
 #   pod unschedulable                        -> exit 11 (INFRA)
 #   run from a copy outside the repository   -> K8S_LIB_DIR is honoured
+#   libs missing / NAMESPACE unset / unknown -> exit 11 (INFRA), not a FAIL
 #   release-gate.yml waits through the helper, not a dead label
 #
 # Run from repo root: bash scripts/ci/selftest-wait-component-ready.sh
@@ -95,12 +98,29 @@ cp "${REPO_ROOT}/tests/lib/common.sh" "${REPO_ROOT}/tests/lib/k8s.sh" "$TMP/copy
 K8S_LIB_DIR="$TMP/copy" run_case "copy outside the repository with K8S_LIB_DIR" 0 "Ready after" \
   "$TMP/ready.json" "$TMP/copy/wait-component-ready.sh"
 
+# Setup problems before any pod is looked at are INFRA, not a product FAIL.
+mkdir -p "$TMP/nolibs"
+cp "$HELPER" "$TMP/nolibs/wait-component-ready.sh"
+K8S_LIB_DIR="$TMP/nolibs" run_case "missing libs are INFRA" 11 "not found in" \
+  "$TMP/ready.json" "$TMP/nolibs/wait-component-ready.sh"
+out=$(env -u NAMESPACE bash "$HELPER" opensearch 2 2>&1); rc=$?
+if [ "$rc" = 11 ] && grep -q "NAMESPACE is not set" <<<"$out"; then
+  echo "  PASS: unset NAMESPACE is INFRA (exit=11)"
+else
+  echo "  FAIL: unset NAMESPACE: exit=${rc}: ${out}"; fails=$((fails+1))
+fi
+out=$(NAMESPACE=x bash "$HELPER" nosuch 2 2>&1); rc=$?
+if [ "$rc" = 11 ]; then echo "  PASS: unknown component is INFRA (exit=11)"
+else echo "  FAIL: unknown component: exit=${rc}"; fails=$((fails+1)); fi
+
 # release-gate.yml must wait through the helper, and no step may select
 # OpenSearch by a label the chart does not set.
 WF="${REPO_ROOT}/.github/workflows/release-gate.yml"
 if grep -qE 'app\.kubernetes\.io/name=opensearch|-l app=opensearch' "$WF"; then
   echo "  FAIL: release-gate.yml still selects OpenSearch by a label the chart does not set"; fails=$((fails+1))
-elif ! grep -q 'wait-component-ready.sh" opensearch' "$WF"; then
+elif ! grep -q 'wait-component-ready.sh" opensearch' "$WF" \
+     || ! grep -qF 'K8S_LIB_DIR: ${{ runner.temp }}/component-wait' "$WF" \
+     || ! grep -qF 'cp tests/lib/common.sh tests/lib/k8s.sh "$d/"' "$WF"; then
   echo "  FAIL: release-gate.yml does not wait for OpenSearch through wait-component-ready.sh"; fails=$((fails+1))
 else
   echo "  PASS: release-gate.yml waits for OpenSearch through the helper"

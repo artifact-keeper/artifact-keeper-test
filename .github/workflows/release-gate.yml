@@ -202,16 +202,20 @@ permissions:
 # group is keyed on the run's shape as well as the tag (artifact-keeper-test#840).
 # With the tag alone, two narrow dispatches on one tag replaced each other, and
 # a nightly or hand-dispatched full gate could replace a Release Candidate's
-# pending gate, killing the candidate. Three classes, in this order:
+# pending gate, killing the candidate. Four classes, in this order:
 #
 #   release-gate-<tag>-candidate   artifact-keeper's release-candidate.yml, its
-#       full gate and its only_jobs rerun (artifact-keeper#6076) alike. In a
-#       called workflow github.workflow_ref is the CALLER's. release-candidate.yml
-#       serializes its own runs per sha, so this group never holds a pending
-#       run another caller could replace, and no other caller can join it.
+#       full gate and its only_jobs rerun (artifact-keeper#6076) alike, from any
+#       ref (main, or a release/X.Y.x dispatch). In a called workflow
+#       github.workflow_ref is the CALLER's. No other caller can join this
+#       group. release-candidate.yml serializes its own runs per `sha` input,
+#       so the group only holds a pending run when the same commit is
+#       dispatched under two spellings (an empty sha and its 40-hex) at once.
+#   release-gate-<tag>-release     artifact-keeper's release.yml gate on a
+#       stable tag: nothing else can cancel it either.
 #   release-gate-<tag>-full        every other full gate (only_jobs empty,
 #       test_suite all): the nightly (artifact-keeper#6084, which yields to a
-#       candidate through its sentinel), release.yml, rehearsals, hand dispatches.
+#       candidate through its sentinel), rehearsals, hand dispatches.
 #   release-gate-<tag>-narrow-<run_id>   anything narrower (only_jobs set, or a
 #       single test_suite): a validation or self-test dispatch. Each run is its
 #       own group, so narrow runs never cancel each other or a full gate. Every
@@ -222,6 +226,7 @@ concurrency:
   group: >-
     release-gate-${{ inputs.backend_tag }}${{
     startsWith(github.workflow_ref, 'artifact-keeper/artifact-keeper/.github/workflows/release-candidate.yml@') && '-candidate'
+    || startsWith(github.workflow_ref, 'artifact-keeper/artifact-keeper/.github/workflows/release.yml@') && '-release'
     || (inputs.only_jobs == '' && inputs.test_suite == 'all') && '-full'
     || format('-narrow-{0}', github.run_id) }}
   cancel-in-progress: false
