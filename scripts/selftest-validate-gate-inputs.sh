@@ -44,6 +44,9 @@ expect 0 "optional inputs empty"                        BACKEND_TAG=1.12.0 WEB_T
 expect 0 "an adapter sha tag"                           BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=sha-a94c2fd
 expect 0 "an adapter version tag"                       BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=1.3.2
 expect 0 "scanner_adapter_tag empty"                    BACKEND_TAG=sha-a94c2fd SCANNER_ADAPTER_TAG=
+expect 0 "release-candidate.yml: the certified adapter" BACKEND_TAG=sha-a94c2fd SCANNER_ADAPTER_TAG=sha-a94c2fd SCANNER_ADAPTER_DIGEST="$DIGEST"
+expect 0 "a published adapter version and its digest"   BACKEND_TAG=sha-a94c2fd SCANNER_ADAPTER_TAG=1.5.2 SCANNER_ADAPTER_DIGEST="$DIGEST"
+expect 0 "scanner_adapter_digest empty"                 BACKEND_TAG=sha-a94c2fd SCANNER_ADAPTER_TAG=1.5.2 SCANNER_ADAPTER_DIGEST=
 expect 0 "only_jobs: one job"                           BACKEND_TAG=sha-a94c2fd GATE_ONLY_JOBS=webhook-tests
 expect 0 "only_jobs: jobs and DTF legs"                 BACKEND_TAG=sha-a94c2fd GATE_ONLY_JOBS='collect-results dtf-gate/storage-1.11.0 dtf-gate/conda-1.11.0-b pullthrough-tests'
 expect 0 "tests_sha: a full commit"                     BACKEND_TAG=sha-a94c2fd GATE_TESTS_SHA=0495cf0389b14ecb63bc62b510d58e9c33425d6c
@@ -69,6 +72,9 @@ expect 1 "digest: 65 hex digits"                        BACKEND_TAG=1.12.0 BACKE
 expect 1 "adapter tag: a slash"                         BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=a/b
 expect 1 "adapter tag: an @ (a digest suffix)"          BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=1@sha256
 expect 1 "adapter tag: a leading -"                     BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=-x
+expect 1 "adapter digest without an adapter tag"        BACKEND_TAG=1.12.0 SCANNER_ADAPTER_DIGEST="$DIGEST"
+expect 1 "adapter digest: too short"                    BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=1.5.2 SCANNER_ADAPTER_DIGEST=sha256:abc
+expect 1 "adapter digest: a tag in it"                  BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=1.5.2 SCANNER_ADAPTER_DIGEST="1.5.2@${DIGEST}"
 expect 1 "tests_sha: short"                             BACKEND_TAG=1.12.0 GATE_TESTS_SHA=0495cf0
 expect 1 "tests_sha: a branch name"                     BACKEND_TAG=1.12.0 GATE_TESTS_SHA=main
 expect 1 "tests_sha: upper-case hex"                    BACKEND_TAG=1.12.0 GATE_TESTS_SHA=0495CF0389B14ECB63BC62B510D58E9C33425D6C
