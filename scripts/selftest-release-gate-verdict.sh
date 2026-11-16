@@ -26,6 +26,10 @@
 #   * teardown runs only when deploy ran and left a run id
 #     (artifact-keeper-test#839), so a skipped deploy does not add a red
 #     cleanup job that says nothing.
+#   * the summary's ADVISORY_JOBS list is exactly the job-level
+#     continue-on-error jobs in `collect-results.needs`, so the "Advisory"
+#     table never hides a voting job or shows a non-voting one as required
+#     (artifact-keeper-test#423);
 #   * the destructive-phase barrier: every job that talks to the shared
 #     instance (reads `needs.deploy.outputs.backend_url`) is in
 #     `stress-tests.needs` or runs after stress-tests, so stress and
@@ -111,6 +115,21 @@ def problems(path):
         for need in ("needs.deploy.result != 'skipped'", "needs.deploy.outputs.run_id != ''"):
             if need not in cond:
                 out.append(f"teardown runs without `{need}` in its if: (artifact-keeper-test#839)")
+
+    # #423: the summary's advisory table is the non-voting set, exactly.
+    advisory = None
+    for s in steps:
+        m = re.search(r'ADVISORY_JOBS="([^"]*)"', str(s.get("run", "")))
+        if m:
+            advisory = set(m.group(1).split())
+    non_voting = {n for n in needs if (jobs.get(n) or {}).get("continue-on-error") is True}
+    if advisory is None:
+        out.append(f"no ADVISORY_JOBS=\"...\" list in {GATE_JOB}'s summary (artifact-keeper-test#423)")
+    else:
+        for name in sorted(non_voting - advisory):
+            out.append(f"'{name}' is non-voting (continue-on-error) but missing from ADVISORY_JOBS, so the summary shows it as required")
+        for name in sorted(advisory - non_voting):
+            out.append(f"'{name}' is in ADVISORY_JOBS but is not a non-voting job in {GATE_JOB}.needs")
 
     # #365: the destructive-phase barrier.
     barrier = jobs.get(BARRIER_JOB)
@@ -199,6 +218,7 @@ jobs:
     steps:
       - name: Summary
         run: |
+          ADVISORY_JOBS=" soft stress-tests "
           for job in deploy suite-a soft stress-tests late; do echo "$job"; done
       - name: Gate check - fail if any required suite did not succeed
         if: >-
@@ -257,6 +277,20 @@ s = open(sys.argv[1]).read()
 s = s.replace("for job in deploy suite-a soft stress-tests late;", "for job in deploy soft stress-tests late;", 1)
 open(sys.argv[2], "w").write(s)
 PY
+# Rule 5 (#423): a non-voting job missing from the advisory table, and a
+# voting job listed in it.
+python3 - "${WORK}/good.yml" "${WORK}/advisory-missing.yml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace('ADVISORY_JOBS=" soft stress-tests "', 'ADVISORY_JOBS=" stress-tests "', 1)
+open(sys.argv[2], "w").write(s)
+PY
+python3 - "${WORK}/good.yml" "${WORK}/advisory-voting.yml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace('ADVISORY_JOBS=" soft stress-tests "', 'ADVISORY_JOBS=" soft stress-tests suite-a "', 1)
+open(sys.argv[2], "w").write(s)
+PY
 # Rule 6 (#365): a job on the shared instance outside the barrier.
 python3 - "${WORK}/good.yml" "${WORK}/barrier-gap.yml" <<'PY'
 import sys
@@ -289,6 +323,8 @@ expect "post-verdict cleanup without c-o-e vetoes"     1 "${WORK}/veto-teardown.
 expect "teardown without the deploy/run-id guard"       1 "${WORK}/teardown-unguarded.yml"   "teardown runs without"
 expect "predicate clause on an unlisted job"           1 "${WORK}/predicate-not-needed.yml" "predicate names 'suite-a'"
 expect "needed job missing from the summary"           1 "${WORK}/summary-missing.yml"      "'suite-a' is in collect-results.needs but missing"
+expect "non-voting job missing from ADVISORY_JOBS"     1 "${WORK}/advisory-missing.yml"     "'soft' is non-voting"
+expect "voting job listed in ADVISORY_JOBS"            1 "${WORK}/advisory-voting.yml"      "'suite-a' is in ADVISORY_JOBS"
 expect "instance job outside the destructive barrier"  1 "${WORK}/barrier-gap.yml"          "job 'soft' talks to the shared instance"
 
 if [ "$FAILURES" -ne 0 ]; then

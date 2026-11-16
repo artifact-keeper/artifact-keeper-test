@@ -4413,11 +4413,16 @@ jobs:
           BACKEND_TAG: ${{ inputs.backend_tag }}
           WEB_TAG: ${{ inputs.web_tag }}
           RUN_ID: ${{ needs.deploy.outputs.run_id }}
+        # Two tables (artifact-keeper-test#423): the jobs that decide the
+        # verdict, and the advisory ones (job-level continue-on-error: shown,
+        # never veto). One table made a red mesh-tests or dtf-advisory read as
+        # a gate failure on every candidate. ADVISORY_JOBS must be exactly the
+        # job-level continue-on-error jobs in this job's needs;
+        # scripts/selftest-release-gate-verdict.sh enforces that.
         run: |
-          echo "## Release Gate Results" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          ADVISORY_JOBS=" cli-smoke format-tests-audit security-grype-scan-completes stress-tests mesh-tests dtf-advisory "
+          required_rows=""
+          advisory_rows=""
 
           for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke deploy real-flow-smoke cli-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests format-tests-audit format-tests-registration-check repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes pullthrough-tests compatibility-tests stress-tests resilience-tests mesh-tests build-dtf-probes dtf-gate dtf-advisory; do
             status="skipped"
@@ -4456,8 +4461,27 @@ jobs:
               dtf-gate) status="${{ needs.dtf-gate.result }}" ;;
               dtf-advisory) status="${{ needs.dtf-advisory.result }}" ;;
             esac
-            echo "| ${job} | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+            case "$ADVISORY_JOBS" in
+              *" ${job} "*) advisory_rows="${advisory_rows}| ${job} | ${status} |"$'\n' ;;
+              *) required_rows="${required_rows}| ${job} | ${status} |"$'\n' ;;
+            esac
           done
+
+          {
+            echo "## Release Gate Results"
+            echo ""
+            echo "### Required (these decide the verdict)"
+            echo ""
+            echo "| Suite | Status |"
+            echo "|-------|--------|"
+            printf '%s' "$required_rows"
+            echo ""
+            echo "### Advisory (non-blocking: reported, never veto the release)"
+            echo ""
+            echo "| Suite | Status |"
+            echo "|-------|--------|"
+            printf '%s' "$advisory_rows"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Backend tag:** \`${BACKEND_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
