@@ -87,3 +87,8 @@ jobs:
       # a probe pod that cannot start is INFRA (11), /readyz non-200 stays 3.
       - name: Run clean-install-smoke exit-code self-test
         run: bash scripts/tests/test-clean-install-smoke-exit-codes.sh
+
+      # Work dirs default under DTF_WORK_PARENT / RUNNER_TEMP so a dind
+      # daemon can see them as bind-mount sources (artifact-keeper-test#732).
+      - name: Run work-dir parent self-test
+        run: bash tests/lib/selftest-work-parent.sh
