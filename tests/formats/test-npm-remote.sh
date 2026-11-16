@@ -114,7 +114,9 @@ else
   # correct way to confirm caching is to re-fetch the artifact through the
   # proxy and verify it is still served successfully (cache hit), rather than
   # asserting on the DB-backed artifact listing.
-  sleep 2
+  # No wait: this re-fetch passes whether the first fetch's cache commit has
+  # landed (cache hit) or not (served from upstream again), and the real
+  # registry.npmjs.org upstream has no request counter to tell the two apart.
   TARBALL_PATH="/npm/${REMOTE_KEY}/${PROXY_PKG}/-/${PROXY_PKG}-${PROXY_VERSION}.tgz"
   if curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
@@ -367,7 +369,10 @@ else
   fail "could not add members to virtual repo"
 fi
 
-sleep 2
+# add_virtual_member (backend repositories.rs) inserts the member row before
+# it answers, and the npm virtual path reads members from the DB per request,
+# so the only precondition is the local member's version row (#364).
+await_artifact_listed "$LOCAL_KEY" "$LOCAL_PKG_NAME" "$LOCAL_PKG_VERSION"
 
 begin_test "Virtual repo resolves locally-published package"
 if resp=$(curl -sf $CURL_TIMEOUT \

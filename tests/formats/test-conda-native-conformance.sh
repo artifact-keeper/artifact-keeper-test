@@ -152,7 +152,9 @@ else
   fi
 fi
 
-sleep 1
+# Hosted repodata is rebuilt on read from the artifacts rows (triggers mark
+# the subdir dirty, conda/shard_store.rs subdir_state materialises it).
+await_artifact_listed "$REPO_KEY" "$CONDA_FILENAME"
 
 # ---------------------------------------------------------------------------
 # 2. GET repodata.json contains the .conda package
@@ -243,7 +245,7 @@ upload2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${CONDA_URL}/${SUBDIR}/${CONDA_FILENAME_2}") || true
 
 if [ "$upload2_status" -ge 200 ] 2>/dev/null && [ "$upload2_status" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$CONDA_FILENAME_2"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${CONDA_URL}/${SUBDIR}/repodata.json" 2>/dev/null); then
@@ -269,7 +271,7 @@ else
     --data-binary "@${CONDA_FILE_2}" \
     "${CONDA_URL}/upload") || true
   if [ "$upload2_status" -ge 200 ] 2>/dev/null && [ "$upload2_status" -lt 300 ] 2>/dev/null; then
-    sleep 1
+    await_artifact_listed "$REPO_KEY" "$CONDA_FILENAME_2"
     if resp=$(curl -sf $CURL_TIMEOUT \
         -H "$(format_auth_header)" \
         "${CONDA_URL}/${SUBDIR}/repodata.json" 2>/dev/null); then

@@ -118,7 +118,9 @@ else
   fail "conda upload returned HTTP ${upload_status}, expected 2xx"
 fi
 
-sleep 1
+# Hosted repodata is rebuilt on read from the artifacts rows (triggers mark
+# the subdir dirty, conda/shard_store.rs subdir_state materialises it).
+await_artifact_listed "$REPO_KEY" "$CONDA_FILENAME"
 
 # ---------------------------------------------------------------------------
 # 2. GET {subdir}/repodata.json returns channel metadata with packages
@@ -276,7 +278,7 @@ upload2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${CONDA_URL}/upload") || true
 
 if [ "$upload2_status" -ge 200 ] 2>/dev/null && [ "$upload2_status" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$CONDA_FILENAME_2"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${CONDA_URL}/${SUBDIR}/repodata.json" 2>/dev/null); then

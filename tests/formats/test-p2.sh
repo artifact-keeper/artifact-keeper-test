@@ -44,7 +44,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Create test P2 bundle artifact"
-cd "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
 
 # Create a minimal OSGi MANIFEST.MF
 mkdir -p META-INF
@@ -98,7 +98,9 @@ begin_test "Query P2 content metadata"
 if [ "$WASM_AVAILABLE" = false ]; then
   skip "p2 WASM plugin not loaded"
 else
-  sleep 1
+  # No sleep: the /ext route is stateless. wasm_proxy::handle_wasm_request hands the plugin
+  # a read-only artifact snapshot and the plugin WIT has no write import, so the PUT above
+  # leaves no row or blob to wait for (#364).
   CONTENT_STATUS=$(curl -s -o "${WORK_DIR}/content.xml" -w '%{http_code}' \
     -H "$(format_auth_header)" \
     "${EXT_URL}/content.xml") || true

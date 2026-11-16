@@ -119,7 +119,7 @@ if $upload_ok; then
   pass
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "${MODEL_ID}/${REVISION}/tokenizer.json"
 
 # ---------------------------------------------------------------------------
 # 2. Download model file by path
@@ -204,7 +204,7 @@ dd if=/dev/urandom of="$WEIGHTS_V2" bs=1024 count=4 2>/dev/null
 
 status=$(hf_upload_file "$MODEL_ID" "$REVISION_2" "pytorch_model.bin" "$WEIGHTS_V2") || true
 if [ "$status" = "200" ] || [ "$status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${MODEL_ID}/${REVISION_2}/pytorch_model.bin"
   # Verify the v2 file is downloadable
   DL_V2="${WORK_DIR}/downloaded-v2.bin"
   v2_status=$(curl -s -o "$DL_V2" -w '%{http_code}' $CURL_TIMEOUT \
@@ -286,7 +286,7 @@ dd if=/dev/urandom of="$LARGE_FILE" bs=1024 count=1024 2>/dev/null
 
 large_status=$(hf_upload_file "$MODEL_ID" "$REVISION" "large-model.bin" "$LARGE_FILE") || true
 if [ "$large_status" = "200" ] || [ "$large_status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${MODEL_ID}/${REVISION}/large-model.bin"
   LARGE_DL="${WORK_DIR}/large-downloaded.bin"
   dl_status=$(curl -s -o "$LARGE_DL" -w '%{http_code}' $CURL_TIMEOUT \
     -H "$(format_auth_header)" \

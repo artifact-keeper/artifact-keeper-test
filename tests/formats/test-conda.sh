@@ -43,7 +43,7 @@ fi
 #   - info/index.json (package metadata)
 #   - info/paths.json (file listing)
 begin_test "Build minimal conda package"
-cd "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
 mkdir -p conda-pkg/info
 cat > conda-pkg/info/index.json <<EOF
 {
@@ -64,7 +64,7 @@ cat > conda-pkg/info/paths.json <<EOF
 }
 EOF
 CONDA_FILENAME="${PKG_NAME}-${PKG_VERSION}-0.tar.bz2"
-cd conda-pkg
+cd conda-pkg || exit 1
 if tar cjf "${WORK_DIR}/${CONDA_FILENAME}" info/ 2>/dev/null; then
   pass
 else
@@ -89,7 +89,7 @@ fi
 # Verify channeldata.json
 # ---------------------------------------------------------------------------
 begin_test "Verify channeldata.json"
-sleep 1
+await_artifact_listed "$REPO_KEY" "$CONDA_FILENAME"
 if resp=$(curl -sf "${CONDA_URL}/channeldata.json" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$PKG_NAME" "channeldata should contain package name"; then
     pass

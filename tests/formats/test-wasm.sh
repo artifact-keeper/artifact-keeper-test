@@ -44,7 +44,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Create test WASM binary"
-cd "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
 
 # Produce a minimal valid WASM binary.
 # The WASM magic number is \0asm (00 61 73 6d) followed by version 1 (01 00 00 00).
@@ -82,7 +82,9 @@ begin_test "Query WASM module listing"
 if [ "$WASM_AVAILABLE" = false ]; then
   skip "wasm WASM plugin not loaded"
 else
-  sleep 1
+  # No sleep: the /ext route is stateless. wasm_proxy::handle_wasm_request hands the plugin
+  # a read-only artifact snapshot and the plugin WIT has no write import, so the PUT above
+  # leaves no row or blob to wait for (#364).
   if resp=$(curl -sf "${EXT_URL}/" -H "$(format_auth_header)"); then
     if assert_contains "$resp" "$MODULE_NAME" "listing should contain module name"; then
       pass

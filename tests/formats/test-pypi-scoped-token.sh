@@ -146,7 +146,7 @@ begin_test "Package listable via simple index with scoped token"
 if [ -z "${SCOPED_TOKEN:-}" ] || [ "$SCOPED_TOKEN" = "null" ]; then
   skip "no scoped token from mint step"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$NORMALIZED_NAME" "$PKG_VERSION"
   if resp=$(curl -sf $CURL_TIMEOUT -u "${ADMIN_USER}:${SCOPED_TOKEN}" \
       "${PYPI_URL}/simple/${NORMALIZED_NAME}/" 2>/dev/null); then
     if assert_contains "$resp" ".tar.gz" "package index should list the sdist"; then

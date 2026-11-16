@@ -125,7 +125,9 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify maven-metadata.xml"
-sleep 1
+# maven-metadata.xml is generated from the artifacts rows on read, and the
+# upload drops the per-GAV metadata cache before answering.
+await_artifact_listed "$REPO_KEY" "$POM_PATH"
 METADATA_PATH="${GROUP_PATH}/${ARTIFACT_ID}/maven-metadata.xml"
 if resp=$(curl -sf $CURL_TIMEOUT "${MAVEN_URL}/${METADATA_PATH}" -u "${ADMIN_USER}:${ADMIN_PASS}"); then
   if assert_contains "$resp" "$VERSION" "metadata should list the uploaded version"; then
@@ -212,7 +214,7 @@ fi
 
 begin_test "Grouped view returns non-empty components with path-derived version"
 if require_feature "maven_grouped_hosted_direct_put"; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${GROUPED_BASE}/${GROUPED_ARTIFACT_ID}-${GROUPED_VERSION}.pom"
   GROUPED_PATH="/api/v1/repositories/${REPO_KEY}/artifacts?group_by=maven_component&count=exact&per_page=100"
   if resp=$(api_get_with_retry "$GROUPED_PATH"); then
     comp_count=$(echo "$resp" | jq '.components | length' 2>/dev/null) || comp_count=""

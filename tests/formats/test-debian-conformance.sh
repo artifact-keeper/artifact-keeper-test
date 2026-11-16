@@ -102,8 +102,8 @@ else
   fail "upload returned HTTP ${HTTP_CODE}, expected 2xx"
 fi
 
-# Small pause for metadata generation
-sleep 1
+# Packages/Release render from the artifacts rows on request.
+await_artifact_listed "$REPO_KEY" "testlib_1.0.0_amd64.deb"
 
 # -------------------------------------------------------------------------
 # 2. GET dists/{dist}/Release returns valid Release with checksums
@@ -273,7 +273,7 @@ ARM_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
 if [ "$ARM_CODE" -lt 200 ] || [ "$ARM_CODE" -ge 300 ]; then
   fail "arm64 upload returned HTTP ${ARM_CODE}"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "testlib_1.0.0_arm64.deb"
   # Fetch arm64 Packages index
   ARM_PACKAGES=$(curl -sf -H "$(format_auth_header)" \
       "${BASE_URL}/debian/${REPO_KEY}/dists/${DISTRIBUTION}/${COMPONENT}/binary-arm64/Packages" 2>/dev/null) || true

@@ -55,7 +55,7 @@ public func hello() -> String {
 }
 EOF
 
-cd "${WORK_DIR}"
+cd "${WORK_DIR}" || exit 1
 zip -rq "${WORK_DIR}/testpkg-1.0.0.zip" swift-pkg/
 
 if [ -s "${WORK_DIR}/testpkg-1.0.0.zip" ]; then
@@ -88,7 +88,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "List package releases"
-sleep 1
+await_artifact_listed "$REPO_KEY" "${SCOPE}/${PACKAGE_NAME}/" "$PACKAGE_VERSION"
 if resp=$(api_get "/swift/${REPO_KEY}/${SCOPE}/${PACKAGE_NAME}" 2>/dev/null); then
   if assert_contains "$resp" "${PACKAGE_VERSION}"; then
     pass

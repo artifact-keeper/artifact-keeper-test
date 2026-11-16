@@ -83,7 +83,7 @@ pass
 # -------------------------------------------------------------------------
 
 begin_test "Publish crate with cargo publish"
-cd "${CRATE_DIR}"
+cd "${CRATE_DIR}" || exit 1
 if output=$(cargo publish --registry test-registry --allow-dirty --no-verify 2>&1); then
   pass
 else
@@ -100,7 +100,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify crate metadata via sparse index"
-sleep 2
+await_artifact_listed "$REPO_KEY" "$CRATE_NAME" "$CRATE_VERSION"
 # The sparse index stores crate info keyed by crate name length:
 # 1-2 chars: /index/1/{name} or /index/2/{name}
 # 3 chars:   /index/3/{first}/{name}

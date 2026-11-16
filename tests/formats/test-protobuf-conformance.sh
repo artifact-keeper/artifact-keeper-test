@@ -70,11 +70,14 @@ if resp=$(curl -sf $CURL_TIMEOUT -X POST "$UPLOAD_URL" \
     -H "Content-Type: application/json" \
     -d "$UPLOAD_BODY" 2>&1); then
   pass
+  # Upload commits the module's `artifacts` row inside the request; confirm
+  # it is listed (modules/<module>/commits/<digest>) before the Download and
+  # GetModules reads instead of sleeping (#364).
+  COMMIT1=$(echo "$resp" | jq -r '.commits[0].digest.value // empty' 2>/dev/null) || COMMIT1=""
+  await_artifact_listed "$REPO_KEY" "modules/${OWNER}/${MODULE}/commits/" "$COMMIT1"
 else
   fail "Connect RPC upload failed: ${resp}"
 fi
-
-sleep 1
 
 # ---------------------------------------------------------------------------
 # 2. Download the module
@@ -202,7 +205,8 @@ if resp=$(curl -sf $CURL_TIMEOUT -X POST "$UPLOAD_URL" \
     -H "$(format_auth_header)" \
     -H "Content-Type: application/json" \
     -d "$UPLOAD_BODY_V2" 2>&1); then
-  sleep 1
+  COMMIT2=$(echo "$resp" | jq -r '.commits[0].digest.value // empty' 2>/dev/null) || COMMIT2=""
+  await_artifact_listed "$REPO_KEY" "modules/${OWNER}/${MODULE}/commits/" "$COMMIT2"
   # List commits to verify multiple versions exist
   COMMITS_URL="${PROTO_BASE}/buf.registry.module.v1.CommitService/ListCommits"
   COMMITS_BODY="{\"owner\":\"${OWNER}\",\"module\":\"${MODULE}\"}"

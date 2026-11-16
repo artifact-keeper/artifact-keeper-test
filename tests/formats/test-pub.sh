@@ -45,7 +45,7 @@ String hello() => 'hello from ${PACKAGE_NAME}';
 EOF
 
 # Pub packages are uploaded as tar.gz archives
-cd "${PKG_DIR}"
+cd "${PKG_DIR}" || exit 1
 tar czf "${WORK_DIR}/package.tar.gz" pubspec.yaml lib/
 
 if [ -s "${WORK_DIR}/package.tar.gz" ]; then
@@ -110,7 +110,7 @@ finalize_code=$(curl -s -o /dev/null -w '%{http_code}' \
 # -------------------------------------------------------------------------
 
 begin_test "Verify package info endpoint"
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PACKAGE_NAME" "$PACKAGE_VERSION"
 if resp=$(curl -sf -H "Authorization: Basic ${BASIC_AUTH}" \
     "${BASE_URL}/pub/${REPO_KEY}/api/packages/${PACKAGE_NAME}" 2>/dev/null); then
   if assert_contains "$resp" "${PACKAGE_NAME}"; then

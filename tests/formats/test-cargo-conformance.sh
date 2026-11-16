@@ -40,6 +40,17 @@ sparse_index_path() {
   fi
 }
 
+# cargo_index_yanked_is VERSION true|false: one sparse index GET; true when
+# the entry for VERSION carries that yanked value (absent counts as false).
+cargo_index_yanked_is() {
+  local version="$1" want="$2" body got
+  body=$(curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+    "${BASE_URL}$(sparse_index_path "$CRATE_NAME")" 2>/dev/null) || return 1
+  got=$(jq -r --arg v "$version" 'select(.vers == $v) | (.yanked // false) | tostring' \
+    <<<"$body" 2>/dev/null | head -n1) || return 1
+  [ "$got" = "$want" ]
+}
+
 # ---------------------------------------------------------------------------
 # Helper: build and publish a crate via the new crate API
 # ---------------------------------------------------------------------------
@@ -189,7 +200,10 @@ else
   fail "second version publish failed with status ${status2}"
 fi
 
-sleep 2
+# cargo::publish commits the row and drops the crate's IndexCache entry before it
+# answers; await the rows rather than sleeping (#364).
+await_artifact_listed "$REPO_KEY" "$CRATE_NAME" "$CRATE_VERSION"
+await_artifact_listed "$REPO_KEY" "$CRATE_NAME" "$CRATE_VERSION_2"
 
 # ---------------------------------------------------------------------------
 # 3. Sparse index: GET /index/{prefix}/{crate} returns index entry JSON
@@ -274,7 +288,10 @@ yank_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
 if [ "$yank_status" = "200" ] || [ "$yank_status" = "204" ]; then
   # Verify the index entry shows yanked=true
   index_path=$(sparse_index_path "$CRATE_NAME")
-  sleep 1
+  # No yank route exists in cargo::router, so there is no handler to prove
+  # read-your-writes from; poll the index for the flag instead of sleeping (#364).
+  wait_until "index shows ${CRATE_VERSION} yanked" 15 cargo_index_yanked_is "$CRATE_VERSION" true \
+    || echo "  note: index did not show yanked=true within 15s"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${BASE_URL}${index_path}" 2>/dev/null); then
@@ -305,7 +322,8 @@ unyank_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
 if [ "$unyank_status" = "200" ] || [ "$unyank_status" = "204" ]; then
   # Verify the index entry shows yanked=false or absent
   index_path=$(sparse_index_path "$CRATE_NAME")
-  sleep 1
+  wait_until "index shows ${CRATE_VERSION} unyanked" 15 cargo_index_yanked_is "$CRATE_VERSION" false \
+    || echo "  note: index did not show yanked=false within 15s"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${BASE_URL}${index_path}" 2>/dev/null); then

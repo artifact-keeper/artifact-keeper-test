@@ -98,7 +98,8 @@ else
   fail "chart upload returned HTTP ${UPLOAD_CODE}, expected 200 or 201"
 fi
 
-sleep 1
+# Hosted index.yaml is generated on request from the artifacts rows.
+await_artifact_listed "$REPO_KEY" "${CHART_NAME}-${CHART_V1}.tgz"
 
 # -------------------------------------------------------------------------
 # 2. GET index.yaml returns valid YAML with entries
@@ -210,7 +211,7 @@ UPLOAD2_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
 if [ "$UPLOAD2_CODE" != "200" ] && [ "$UPLOAD2_CODE" != "201" ]; then
   fail "second chart upload returned HTTP ${UPLOAD2_CODE}"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${CHART_NAME}-${CHART_V2}.tgz"
   INDEX2=$(curl -sf -H "$(format_auth_header)" \
       "${BASE_URL}/helm/${REPO_KEY}/index.yaml" 2>/dev/null) || true
 
@@ -403,7 +404,7 @@ UPLOAD3_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
 if [ "$UPLOAD3_CODE" != "200" ] && [ "$UPLOAD3_CODE" != "201" ]; then
   fail "v3 chart upload returned HTTP ${UPLOAD3_CODE}"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${CHART_NAME}-${CHART_V3}.tgz"
   INDEX3=$(curl -sf -H "$(format_auth_header)" \
       "${BASE_URL}/helm/${REPO_KEY}/index.yaml" 2>/dev/null) || true
   if echo "$INDEX3" | grep -q "${CHART_V3}"; then

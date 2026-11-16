@@ -57,7 +57,8 @@ begin_test "Fetch simple index for proxied package"
 if [ "$UPSTREAM_REACHABLE" != "true" ]; then
   skip "upstream unreachable"
 else
-  sleep 1
+  # No wait: create_remote_repo committed before it answered and nothing else
+  # precedes this first proxied fetch.
   if resp=$(curl -sf $CURL_TIMEOUT \
       -u "${ADMIN_USER}:${ADMIN_PASS}" \
       "${PYPI_REMOTE_URL}/simple/${PROXY_PKG}/" 2>/dev/null); then
@@ -122,7 +123,9 @@ else
   # simple index through the proxy and verify it is still served with the
   # expected sdist/wheel links (served from cache), rather than asserting on
   # the DB-backed artifact listing.
-  sleep 2
+  # No wait: this re-fetch passes whether the first fetch's cache commit has
+  # landed (cache hit) or not (served from upstream again), and the real
+  # pypi.org upstream has no request counter to tell the two apart.
   if resp=$(curl -sf $CURL_TIMEOUT \
       -u "${ADMIN_USER}:${ADMIN_PASS}" \
       "${PYPI_REMOTE_URL}/simple/${PROXY_PKG}/" 2>/dev/null); then
@@ -242,8 +245,10 @@ else
 fi
 
 begin_test "Virtual simple index lists locally published package"
-sleep 2
 NORMALIZED_NAME=$(echo "$PKG_NAME" | tr '_' '-')
+# add_virtual_member (backend repositories.rs) inserts the member row before
+# it answers, so the only precondition is the local member's version row.
+await_artifact_listed "$LOCAL_KEY" "$NORMALIZED_NAME" "$PKG_VERSION"
 if resp=$(curl -sf $CURL_TIMEOUT \
     -u "${ADMIN_USER}:${ADMIN_PASS}" \
     "${PYPI_VIRTUAL_URL}/simple/" 2>/dev/null); then

@@ -25,7 +25,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Create proto descriptor file"
-cd "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
 
 cat > billing.proto <<'PROTOEOF'
 syntax = "proto3";
@@ -58,6 +58,11 @@ if resp=$(curl -sf -X POST "$UPLOAD_URL" \
   -H "Content-Type: application/json" \
   -d "$UPLOAD_BODY" 2>&1); then
   pass
+  # Upload commits the module's `artifacts` row inside the request; confirm
+  # it is listed (modules/<owner>/<module>/commits/<digest>) before the
+  # GetModules read instead of sleeping (#364).
+  COMMIT1=$(echo "$resp" | jq -r '.commits[0].digest.value // empty' 2>/dev/null) || COMMIT1=""
+  await_artifact_listed "$REPO_KEY" "modules/acme/billing/commits/" "$COMMIT1"
 else
   fail "Connect RPC upload failed: ${resp}"
 fi
@@ -67,7 +72,6 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Query modules via Connect RPC"
-sleep 1
 MODULES_URL="${BASE_URL}/proto/${REPO_KEY}/buf.registry.module.v1.ModuleService/GetModules"
 if resp=$(curl -sf -X POST "$MODULES_URL" \
   -H "$(format_auth_header)" \

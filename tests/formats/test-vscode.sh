@@ -36,7 +36,7 @@ fi
 
 begin_test "Build minimal VSIX file"
 
-cd "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
 mkdir -p vsix-content/extension
 
 cat > vsix-content/extension.vsixmanifest <<EOF
@@ -73,7 +73,7 @@ cat > vsix-content/\[Content_Types\].xml <<EOF
 </Types>
 EOF
 
-cd vsix-content
+cd vsix-content || exit 1
 VSIX_FILE="${WORK_DIR}/${EXT_ID}-${EXT_VERSION}.vsix"
 if zip -r "$VSIX_FILE" . > /dev/null 2>&1; then
   pass
@@ -104,7 +104,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Query extension via extensionquery"
-sleep 1
+await_artifact_listed "$REPO_KEY" "${PUBLISHER}/${EXT_NAME}/" "$EXT_VERSION"
 if resp=$(curl -sf -H "$(format_auth_header)" \
   "${BASE_URL}/vscode/${REPO_KEY}/api/extensionquery"); then
   if assert_contains "$resp" "$EXT_NAME" "query response should contain extension name"; then

@@ -216,7 +216,14 @@ else
   fail "snupkg push failed on all endpoints" "$SYM_DETAIL"
 fi
 
-sleep 2
+# Wait for the pushed symbol package's row. A symbolpackage push lands under
+# its own .snupkg filename; the /api/v2/package fallback files whatever it
+# accepts at the {id}/{version}/ path (nuget.rs build_nuget_artifact_path).
+if [ "$SYM_STATUS" = "ok" ]; then
+  await_artifact_listed "$REPO_KEY" "${PACKAGE_ID_LOWER}.${PACKAGE_VERSION}.snupkg"
+elif [ "$SYM_STATUS" = "ok-fallback" ]; then
+  await_artifact_listed "$REPO_KEY" "$PACKAGE_ID_LOWER" "$PACKAGE_VERSION"
+fi
 
 # ---------------------------------------------------------------------------
 # Retrieve the .snupkg back, separate from the .nupkg
