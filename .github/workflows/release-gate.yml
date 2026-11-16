@@ -4382,9 +4382,13 @@ jobs:
       # (Docker Publish tags the adapter it builds from a commit sha-<7>, the
       # same tag release-candidate.yml passes as backend_tag). Its red/green
       # axis is the adapter, and :1 moves only in the post-gate promotion.
-      # With scanner_adapter_digest the candidate's adapter is pinned to it
-      # (artifact-keeper-test#380); the digest always comes with its tag.
-      SCANNER_ADAPTER_IMAGE: ${{ matrix.adapter == 'candidate' && format('ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:{0}{1}', inputs.scanner_adapter_tag || inputs.backend_tag, inputs.scanner_adapter_digest != '' && format('@{0}', inputs.scanner_adapter_digest) || '') || 'ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:1' }}
+      # With scanner_adapter_digest (the Release Candidate's certified
+      # adapter, artifact-keeper-test#380) EVERY group runs that adapter,
+      # pinned by digest, except scanner-server: trivy-server-mode pairs the
+      # adapter's bundled trivy with its own trivy server image, so it keeps
+      # the published :1 it is written against. The digest always comes with
+      # its tag (validate-gate-inputs.sh).
+      SCANNER_ADAPTER_IMAGE: ${{ ((matrix.adapter == 'candidate' || inputs.scanner_adapter_digest != '') && matrix.group != 'scanner-server') && format('ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:{0}{1}', inputs.scanner_adapter_tag || inputs.backend_tag, inputs.scanner_adapter_digest != '' && format('@{0}', inputs.scanner_adapter_digest) || '') || 'ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:1' }}
       TRIVY_DB_REPOSITORY: ghcr.io/artifact-keeper/trivy-db
       # Authenticated DB pull so the adapter's trivy is not at the mercy
       # of ghcr anonymous-token throttling (see waiver above). The DTF
