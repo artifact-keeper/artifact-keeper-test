@@ -41,9 +41,9 @@ set -uo pipefail
 
 # needs.<job>.result == 'failure' || ... == 'cancelled' in the full predicate.
 REQUIRED_LOOSE="version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke deploy format-tests format-tests-registration-check compatibility-tests repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests resilience-tests"
-# needs.<job>.result != 'success' in the full predicate (the last two only for
+# needs.<job>.result != 'success' in the full predicate (the last four only for
 # the suites that run them).
-REQUIRED_STRICT="scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate security-tests dtf-gate"
+REQUIRED_STRICT="scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate security-tests pullthrough-tests build-dtf-probes dtf-gate"
 
 if [[ "${1:-}" == --print-policy ]]; then
   echo "loose ${REQUIRED_LOOSE}"
@@ -67,13 +67,16 @@ selected() { # <job>
     version-set-integrity) return 0 ;;
     clean-install-smoke|deploy) [[ "$CLUSTER" == true ]] ;;
     dtf-gate) [[ "$sel" == *" dtf-gate "* || "$sel" == *" dtf-gate/"* ]] ;;
+    # Runs whenever dtf-gate (or one of its legs) is selected, like its `if:`.
+    build-dtf-probes) [[ "$sel" == *" build-dtf-probes "* || "$sel" == *" dtf-gate "* || "$sel" == *" dtf-gate/"* ]] ;;
     *) [[ "$sel" == *" $1 "* ]] ;;
   esac
 }
 applies() { # <job>: does the full predicate judge it for this test_suite?
   case "$1" in
     security-tests) [[ "$SUITE" == all || "$SUITE" == security ]] ;;
-    dtf-gate) [[ "$SUITE" == all || "$SUITE" == security || "$SUITE" == dtf ]] ;;
+    dtf-gate|build-dtf-probes) [[ "$SUITE" == all || "$SUITE" == security || "$SUITE" == dtf ]] ;;
+    pullthrough-tests) [[ "$SUITE" == all || "$SUITE" == pullthrough ]] ;;
     *) return 0 ;;
   esac
 }

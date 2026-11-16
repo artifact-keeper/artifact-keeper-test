@@ -37,6 +37,10 @@ name: Harness Contract Self-Test
 # That case is a tree-wide grep, so this workflow triggers on any change under
 # tests/ rather than only on the lib files.
 #
+# It also pins the VERDICT SHAPE of release-gate.yml (artifact-keeper-test#359):
+# every job is either on collect-results' predicate or job-level
+# continue-on-error, so no job can veto a release the verdict passed.
+#
 # Runs on a plain hosted runner: the fixtures are a closed TCP port and a
 # small python /health stub, so no cluster and no deployed candidate needed.
 
@@ -54,6 +58,7 @@ on:
       - 'scripts/gate-selection.sh'
       - 'scripts/gate-subset-verdict.sh'
       - 'scripts/selftest-gate-subset-verdict.sh'
+      - 'scripts/selftest-release-gate-verdict.sh'
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
@@ -70,6 +75,7 @@ on:
       - 'scripts/gate-selection.sh'
       - 'scripts/gate-subset-verdict.sh'
       - 'scripts/selftest-gate-subset-verdict.sh'
+      - 'scripts/selftest-release-gate-verdict.sh'
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
@@ -108,3 +114,9 @@ jobs:
       # required lists match the full-run predicate.
       - name: Run gate subset-run self-test
         run: bash scripts/selftest-gate-subset-verdict.sh
+
+      # Every release-gate job counts in collect-results' verdict or carries
+      # job-level continue-on-error, so the workflow conclusion the callers
+      # read cannot disagree with the verdict (artifact-keeper-test#359).
+      - name: Run release-gate verdict-shape self-test
+        run: bash scripts/selftest-release-gate-verdict.sh
