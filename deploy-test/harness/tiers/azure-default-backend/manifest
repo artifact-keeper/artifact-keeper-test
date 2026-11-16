@@ -34,8 +34,10 @@
 #
 # Gates: (CONTROL) a single RPM-path upload and a chunked session into
 # Azure-backed repositories land byte-exact with the blob in Azurite (both
-# images); (FIX) six parallel uploads of one 12 MiB body all 201, each path
-# downloads byte-exact, and the backend logged the #3920 race at least once;
+# images); (FIX) rounds of six parallel uploads of one fresh 12 MiB body all
+# 201 and each path downloads byte-exact, repeated (ADB_RACE_ROUNDS, default
+# 8) until the backend logs the #3920 race; no round reaching it is INFRA
+# (exit 11, "race not reached"), never a pass;
 # a remote created without storage_backend is on `filesystem`; an explicit
 # `azure` remote is 400 naming filesystem; the backend restarts healthy with
 # that remote present; the remote then serves from the mock upstream with
