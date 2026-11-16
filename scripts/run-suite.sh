@@ -78,6 +78,13 @@ case "$SUITE" in
 esac
 
 TIMEOUT="${TEST_TIMEOUT:-${SUITE_TIMEOUT_DEFAULT}}"
+# Hand the cap to the scripts. RUN_SUITE_TIMEOUT is the value `timeout`
+# enforces below: tests/lib/common.sh require_wait_budget checks a script's own
+# waits against it and fails loudly when they cannot fit (#832). TEST_TIMEOUT
+# is exported with the same value so a script that sizes a wait from it sees
+# the real cap, not common.sh's 120 s fallback.
+export RUN_SUITE_TIMEOUT="$TIMEOUT"
+export TEST_TIMEOUT="$TIMEOUT"
 
 # ---------------------------------------------------------------------------
 # Discover test scripts

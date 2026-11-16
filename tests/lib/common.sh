@@ -837,6 +837,58 @@ api_get() {
   curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"
 }
 
+# fetch_all_pages PATH OUT_FILE [HEADER]
+#
+# Walk a paginated `{items, pagination: {page, per_page, total, total_pages}}`
+# listing (users, repositories, ...) page by page at per_page=100 and write
+# every item into OUT_FILE as `{"items": [...]}`. A suite that looks for its
+# own fixture in page 1 of a listing passes on a fresh gate install and fails
+# on any instance holding more than 20 rows of prior state
+# (artifact-keeper-test#725); this reads all of them.
+#
+# HEADER is passed to curl as one -H (e.g. "$(auth_header)"); omit it for an
+# anonymous listing. A bare JSON array answer is accepted as a single page.
+# Sets FETCH_ALL_STATUS to the last HTTP status. Returns 0 when every page
+# answered 200; otherwise returns 1 with that page's body left in OUT_FILE,
+# so a caller can still judge a 401/403 the way it judged page 1 before.
+# Stops after FETCH_ALL_MAX_PAGES (default 200) pages.
+fetch_all_pages() {
+  local path="$1" out="$2" header="${3:-}"
+  local sep='?' page=1 total_pages=1 max="${FETCH_ALL_MAX_PAGES:-200}"
+  local tmp="${out}.page" acc="${out}.acc"
+  local -a args
+  [[ "$path" == *\?* ]] && sep='&'
+  printf '[]' > "$acc"
+  FETCH_ALL_STATUS=000
+  while :; do
+    args=(-s -o "$tmp" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}")
+    [ -n "$header" ] && args+=(-H "$header")
+    FETCH_ALL_STATUS=$(curl "${args[@]}" "${BASE_URL}${path}${sep}page=${page}&per_page=100" 2>/dev/null) \
+      || FETCH_ALL_STATUS=000
+    if [ "$FETCH_ALL_STATUS" != "200" ]; then
+      mv -f "$tmp" "$out" 2>/dev/null || : > "$out"
+      rm -f "$acc"
+      return 1
+    fi
+    if ! jq -s '.[0] + (.[1] | if type == "array" then . else (.items // []) end)' \
+        "$acc" "$tmp" > "${acc}.next" 2>/dev/null; then
+      mv -f "$tmp" "$out"
+      rm -f "$acc" "${acc}.next"
+      return 1
+    fi
+    mv -f "${acc}.next" "$acc"
+    total_pages=$(jq -r 'if type == "object" then (.pagination.total_pages // 1) else 1 end' "$tmp" 2>/dev/null) || total_pages=1
+    [[ "$total_pages" =~ ^[0-9]+$ ]] || total_pages=1
+    if [ "$page" -ge "$total_pages" ] || [ "$page" -ge "$max" ]; then
+      break
+    fi
+    page=$(( page + 1 ))
+  done
+  jq '{items: .}' "$acc" > "$out"
+  rm -f "$acc" "$tmp"
+  return 0
+}
+
 # api_get_with_retry - GET an idempotent management-API endpoint with a bounded
 # retry-with-backoff on TRANSIENT failures only. On success it echoes the
 # response body on stdout and returns 0, so it is a drop-in replacement for
@@ -2579,6 +2631,45 @@ assert_eventually() {
   shift 2
   if ! wait_until "$desc" "$timeout" "$@"; then
     fail "timed out after ${timeout}s waiting for: ${desc}"
+    return 1
+  fi
+  return 0
+}
+
+# require_wait_budget SECONDS [WHAT]
+#
+# Declare the longest time this script can spend in its own bounded waits
+# (polling loops plus fixed sleeps, summed over every step), once, after
+# begin_suite. scripts/run-suite.sh kills each script at TEST_TIMEOUT with
+# `timeout` (exit 124): a script whose waits do not fit inside that cap is
+# killed mid-poll, never reaches its own verdict (pass, fail, or documented
+# skip), and its red reads as "the harness killed it" rather than as a result.
+# That is how test-replication-schedule.sh (180 s wait) died under the mesh
+# job's default 120 s cap (artifact-keeper-test#832).
+#
+# If SECONDS plus WAIT_BUDGET_MARGIN (default 30 s, for setup, curl calls and
+# cleanup) exceeds the cap, this fails the suite loudly, naming both numbers,
+# instead of letting `timeout` kill it later. Raise the job's TEST_TIMEOUT or
+# lower the script's wait; never let the two drift apart. Prints nothing when
+# the budget fits.
+#
+# The cap is RUN_SUITE_TIMEOUT, which run-suite.sh exports as the value it
+# enforces. A script run by hand (bash tests/mesh/test-x.sh) has no killer and
+# no RUN_SUITE_TIMEOUT, so nothing is checked: common.sh's TEST_TIMEOUT
+# fallback of 120 s is not a limit anyone enforces there.
+require_wait_budget() {
+  local secs="$1" what="${2:-bounded waits}"
+  local margin="${WAIT_BUDGET_MARGIN:-30}"
+  local cap="${RUN_SUITE_TIMEOUT:-}"
+  [ -n "$cap" ] || return 0
+  if ! [[ "$secs" =~ ^[0-9]+$ ]] || ! [[ "$margin" =~ ^[0-9]+$ ]] || ! [[ "$cap" =~ ^[0-9]+$ ]]; then
+    begin_test "Wait budget fits TEST_TIMEOUT"
+    fail_fatal "require_wait_budget: non-integer budget '${secs}', margin '${margin}' or run-suite.sh TEST_TIMEOUT '${cap}'"
+    return 1
+  fi
+  if [ $(( secs + margin )) -gt "$cap" ]; then
+    begin_test "Wait budget fits TEST_TIMEOUT"
+    fail_fatal "this script's ${what} can take ${secs}s (+${margin}s setup margin = $(( secs + margin ))s), more than TEST_TIMEOUT=${cap}s: run-suite.sh would kill it (exit 124) before its verdict. Raise the job's TEST_TIMEOUT or lower the wait."
     return 1
   fi
   return 0

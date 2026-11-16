@@ -54,6 +54,7 @@ POLICY_ID=""
 DEAD_URL="${MESH_DEAD_PEER_URL:-http://ak-dead-peer.invalid:1}"
 DEGRADE_TIMEOUT="${BP_DEGRADE_TIMEOUT:-30}"
 RECOVERY_TIMEOUT="${BP_RECOVERY_TIMEOUT:-60}"
+require_wait_budget $(( DEGRADE_TIMEOUT + RECOVERY_TIMEOUT + 2 )) "degrade + recovery waits"
 
 cleanup_backpressure() {
   if [ -n "${POLICY_ID:-}" ] && [ "$POLICY_ID" != "null" ]; then

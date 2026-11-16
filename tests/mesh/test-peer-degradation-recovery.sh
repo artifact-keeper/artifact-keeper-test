@@ -27,6 +27,7 @@ fi
 MAIN_URL="${MAIN_URL:-$BASE_URL}"
 BASE_URL="$MAIN_URL"
 auth_admin
+require_wait_budget 30 "degraded-status poll (15 x 2s)"
 
 PEER_NAME="fed-degraded-${RUN_ID}"
 # The "broken" peer must be a URL the backend ACCEPTS but cannot reach.

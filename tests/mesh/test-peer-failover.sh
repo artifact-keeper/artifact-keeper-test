@@ -52,6 +52,7 @@ HEALTHY_ID=""
 BROKEN_ID=""
 POLICY_ID=""
 FAILOVER_TIMEOUT="${FAILOVER_TIMEOUT:-90}"
+require_wait_budget $(( FAILOVER_TIMEOUT + 20 )) "failover wait + 20s unhealthy-flip poll"
 
 cleanup_failover() {
   export BASE_URL="$MAIN_URL"; export ADMIN_TOKEN="$MAIN_TOKEN"

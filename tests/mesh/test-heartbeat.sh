@@ -10,6 +10,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "mesh-heartbeat"
 setup_workdir
+require_wait_budget 15 "heartbeat-cycle wait"
 
 MAIN_URL="${MAIN_URL:?MAIN_URL must be set}"
 PEER1_URL="${PEER1_URL:?PEER1_URL must be set}"

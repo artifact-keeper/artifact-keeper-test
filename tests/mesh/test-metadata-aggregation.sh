@@ -38,6 +38,7 @@ POLICY_NAME="fed-agg-policy-${RUN_ID}"
 PEER_ID=""
 POLICY_ID=""
 SYNC_TIMEOUT="${AGG_SYNC_TIMEOUT:-75}"
+require_wait_budget "$SYNC_TIMEOUT" "aggregation wait (AGG_SYNC_TIMEOUT)"
 
 cleanup_agg() {
   export BASE_URL="$MAIN_URL"; export ADMIN_TOKEN="$MAIN_TOKEN"
