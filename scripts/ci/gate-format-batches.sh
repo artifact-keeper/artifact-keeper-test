@@ -47,7 +47,7 @@ case "$cmd" in
     ;;
   install-deps)
     batch="${2:?batch name required}"
-    batches | cut -f1 | grep -qxF -- "$batch" \
+    grep -qxF -- "$batch" <<<"$(batches | cut -f1)" \
       || { echo "::error title=Gate format batches::batch '${batch}' not found in ${WF}" >&2; exit 1; }
     # The step's `run: |` block, de-indented. It reads the batch from the
     # expression ${{ matrix.batch.name }}; substitute the literal name.

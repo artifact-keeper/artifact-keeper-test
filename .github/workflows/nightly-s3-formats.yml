@@ -198,6 +198,10 @@ jobs:
       JUNIT_OUTPUT_DIR: /tmp/test-results
       # See the header: skip_suite() fails, as in the gate.
       RELEASE_GATE: '1'
+      # test-nuget.sh's #3899 check reads the backend log with kubectl and
+      # skips without it (it skips in the gate's format-tests too). Given here
+      # so that check runs on S3 rather than adding a skip.
+      AK_NAMESPACE: ${{ needs.deploy-s3.outputs.namespace }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -214,6 +218,9 @@ jobs:
           fi
           echo "Runner pod IP: ${POD_IP}"
           echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
 
       - name: Install test dependencies (the gate's step)
         run: scripts/ci/gate-format-batches.sh install-deps "${{ matrix.batch }}"

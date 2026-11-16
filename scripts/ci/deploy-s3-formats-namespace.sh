@@ -108,7 +108,10 @@ fi
 got=$(kubectl -n "$NAMESPACE" get deploy artifact-keeper-backend \
   -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | grep -E '^STORAGE_BACKEND=' || true)
 [[ "$got" == "STORAGE_BACKEND=s3" ]] || { echo "ERROR: backend runs with '${got:-no STORAGE_BACKEND}', want STORAGE_BACKEND=s3" >&2; exit 1; }
-if ! kubectl -n "$NAMESPACE" logs deploy/artifact-keeper-backend --tail=-1 2>/dev/null | grep -q 'S3 storage backend initialized'; then
+# Read the log into a variable first: `kubectl logs | grep -q` under pipefail
+# fails when grep exits early and kubectl takes SIGPIPE.
+boot_log=$(kubectl -n "$NAMESPACE" logs deploy/artifact-keeper-backend --tail=-1 2>/dev/null || true)
+if ! grep -q 'S3 storage backend initialized' <<<"$boot_log"; then
   echo "ERROR: the backend log has no 'S3 storage backend initialized' line" >&2
   exit 1
 fi
