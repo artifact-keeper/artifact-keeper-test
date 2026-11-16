@@ -22,8 +22,11 @@
 #   3. POST .../{id}/preview on policy A. Assert response is non-empty
 #      object (PolicyExecutionResult), AND that the artifacts are still
 #      there (preview did not delete).
-#   4. POST .../execute-all. Assert response is an array with length>=2
-#      (one entry per enabled policy).
+#   4. POST .../execute-all. Assert response is an array that holds a
+#      result for each of this suite's two policies (matched by policy_id).
+#      execute-all applies every enabled policy on the instance, so the
+#      array's length is global state other suites move; only our own
+#      entries are asserted (artifact-keeper-test#365).
 #   5. After execute-all, each repo retains <= 2 versions (we tolerate
 #      slight over-retention from policy-engine batching; the strong
 #      signal is "fewer than we started with on BOTH repos").
@@ -224,18 +227,26 @@ case "$EXEC_STATUS" in
     ;;
 esac
 
-begin_test "execute-all reports >= 2 results (one per enabled policy)"
+begin_test "execute-all reports a result for each of this suite's two policies"
 if [ "$EXEC_STATUS" != "200" ]; then
   skip "execute-all did not return 200"
 else
-  n=$(jq 'length' < "$EXEC_BODY" 2>/dev/null || echo 0)
-  if [ "$n" -ge 2 ] 2>/dev/null; then
+  # execute-all runs every enabled policy on the instance, so the array also
+  # carries other suites' policies and its length is not ours to assert.
+  # Both policies here are enabled (the create default) and owned by this
+  # run, so each must have exactly one PolicyExecutionResult, matched by id.
+  missing=""
+  for pid in "$POLICY_A" "$POLICY_B"; do
+    hits=$(jq --arg id "$pid" '[.[]? | select(.policy_id == $id)] | length' < "$EXEC_BODY" 2>/dev/null || echo 0)
+    if [ "${hits:-0}" != "1" ]; then
+      missing="${missing} ${pid}(x${hits:-0})"
+    fi
+  done
+  if [ -z "$missing" ]; then
     pass
   else
-    # Other suites may run in parallel and clean up policies before our
-    # execute-all fires. Treat n==1 as a soft failure (the count is
-    # informational; the real assertion is "array shape returned").
-    fail "expected >= 2 policy results, got ${n}"
+    ids=$(jq -c '[.[]? | .policy_id]' < "$EXEC_BODY" 2>/dev/null | head -c 400 || true)
+    fail "execute-all did not report exactly one result for each suite policy:${missing}; result policy_ids: ${ids}"
   fi
 fi
 
