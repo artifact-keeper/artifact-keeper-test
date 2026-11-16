@@ -37,6 +37,7 @@ export AZURITE_URL="https://127.0.0.1:${S3_PORT}/dtfaccount"
 export AZURITE_CONTAINER="ak-artifacts"
 MIB=1048576
 NPAR="${ADB_PARALLEL:-6}"
+RACE_ROUNDS="${ADB_RACE_ROUNDS:-8}"
 
 RPM_REPO="adb-rpm-${SLOT}-${SUF}"
 GEN_REPO="adb-gen-${SLOT}-${SUF}"
@@ -92,7 +93,6 @@ if [ -n "$SF" ]; then
   end_suite
 fi
 head -c $((5 * MIB)) /dev/urandom > "${WORK}/single.bin"
-head -c $((12 * MIB)) /dev/urandom > "${WORK}/race.bin"
 head -c $((2 * MIB)) /dev/urandom > "${WORK}/chunked.bin"
 
 # =============================================================================
@@ -129,26 +129,45 @@ fi
 # =============================================================================
 # #3920: concurrent identical uploads
 # =============================================================================
-begin_test "#3920: ${NPAR} parallel uploads of one 12 MiB body to an Azure-backed repository all answer 201, every path downloads byte-exact, and the lost commit race was resolved (backend logged it)"
-R0="$(race_logs)"
-for i in $(seq 1 "$NPAR"); do
-  curl -s -o "${WORK}/race-${i}.body" -w '%{http_code}' --max-time 120 -X PUT "${AUTHZ[@]}" \
-    -H 'Content-Type: application/octet-stream' --data-binary "@${WORK}/race.bin" \
-    "${BASE_URL}/api/v1/repositories/${RPM_REPO}/artifacts/race${i}/dtf-race-1.0-${i}.noarch.rpm" > "${WORK}/race-${i}.code" 2>/dev/null &
-done
-wait
-CODES=""; DL=""; BAD_BODY=""
-for i in $(seq 1 "$NPAR"); do
-  ci="$(cat "${WORK}/race-${i}.code" 2>/dev/null)"; CODES="${CODES} ${ci:-000}"
-  [ "$ci" = "201" ] || BAD_BODY="$(head -c 200 "${WORK}/race-${i}.body" 2>/dev/null)"
-  di="$(code_to_file "${BASE_URL}/api/v1/repositories/${RPM_REPO}/download/race${i}/dtf-race-1.0-${i}.noarch.rpm" "${WORK}/race-${i}.out" "${AUTHZ[@]}" -L)"
-  if [ "$di" = "200" ] && cmp -s "${WORK}/race-${i}.out" "${WORK}/race.bin"; then DL="${DL} ok"; else DL="${DL} ${di}"; fi
-done
-RACES=$(( $(race_logs) - R0 ))
+begin_test "#3920: rounds of ${NPAR} parallel uploads of one fresh 12 MiB body to an Azure-backed repository all answer 201 and every path downloads byte-exact"
+# Whether the uploads overlap closely enough for one Put Block List to lose
+# is up to the scheduler: on an idle or fast runner a single round can
+# serialise and the race is never reached. So the round repeats (each with a
+# fresh body, so it is never deduplicated against an already committed blob)
+# until the backend logs the race, up to ADB_RACE_ROUNDS. EVERY round must be
+# all-201 and byte-exact; the first round that is not fails the tier at once.
+# Whether the race was reached is judged in its own case at the end of the
+# suite (INFRA, not a product verdict, when no round reached it).
+R0="$(race_logs)"; RACES=0; ROUND=0; RACE_PRODUCT_FAIL=""
 WANT_CODES="$(for _ in $(seq 1 "$NPAR"); do printf ' 201'; done)"
 WANT_DL="$(for _ in $(seq 1 "$NPAR"); do printf ' ok'; done)"
-if [ "$CODES" = "$WANT_CODES" ] && [ "$DL" = "$WANT_DL" ] && [ "$RACES" -ge 1 ]; then pass; else
-  fail "upload codes:${CODES} (want all 201); downloads:${DL}; '#3920 lost a race' log lines: ${RACES} (want >=1, else the race was not reached). Pre-#3920 the loser's Put Block List got 400 InvalidBlockList and the upload 500 STORAGE_ERROR" \
+ROUND_LOG=""
+while [ "$ROUND" -lt "$RACE_ROUNDS" ] && [ "$RACES" -lt 1 ]; do
+  ROUND=$(( ROUND + 1 ))
+  head -c $((12 * MIB)) /dev/urandom > "${WORK}/race.bin"
+  for i in $(seq 1 "$NPAR"); do
+    curl -s -o "${WORK}/race-${i}.body" -w '%{http_code}' --max-time 120 -X PUT "${AUTHZ[@]}" \
+      -H 'Content-Type: application/octet-stream' --data-binary "@${WORK}/race.bin" \
+      "${BASE_URL}/api/v1/repositories/${RPM_REPO}/artifacts/race${ROUND}-${i}/dtf-race-1.0-${ROUND}${i}.noarch.rpm" > "${WORK}/race-${i}.code" 2>/dev/null &
+  done
+  wait
+  CODES=""; DL=""; BAD_BODY=""
+  for i in $(seq 1 "$NPAR"); do
+    ci="$(cat "${WORK}/race-${i}.code" 2>/dev/null)"; CODES="${CODES} ${ci:-000}"
+    [ "$ci" = "201" ] || BAD_BODY="$(head -c 200 "${WORK}/race-${i}.body" 2>/dev/null)"
+    di="$(code_to_file "${BASE_URL}/api/v1/repositories/${RPM_REPO}/download/race${ROUND}-${i}/dtf-race-1.0-${ROUND}${i}.noarch.rpm" "${WORK}/race-${i}.out" "${AUTHZ[@]}" -L)"
+    if [ "$di" = "200" ] && cmp -s "${WORK}/race-${i}.out" "${WORK}/race.bin"; then DL="${DL} ok"; else DL="${DL} ${di}"; fi
+  done
+  RACES=$(( $(race_logs) - R0 ))
+  ROUND_LOG="${ROUND_LOG} r${ROUND}:races=${RACES}"
+  echo "  round ${ROUND}/${RACE_ROUNDS}: upload codes:${CODES}; downloads:${DL}; '#3920 lost a race' log lines so far: ${RACES}"
+  if [ "$CODES" != "$WANT_CODES" ] || [ "$DL" != "$WANT_DL" ]; then
+    RACE_PRODUCT_FAIL="round ${ROUND}: upload codes:${CODES} (want all 201); downloads:${DL} (want all ok)"
+    break
+  fi
+done
+if [ -z "$RACE_PRODUCT_FAIL" ]; then pass; else
+  fail "${RACE_PRODUCT_FAIL}. Pre-#3920 the loser's Put Block List got 400 InvalidBlockList and the upload 500 STORAGE_ERROR" \
     "${BAD_BODY}"
 fi
 
@@ -198,6 +217,20 @@ ENTRY="$(fsx "ls -d /data/storage/proxy-cache/*/${REMOTE}/f/${NAME}/__content__ 
 if [ "$g1" = "200" ] && [ "$g2" = "200" ] && [ -s "${WORK}/golden" ] && cmp -s "${WORK}/remote1.out" "${WORK}/golden" \
    && cmp -s "${WORK}/remote2.out" "${WORK}/golden" && [ "$UP" = "1" ] && [ -n "$ENTRY" ]; then pass; else
   fail "GET1=${g1} GET2=${g2} byte-exact=$(cmp -s "${WORK}/remote1.out" "${WORK}/golden" && echo yes || echo no) upstream GETs=${UP:-?} (want 1) cache entry='${ENTRY}' (want a __content__ under /data/storage/proxy-cache)"
+fi
+
+# =============================================================================
+# #3920: was the race reached? (judged last so it never masks a product FAIL)
+# =============================================================================
+# common.sh lets an INFRA case take precedence over FAILs in the exit code, so
+# INFRA is only recorded when nothing else failed; otherwise this case is a
+# plain FAIL next to the real one.
+begin_test "#3920: the concurrent Put Block List race was reached (backend logged '#3920 lost a race' at least once in ${RACE_ROUNDS} rounds)"
+if [ "$RACES" -ge 1 ]; then pass
+elif [ -n "$RACE_PRODUCT_FAIL" ] || [ "${_FAIL_COUNT:-0}" -gt 0 ]; then
+  fail "race not reached in ${ROUND} round(s) (${ROUND_LOG# }); not judged as INFRA because another case failed"
+else
+  infra_fail "race not reached: ${ROUND} round(s) of ${NPAR} parallel identical uploads, all 201 and byte-exact, but '#3920 lost a race' log lines: 0 (${ROUND_LOG# }). The tier did not exercise the #3920 fix; this is NOT a pass. Raise ADB_RACE_ROUNDS or ADB_PARALLEL"
 fi
 
 end_suite
