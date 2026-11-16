@@ -93,11 +93,12 @@ v_case() {
   if [[ "$rc" == "$want" ]]; then pass "$label"
   else fail "$label: exit $rc, want $want"; sed 's/^/        /' "$WORK/v.log"; fi
 }
-DTF_OK="$(needs skipped version-set-integrity=success dtf-gate=success)"
+DTF_OK="$(needs skipped version-set-integrity=success build-dtf-probes=success dtf-gate=success)"
 v_case 0 "DTF legs selected and green, nothing else ran"   'dtf-gate/core collect-results' false "$DTF_OK"
-v_case 1 "a selected DTF leg failed"                       'dtf-gate/core' false "$(needs skipped version-set-integrity=success dtf-gate=failure)"
+v_case 1 "a selected DTF leg failed"                       'dtf-gate/core' false "$(needs skipped version-set-integrity=success build-dtf-probes=success dtf-gate=failure)"
 v_case 1 "a selected DTF job that SKIPPED is not a pass"   'dtf-gate/core' false "$(needs skipped version-set-integrity=success)"
-v_case 1 "version-set-integrity failed"                    'dtf-gate/core' false "$(needs skipped version-set-integrity=failure dtf-gate=success)"
+v_case 1 "the DTF probe build failed (#359: named, not only a skipped dtf-gate)" 'dtf-gate/core' false "$(needs skipped version-set-integrity=success build-dtf-probes=failure)"
+v_case 1 "version-set-integrity failed"                    'dtf-gate/core' false "$(needs skipped version-set-integrity=failure build-dtf-probes=success dtf-gate=success)"
 CL="version-set-integrity=success clean-install-smoke=success deploy=success"
 # shellcheck disable=SC2086 # word splitting of $CL into job=result pairs is the point
 v_case 0 "a cluster suite selected and green"              'webhook-tests' true "$(needs skipped $CL webhook-tests=success)"
@@ -111,13 +112,17 @@ v_case 1 "an unselected required job failed"               'webhook-tests' true 
 # shellcheck disable=SC2086
 v_case 1 "an unselected required job was cancelled"        'webhook-tests' true "$(needs skipped $CL webhook-tests=success pinned-cve-gate=cancelled)"
 v_case 0 "the opt-in smoke selected and skipped by design" 'dtf-gate/core clean-install-smoke-with-deps' false "$DTF_OK"
-v_case 0 "an advisory job selected and red is not judged"  'dtf-gate/core mesh-tests stress-tests' false "$(needs skipped version-set-integrity=success dtf-gate=success mesh-tests=failure stress-tests=failure)"
+v_case 0 "an advisory job selected and red is not judged"  'dtf-gate/core mesh-tests stress-tests' false "$(needs skipped version-set-integrity=success build-dtf-probes=success dtf-gate=success mesh-tests=failure stress-tests=failure)"
+# shellcheck disable=SC2086
+v_case 0 "pullthrough-tests selected and green (#359)"     'pullthrough-tests' true "$(needs skipped $CL pullthrough-tests=success)" pullthrough
+# shellcheck disable=SC2086
+v_case 1 "pullthrough-tests selected and skipped (#359)"   'pullthrough-tests' true "$(needs skipped $CL)" pullthrough
 # shellcheck disable=SC2086
 v_case 0 "platform-tests with its auth-tests prerequisite" 'platform-tests' true "$(needs skipped $CL platform-tests=success auth-tests=success)"
 # shellcheck disable=SC2086
 v_case 1 "the prerequisite auth-tests failed"              'platform-tests' true "$(needs skipped $CL platform-tests=skipped auth-tests=failure)"
 v_case 0 "security-tests is not judged for test_suite=dtf" 'dtf-gate/core' false "$DTF_OK" dtf
-v_case 1 "a required job missing from needs"               'dtf-gate/core' false "$(needs skipped version-set-integrity=success dtf-gate=success | jq 'del(."repo-tests")')"
+v_case 1 "a required job missing from needs"               'dtf-gate/core' false "$(needs skipped version-set-integrity=success build-dtf-probes=success dtf-gate=success | jq 'del(."repo-tests")')"
 v_case 2 "CLUSTER unset (selection did not run)"           'dtf-gate/core' '' "$DTF_OK"
 v_case 2 "only_jobs empty is the full gate's business"     '' false "$DTF_OK"
 v_case 2 "NEEDS_JSON is not JSON"                          'dtf-gate/core' false 'not json'

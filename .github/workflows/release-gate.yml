@@ -984,9 +984,16 @@ jobs:
   #
   # When a fixture-builder for one of the listed formats lands,
   # remove the format from this list and add it to the matrix above.
+  #
+  # It asserts nothing about the candidate, so it must not be able to veto
+  # one: job-level continue-on-error, and deliberately off collect-results
+  # (artifact-keeper-test#359). Without it a runner or timeout failure in
+  # five `echo`s turned the reusable workflow red and blocked a release the
+  # verdict had passed.
   # -------------------------------------------------------------------
   scan-completion-gate-scaffolds-pending:
     needs: deploy
+    continue-on-error: true
     if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' scan-completion-gate-scaffolds-pending '))
     runs-on: ak-e2e-runners
     timeout-minutes: 2
@@ -2068,6 +2075,13 @@ jobs:
   #
   #   3. RELEASE_GATE=1 is set: silent skips here are the exact
   #      silent-success class (#888) this cluster exists to catch.
+  #
+  # BLOCKING, and on the collect-results predicate with the strict
+  # `!= 'success'` form (artifact-keeper-test#359). It used to be in neither
+  # `collect-results.needs` nor the predicate, yet carry no
+  # continue-on-error, so its failure turned the reusable workflow red and
+  # vetoed the release while the gate's own verdict said success. It now
+  # counts in the verdict it always had the power to decide.
   # -------------------------------------------------------------------
   pullthrough-tests:
     needs: deploy
@@ -2606,10 +2620,10 @@ jobs:
       # Mirror of the gate backend's guest-access posture for
       # tests/auth/test-public-repo-guest-disabled.sh (#3855), which fails
       # under RELEASE_GATE=1 when the posture is undeclared. The gate deploy
-      # sets no AK_GUEST_ACCESS_ENABLED and stores no runtime setting, so the
-      # backend runs with guest access enabled (the default since #867); the
-      # suite then proves a public create really succeeds. KEEP THIS IN SYNC
-      # if the gate deploy ever disables guest access.
+      # pins AK_GUEST_ACCESS_ENABLED=true in helm/values-test.yaml and
+      # helm/values-test-full.yaml (artifact-keeper-test#423) instead of
+      # relying on the backend default; the suite then proves a public create
+      # really succeeds. KEEP THIS IN SYNC with those values files.
       AK_GUEST_ACCESS_ENABLED: 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3222,6 +3236,11 @@ jobs:
   # staging step below asserts the runner really is x86_64 and fails
   # loudly if not. If the pool ever gains arm64 runners, add an
   # aarch64 build leg here and select by `uname -m` when staging.
+  #
+  # On the collect-results predicate, guarded like dtf-gate
+  # (artifact-keeper-test#359). Its failure already reached the verdict
+  # indirectly (dtf-gate skips, and dtf-gate uses `!= 'success'`), but it
+  # also vetoed the release directly; listing it names it as the cause.
   # -------------------------------------------------------------------
   build-dtf-probes:
     if: (inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' build-dtf-probes ') || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate/'))
@@ -4299,7 +4318,14 @@ jobs:
   # Collect results and publish summary
   # -------------------------------------------------------------------
   collect-results:
-    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, cli-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, format-tests-audit, format-tests-registration-check, security-tests, security-grype-scan-completes, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests, dtf-gate, dtf-advisory]
+    # Every job in this workflow is EITHER listed here and on the full-run
+    # "Gate check" predicate below, OR carries job-level
+    # `continue-on-error: true`. A job that is neither fails the reusable
+    # workflow (and so the caller's `needs.release-gate.result`) while this
+    # verdict never sees it: a veto nobody voted for
+    # (artifact-keeper-test#359). Pinned by
+    # scripts/selftest-release-gate-verdict.sh.
+    needs: [version-set-integrity, clean-install-smoke, clean-install-smoke-with-deps, chart-upgrade-smoke, deploy, real-flow-smoke, cli-smoke, scan-completion-gate, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, format-tests, format-tests-audit, format-tests-registration-check, security-tests, security-grype-scan-completes, pullthrough-tests, compatibility-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, admin-tests, stress-tests, resilience-tests, mesh-tests, build-dtf-probes, dtf-gate, dtf-advisory]
     if: always()
     # Result rollup only: aggregates needs[].result and downloads JUnit
     # artifacts. No cluster access. Runs on a hosted runner so a
@@ -4326,13 +4352,14 @@ jobs:
           echo "| Suite | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke real-flow-smoke cli-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests format-tests-audit format-tests-registration-check repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes compatibility-tests stress-tests resilience-tests mesh-tests dtf-gate dtf-advisory; do
+          for job in version-set-integrity clean-install-smoke clean-install-smoke-with-deps chart-upgrade-smoke deploy real-flow-smoke cli-smoke scan-completion-gate sbom-correctness-gate pinned-cve-gate pinned-cve-image-gate format-tests format-tests-audit format-tests-registration-check repo-tests promotion-tests rbac-tests lifecycle-tests webhook-tests search-tests platform-tests auth-tests admin-tests security-tests security-grype-scan-completes pullthrough-tests compatibility-tests stress-tests resilience-tests mesh-tests build-dtf-probes dtf-gate dtf-advisory; do
             status="skipped"
             case "$job" in
               version-set-integrity) status="${{ needs.version-set-integrity.result }}" ;;
               clean-install-smoke) status="${{ needs.clean-install-smoke.result }}" ;;
               clean-install-smoke-with-deps) status="${{ needs.clean-install-smoke-with-deps.result }}" ;;
               chart-upgrade-smoke) status="${{ needs.chart-upgrade-smoke.result }}" ;;
+              deploy) status="${{ needs.deploy.result }}" ;;
               real-flow-smoke) status="${{ needs.real-flow-smoke.result }}" ;;
               cli-smoke) status="${{ needs.cli-smoke.result }}" ;;
               scan-completion-gate) status="${{ needs.scan-completion-gate.result }}" ;;
@@ -4353,10 +4380,12 @@ jobs:
               admin-tests) status="${{ needs.admin-tests.result }}" ;;
               security-tests) status="${{ needs.security-tests.result }}" ;;
               security-grype-scan-completes) status="${{ needs.security-grype-scan-completes.result }}" ;;
+              pullthrough-tests) status="${{ needs.pullthrough-tests.result }}" ;;
               compatibility-tests) status="${{ needs.compatibility-tests.result }}" ;;
               stress-tests) status="${{ needs.stress-tests.result }}" ;;
               resilience-tests) status="${{ needs.resilience-tests.result }}" ;;
               mesh-tests) status="${{ needs.mesh-tests.result }}" ;;
+              build-dtf-probes) status="${{ needs.build-dtf-probes.result }}" ;;
               dtf-gate) status="${{ needs.dtf-gate.result }}" ;;
               dtf-advisory) status="${{ needs.dtf-advisory.result }}" ;;
             esac
@@ -4450,6 +4479,17 @@ jobs:
         # `continue-on-error: true` was narrowed, that suppression applied
         # to all five legs and made this clause dead.
         #
+        # pullthrough-tests (artifact-keeper-test#359) is BLOCKING with the
+        # strict form, guarded by its suite selection (all/pullthrough).
+        # build-dtf-probes is listed with dtf-gate's guard so a probe build
+        # failure is named here rather than only as a skipped dtf-gate.
+        #
+        # Invariant: every job is either on this predicate (and in `needs`)
+        # or carries job-level continue-on-error; scan-completion-gate-
+        # scaffolds-pending and teardown are the latter because neither
+        # asserts anything about the candidate. Enforced by
+        # scripts/selftest-release-gate-verdict.sh.
+        #
         # The wildcard form contains(needs.*.result, 'failure') still
         # observes failures because needs.<job>.result reflects the
         # job's outcome, not its continue-on-error-adjusted conclusion.
@@ -4474,6 +4514,8 @@ jobs:
           needs.pinned-cve-image-gate.result != 'success' ||
           ((needs.security-tests.result != 'success') && (inputs.test_suite == 'all' || inputs.test_suite == 'security')) ||
           ((needs.dtf-gate.result != 'success') && (inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf')) ||
+          ((needs.build-dtf-probes.result != 'success') && (inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf')) ||
+          ((needs.pullthrough-tests.result != 'success') && (inputs.test_suite == 'all' || inputs.test_suite == 'pullthrough')) ||
           needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled' ||
           needs.format-tests.result == 'failure' || needs.format-tests.result == 'cancelled' ||
           needs.format-tests-registration-check.result == 'failure' || needs.format-tests-registration-check.result == 'cancelled' ||
@@ -4520,9 +4562,31 @@ jobs:
   # -------------------------------------------------------------------
   # Teardown
   # -------------------------------------------------------------------
+  # Cleanup, not a verdict: it runs after collect-results has decided, so it
+  # cannot count in that verdict, and a kubectl hiccup or runner eviction
+  # here must not veto a release the gate already passed. Job-level
+  # continue-on-error keeps the failure visible on the job while the
+  # workflow conclusion follows collect-results (artifact-keeper-test#359).
+  # A leaked namespace is an ops problem for the runner pool.
+  #
+  # It runs only when there is a namespace to tear down: deploy was not
+  # skipped and reported a run id (artifact-keeper-test#839). When
+  # clean-install-smoke fails, deploy is skipped and its run_id output is
+  # empty; teardown used to run anyway, call the script with `--run-id ""`
+  # and go red with "--run-id is required", a second red job that said
+  # nothing. deploy writes run_id ("Generate run ID") before it creates the
+  # namespace, so an empty run id means nothing was created. With the guard
+  # every failure that remains is a real one on a real namespace.
+  #
+  # continue-on-error stays even with the guard: it is what stops a real
+  # cleanup failure from vetoing a release the verdict already passed (#359).
+  # The job still shows red, so the failure stays visible.
   teardown:
     needs: [deploy, collect-results]
-    if: (always() && inputs.skip_teardown != true) && (inputs.only_jobs == '' || needs.deploy.result != 'skipped')
+    continue-on-error: true
+    if: >-
+      always() && inputs.skip_teardown != true &&
+      needs.deploy.result != 'skipped' && needs.deploy.outputs.run_id != ''
     runs-on: ak-e2e-runners
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
