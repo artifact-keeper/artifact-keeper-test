@@ -111,6 +111,26 @@ push_state() { # repo path
           LEFT JOIN sync_tasks st ON st.artifact_id = a.id AND st.task_type = 'push' AND st.peer_instance_id = '${PEER_ID}' \
           WHERE r.key = '$1' AND a.path = '$2' AND a.is_deleted = false"
 }
+# The upload handlers queue the push row from a spawned task AFTER the 201 is
+# sent (artifact_service "non-blocking" enqueue), so a read straight after the
+# upload can land before the insert or re-arm commits. Positive checks poll
+# until the row reaches the wanted state (or the deadline passes and the last
+# seen state is reported); negative checks wait PUSH_SETTLE_S first so a late
+# enqueue would be seen. The peer stays in backoff at a `.invalid` host, so no
+# worker can move a row on its own: polling cannot hide a missing re-arm.
+PUSH_WAIT_S="${PUSH_WAIT_S:-20}"
+PUSH_SETTLE_S="${PUSH_SETTLE_S:-3}"
+wait_push_state() { # repo path want
+  local st deadline=$((SECONDS + PUSH_WAIT_S))
+  while :; do
+    st="$(push_state "$1" "$2")"
+    [ "$st" = "$3" ] && break
+    [ "$SECONDS" -ge "$deadline" ] && break
+    sleep 0.5
+  done
+  echo "$st"
+}
+settled_push_state() { sleep "$PUSH_SETTLE_S"; push_state "$1" "$2"; }
 mark_push_completed() { # repo path: simulate a delivered push
   psql_q "UPDATE sync_tasks st SET status = 'completed', completed_at = NOW() - INTERVAL '1 minute', retry_count = 2 \
           FROM artifacts a JOIN repositories r ON r.id = a.repository_id \
@@ -331,14 +351,14 @@ fi
 # =============================================================================
 begin_test "CONTROL: a generic upload to a push-subscribed repo queues a pending push row (peer wiring works)"
 c="$(code -u "$AUTH" -X PUT --data-binary "ctl-${SUF}" "${BASE_URL}/api/v1/repositories/${R_GEN}/artifacts/ctl/ctl.bin")"
-st="$(push_state "$R_GEN" ctl/ctl.bin)"
+st="$(wait_push_state "$R_GEN" ctl/ctl.bin "pending|0|1")"
 if [ "$c" = "201" ] && [ "$st" = "pending|0|1" ]; then pass; else
   fail "generic upload -> ${c}, push row ${st} (want 201, pending|0|1)"
 fi
 
 begin_test "FIX(#4643): real 'npm publish ${SYNCPKG}@1.0.0' into a push-subscribed repo queues a pending push row"
 rc=0; out="$(npm_publish "$R_NSYNC" "$SYNCPKG" 1.0.0)" || rc=$?
-st="$(push_state "$R_NSYNC" "${SYNCPKG}/1.0.0/$(tgz_name "$SYNCPKG" 1.0.0)")"
+st="$(wait_push_state "$R_NSYNC" "${SYNCPKG}/1.0.0/$(tgz_name "$SYNCPKG" 1.0.0)" "pending|0|1")"
 if [ "$rc" = "0" ] && [ "$st" = "pending|0|1" ]; then pass; else
   fail "npm publish rc=${rc}; push row for the tarball: ${st} (want pending|0|1)" "$(tail -3 <<<"$out")"
 fi
@@ -350,7 +370,7 @@ mkdir -p "$WORK/zip/${GOMOD}@v1.0.0" && cp "$WORK/go.mod" "$WORK/zip/${GOMOD}@v1
 
 begin_test "FIX(#4643): Go .mod upload to a push-subscribed repo queues a pending push row"
 c="$(code -u "$AUTH" -X PUT --data-binary "@$WORK/go.mod" "${BASE_URL}/go/${R_GO}/${GOMOD}/@v/v1.0.0.mod")"
-st="$(push_state "$R_GO" "${GOMOD}/v1.0.0/go.mod")"
+st="$(wait_push_state "$R_GO" "${GOMOD}/v1.0.0/go.mod" "pending|0|1")"
 if [ "$c" = "201" ] && [ "$st" = "pending|0|1" ]; then pass; else
   fail "go .mod PUT -> ${c}, push row ${st} (want 201, pending|0|1)"
 fi
@@ -358,7 +378,7 @@ fi
 begin_test "FIX(#4643): Go .zip upload to a push-subscribed repo queues a pending push row"
 c="$(code -u "$AUTH" -X PUT -H 'Content-Type: application/zip' --data-binary "@$WORK/mod.zip" \
   "${BASE_URL}/go/${R_GO}/${GOMOD}/@v/v1.0.0.zip")"
-st="$(push_state "$R_GO" "${GOMOD}/v1.0.0/v1.0.0.zip")"
+st="$(wait_push_state "$R_GO" "${GOMOD}/v1.0.0/v1.0.0.zip" "pending|0|1")"
 if [ "$c" = "201" ] && [ "$st" = "pending|0|1" ]; then pass; else
   fail "go .zip PUT -> ${c}, push row ${st} (want 201, pending|0|1)"
 fi
@@ -366,7 +386,7 @@ fi
 begin_test "CONTROL: a replication-tagged Go upload (X-Artifact-Keeper-Replication) is stored but queues nothing"
 c="$(code -u "$AUTH" -X PUT -H 'X-Artifact-Keeper-Replication: true' --data-binary "@$WORK/go.mod" \
   "${BASE_URL}/go/${R_GO}/${GOMOD}/@v/v1.1.0.mod")"
-st="$(push_state "$R_GO" "${GOMOD}/v1.1.0/go.mod")"
+st="$(settled_push_state "$R_GO" "${GOMOD}/v1.1.0/go.mod")"
 if [ "$c" = "201" ] && [ "$st" = "none|-1|0" ]; then pass; else
   fail "replicated go .mod PUT -> ${c}, push row ${st} (want 201, none|-1|0: a replicated write must not echo back)"
 fi
@@ -377,7 +397,7 @@ fi
 VP="models/m.bin"
 begin_test "CONTROL: first upload to a versioned generic repo queues a pending push row"
 c="$(code -u "$AUTH" -X PUT --data-binary "rev1-${SUF}" "${BASE_URL}/api/v1/repositories/${R_VER}/artifacts/${VP}")"
-st="$(push_state "$R_VER" "$VP")"
+st="$(wait_push_state "$R_VER" "$VP" "pending|0|1")"
 if [ "$c" = "201" ] && [ "$st" = "pending|0|1" ]; then pass; else
   fail "versioned first upload -> ${c}, push row ${st} (want 201, pending|0|1)"
 fi
@@ -386,7 +406,7 @@ T_VER="$(mark_push_completed "$R_VER" "$VP")"
 begin_test "FIX(#4658): re-upload of different bytes to the same versioned path re-arms that push row (completed -> pending, retry 0)"
 c="$(code -u "$AUTH" -X PUT --data-binary "rev2-${SUF}" "${BASE_URL}/api/v1/repositories/${R_VER}/artifacts/${VP}")"
 rev="$(jq -r '.revision // empty' "$WORK/last" 2>/dev/null || true)"
-st="$(push_state "$R_VER" "$VP")"
+st="$(wait_push_state "$R_VER" "$VP" "pending|0|1")"
 same="$(psql_q "SELECT count(*) FROM sync_tasks WHERE id = '${T_VER:-00000000-0000-0000-0000-000000000000}' AND status = 'pending'")"
 if [ -n "$T_VER" ] && [ "$c" = "201" ] && [ "$st" = "pending|0|1" ] && [ "$same" = "1" ]; then pass; else
   fail "versioned re-upload -> ${c} (revision ${rev}); push row ${st} (want pending|0|1, the same row ${T_VER} re-armed). The peer would keep the first revision."
@@ -395,11 +415,12 @@ fi
 GP="plain/p.bin"
 begin_test "CONTROL: an unversioned live overwrite is 409 and leaves the completed push row completed"
 c0="$(code -u "$AUTH" -X PUT --data-binary "one-${SUF}" "${BASE_URL}/api/v1/repositories/${R_GEN}/artifacts/${GP}")"
+st0="$(wait_push_state "$R_GEN" "$GP" "pending|0|1")"
 T_GEN="$(mark_push_completed "$R_GEN" "$GP")"
 c="$(code -u "$AUTH" -X PUT --data-binary "two-${SUF}" "${BASE_URL}/api/v1/repositories/${R_GEN}/artifacts/${GP}")"
-st="$(push_state "$R_GEN" "$GP")"
-if [ "$c0" = "201" ] && [ -n "$T_GEN" ] && [ "$c" = "409" ] && [ "$st" = "completed|2|1" ]; then pass; else
-  fail "first=${c0} overwrite=${c} (want 201/409); push row ${st} (want completed|2|1)"
+st="$(settled_push_state "$R_GEN" "$GP")"
+if [ "$c0" = "201" ] && [ "$st0" = "pending|0|1" ] && [ -n "$T_GEN" ] && [ "$c" = "409" ] && [ "$st" = "completed|2|1" ]; then pass; else
+  fail "first=${c0} (push row ${st0}) overwrite=${c} (want 201 pending|0|1 / 409); push row ${st} (want completed|2|1)"
 fi
 
 begin_test "CONTROL: deleting it queues a pending delete row for the online peer"
@@ -413,7 +434,7 @@ fi
 
 begin_test "FIX(#4658): re-upload after the delete re-arms the completed push row (completed -> pending, retry 0)"
 c="$(code -u "$AUTH" -X PUT --data-binary "three-${SUF}" "${BASE_URL}/api/v1/repositories/${R_GEN}/artifacts/${GP}")"
-st="$(push_state "$R_GEN" "$GP")"
+st="$(wait_push_state "$R_GEN" "$GP" "pending|0|1")"
 if [ "$c" = "201" ] && [ "$st" = "pending|0|1" ]; then pass; else
   fail "upload after delete -> ${c}; push row ${st} (want 201, pending|0|1). The peer would stay at 404 for this path."
 fi
