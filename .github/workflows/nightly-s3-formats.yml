@@ -62,6 +62,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      batches:
+        description: 'Space-separated format-tests batches to run (for narrow validation runs). Empty = every gate batch.'
+        required: false
+        type: string
+        default: ''
     secrets:
       GHCR_DOCKER_CONFIG:
         required: false
@@ -86,6 +91,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      batches:
+        description: 'Space-separated format-tests batches to run (for narrow validation runs). Empty = every gate batch.'
+        required: false
+        type: string
+        default: ''
 
 # The nightly grants exactly these two; asking for more fails the call.
 permissions:
@@ -97,6 +107,7 @@ env:
   BACKEND_DIGEST: ${{ inputs.backend_digest }}
   IAC_REF: ${{ inputs.iac_ref || 'main' }}
   WEB_TAG: ${{ inputs.web_tag || 'latest' }}
+  BATCHES: ${{ inputs.batches || 'node system-packages' }}
 
 jobs:
   deploy-s3:
@@ -131,7 +142,10 @@ jobs:
 
       - name: Read the gate's format-tests batches
         id: batches
-        run: echo "batches=$(scripts/ci/gate-format-batches.sh list)" >> "$GITHUB_OUTPUT"
+        run: |
+          json=$(scripts/ci/gate-format-batches.sh list "${BATCHES}")
+          echo "batches: ${json}"
+          echo "batches=${json}" >> "$GITHUB_OUTPUT"
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0

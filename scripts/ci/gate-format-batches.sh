@@ -5,10 +5,12 @@
 # gate's toolchain setup, without a second hand-kept copy that drifts.
 #
 # Usage:
-#   gate-format-batches.sh list                 JSON array of batch names
+#   gate-format-batches.sh list ["b1 b2"]       JSON array of batch names, all or
+#                                               the named ones (each must exist)
 #   gate-format-batches.sh scripts <batch>      the batch's scripts, one line
 #   gate-format-batches.sh install-deps <batch> run the gate's install step
 #
+# INSTALL_DRY_RUN=1 makes install-deps print the step instead of running it.
 # GATE_WORKFLOW names the gate file (default .github/workflows/release-gate.yml).
 # Every lookup that finds nothing is an error (exit 1), never an empty success:
 # a parse that silently returned no batches would turn the lane green having
@@ -37,6 +39,16 @@ case "$cmd" in
   list)
     names="$(batches | cut -f1)"
     [[ -n "$names" ]] || { echo "::error title=Gate format batches::no format-tests batches found in ${WF}" >&2; exit 1; }
+    # Optional filter (the lane's `batches` input): space-separated names,
+    # each of which must be a gate batch. Empty = every batch.
+    if [[ -n "${2:-}" ]]; then
+      want=""
+      for b in $2; do
+        grep -qxF -- "$b" <<<"$names" || { echo "::error title=Gate format batches::'${b}' is not a format-tests batch of ${WF} (batches: $(tr '\n' ' ' <<<"$names"))" >&2; exit 1; }
+        want+="${b}"$'\n'
+      done
+      names="$(grep -xF -f <(printf '%s' "$want") <<<"$names")"
+    fi
     printf '%s\n' "$names" | awk 'BEGIN{printf "["} {printf "%s\"%s\"", (NR>1?",":""), $0} END{print "]"}'
     ;;
   scripts)

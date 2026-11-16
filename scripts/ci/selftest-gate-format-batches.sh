@@ -10,6 +10,7 @@
 # is an error, never an empty matrix that passes having run nothing:
 #
 #   list                  every batch of the real gate, as a JSON array
+#   list "<names>"        only those, in gate order; an unknown name is an error
 #   scripts <batch>       non-empty, every named script exists in tests/formats
 #   install-deps <batch>  the gate's step, batch substituted, no ${{ left
 #   coverage              the formats #6121 names are in some batch
@@ -70,6 +71,9 @@ done
 
 printf 'name: x\njobs:\n  other:\n    runs-on: x\n' > "$TMP/no-formats.yml"
 GATE_WORKFLOW="$TMP/no-formats.yml" bash "$SUT" list >/dev/null 2>&1 && bad "a gate without format-tests listed batches" || ok "a gate without format-tests is an error"
+sub=$(bash "$SUT" list "mcp node")
+[[ "$sub" == '["node","mcp"]' ]] && ok "list filters to the named batches, gate order" || bad "list 'mcp node' gave ${sub}"
+bash "$SUT" list "node nope" >/dev/null 2>&1 && bad "list accepted an unknown batch in the filter" || ok "list refuses an unknown batch in the filter"
 bash "$SUT" scripts no-such-batch >/dev/null 2>&1 && bad "an unknown batch was accepted" || ok "an unknown batch is an error"
 INSTALL_DRY_RUN=1 bash "$SUT" install-deps no-such-batch >/dev/null 2>&1 && bad "install-deps accepted an unknown batch" || ok "install-deps refuses an unknown batch"
 
