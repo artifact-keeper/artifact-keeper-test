@@ -59,6 +59,7 @@ on:
       - 'scripts/gate-subset-verdict.sh'
       - 'scripts/selftest-gate-subset-verdict.sh'
       - 'scripts/selftest-release-gate-verdict.sh'
+      - 'scripts/selftest-gate-concurrency.sh'
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
@@ -81,6 +82,7 @@ on:
       - 'scripts/gate-subset-verdict.sh'
       - 'scripts/selftest-gate-subset-verdict.sh'
       - 'scripts/selftest-release-gate-verdict.sh'
+      - 'scripts/selftest-gate-concurrency.sh'
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
@@ -141,6 +143,13 @@ jobs:
       # read cannot disagree with the verdict (artifact-keeper-test#359).
       - name: Run release-gate verdict-shape self-test
         run: bash scripts/selftest-release-gate-verdict.sh
+
+      # release-gate.yml's concurrency classes (artifact-keeper-test#840): a
+      # candidate's gate and its rerun share one group nothing else joins,
+      # other full gates on a tag serialize, narrow dispatches never cancel
+      # each other.
+      - name: Run release-gate concurrency self-test
+        run: bash scripts/selftest-gate-concurrency.sh
 
       # require_wait_budget (tests/lib/common.sh) and run-suite.sh's
       # TEST_TIMEOUT hand-off: a script whose own waits cannot fit inside the
