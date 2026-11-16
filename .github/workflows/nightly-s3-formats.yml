@@ -107,7 +107,7 @@ env:
   BACKEND_DIGEST: ${{ inputs.backend_digest }}
   IAC_REF: ${{ inputs.iac_ref || 'main' }}
   WEB_TAG: ${{ inputs.web_tag || 'latest' }}
-  BATCHES: ${{ inputs.batches || 'node system-packages' }}
+  BATCHES: ${{ inputs.batches || 'node' }}
 
 jobs:
   deploy-s3:

@@ -11,12 +11,13 @@
 #         s3; a generic repository created WITHOUT a storage_backend reports
 #         storage_backend "s3"; a unique blob uploaded to it round-trips and
 #         its sha256 content key is an object in the MinIO bucket.
-#   post  (after the format tiers): every repository on the instance reports
-#         storage_backend "s3" (the format suites never ask for another
-#         backend, so a non-s3 repository means the default changed under
-#         them), there are at least 20 of them (the format tiers ran), and
-#         the bucket holds at least 100 objects, a floor a run whose bytes
-#         went to the filesystem cannot meet.
+#   post  (after the format tiers): every repository still on the instance
+#         reports storage_backend "s3" (most suites delete their repositories
+#         when they finish, so this is the survivors, never a count), and NO
+#         content-addressed file (a 64-hex sha256 name) exists under the
+#         backend pod's STORAGE_PATH: artifact bytes a handler wrote to the
+#         local disk instead of the bucket are a product bug on S3, and this
+#         is the check that sees them. The bucket's object count is reported.
 #
 # Usage: s3-default-storage-proof.sh pre|post
 # Env:   BASE_URL, ADMIN_PASS, RUN_ID, NAMESPACE (the test namespace),
@@ -115,29 +116,45 @@ case "$PHASE" in
     begin_test "Every repository on the instance is on s3"
     if fetch_all_pages "/api/v1/repositories" "${WORK_DIR}/repos.json" "$(auth_header)"; then
       total=$(jq '.items | length' "${WORK_DIR}/repos.json")
-      jq -r '.items | group_by(.storage_backend) | map("\(.[0].storage_backend)=\(length)") | join(" ")' "${WORK_DIR}/repos.json"
+      echo "  by backend: $(jq -r '.items | group_by(.storage_backend) | map("\(.[0].storage_backend)=\(length)") | join(" ")' "${WORK_DIR}/repos.json")"
       others=$(jq -r '.items[] | select(.storage_backend != "s3") | "\(.key) (\(.format), \(.storage_backend))"' "${WORK_DIR}/repos.json")
-      if [[ "$total" -lt 20 ]]; then
-        fail "only ${total} repositories on the instance; the format tiers cannot have run"
+      if [[ "$total" -lt 1 ]]; then
+        fail "no repositories on the instance; even the pre-proof repository is gone"
       elif [[ -n "$others" ]]; then
         fail "$(wc -l <<<"$others") of ${total} repositories are not on s3" "$others"
       else
-        echo "  ${total} repositories, all storage_backend=s3"
         pass
       fi
     else
       fail "could not list repositories (HTTP ${FETCH_ALL_STATUS:-?})"
     fi
 
-    begin_test "The MinIO bucket holds the format tiers' content"
-    if bucket_listing "${WORK_DIR}/bucket.txt"; then
-      objects=$(grep -c . "${WORK_DIR}/bucket.txt" || true)
-      echo "  bucket ${S3_BUCKET}: ${objects} objects"
-      if [[ "$objects" -ge 100 ]]; then
-        pass
+    begin_test "No artifact bytes on the backend's local disk"
+    pod=$(kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/component=backend \
+            --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    root=""
+    [[ -n "$pod" ]] && root=$(kubectl -n "$NAMESPACE" exec "$pod" -- printenv STORAGE_PATH 2>/dev/null | tr -d '\r' || true)
+    if [[ -z "$pod" || -z "$root" ]]; then
+      fail "could not find the running backend pod or its STORAGE_PATH (pod '${pod}')"
+    elif ! kubectl -n "$NAMESPACE" exec "$pod" -- ls -laR "$root" > "${WORK_DIR}/fs.txt" 2>&1; then
+      fail "could not list ${root} in ${pod}" "$(tail -n 20 "${WORK_DIR}/fs.txt")"
+    else
+      # ls -R prints "<dir>:" headers, then entries; keep regular files whose
+      # name is a sha256 and prefix them with their directory.
+      awk '/:$/ { dir=substr($0, 1, length($0)-1); next }
+           /^-/ && $NF ~ /^[0-9a-f]{64}$/ { print dir "/" $NF " (" $5 " bytes)" }' "${WORK_DIR}/fs.txt" > "${WORK_DIR}/fs-cas.txt"
+      echo "  ${root}: $(grep -c '^-' "${WORK_DIR}/fs.txt" || true) regular files, $(wc -l < "${WORK_DIR}/fs-cas.txt") content-addressed"
+      if [[ -s "${WORK_DIR}/fs-cas.txt" ]]; then
+        fail "$(wc -l < "${WORK_DIR}/fs-cas.txt") content-addressed files under ${root} on an S3-default backend" "$(head -n 30 "${WORK_DIR}/fs-cas.txt")"
       else
-        fail "bucket ${S3_BUCKET} holds only ${objects} objects after the format tiers" "$(head -n 20 "${WORK_DIR}/bucket.txt")"
+        pass
       fi
+    fi
+
+    begin_test "The MinIO bucket is listable"
+    if bucket_listing "${WORK_DIR}/bucket.txt"; then
+      echo "  bucket ${S3_BUCKET}: $(grep -c . "${WORK_DIR}/bucket.txt" || true) objects after the format tiers (suites delete what they create)"
+      pass
     else
       fail "could not list bucket ${S3_BUCKET}" "$(tail -n 20 "${WORK_DIR}/bucket.txt")"
     fi
