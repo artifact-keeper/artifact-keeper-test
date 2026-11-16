@@ -107,7 +107,20 @@ SHA256=$(_sha256_of "${WORK_DIR}/${FILENAME}")
 SHA1=$(_sha1_of   "${WORK_DIR}/${FILENAME}")
 MD5=$(_md5_of    "${WORK_DIR}/${FILENAME}")
 
-sleep 2   # the backend computes/persists all three checksums on upload
+# _artifact_listed REPO PATH
+# True once the repository's artifact listing carries a row whose path ends in
+# PATH, i.e. the upload has been persisted (test#364: replaces a fixed sleep).
+_artifact_listed() {
+  api_get "/api/v1/repositories/$1/artifacts?per_page=100" 2>/dev/null \
+    | jq -e --arg p "$2" '[.items[]? | select((.path // "") | endswith($p))] | length > 0' >/dev/null 2>&1
+}
+
+# The backend computes and persists all three checksums with the artifact row,
+# so the row being listed is the precondition for every lookup below.
+begin_test "Uploaded sentinel is persisted"
+if assert_eventually "${FILENAME} listed in ${REPO_KEY}" 60 _artifact_listed "$REPO_KEY" "$FILENAME"; then
+  pass
+fi
 
 # _checksum_artifact_id <checksum> <algorithm>
 # Calls /api/v1/search/checksum and echoes the first artifact id (or "").

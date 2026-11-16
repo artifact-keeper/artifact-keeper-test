@@ -97,9 +97,23 @@ else
   exit 1
 fi
 
-# Indexer settle. The OpenSearch backend (v1.2.0+) and the SQL fallback both
-# need a moment to reflect the new rows in subsequent search calls.
-sleep 4
+# The sort-flip cases below need all three sentinels in the result window.
+# Poll (bounded) until advanced search returns all three instead of a fixed
+# sleep (test#364); a sentinel that never surfaces is a product failure.
+_edges_corpus_searchable() {
+  # shellcheck disable=SC2086  # CURL_TIMEOUT must word-split, per common.sh
+  curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/search/advanced?query=${UNIQUE_TERM}&repository_key=${REPO_KEY}&per_page=10" 2>/dev/null \
+    | jq -e --arg t "$UNIQUE_TERM" '
+        [.items[]? | (.path // .name // "") | split("/") | .[-1]
+         | select(. == ($t + "-small.bin") or . == ($t + "-medium.bin") or . == ($t + "-large.bin"))]
+        | unique | length == 3' >/dev/null 2>&1
+}
+
+begin_test "All three sentinels are searchable"
+if assert_eventually "advanced search returns the three ${UNIQUE_TERM} sentinels in ${REPO_KEY}" 60 _edges_corpus_searchable; then
+  pass
+fi
 
 # ---------------------------------------------------------------------------
 # Case (a): /search/suggest?limit=0 must return zero suggestions.

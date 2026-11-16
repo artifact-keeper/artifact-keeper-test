@@ -33,6 +33,8 @@
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "search-autocomplete-edges"
+# Two bounded polls below, 45 s each.
+require_wait_budget 90 "persisted-sentinel and suggestion polls"
 auth_admin
 setup_workdir
 
@@ -66,7 +68,19 @@ else
   end_suite
 fi
 
-sleep 3   # allow autocomplete index to settle
+# _artifact_listed REPO PATH
+# True once the repository's artifact listing carries a row whose path ends in
+# PATH, i.e. the upload has been persisted (test#364: replaces a fixed sleep).
+_artifact_listed() {
+  api_get "/api/v1/repositories/$1/artifacts?per_page=100" 2>/dev/null \
+    | jq -e --arg p "$2" '[.items[]? | select((.path // "") | endswith($p))] | length > 0' >/dev/null 2>&1
+}
+
+# Suggestions are drawn from the persisted artifact names.
+begin_test "Uploaded sentinel is persisted"
+if assert_eventually "${UNIQUE_TERM}.txt listed in ${REPO_KEY}" 45 _artifact_listed "$REPO_KEY" "${UNIQUE_TERM}.txt"; then
+  pass
+fi
 
 # _suggest_status <query-string>
 # Returns HTTP status for a suggest request.
@@ -181,21 +195,21 @@ esac
 #    of the edge cases above could pass against a no-op handler.
 # -------------------------------------------------------------------------
 
+# The sentinel is persisted (checked above), so a suggestion that never
+# surfaces within the bounded poll is a product failure, not indexer lag
+# (test#364: replaces a fixed `sleep 4` retry that skipped on a miss).
+_sentinel_suggested() {
+  local n
+  n=$(_suggest_count "prefix=${UNIQUE_TERM:0:5}&limit=10")
+  [ -n "$n" ] && [ "$n" -ge 1 ] 2>/dev/null
+}
+
 begin_test "prefix matching sentinel returns at least one suggestion"
 count=$(_suggest_count "prefix=${UNIQUE_TERM:0:5}&limit=10")
 if [ -z "$count" ]; then
   skip "sanity suggest request returned error or unparseable body"
-elif [ "$count" -ge 1 ]; then
+elif assert_eventually "suggest?prefix=${UNIQUE_TERM:0:5} returns >= 1 suggestion" 45 _sentinel_suggested; then
   pass
-else
-  # Indexer may need a few more seconds on slow runners.
-  sleep 4
-  count=$(_suggest_count "prefix=${UNIQUE_TERM:0:5}&limit=10")
-  if [ "${count:-0}" -ge 1 ]; then
-    pass
-  else
-    skip "indexer did not surface a suggestion for our sentinel within budget"
-  fi
 fi
 
 end_suite

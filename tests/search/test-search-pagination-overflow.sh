@@ -64,7 +64,18 @@ else
   end_suite
 fi
 
-sleep 3
+# _artifact_listed REPO PATH
+# True once the repository's artifact listing carries a row whose path ends in
+# PATH, i.e. the upload has been persisted (test#364: replaces a fixed sleep).
+_artifact_listed() {
+  api_get "/api/v1/repositories/$1/artifacts?per_page=100" 2>/dev/null \
+    | jq -e --arg p "$2" '[.items[]? | select((.path // "") | endswith($p))] | length > 0' >/dev/null 2>&1
+}
+
+begin_test "Uploaded sentinel is persisted"
+if assert_eventually "${UNIQUE_TERM}.txt listed in ${REPO_KEY}" 60 _artifact_listed "$REPO_KEY" "${UNIQUE_TERM}.txt"; then
+  pass
+fi
 
 # Pick whichever search endpoint the backend exposes for this corpus.
 SEARCH_BASE=""

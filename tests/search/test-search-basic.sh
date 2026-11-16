@@ -24,23 +24,32 @@ else
   fail "could not create repo"
 fi
 
-sleep 3  # Allow indexing
-
 # -------------------------------------------------------------------------
 # Quick search
+#
+# Quick search reads the OpenSearch index when one is configured, and that
+# index is fed asynchronously after the upload returns. Poll (bounded) until
+# the hit is indexed instead of guessing a fixed sleep (test#364); a hit that
+# never appears within the budget is a product failure.
 # -------------------------------------------------------------------------
 
+QUICK_SEARCH_PATH=""
+_quick_search_has_hit() {
+  local resp
+  resp=$(api_get "${QUICK_SEARCH_PATH}?q=${UNIQUE_TERM}" 2>/dev/null) || return 1
+  [[ "$resp" == *searchable* ]]
+}
+
 begin_test "Quick search finds artifact"
-if resp=$(api_get "/api/v1/search?q=${UNIQUE_TERM}" 2>/dev/null); then
-  if assert_contains "$resp" "searchable"; then
-    pass
-  fi
-elif resp=$(api_get "/api/v1/search/quick?q=${UNIQUE_TERM}" 2>/dev/null); then
-  if assert_contains "$resp" "searchable"; then
-    pass
-  fi
-else
+if api_get "/api/v1/search?q=${UNIQUE_TERM}" >/dev/null 2>&1; then
+  QUICK_SEARCH_PATH="/api/v1/search"
+elif api_get "/api/v1/search/quick?q=${UNIQUE_TERM}" >/dev/null 2>&1; then
+  QUICK_SEARCH_PATH="/api/v1/search/quick"
+fi
+if [ -z "$QUICK_SEARCH_PATH" ]; then
   skip "search endpoint returned error (indexing may be disabled)"
+elif assert_eventually "quick search returns the uploaded artifact" 60 _quick_search_has_hit; then
+  pass
 fi
 
 # -------------------------------------------------------------------------
