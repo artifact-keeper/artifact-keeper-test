@@ -103,11 +103,11 @@ permissions:
   packages: read
 
 env:
-  BACKEND_TAG: ${{ inputs.backend_tag || 'sha-3fbc427' }}
+  BACKEND_TAG: ${{ inputs.backend_tag || 'sha-2ae12c7' }}
   BACKEND_DIGEST: ${{ inputs.backend_digest }}
   IAC_REF: ${{ inputs.iac_ref || 'main' }}
   WEB_TAG: ${{ inputs.web_tag || 'latest' }}
-  BATCHES: ${{ inputs.batches || 'node' }}
+  BATCHES: ${{ inputs.batches }}
 
 jobs:
   deploy-s3:
