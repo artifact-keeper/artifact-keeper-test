@@ -46,7 +46,9 @@ INGEST_AUDIT_ACTION="MCP_CAPABILITIES_INGESTED"
 REPO="mcp-caps-${RUN_ID}"
 NAME="io.github.ak-caps/weather-${RUN_ID}"
 GENERATED_BY="github-actions/ak-e2e/${RUN_ID}"
-SUITE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+AUDIT_FLOOR_ISO=$(date -u -d "@$(( $(date +%s) - 60 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u +%Y-%m-%dT%H:%M:%SZ)
+ART_ID=""
 
 caps_url() {
   printf '%s/%s/%s' "$(mcp_base "$REPO")" "$(mcp_version_path "$NAME" "$1")" "$CAPS_TAIL"
@@ -65,10 +67,26 @@ caps_get() {
   mcp_req GET "$(caps_url "$1")" admin
 }
 
+# audit_count ACTION: audit rows of ACTION about this suite's own server.json
+# artifact. Both MCP audits (MCP_CAPABILITIES_INGESTED, MCP_TOOLS_DRIFT) carry
+# resource_type artifact and resource_id = the version's artifact id, which is
+# minted by this run, so resource_id scopes the count to this suite whatever
+# other suites ingest in parallel. `from` is only a coarse floor: it is the
+# runner's clock at whole seconds, compared against the server's created_at,
+# so it is moved back a minute to absorb clock skew instead of hiding a row.
 audit_count() {
-  curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
-    "${BASE_URL}/api/v1/admin/audit?action=${1}&from=${SUITE_START_ISO}&per_page=200" 2>/dev/null \
-    | jq -r '.items | length' 2>/dev/null || echo 0
+  local n
+  n=$(curl -s "${CURL_TIMEOUT_ARGS[@]}" -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/admin/audit?action=${1}&resource_type=artifact&resource_id=${ART_ID}&from=${AUDIT_FLOOR_ISO}&per_page=200" 2>/dev/null \
+    | jq -r --arg id "$ART_ID" '[.items[]? | select(.resource_id == $id)] | length' 2>/dev/null) || n=0
+  printf '%s\n' "${n:-0}"
+}
+
+# The backend writes both audit rows fire-and-forget (tokio::spawn after the
+# snapshot transaction commits, services/mcp_capabilities.rs), so a 201 does
+# not mean the row is readable yet: poll for it.
+ingest_audited() {
+  [ "$(audit_count "$INGEST_AUDIT_ACTION")" -gt 0 ]
 }
 
 finding_named() {
@@ -134,10 +152,10 @@ else
 fi
 
 begin_test "Ingest is audited ${INGEST_AUDIT_ACTION}"
-if [ "$(audit_count "$INGEST_AUDIT_ACTION")" -gt 0 ]; then
+if wait_until "${INGEST_AUDIT_ACTION} audit row for artifact ${ART_ID}" 30 ingest_audited; then
   pass
 else
-  fail "no ${INGEST_AUDIT_ACTION} audit event since ${SUITE_START_ISO}"
+  fail "no ${INGEST_AUDIT_ACTION} audit event for artifact ${ART_ID} (${NAME}@1.0.0) within 30s of the 201"
 fi
 
 begin_test "A second snapshot with a changed tool produces ${DRIFT_RULE}"
