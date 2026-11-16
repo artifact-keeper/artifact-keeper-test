@@ -2807,6 +2807,14 @@ jobs:
           PEER2_URL: ${{ steps.mesh-deploy.outputs.PEER2_URL }}
           PEER3_URL: ${{ steps.mesh-deploy.outputs.PEER3_URL }}
           BASE_URL: ${{ steps.mesh-deploy.outputs.MAIN_URL }}
+          # Per-script cap for run-suite.sh, which kills each script at
+          # TEST_TIMEOUT (exit 124). The longest mesh wait is
+          # test-replication-schedule.sh's 180 s scheduler-tick poll; at the
+          # 120 s default it was killed mid-poll (artifact-keeper-test#832).
+          # 300 s = 180 s + setup/cleanup headroom. Every mesh script declares
+          # its waits with require_wait_budget and fails loudly if they stop
+          # fitting under this number.
+          TEST_TIMEOUT: '300'
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
           chmod +x scripts/run-suite.sh

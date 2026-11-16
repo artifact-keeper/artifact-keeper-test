@@ -2630,6 +2630,45 @@ assert_eventually() {
   return 0
 }
 
+# require_wait_budget SECONDS [WHAT]
+#
+# Declare the longest time this script can spend in its own bounded waits
+# (polling loops plus fixed sleeps, summed over every step), once, after
+# begin_suite. scripts/run-suite.sh kills each script at TEST_TIMEOUT with
+# `timeout` (exit 124): a script whose waits do not fit inside that cap is
+# killed mid-poll, never reaches its own verdict (pass, fail, or documented
+# skip), and its red reads as "the harness killed it" rather than as a result.
+# That is how test-replication-schedule.sh (180 s wait) died under the mesh
+# job's default 120 s cap (artifact-keeper-test#832).
+#
+# If SECONDS plus WAIT_BUDGET_MARGIN (default 30 s, for setup, curl calls and
+# cleanup) exceeds the cap, this fails the suite loudly, naming both numbers,
+# instead of letting `timeout` kill it later. Raise the job's TEST_TIMEOUT or
+# lower the script's wait; never let the two drift apart. Prints nothing when
+# the budget fits.
+#
+# The cap is RUN_SUITE_TIMEOUT, which run-suite.sh exports as the value it
+# enforces. A script run by hand (bash tests/mesh/test-x.sh) has no killer and
+# no RUN_SUITE_TIMEOUT, so nothing is checked: common.sh's TEST_TIMEOUT
+# fallback of 120 s is not a limit anyone enforces there.
+require_wait_budget() {
+  local secs="$1" what="${2:-bounded waits}"
+  local margin="${WAIT_BUDGET_MARGIN:-30}"
+  local cap="${RUN_SUITE_TIMEOUT:-}"
+  [ -n "$cap" ] || return 0
+  if ! [[ "$secs" =~ ^[0-9]+$ ]] || ! [[ "$margin" =~ ^[0-9]+$ ]] || ! [[ "$cap" =~ ^[0-9]+$ ]]; then
+    begin_test "Wait budget fits TEST_TIMEOUT"
+    fail_fatal "require_wait_budget: non-integer budget '${secs}', margin '${margin}' or run-suite.sh TEST_TIMEOUT '${cap}'"
+    return 1
+  fi
+  if [ $(( secs + margin )) -gt "$cap" ]; then
+    begin_test "Wait budget fits TEST_TIMEOUT"
+    fail_fatal "this script's ${what} can take ${secs}s (+${margin}s setup margin = $(( secs + margin ))s), more than TEST_TIMEOUT=${cap}s: run-suite.sh would kill it (exit 124) before its verdict. Raise the job's TEST_TIMEOUT or lower the wait."
+    return 1
+  fi
+  return 0
+}
+
 wait_for_file_value() {
   local file="$1"
   local pattern="$2"

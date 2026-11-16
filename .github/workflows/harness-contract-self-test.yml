@@ -92,3 +92,10 @@ jobs:
       # daemon can see them as bind-mount sources (artifact-keeper-test#732).
       - name: Run work-dir parent self-test
         run: bash tests/lib/selftest-work-parent.sh
+
+      # require_wait_budget (tests/lib/common.sh) and run-suite.sh's
+      # TEST_TIMEOUT hand-off: a script whose own waits cannot fit inside the
+      # per-script cap fails loudly instead of being killed with exit 124
+      # (artifact-keeper-test#832).
+      - name: Run wait-budget self-test
+        run: bash tests/lib/selftest-wait-budget.sh
