@@ -16,7 +16,13 @@
 #      it has no side effect on storage, auth, or retention; it only
 #      affects the edge-staleness UI threshold.
 #   3. GET again, verify the new value sticks.
-#   4. POST the original document back. Verify it round-trips.
+#   4. Put the original threshold back. Verify it round-trips.
+#
+# Restore is field-level (artifact-keeper-test#365): re-read the CURRENT
+# document and set only edge_stale_threshold_minutes back, instead of POSTing
+# the snapshot taken at step 1. A blind snapshot restore would revert any
+# other field a sibling suite changed in the meantime. The mutation POST is
+# built from a fresh GET for the same reason.
 #
 # Mutating storage_backend/storage_path/retention_days mid-test would
 # destabilise other suites running in parallel, so we deliberately avoid
@@ -33,15 +39,34 @@ ORIGINAL_THRESHOLD=""
 NEW_THRESHOLD=""
 SETTINGS_AVAILABLE=0
 
+# _threshold_restore_doc: the current settings document with only
+# edge_stale_threshold_minutes set back to ORIGINAL_THRESHOLD. Empty when the
+# current document cannot be read.
+_threshold_restore_doc() {
+  local cur
+  cur=$(api_get "/api/v1/admin/settings" 2>/dev/null) || return 1
+  echo "$cur" | jq -c --argjson v "$ORIGINAL_THRESHOLD" '.edge_stale_threshold_minutes = $v' 2>/dev/null
+}
+
 _restore_settings() {
-  if [ "$SETTINGS_AVAILABLE" = "1" ] && [ -n "$ORIGINAL_SETTINGS" ]; then
+  if [ "$SETTINGS_AVAILABLE" = "1" ] && [ -n "$ORIGINAL_THRESHOLD" ]; then
     auth_admin > /dev/null 2>&1 || true
+    local doc
+    doc=$(_threshold_restore_doc) || doc=""
+    [ -n "$doc" ] || return 0
     curl -s -o /dev/null $CURL_TIMEOUT -X POST \
       -H "$(auth_header)" \
       -H "Content-Type: application/json" \
-      -d "$ORIGINAL_SETTINGS" \
+      -d "$doc" \
       "${BASE_URL}/api/v1/admin/settings" 2>/dev/null || true
   fi
+}
+
+# _threshold_is VALUE: the stored edge_stale_threshold_minutes equals VALUE.
+_threshold_is() {
+  local cur
+  cur=$(api_get "/api/v1/admin/settings" 2>/dev/null) || return 1
+  [ "$(echo "$cur" | jq -r '.edge_stale_threshold_minutes // empty' 2>/dev/null)" = "$1" ]
 }
 add_exit_handler _restore_settings
 
@@ -79,7 +104,8 @@ else
   # in the GET-after-POST. Avoid 0 (could clash with default), avoid
   # large jumps (would mask off-by-one).
   NEW_THRESHOLD=$(( ORIGINAL_THRESHOLD + 1 ))
-  MUTATED=$(echo "$ORIGINAL_SETTINGS" | jq --argjson v "$NEW_THRESHOLD" '.edge_stale_threshold_minutes = $v')
+  FRESH=$(api_get "/api/v1/admin/settings" 2>/dev/null) || FRESH="$ORIGINAL_SETTINGS"
+  MUTATED=$(echo "$FRESH" | jq --argjson v "$NEW_THRESHOLD" '.edge_stale_threshold_minutes = $v')
 
   tmp=$(mktemp)
   post_status=$(curl -s -o "$tmp" -w '%{http_code}' $CURL_TIMEOUT \
@@ -103,9 +129,9 @@ begin_test "GET /admin/settings reflects the updated value"
 if [ "$SETTINGS_AVAILABLE" != "1" ]; then
   skip "settings unavailable"
 else
-  # Brief pause: some builds write-through to disk on POST and the next
-  # GET races the flush. 1s is well under the per-test timeout budget.
-  sleep 1
+  # Bounded poll instead of a fixed pause: if a build writes through
+  # asynchronously the GET may briefly lag the POST.
+  wait_until "edge_stale_threshold_minutes=${NEW_THRESHOLD} readable" 15 _threshold_is "$NEW_THRESHOLD" || true
   reread=$(api_get "/api/v1/admin/settings" 2>/dev/null) || reread=""
   if [ -z "$reread" ]; then
     fail "GET-after-POST returned empty body"
@@ -123,16 +149,18 @@ begin_test "POST original settings restores the document"
 if [ "$SETTINGS_AVAILABLE" != "1" ]; then
   skip "settings unavailable"
 else
+  RESTORE_DOC=$(_threshold_restore_doc) || RESTORE_DOC=""
+  [ -n "$RESTORE_DOC" ] || RESTORE_DOC=$(echo "$ORIGINAL_SETTINGS" | jq -c '.')
   tmp=$(mktemp)
   restore_status=$(curl -s -o "$tmp" -w '%{http_code}' $CURL_TIMEOUT \
     -X POST \
     -H "$(auth_header)" \
     -H "Content-Type: application/json" \
-    -d "$ORIGINAL_SETTINGS" \
+    -d "$RESTORE_DOC" \
     "${BASE_URL}/api/v1/admin/settings" 2>/dev/null) || restore_status=000
   body=$(cat "$tmp"); rm -f "$tmp"
   if [ "$restore_status" = "200" ] || [ "$restore_status" = "204" ]; then
-    sleep 1
+    wait_until "edge_stale_threshold_minutes=${ORIGINAL_THRESHOLD} readable" 15 _threshold_is "$ORIGINAL_THRESHOLD" || true
     final=$(api_get "/api/v1/admin/settings" 2>/dev/null) || final=""
     final_threshold=$(echo "$final" | jq -r '.edge_stale_threshold_minutes // empty')
     if [ "$final_threshold" = "$ORIGINAL_THRESHOLD" ]; then

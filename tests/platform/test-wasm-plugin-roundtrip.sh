@@ -206,7 +206,11 @@ case "$load_status" in
 esac
 
 # Re-list plugins; the negative control must not have nuked them.
-begin_test "Plugin list still non-empty after malformed-manifest rejection"
+# Scoped to the plugin this suite exercised (artifact-keeper-test#365): the
+# global count is instance state, and a sibling suite installing or removing
+# its own plugin moves it. "The plugin we used is still loaded" is the claim
+# the negative control puts at risk, and no sibling can move it.
+begin_test "Plugin this suite used is still listed after malformed-manifest rejection"
 plugin_resp_after=""
 for path in "${list_paths[@]}"; do
   if plugin_resp_after=$(api_get "$path" 2>/dev/null) && [ -n "$plugin_resp_after" ]; then
@@ -214,16 +218,27 @@ for path in "${list_paths[@]}"; do
   fi
 done
 
-plugin_count_after=0
-if echo "$plugin_resp_after" | jq -e '.items' >/dev/null 2>&1; then
-  plugin_count_after=$(echo "$plugin_resp_after" | jq '.items | length // 0' 2>/dev/null || echo 0)
-elif echo "$plugin_resp_after" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  plugin_count_after=$(echo "$plugin_resp_after" | jq 'length // 0' 2>/dev/null || echo 0)
-fi
-if [ "$plugin_count_after" -ge 1 ]; then
-  pass
+if [ -n "$plugin_name" ]; then
+  still_listed=$(echo "$plugin_resp_after" | jq --arg n "$plugin_name" \
+    '[ (.items // .)[]? | select((.name // .id // .key) == $n) ] | length' 2>/dev/null || echo 0)
+  if [[ "$still_listed" =~ ^[0-9]+$ ]] && [ "$still_listed" -ge 1 ]; then
+    pass
+  else
+    fail "plugin '${plugin_name}' is no longer listed after malformed-manifest rejection; the negative control corrupted the runtime" "${plugin_resp_after:0:300}"
+  fi
 else
-  fail "plugin list went empty after malformed-manifest rejection; the negative control corrupted the runtime"
+  # No identifying field to scope on: fall back to the instance-wide floor.
+  plugin_count_after=0
+  if echo "$plugin_resp_after" | jq -e '.items' >/dev/null 2>&1; then
+    plugin_count_after=$(echo "$plugin_resp_after" | jq '.items | length // 0' 2>/dev/null || echo 0)
+  elif echo "$plugin_resp_after" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    plugin_count_after=$(echo "$plugin_resp_after" | jq 'length // 0' 2>/dev/null || echo 0)
+  fi
+  if [ "$plugin_count_after" -ge 1 ]; then
+    pass
+  else
+    fail "plugin list went empty after malformed-manifest rejection; the negative control corrupted the runtime"
+  fi
 fi
 
 api_delete "/api/v1/repositories/${repo_key}" >/dev/null 2>&1 || true
