@@ -65,6 +65,8 @@ on:
       - 'scripts/ci/**'
       - 'deploy-test/harness/run-tiers.sh'
       - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'scripts/clean-install-smoke.sh'
+      - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
@@ -85,6 +87,8 @@ on:
       - 'scripts/ci/**'
       - 'deploy-test/harness/run-tiers.sh'
       - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'scripts/clean-install-smoke.sh'
+      - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -162,3 +166,8 @@ jobs:
       # (artifact-keeper-test#378).
       - name: Run dtf-advisory outcome self-test
         run: bash scripts/ci/selftest-dtf-advisory-outcome.sh
+
+      # clean-install-smoke's /readyz probe exit codes (artifact-keeper-test#835):
+      # a probe pod that cannot start is INFRA (11), /readyz non-200 stays 3.
+      - name: Run clean-install-smoke exit-code self-test
+        run: bash scripts/tests/test-clean-install-smoke-exit-codes.sh
