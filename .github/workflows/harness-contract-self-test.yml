@@ -59,6 +59,7 @@ on:
       - 'scripts/gate-subset-verdict.sh'
       - 'scripts/selftest-gate-subset-verdict.sh'
       - 'scripts/selftest-release-gate-verdict.sh'
+      - 'scripts/selftest-gate-concurrency.sh'
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
@@ -81,6 +82,7 @@ on:
       - 'scripts/gate-subset-verdict.sh'
       - 'scripts/selftest-gate-subset-verdict.sh'
       - 'scripts/selftest-release-gate-verdict.sh'
+      - 'scripts/selftest-gate-concurrency.sh'
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
@@ -142,6 +144,13 @@ jobs:
       - name: Run release-gate verdict-shape self-test
         run: bash scripts/selftest-release-gate-verdict.sh
 
+      # release-gate.yml's concurrency classes (artifact-keeper-test#840): a
+      # candidate's gate and its rerun share one group nothing else joins,
+      # other full gates on a tag serialize, narrow dispatches never cancel
+      # each other.
+      - name: Run release-gate concurrency self-test
+        run: bash scripts/selftest-gate-concurrency.sh
+
       # require_wait_budget (tests/lib/common.sh) and run-suite.sh's
       # TEST_TIMEOUT hand-off: a script whose own waits cannot fit inside the
       # per-script cap fails loudly instead of being killed with exit 124
@@ -171,3 +180,8 @@ jobs:
       # a probe pod that cannot start is INFRA (11), /readyz non-200 stays 3.
       - name: Run clean-install-smoke exit-code self-test
         run: bash scripts/tests/test-clean-install-smoke-exit-codes.sh
+
+      # admin-tests' OpenSearch wait (scripts/ci/wait-component-ready.sh,
+      # artifact-keeper-test#841): the chart's selector, no match is INFRA.
+      - name: Run component wait self-test
+        run: bash scripts/ci/selftest-wait-component-ready.sh
