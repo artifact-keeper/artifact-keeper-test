@@ -12,6 +12,16 @@
 #   * POST /api/v1/quarantine/proxy-cache/{repo}/release releases one held
 #     entry immediately, keyed on repo + path.
 #
+# "Immediately" is the backend's contract, not a test convenience: the release
+# is synchronous and read-your-writes on a single replica. It clears the cache
+# sidecar's hold and stamps the catalog row before it answers, under the same
+# lock a held fill commits under (artifact-keeper#6043). So the download right
+# after a 200 release is asserted once, with no poll. A 409 there is a backend
+# regression, not a race in this script: #6043 was exactly that (a release
+# landing while the held fill's detached drain was still running), seen here as
+# artifact-keeper-test#727, and fixed by artifact-keeper#6059 (main 825b75e9,
+# release/1.11.x 48dbdf50). Do not add a retry to that check.
+#
 # AK-to-AK topology (the Python mock upstream binds RFC1918 and the backend's
 # SSRF guard rejects it — see test-cache-hit-no-refetch.sh):
 #   U  = local generic repo we publish one file to.
@@ -110,18 +120,32 @@ for _ in $(seq 1 15); do
   [ "$status" = "404" ] || break
   sleep 1
 done
-if [ "$status" = "200" ]; then
+# The release's own answer states what it did: the entry it names (repo + path)
+# and released:true. A 200 that names another entry, or says released:false,
+# is not the acknowledgement the next check relies on.
+release_body=$(cat "${WORK_DIR}/release.json" 2>/dev/null || true)
+release_state=$(printf '%s' "$release_body" | jq -r \
+  --arg repo "$R1_KEY" --arg path "$PKG_PATH" \
+  'if .released == true and .repository == $repo and .path == $path
+   then "released" else "not-released" end' 2>/dev/null) || release_state="unparseable"
+if [ "$status" = "200" ] && [ "$release_state" = "released" ]; then
   pass
+elif [ "$status" = "200" ]; then
+  fail "release endpoint answered 200 but its body does not report this entry released (${release_state})" "$release_body"
 else
-  fail "release endpoint must answer 200, got HTTP ${status}" "$(cat "${WORK_DIR}/release.json" 2>/dev/null)"
+  fail "release endpoint must answer 200, got HTTP ${status}" "$release_body"
 fi
 
+# Asserted once, on purpose: see the header. The release above answered 200
+# with released:true, so this download must be served.
 begin_test "The released entry serves immediately (bytes match upstream)"
 out=$(fetch_through "$R1_KEY") || true
 status="${out##*$'\t'}"
 body=$(printf '%s' "${out%$'\t'*}")
 if [ "$status" = "200" ] && [ "$body" = "$PAYLOAD" ]; then
   pass
+elif [ "$status" = "409" ]; then
+  fail "released entry must serve 200 with upstream bytes, got HTTP 409 after the release answered 200 (backend regression, see artifact-keeper#6043)" "$body"
 else
   fail "released entry must serve 200 with upstream bytes, got HTTP ${status}" "$body"
 fi

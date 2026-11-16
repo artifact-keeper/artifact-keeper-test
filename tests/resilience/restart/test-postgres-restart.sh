@@ -7,6 +7,7 @@
 # Requires: kubectl, NAMESPACE
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "restart-postgres"
 require_cmd kubectl
@@ -45,22 +46,14 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Delete PostgreSQL pod"
-PG_POD=$(kubectl get pods -l app=postgres \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-if [ -z "$PG_POD" ]; then
-  # Try alternate label selectors commonly used for PostgreSQL
-  PG_POD=$(kubectl get pods -l app.kubernetes.io/name=postgresql \
-    -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-fi
-if [ -z "$PG_POD" ]; then
-  skip "could not find PostgreSQL pod (tried labels app=postgres and app.kubernetes.io/name=postgresql)"
+k8s_require_pod PG_POD "$AK_POSTGRES_SELECTOR" PostgreSQL
+echo "  Deleting PostgreSQL pod: ${PG_POD}"
+if del_out=$(kubectl delete pod "$PG_POD" -n "${NAMESPACE}" 2>&1); then
+  echo "$del_out"
+  pass
 else
-  echo "  Deleting PostgreSQL pod: ${PG_POD}"
-  if kubectl delete pod "$PG_POD" -n "${NAMESPACE}" 2>&1; then
-    pass
-  else
-    fail "kubectl delete pod ${PG_POD} failed"
-  fi
+  infra_fail "kubectl delete pod ${PG_POD} failed; the restart this suite exists to test never happened" "$del_out"
+  end_suite
 fi
 
 # ---------------------------------------------------------------------------
@@ -68,28 +61,10 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Wait for PostgreSQL pod ready"
-elapsed=0
-pg_ready=false
-while [ "$elapsed" -lt 120 ]; do
-  # Check both common label patterns
-  ready=$(kubectl get pods -l app=postgres \
-    -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
-  if [ "$ready" != "true" ]; then
-    ready=$(kubectl get pods -l app.kubernetes.io/name=postgresql \
-      -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
-  fi
-  if [ "$ready" = "true" ]; then
-    pg_ready=true
-    break
-  fi
-  sleep 3
-  elapsed=$(( elapsed + 3 ))
-done
-if [ "$pg_ready" = true ]; then
-  echo "  PostgreSQL ready after ${elapsed}s"
+# The StatefulSet recreates the pod under the same name; wait on the UID.
+if k8s_wait_ready "$AK_POSTGRES_SELECTOR" PostgreSQL 120 "$PG_POD_UID"; then
+  echo "  PostgreSQL ready after ${K8S_READY_ELAPSED}s"
   pass
-else
-  skip "ARC runner timing: PostgreSQL did not become ready within 120s"
 fi
 
 # ---------------------------------------------------------------------------

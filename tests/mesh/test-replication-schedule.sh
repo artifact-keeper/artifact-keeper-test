@@ -38,6 +38,10 @@ POLICY_ID=""
 REPO_ID=""
 CRON_EXPR="${SCHEDULE_CRON:-* * * * *}"  # every minute
 SCHEDULE_WAIT="${SCHEDULE_WAIT_SECS:-180}"
+# The cron expression fires every minute, so 180 s covers up to three ticks.
+# This wait alone is longer than run-suite.sh's 120 s default: the mesh jobs
+# set TEST_TIMEOUT, and require_wait_budget fails here, loudly, if they stop.
+require_wait_budget "$SCHEDULE_WAIT" "scheduler-tick wait (SCHEDULE_WAIT_SECS)"
 
 cleanup_schedule() {
   if [ -n "${POLICY_ID:-}" ] && [ "$POLICY_ID" != "null" ]; then

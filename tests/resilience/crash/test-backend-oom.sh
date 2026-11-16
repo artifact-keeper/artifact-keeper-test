@@ -10,6 +10,7 @@
 # Requires: kubectl, NAMESPACE
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "crash-backend-oom"
 require_cmd kubectl
@@ -48,9 +49,10 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Record pod restart count"
-RESTARTS_BEFORE=$(kubectl get pods -l app=artifact-keeper-backend \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
-echo "  Restarts before: ${RESTARTS_BEFORE}"
+k8s_require_pod OOM_POD "$AK_BACKEND_SELECTOR" backend
+RESTARTS_BEFORE=$(kubectl get pod "$OOM_POD" \
+  -n "${NAMESPACE}" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+echo "  Pod ${OOM_POD}, restarts before: ${RESTARTS_BEFORE}"
 pass
 
 # ---------------------------------------------------------------------------
@@ -77,8 +79,12 @@ sleep 10
 # ---------------------------------------------------------------------------
 
 begin_test "Check if pod restarted"
-RESTARTS_AFTER=$(kubectl get pods -l app=artifact-keeper-backend \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+if ! RESTARTS_AFTER=$(kubectl get pod "$OOM_POD" \
+    -n "${NAMESPACE}" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null); then
+  # The pod object itself is gone: it was replaced, which is a restart too.
+  echo "  Pod ${OOM_POD} no longer exists (replaced)"
+  RESTARTS_AFTER=$(( RESTARTS_BEFORE + 1 ))
+fi
 echo "  Restarts after: ${RESTARTS_AFTER}"
 if [ "$RESTARTS_AFTER" -gt "$RESTARTS_BEFORE" ] 2>/dev/null; then
   echo "  Pod was restarted (OOM triggered as expected)"

@@ -8,6 +8,7 @@
 # Requires: kubectl, NAMESPACE
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "crash-backend-kill"
 require_cmd kubectl
@@ -71,11 +72,15 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Force-kill backend pod"
-if kubectl delete pod -l app=artifact-keeper-backend \
-    --force --grace-period=0 -n "${NAMESPACE}" 2>&1; then
+k8s_require_pod KILLED_POD "$AK_BACKEND_SELECTOR" backend
+echo "  Force-killing pod: ${KILLED_POD}"
+if kill_out=$(kubectl delete pod "$KILLED_POD" \
+    --force --grace-period=0 -n "${NAMESPACE}" 2>&1); then
+  echo "$kill_out"
   pass
 else
-  skip "kubectl delete pod failed (may lack permissions in CI)"
+  infra_fail "kubectl delete pod ${KILLED_POD} failed; the kill this suite exists to test never happened" "$kill_out"
+  end_suite
 fi
 
 # ---------------------------------------------------------------------------
@@ -83,23 +88,9 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Wait for backend pod to become ready"
-elapsed=0
-pod_ready=false
-while [ "$elapsed" -lt 240 ]; do
-  ready_count=$(kubectl get pods -l app=artifact-keeper-backend \
-    -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
-  if [ "$ready_count" = "true" ]; then
-    pod_ready=true
-    break
-  fi
-  sleep 3
-  elapsed=$(( elapsed + 3 ))
-done
-if [ "$pod_ready" = true ]; then
-  echo "  Pod ready after ${elapsed}s"
+if k8s_wait_ready "$AK_BACKEND_SELECTOR" backend 240 "$KILLED_POD_UID"; then
+  echo "  Replacement pod ${K8S_READY_POD} ready after ${K8S_READY_ELAPSED}s"
   pass
-else
-  skip "ARC runner timing: backend pod did not become ready within 240s"
 fi
 
 # ---------------------------------------------------------------------------

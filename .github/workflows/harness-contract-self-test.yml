@@ -47,12 +47,22 @@ on:
       # adding one anywhere has to re-run this job.
       - 'tests/**'
       - 'scripts/run-suite.sh'
+      - 'scripts/clean-install-smoke.sh'
+      - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
+      - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'scripts/ci/**'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
     paths:
       - 'tests/**'
       - 'scripts/run-suite.sh'
+      - 'scripts/clean-install-smoke.sh'
+      - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
+      - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'scripts/ci/**'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -72,3 +82,38 @@ jobs:
         run: |
           chmod +x tests/lib/selftest-release-gate-contract.sh
           ./tests/lib/selftest-release-gate-contract.sh
+
+      # The resilience suites' pod selection and readiness classification
+      # (tests/lib/k8s.sh, artifact-keeper-test#354): a selector that matches
+      # nothing is INFRA, never a pass or a skip.
+      - name: Run k8s selector self-test
+        run: bash tests/lib/selftest-k8s-selectors.sh
+
+      # clean-install-smoke's /readyz probe exit codes (artifact-keeper-test#835):
+      # a probe pod that cannot start is INFRA (11), /readyz non-200 stays 3.
+      - name: Run clean-install-smoke exit-code self-test
+        run: bash scripts/tests/test-clean-install-smoke-exit-codes.sh
+
+      # Work dirs default under DTF_WORK_PARENT / RUNNER_TEMP so a dind
+      # daemon can see them as bind-mount sources (artifact-keeper-test#732).
+      - name: Run work-dir parent self-test
+        run: bash tests/lib/selftest-work-parent.sh
+
+      # require_wait_budget (tests/lib/common.sh) and run-suite.sh's
+      # TEST_TIMEOUT hand-off: a script whose own waits cannot fit inside the
+      # per-script cap fails loudly instead of being killed with exit 124
+      # (artifact-keeper-test#832).
+      - name: Run wait-budget self-test
+        run: bash tests/lib/selftest-wait-budget.sh
+
+      # fetch_all_pages (tests/lib/common.sh): suites that look for their own
+      # fixture in a paginated listing read every page, not page 1
+      # (artifact-keeper-test#725).
+      - name: Run fetch-all-pages self-test
+        run: bash tests/lib/selftest-fetch-all-pages.sh
+
+      # The dtf-advisory outcome mapper and run-tiers.sh's aggregate exit
+      # code: INFRA is retried once and warned about, a product FAIL is red
+      # (artifact-keeper-test#378).
+      - name: Run dtf-advisory outcome self-test
+        run: bash scripts/ci/selftest-dtf-advisory-outcome.sh

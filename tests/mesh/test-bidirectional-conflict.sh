@@ -43,6 +43,7 @@ PEER_ID=""
 POLICY_ID=""
 ARTIFACT_PATH="conflict/contested.txt"
 SYNC_TIMEOUT="${CONFLICT_SYNC_TIMEOUT:-60}"
+require_wait_budget "$SYNC_TIMEOUT" "convergence wait (CONFLICT_SYNC_TIMEOUT)"
 
 cleanup_conflict() {
   export BASE_URL="$MAIN_URL"; export ADMIN_TOKEN="$MAIN_TOKEN"

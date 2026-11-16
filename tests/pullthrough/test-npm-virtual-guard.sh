@@ -323,43 +323,73 @@ else
 fi
 
 begin_test "Drop B's disk negative-cache sidecar in the backend pod (isolates the in-process entry)"
+# The sidecar can only be removed from the pod's disk when B's proxy cache
+# lives on the filesystem backend. On S3/Azure/GCS it is an object in the
+# bucket: POST .../cache/invalidate would evict it, but nothing in the API
+# shows whether the async cache-commit task has written it yet, so an
+# invalidate could run before the write and the second GET would then be
+# absorbed by the disk entry, a pass that proves nothing. That leg is
+# skipped, saying why, rather than judged without isolation.
+B_STORAGE=$(api_get "/api/v1/repositories/${B_KEY}" 2>/dev/null | jq -r '.storage_backend // empty' 2>/dev/null || true)
+B_STORAGE="${B_STORAGE:-filesystem}"
+SIDECAR_DROPPED=""
 BACKEND_POD=$(kubectl get pods -n "$NAMESPACE" --no-headers \
   -o custom-columns=:metadata.name 2>/dev/null | grep 'backend' | head -1)
-# Real deployments nest the cache under the named storage backend's UUID
-# (the DB fixture's storage root maps to that backend dir directly).
-STORE_UUID=$(kubectl exec -n "$NAMESPACE" "$BACKEND_POD" -- ls /data/storage/proxy-cache 2>/dev/null | head -1 || true)
-SIDECAR="/data/storage/proxy-cache/${STORE_UUID}/${B_KEY}/${NEGPKG}/__cache_meta__.json"
+# STORAGE_PATH is the filesystem root the backend was started with (config.rs
+# defaults it to /data/storage). Real deployments nest the cache under a
+# scope directory (the storage backend's UUID), and an instance holding prior
+# runs' state can have several, so look for B's own entry under each one
+# instead of taking the first directory listed. Only `ls` and `printenv` are
+# used: the runtime image is ubi-micro, which has no find.
+STORAGE_ROOT=""
+if [ -n "$BACKEND_POD" ]; then
+  STORAGE_ROOT=$(kubectl exec -n "$NAMESPACE" "$BACKEND_POD" -- printenv STORAGE_PATH 2>/dev/null | tr -d '\r' || true)
+fi
+STORAGE_ROOT="${STORAGE_ROOT:-/data/storage}"
+find_sidecar() {
+  local scope candidate
+  for scope in "" $(kubectl exec -n "$NAMESPACE" "$BACKEND_POD" -- ls "${STORAGE_ROOT}/proxy-cache" 2>/dev/null); do
+    candidate="${STORAGE_ROOT}/proxy-cache/${scope:+${scope}/}${B_KEY}/${NEGPKG}/__cache_meta__.json"
+    if kubectl exec -n "$NAMESPACE" "$BACKEND_POD" -- ls "$candidate" >/dev/null 2>&1; then
+      SIDECAR="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+SIDECAR=""
+if [ "$B_STORAGE" != "filesystem" ]; then
+  skip "B's proxy cache is on the '${B_STORAGE}' storage backend, not a filesystem path in the pod; the #3951 in-process leg needs the disk sidecar removed after it is written, which only the filesystem backend lets this suite observe"
+elif [ -z "$BACKEND_POD" ]; then
+  fail "no backend pod found in namespace ${NAMESPACE}"
 # The sidecar is written by an async cache-commit task that outlives the
 # client response; poll for it rather than assuming it landed with the 404.
-sidecar_seen=""
-for _ in $(seq 1 20); do
-  if [ -n "$BACKEND_POD" ] && kubectl exec -n "$NAMESPACE" "$BACKEND_POD" -- ls "$SIDECAR" >/dev/null 2>&1; then
-    sidecar_seen=1
-    break
-  fi
-  sleep 1
-done
-if [ -z "$BACKEND_POD" ]; then
-  fail "no backend pod found in namespace ${NAMESPACE}"
-elif [ -z "$sidecar_seen" ]; then
-  bcache_listing=$(kubectl exec -n "$NAMESPACE" "$BACKEND_POD" -- ls "/data/storage/proxy-cache/${B_KEY}" 2>&1 | head -5 || true)
-  fail "disk negative sidecar never appeared in pod (${SIDECAR}) within 20s; B proxy-cache dir: ${bcache_listing}"
+elif ! wait_until "B's disk negative sidecar under ${STORAGE_ROOT}/proxy-cache" 20 find_sidecar; then
+  bcache_listing=$(kubectl exec -n "$NAMESPACE" "$BACKEND_POD" -- ls "${STORAGE_ROOT}/proxy-cache" 2>&1 | head -5 | tr '\n' ' ' || true)
+  fail "disk negative sidecar for ${B_KEY}/${NEGPKG} never appeared under ${STORAGE_ROOT}/proxy-cache/<scope>/ within 20s; proxy-cache holds: ${bcache_listing:-nothing}"
 elif ! kubectl exec -n "$NAMESPACE" "$BACKEND_POD" -- rm -f "$SIDECAR" 2>/dev/null; then
   fail "could not delete ${SIDECAR} in pod ${BACKEND_POD}"
 else
+  SIDECAR_DROPPED=1
   pass
 fi
 
 begin_test "V3 second packument GET does NOT re-ask B (in-process negative cache) (#3951)"
-V3_DOC2=$(curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
-  "${BASE_URL}/npm/${V3_KEY}/${NEGPKG}" 2>/dev/null) || V3_DOC2=""
-b_hits2=$(cat "$b_counter" 2>/dev/null || echo 0)
-if [ -z "$V3_DOC2" ]; then
-  fail "second V3 GET returned no packument"
-elif [ "$b_hits2" != "1" ]; then
-  fail "member B re-fetched despite its definitive 404 moments ago: mock hits=${b_hits2} (expected 1); the member walk has no in-process negative cache"
+if [ -z "$SIDECAR_DROPPED" ] && [ "$B_STORAGE" != "filesystem" ]; then
+  skip "the disk sidecar could not be isolated on the '${B_STORAGE}' storage backend (see the step above)"
+elif [ -z "$SIDECAR_DROPPED" ]; then
+  fail "B's disk negative sidecar was not removed (see the step above), so a single mock hit would not prove the in-process cache"
 else
-  pass
+  V3_DOC2=$(curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+    "${BASE_URL}/npm/${V3_KEY}/${NEGPKG}" 2>/dev/null) || V3_DOC2=""
+  b_hits2=$(cat "$b_counter" 2>/dev/null || echo 0)
+  if [ -z "$V3_DOC2" ]; then
+    fail "second V3 GET returned no packument"
+  elif [ "$b_hits2" != "1" ]; then
+    fail "member B re-fetched despite its definitive 404 moments ago: mock hits=${b_hits2} (expected 1); the member walk has no in-process negative cache"
+  else
+    pass
+  fi
 fi
 
 end_suite

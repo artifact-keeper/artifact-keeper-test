@@ -18,6 +18,7 @@ auth_admin
 
 REPO_KEY="test-mesh-retro-${RUN_ID}"
 SYNC_TIMEOUT="${SYNC_TIMEOUT:-60}"
+require_wait_budget "$SYNC_TIMEOUT" "retroactive sync wait (SYNC_TIMEOUT)"
 
 # ---------------------------------------------------------------------------
 # Setup: create repos, upload BEFORE creating sync policy

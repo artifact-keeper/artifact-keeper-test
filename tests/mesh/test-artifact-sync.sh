@@ -18,6 +18,7 @@ auth_admin
 
 REPO_KEY="test-mesh-artsync-${RUN_ID}"
 SYNC_TIMEOUT="${SYNC_TIMEOUT:-60}"
+require_wait_budget $(( 2 * SYNC_TIMEOUT )) "two sync waits (SYNC_TIMEOUT=${SYNC_TIMEOUT}s each)"
 
 # ---------------------------------------------------------------------------
 # Setup: create repos on both instances, register peer, create sync policy

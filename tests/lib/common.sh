@@ -823,6 +823,58 @@ api_get() {
   curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"
 }
 
+# fetch_all_pages PATH OUT_FILE [HEADER]
+#
+# Walk a paginated `{items, pagination: {page, per_page, total, total_pages}}`
+# listing (users, repositories, ...) page by page at per_page=100 and write
+# every item into OUT_FILE as `{"items": [...]}`. A suite that looks for its
+# own fixture in page 1 of a listing passes on a fresh gate install and fails
+# on any instance holding more than 20 rows of prior state
+# (artifact-keeper-test#725); this reads all of them.
+#
+# HEADER is passed to curl as one -H (e.g. "$(auth_header)"); omit it for an
+# anonymous listing. A bare JSON array answer is accepted as a single page.
+# Sets FETCH_ALL_STATUS to the last HTTP status. Returns 0 when every page
+# answered 200; otherwise returns 1 with that page's body left in OUT_FILE,
+# so a caller can still judge a 401/403 the way it judged page 1 before.
+# Stops after FETCH_ALL_MAX_PAGES (default 200) pages.
+fetch_all_pages() {
+  local path="$1" out="$2" header="${3:-}"
+  local sep='?' page=1 total_pages=1 max="${FETCH_ALL_MAX_PAGES:-200}"
+  local tmp="${out}.page" acc="${out}.acc"
+  local -a args
+  [[ "$path" == *\?* ]] && sep='&'
+  printf '[]' > "$acc"
+  FETCH_ALL_STATUS=000
+  while :; do
+    args=(-s -o "$tmp" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}")
+    [ -n "$header" ] && args+=(-H "$header")
+    FETCH_ALL_STATUS=$(curl "${args[@]}" "${BASE_URL}${path}${sep}page=${page}&per_page=100" 2>/dev/null) \
+      || FETCH_ALL_STATUS=000
+    if [ "$FETCH_ALL_STATUS" != "200" ]; then
+      mv -f "$tmp" "$out" 2>/dev/null || : > "$out"
+      rm -f "$acc"
+      return 1
+    fi
+    if ! jq -s '.[0] + (.[1] | if type == "array" then . else (.items // []) end)' \
+        "$acc" "$tmp" > "${acc}.next" 2>/dev/null; then
+      mv -f "$tmp" "$out"
+      rm -f "$acc" "${acc}.next"
+      return 1
+    fi
+    mv -f "${acc}.next" "$acc"
+    total_pages=$(jq -r 'if type == "object" then (.pagination.total_pages // 1) else 1 end' "$tmp" 2>/dev/null) || total_pages=1
+    [[ "$total_pages" =~ ^[0-9]+$ ]] || total_pages=1
+    if [ "$page" -ge "$total_pages" ] || [ "$page" -ge "$max" ]; then
+      break
+    fi
+    page=$(( page + 1 ))
+  done
+  jq '{items: .}' "$acc" > "$out"
+  rm -f "$acc" "$tmp"
+  return 0
+}
+
 # api_get_with_retry - GET an idempotent management-API endpoint with a bounded
 # retry-with-backoff on TRANSIENT failures only. On success it echoes the
 # response body on stdout and returns 0, so it is a drop-in replacement for
@@ -2279,6 +2331,26 @@ totp_code() {
 # ---------------------------------------------------------------------------
 # Temp directory with automatic cleanup
 # ---------------------------------------------------------------------------
+#
+# Work directories default under a parent the DOCKER DAEMON can see, not just
+# this shell (artifact-keeper-test#732). On the gate's dind runner pool
+# (ak-docker-runners) the daemon runs in a sidecar that shares only the
+# runner's work volume (/home/runner/_work, which holds RUNNER_TEMP and the
+# checkout), not the runner's /tmp. A bind mount of a /tmp/... path therefore
+# shows up EMPTY inside the container, and the tier fails or reads as INFRA
+# instead of giving its verdict, while passing on every non-dind host
+# (1.12.0 candidate run 42767020927: secrets-file-env, #729, and
+# repo-delete-reclaims-storage-job, #731).
+#
+# Parent, first set wins:
+#   DTF_WORK_PARENT   explicit override (any shared directory)
+#   RUNNER_TEMP       set by the GitHub Actions runner on every job
+#   TMPDIR, /tmp      local runs
+#
+# Any work dir (or subdirectory of one) that is passed to `docker run -v`,
+# `--mount` or a compose `volumes:` entry must come from setup_workdir or
+# dtf_mktemp_dir, never from a bare `mktemp -d`. Pure-local temp files are fine
+# anywhere.
 
 WORK_DIR=""
 
@@ -2288,9 +2360,75 @@ _workdir_cleanup() {
   fi
 }
 
+# dtf_work_parent: print the directory work dirs are created under.
+dtf_work_parent() {
+  printf '%s\n' "${DTF_WORK_PARENT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
+}
+
+# dtf_mktemp_dir VAR [PREFIX] [PARENT]
+#   Create a fresh directory under PARENT (default: dtf_work_parent), store
+#   its path in the caller's variable VAR, and register an EXIT handler that
+#   removes it. It sets a variable instead of printing because the cleanup has
+#   to be registered in the caller's shell, which a $(...) subshell cannot do.
+#   An empty PARENT means the default, so a tier-local knob can be passed
+#   through as "${KNOB:-}". If the parent is not writable it falls back to
+#   ${TMPDIR:-/tmp} with a warning on stderr (the dir then may not be visible
+#   to a dind daemon; a bind_mount_visible preflight reports that as INFRA).
+dtf_mktemp_dir() {
+  local _dmd_var="${1:?dtf_mktemp_dir: variable name required}"
+  local _dmd_prefix="${2:-dtf-work}"
+  local _dmd_parent="${3:-}"
+  local _dmd_dir=""
+  [ -n "$_dmd_parent" ] || _dmd_parent="$(dtf_work_parent)"
+  mkdir -p "$_dmd_parent" 2>/dev/null || true
+  _dmd_dir="$(mktemp -d "${_dmd_parent%/}/${_dmd_prefix}.XXXXXX" 2>/dev/null)" || _dmd_dir=""
+  if [ -z "$_dmd_dir" ]; then
+    echo "dtf_mktemp_dir: cannot create a directory under ${_dmd_parent}; falling back to ${TMPDIR:-/tmp} (may be invisible to a dind daemon)" >&2
+    _dmd_dir="$(mktemp -d "${TMPDIR:-/tmp}/${_dmd_prefix}.XXXXXX")" || return 1
+  fi
+  printf -v "$_dmd_var" '%s' "$_dmd_dir"
+  add_exit_handler "rm -rf $(printf '%q' "$_dmd_dir")"
+}
+
 setup_workdir() {
-  WORK_DIR="$(mktemp -d)"
-  add_exit_handler "rm -rf \"$WORK_DIR\""
+  dtf_mktemp_dir WORK_DIR dtf-work
+}
+
+# dtf_bind_mount_visible DIR IMAGE
+#   Prove the docker daemon sees DIR as a bind-mount source: write a sentinel
+#   into DIR and `test -s` it from a throwaway IMAGE container (needs sh).
+#   Returns 0 when the container sees it, 1 when the container ran and the
+#   sentinel was MISSING (an unshared path), and 2 when the probe itself could
+#   not run (no image, docker error), so the caller can let the tier judge.
+dtf_bind_mount_visible() {
+  local dir="${1:?dtf_bind_mount_visible: dir required}" img="${2:-}"
+  local sentinel=".dtf-bind-mount-probe.$$" out=""
+  [ -n "$img" ] || return 2
+  printf 'dtf\n' > "${dir}/${sentinel}" 2>/dev/null || return 2
+  out="$(docker run --rm --security-opt label=disable --entrypoint sh \
+    -v "${dir}:/dtf-bind-probe:ro" "$img" \
+    -c "if test -s /dtf-bind-probe/${sentinel}; then echo SEEN; else echo MISSING; fi" 2>/dev/null)" || true
+  rm -f "${dir}/${sentinel}" 2>/dev/null || true
+  case "$out" in
+    *SEEN*) return 0 ;;
+    *MISSING*) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# assert_bind_mount_visible DIR IMAGE [HINT]
+#   Suite-level preflight (call after begin_suite): when a container provably
+#   does not see DIR, record an INFRA case and end the suite with
+#   DTF_EXIT_INFRA (11), never a product verdict. A probe that cannot run
+#   returns 0 and leaves the judgement to the tier's own assertions.
+assert_bind_mount_visible() {
+  local dir="$1" img="${2:-}" hint="${3:-set DTF_WORK_PARENT to a directory the docker daemon shares}"
+  local rc=0
+  dtf_bind_mount_visible "$dir" "$img" || rc=$?
+  [ "$rc" -eq 1 ] || return 0
+  begin_test "setup: the docker daemon can see ${dir} as a bind-mount source"
+  infra_fail "a container mounting ${dir} does not see a file the harness wrote there; the daemon does not share this path (${hint}). Not a product verdict."
+  end_suite
 }
 
 # enable_expect_failure_trap: deprecated no-op shim.
@@ -2539,6 +2677,45 @@ assert_eventually() {
   shift 2
   if ! wait_until "$desc" "$timeout" "$@"; then
     fail "timed out after ${timeout}s waiting for: ${desc}"
+    return 1
+  fi
+  return 0
+}
+
+# require_wait_budget SECONDS [WHAT]
+#
+# Declare the longest time this script can spend in its own bounded waits
+# (polling loops plus fixed sleeps, summed over every step), once, after
+# begin_suite. scripts/run-suite.sh kills each script at TEST_TIMEOUT with
+# `timeout` (exit 124): a script whose waits do not fit inside that cap is
+# killed mid-poll, never reaches its own verdict (pass, fail, or documented
+# skip), and its red reads as "the harness killed it" rather than as a result.
+# That is how test-replication-schedule.sh (180 s wait) died under the mesh
+# job's default 120 s cap (artifact-keeper-test#832).
+#
+# If SECONDS plus WAIT_BUDGET_MARGIN (default 30 s, for setup, curl calls and
+# cleanup) exceeds the cap, this fails the suite loudly, naming both numbers,
+# instead of letting `timeout` kill it later. Raise the job's TEST_TIMEOUT or
+# lower the script's wait; never let the two drift apart. Prints nothing when
+# the budget fits.
+#
+# The cap is RUN_SUITE_TIMEOUT, which run-suite.sh exports as the value it
+# enforces. A script run by hand (bash tests/mesh/test-x.sh) has no killer and
+# no RUN_SUITE_TIMEOUT, so nothing is checked: common.sh's TEST_TIMEOUT
+# fallback of 120 s is not a limit anyone enforces there.
+require_wait_budget() {
+  local secs="$1" what="${2:-bounded waits}"
+  local margin="${WAIT_BUDGET_MARGIN:-30}"
+  local cap="${RUN_SUITE_TIMEOUT:-}"
+  [ -n "$cap" ] || return 0
+  if ! [[ "$secs" =~ ^[0-9]+$ ]] || ! [[ "$margin" =~ ^[0-9]+$ ]] || ! [[ "$cap" =~ ^[0-9]+$ ]]; then
+    begin_test "Wait budget fits TEST_TIMEOUT"
+    fail_fatal "require_wait_budget: non-integer budget '${secs}', margin '${margin}' or run-suite.sh TEST_TIMEOUT '${cap}'"
+    return 1
+  fi
+  if [ $(( secs + margin )) -gt "$cap" ]; then
+    begin_test "Wait budget fits TEST_TIMEOUT"
+    fail_fatal "this script's ${what} can take ${secs}s (+${margin}s setup margin = $(( secs + margin ))s), more than TEST_TIMEOUT=${cap}s: run-suite.sh would kill it (exit 124) before its verdict. Raise the job's TEST_TIMEOUT or lower the wait."
     return 1
   fi
   return 0

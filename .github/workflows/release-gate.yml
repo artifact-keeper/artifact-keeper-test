@@ -300,12 +300,28 @@ jobs:
           # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
           # plain tag (byte-identical to the pre-digest behaviour).
           BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
+          rc=0
           ./scripts/clean-install-smoke.sh \
             --run-id "${RUN_ID}" \
             --backend-tag "${BACKEND_TAG_PINNED}" \
             --web-tag "${WEB_TAG}" \
             --iac-ref "${IAC_REF}" \
-            --timeout 300
+            --timeout 300 || rc=$?
+          # Exit codes: scripts/clean-install-smoke.sh header. 11 is gate
+          # infra (the /readyz probe pod never started, artifact-keeper-test#835);
+          # 2 and 3 are product verdicts. A release-line tree whose script
+          # predates the INFRA code can still exit 3 for a probe pod that never
+          # started, so its log names the probe pod in that case.
+          case "$rc" in
+            0) ;;
+            11) echo "::error title=clean-install-smoke INFRA::the /readyz probe pod could not start; the candidate was NOT probed (gate infra, not a product verdict)" ;;
+            2) echo "::error title=clean-install-smoke::backend or web Deployment did not reach Ready (product)" ;;
+            3) echo "::error title=clean-install-smoke::/readyz did not return 200 within the timeout (product)"
+               grep -q 'SMOKE_EXIT_INFRA' scripts/clean-install-smoke.sh \
+                 || echo "::warning title=clean-install-smoke::this tests ref predates the INFRA probe exit code (#835); if the log says the ephemeral curl pod did not become Ready, this exit 3 is gate infra" ;;
+            *) echo "::error title=clean-install-smoke::exit ${rc} (setup or helm install failure)" ;;
+          esac
+          exit "$rc"
 
       - name: Upload smoke diagnostics
         if: failure()
@@ -2569,13 +2585,14 @@ jobs:
   #      ephemeral namespace, so test-full-reboot.sh cannot scale the backend
   #      ("Error from server (Forbidden): ... cannot patch resource
   #      deployments/scale").
-  #   2. The resilience harness selects backend pods with
-  #      `-l app=artifact-keeper-backend` while this workflow waits on them
-  #      with `-l app.kubernetes.io/component=backend` (see lines ~594 and
-  #      ~1331). The selector matches nothing, so test-pvc-remount and
-  #      test-pod-reschedule fail with "no backend pod found".
-  #   3. Meilisearch does not recover inside test-meilisearch-restart.sh's
-  #      90s budget.
+  #   2. FIXED (artifact-keeper-test#354): the harness selected backend pods
+  #      with `-l app=artifact-keeper-backend`, a label the chart never set,
+  #      so kills were vacuous and readiness waits skipped. Selection now
+  #      lives in tests/lib/k8s.sh on app.kubernetes.io/component=<name>, and
+  #      a selector that matches nothing aborts the script as INFRA (exit 11).
+  #   3. FIXED (artifact-keeper-test#354): "Meilisearch did not recover" was
+  #      the same defect. The stack runs OpenSearch, so the meilisearch
+  #      selector matched nothing; the test is now test-opensearch-restart.sh.
   # Selector fix (2) will likely surface MORE failures, including in the
   # now-blocking legs, because it also makes some currently-vacuous PASSes
   # real. That is intended. Nothing here is fixed by this waiver — restart
@@ -2790,6 +2807,14 @@ jobs:
           PEER2_URL: ${{ steps.mesh-deploy.outputs.PEER2_URL }}
           PEER3_URL: ${{ steps.mesh-deploy.outputs.PEER3_URL }}
           BASE_URL: ${{ steps.mesh-deploy.outputs.MAIN_URL }}
+          # Per-script cap for run-suite.sh, which kills each script at
+          # TEST_TIMEOUT (exit 124). The longest mesh wait is
+          # test-replication-schedule.sh's 180 s scheduler-tick poll; at the
+          # 120 s default it was killed mid-poll (artifact-keeper-test#832).
+          # 300 s = 180 s + setup/cleanup headroom. Every mesh script declares
+          # its waits with require_wait_budget and fails loudly if they stop
+          # fitting under this number.
+          TEST_TIMEOUT: '300'
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
           chmod +x scripts/run-suite.sh
