@@ -1,0 +1,67 @@
+# values-nightly-s3.yaml - overlay for the nightly S3 format matrix
+# (.github/workflows/nightly-s3-formats.yml, artifact-keeper#6121).
+#
+# Layered on values-test-full.yaml (the gate's deploy values, which already
+# carry the S3_* env for the MinIO in helm/storage-emulators.yaml). Two
+# changes matter:
+#
+#   1. STORAGE_BACKEND=s3 makes S3 the backend's DEFAULT storage (config.rs
+#      reads STORAGE_BACKEND, default "filesystem"; main.rs builds the primary
+#      backend from S3Backend::from_env). A repository created without an
+#      explicit storage_backend therefore lands in the MinIO bucket, so every
+#      format suite runs on object storage without being told to. The gate
+#      keeps the filesystem default and offers s3 only as a named backend.
+#   2. The stack is cut to what the format suites need, sized small, because
+#      rocky is one node that also runs production and the namespace carries a
+#      ResourceQuota: no web, no Trivy, no scanner adapter, no
+#      Dependency-Track. The format suites do not scan (the scan suites are
+#      the gate's security/scan-completion tiers).
+#
+# Every container here declares requests, which the ResourceQuota requires.
+
+backend:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 3Gi
+  env:
+    STORAGE_BACKEND: "s3"
+  # The artifact bytes go to MinIO; the PVC only holds scratch files.
+  persistence:
+    size: 1Gi
+  scanWorkspace:
+    enabled: false
+
+web:
+  enabled: false
+
+postgres:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+opensearch:
+  javaOpts: "-Xms256m -Xmx256m"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+trivy:
+  enabled: false
+
+scannerAdapter:
+  enabled: false
+
+dependencyTrack:
+  enabled: false

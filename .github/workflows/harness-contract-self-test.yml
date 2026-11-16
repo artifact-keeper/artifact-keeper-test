@@ -167,6 +167,12 @@ jobs:
       - name: Run dtf-advisory outcome self-test
         run: bash scripts/ci/selftest-dtf-advisory-outcome.sh
 
+      # The nightly S3 format matrix reads the gate's format-tests batches and
+      # install step at run time (artifact-keeper#6121): the reader still
+      # understands release-gate.yml, and an unreadable gate is an error.
+      - name: Run gate format-batches reader self-test
+        run: bash scripts/ci/selftest-gate-format-batches.sh
+
       # clean-install-smoke's /readyz probe exit codes (artifact-keeper-test#835):
       # a probe pod that cannot start is INFRA (11), /readyz non-200 stays 3.
       - name: Run clean-install-smoke exit-code self-test
