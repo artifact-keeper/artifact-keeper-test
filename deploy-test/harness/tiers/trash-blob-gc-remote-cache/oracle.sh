@@ -331,24 +331,54 @@ s0="$(oci_blob_status "$R_OCI" img-a "$B1")"
 note "B1 before: HTTP ${s0}"
 # OCI blob mark-and-sweep runs only on the scheduled GC tick (GC_SCHEDULE,
 # every 10 s in this profile), never from the admin storage-gc endpoint, and
-# the GC scheduler starts 120 to 150 s after boot. Wait until the first ticks
-# past both the age floor and that startup delay have run.
+# the GC scheduler starts 120 to 150 s after boot (jittered), later on a
+# loaded runner. The age shield can only be judged once ticks have run PAST
+# the age floor, so wait on that precondition, not on wall-clock: each tick
+# logs "Running scheduled storage garbage collection" when it starts, ticks
+# run one after another in a single task, so a THIRD start after the floor
+# means two whole ticks (mark, then sweep; BLOB_GC_SWEEP_GRACE_SECS=0) have
+# completed with B1 old enough. "Blob GC: swept" is logged only when a sweep
+# deletes something, so it cannot tell "no tick ran" from "the shield held"
+# (artifact-keeper-test#838, candidate 43912490439: zero ticks by 182 s of
+# uptime, reported as a shield regression).
 STARTED="$(date -d "$(docker inspect -f '{{.State.StartedAt}}' "$BACKEND_CTR" 2>/dev/null)" +%s 2>/dev/null || date +%s)"
-deadline=$(( STARTED + 180 )); [ "$deadline" -lt $(( B1_PUSHED_AT + BLOB_MIN_AGE + 40 )) ] && deadline=$(( B1_PUSHED_AT + BLOB_MIN_AGE + 40 ))
-b1=""
+B1_FLOOR=$(( B1_PUSHED_AT + BLOB_MIN_AGE ))
+B1_FLOOR_ISO="$(date -u -d "@${B1_FLOOR}" +%Y-%m-%dT%H:%M:%SZ)"
+GC_TICKS_NEEDED=3
+# Generous and bounded: the scheduler start (up to ~150 s after boot) plus
+# the floor plus several 10 s ticks, with room for a slow runner.
+GC_WAIT_DEADLINE=$(( STARTED + 420 )); [ "$GC_WAIT_DEADLINE" -lt $(( B1_FLOOR + 240 )) ] && GC_WAIT_DEADLINE=$(( B1_FLOOR + 240 ))
+gc_ticks_since_floor(){
+  docker logs --since "$B1_FLOOR_ISO" "$BACKEND_CTR" 2>&1 | grep -a -c 'Running scheduled storage garbage collection' || true
+}
+b1=""; ticks=0
 while :; do
   b1="$(oci_blob_status "$R_OCI" img-a "$B1")"
   [ "$b1" = "404" ] && break
-  [ "$(date +%s)" -ge "$deadline" ] && break
+  ticks="$(gc_ticks_since_floor)"; ticks="${ticks:-0}"
+  [ "$ticks" -ge "$GC_TICKS_NEEDED" ] && { b1="$(oci_blob_status "$R_OCI" img-a "$B1")"; break; }
+  [ "$(date +%s)" -ge "$GC_WAIT_DEADLINE" ] && break
   sleep 3
 done
-SWEPT="$(docker logs --since 5m "$BACKEND_CTR" 2>&1 | grep -a -c 'Blob GC: swept' || true)"
-note "B1 after the scheduled GC ticks: HTTP ${b1} (blob age $(( $(date +%s) - B1_PUSHED_AT ))s, backend up $(( $(date +%s) - STARTED ))s); 'Blob GC: swept' lines in the last 5 min: ${SWEPT}"
-[ "$b1" = "404" ] || fail_g "unreferenced blob B1 still answers ${b1} $(( $(date +%s) - B1_PUSHED_AT ))s after its push (the 24 h default shield: 1.10.0 ignores BLOB_GC_MIN_AGE_SECS)"
-mb="$(oci_manifest_status "$R_OCI" img-b v1)"; b2="$(oci_blob_status "$R_OCI" img-b "$B2")"
-note "image B: manifest HTTP ${mb}, blob B2 HTTP ${b2}"
-[ "$mb" = "200" ] && [ "$b2" = "200" ] || fail_g "GC broke the live image B (manifest ${mb}, blob ${b2})"
-finish_case "#2906: BLOB_GC_MIN_AGE_SECS does not lower the blob age shield"
+ticks="$(gc_ticks_since_floor)"; ticks="${ticks:-0}"
+TICKS_ALL="$(docker logs "$BACKEND_CTR" 2>&1 | grep -a -c 'Running scheduled storage garbage collection' || true)"
+SWEPT="$(docker logs --since "$B1_FLOOR_ISO" "$BACKEND_CTR" 2>&1 | grep -a -c 'Blob GC: swept' || true)"
+NOTREADY="$(docker logs "$BACKEND_CTR" 2>&1 | grep -a -c 'Blob GC: manifest_blob_refs is incomplete\|Blob GC: could not verify manifest_blob_refs' || true)"
+note "B1 after the scheduled GC ticks: HTTP ${b1} (blob age $(( $(date +%s) - B1_PUSHED_AT ))s, backend up $(( $(date +%s) - STARTED ))s); GC ticks started: ${TICKS_ALL:-0} since boot, ${ticks} past the age floor; 'Blob GC: swept' lines since the floor: ${SWEPT:-0}; blob-GC readiness warnings: ${NOTREADY:-0}"
+if [ "$b1" != "404" ] && [ "$ticks" -lt "$GC_TICKS_NEEDED" ]; then
+  # The precondition never held: the shield was not tested, so this is no
+  # verdict on #2906. Report INFRA/SETUP (DTF_EXIT_INFRA, 11) naming the
+  # scheduler, not the product.
+  # The #4451 case below uses the lifecycle scheduler, not this one, so it
+  # still runs.
+  infra_fail "the storage-GC scheduler ran ${ticks} tick(s) past B1's ${BLOB_MIN_AGE}s age floor (${TICKS_ALL:-0} since boot) by $(( $(date +%s) - STARTED ))s of uptime; ${GC_TICKS_NEEDED} are needed (mark, then sweep) before the #2906 age shield can be judged" "$DETAIL"
+else
+  [ "$b1" = "404" ] || fail_g "unreferenced blob B1 still answers ${b1} $(( $(date +%s) - B1_PUSHED_AT ))s after its push, after ${ticks} scheduled GC ticks past its ${BLOB_MIN_AGE}s age floor (the 24 h default shield: 1.10.0 ignores BLOB_GC_MIN_AGE_SECS)"
+  mb="$(oci_manifest_status "$R_OCI" img-b v1)"; b2="$(oci_blob_status "$R_OCI" img-b "$B2")"
+  note "image B: manifest HTTP ${mb}, blob B2 HTTP ${b2}"
+  [ "$mb" = "200" ] && [ "$b2" = "200" ] || fail_g "GC broke the live image B (manifest ${mb}, blob ${b2})"
+  finish_case "#2906: BLOB_GC_MIN_AGE_SECS does not lower the blob age shield"
+fi
 
 begin_test "FIX #4451: a scheduled cache-only lifecycle run increments ak_cleanup_items_removed_total{type=\"lifecycle\"} and logs the evictions"
 reset_case
