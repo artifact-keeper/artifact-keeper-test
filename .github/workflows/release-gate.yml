@@ -3113,6 +3113,16 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      # The fault-injector backstop below must be main's, whatever line the
+      # tree is moved to: copy it and the library it sources before the
+      # switch (as admin-tests does for the component wait, #843).
+      - name: Install the fault-injector detach helper from this checkout
+        run: |
+          d="${RUNNER_TEMP}/fault-detach"
+          mkdir -p "$d"
+          install -m 0755 scripts/resilience-fault-injector-detach.sh "$d/resilience-fault-injector-detach.sh"
+          cp tests/lib/k8s.sh "$d/"
+
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
           GH_TOKEN: ${{ github.token }}
@@ -3121,6 +3131,17 @@ jobs:
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+
+      # The network and storage suites patch a fault injector onto the backend
+      # (tests/lib/k8s.sh, artifact-keeper-test#842). Every other leg first
+      # makes sure it runs on an unpatched, fault-free pod, whatever order the
+      # legs ran in and whatever an earlier leg left behind. Not soft: a
+      # backend that cannot be cleaned would grade this leg on a faulted pod.
+      - name: Start from a backend without the fault injector
+        if: matrix.category != 'network' && matrix.category != 'storage'
+        env:
+          K8S_LIB_DIR: ${{ runner.temp }}/fault-detach
+        run: '"${K8S_LIB_DIR}/resilience-fault-injector-detach.sh"'
 
       - name: Run ${{ matrix.category }} resilience tests
         # Soft for the two waived legs ONLY (artifact-keeper-test#338).
@@ -3152,6 +3173,15 @@ jobs:
             esac
             exit 1
           fi
+
+      # And the legs that attach the injector take it off again, so later
+      # legs and later jobs get an unpatched pod. Runs even when
+      # the suites failed; not soft, for the same reason as above.
+      - name: Remove the fault injector
+        if: ${{ !cancelled() && (matrix.category == 'network' || matrix.category == 'storage') }}
+        env:
+          K8S_LIB_DIR: ${{ runner.temp }}/fault-detach
+        run: '"${K8S_LIB_DIR}/resilience-fault-injector-detach.sh"'
 
       - name: Upload test results
         if: always()
