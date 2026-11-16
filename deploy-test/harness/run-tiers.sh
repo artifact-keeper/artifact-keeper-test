@@ -18,6 +18,16 @@
 #   * prints a per-tier PASS/FAIL summary and exits non-zero if ANY tier failed
 #     (the job's blocking predicate)
 #
+# Aggregate exit code (artifact-keeper-test#378): 0 when every tier passed (or
+# is NOT ON THIS LINE); 1 when ANY tier is a FAIL of any class below, even if
+# other tiers were INFRA (a product verdict always wins over "could not
+# evaluate"); 11 (DTF_EXIT_INFRA) only when no tier FAILed and at least one was
+# INFRA; 10 when the candidate could not be pulled. Every non-zero code is RED
+# for a blocking caller. A soft caller (release-gate.yml dtf-advisory) reads
+# 10/11 as "unjudged" and anything else as a product FAIL. With
+# DTF_INFRA_TIERS_FILE=<path> set, the file is truncated at start and gets one
+# INFRA tier name per line, so such a caller can re-run only those tiers.
+#
 # Failure-class labeling (triage aid, NOT a soft-fail): every non-zero tier
 # outcome is RED either way, but the summary distinguishes
 #   FAIL(tier)     oracle ran and asserted a real regression — the ONLY class
@@ -56,6 +66,10 @@ HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/exit_codes.sh
 source "${HARNESS_DIR}/lib/exit_codes.sh"
 TESTS_REF="$(dtf_tests_ref "${HARNESS_DIR}/..")"
+# Created first, so a caller can tell this driver (#378) from an older one.
+if [ -n "${DTF_INFRA_TIERS_FILE:-}" ]; then
+  : > "$DTF_INFRA_TIERS_FILE"
+fi
 
 BACKEND_IMAGE_ARG=""
 TIERS=()
@@ -63,7 +77,7 @@ TIERS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --backend-image) BACKEND_IMAGE_ARG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,52p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,62p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) echo "!! unknown argument: $1" >&2; exit 2 ;;
     *) TIERS+=("$1"); shift ;;
   esac
@@ -141,7 +155,10 @@ for tier in "${TIERS[@]}"; do
         # #323: the oracle could not evaluate the tier. Tracked separately so
         # the summary never attributes a harness/setup failure to the
         # candidate. Still counted as RED below (fail-closed).
-        INFRA+=("${tier} (INFRA/SETUP: harness could not evaluate the tier — NOT a product verdict, rc=${rc})") ;;
+        INFRA+=("${tier} (INFRA/SETUP: harness could not evaluate the tier — NOT a product verdict, rc=${rc})")
+        if [ -n "${DTF_INFRA_TIERS_FILE:-}" ]; then
+          printf '%s\n' "$tier" >> "$DTF_INFRA_TIERS_FILE"
+        fi ;;
       "$DTF_EXIT_NOT_ON_LINE")
         # Only honoured on a release-line suite; anywhere else rc 12 is a
         # harness wiring bug like any other unexpected driver code.
@@ -190,7 +207,12 @@ if [ ${#FAILED[@]} -gt 0 ] || [ ${#INFRA[@]} -gt 0 ]; then
   # INFRA/SETUP outcome is just as RED as an assertion failure — it is only
   # LABELED differently (artifact-keeper-test#323).
   echo "!! $(( ${#FAILED[@]} + ${#INFRA[@]} )) of ${#TIERS[@]} tier(s) did not pass — gate is RED" >&2
-  exit 1
+  # A product FAIL wins over INFRA in the aggregate (#378): exit 11 says the
+  # candidate is unjudged, so it is only true when nothing asserted against it.
+  if [ ${#FAILED[@]} -gt 0 ]; then
+    exit 1
+  fi
+  exit "$DTF_EXIT_INFRA"
 fi
 if [ ${#NOT_ON_LINE[@]} -gt 0 ]; then
   echo ">> ${#PASSED[@]} tier(s) passed, ${#NOT_ON_LINE[@]} not on ${TESTS_REF}: gate is GREEN"
