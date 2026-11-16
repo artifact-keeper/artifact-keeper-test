@@ -72,3 +72,10 @@ jobs:
         run: |
           chmod +x tests/lib/selftest-release-gate-contract.sh
           ./tests/lib/selftest-release-gate-contract.sh
+
+      # The resilience suites' pod selection and readiness classification
+      # (tests/lib/k8s.sh, artifact-keeper-test#354): a selector that matches
+      # nothing is INFRA, never a pass or a skip.
+      - name: Run k8s selector self-test
+        run: bash tests/lib/selftest-k8s-selectors.sh
+

@@ -9,6 +9,7 @@
 # Note: Backend pod must be running as root or have permissions to chmod /data.
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "storage-readonly"
 require_cmd kubectl
@@ -18,12 +19,10 @@ setup_workdir
 NAMESPACE="${NAMESPACE:-ak-test-${RUN_ID}}"
 REPO_KEY="store-ro-${RUN_ID}"
 
-BACKEND_POD=$(kubectl get pods -l app=artifact-keeper-backend \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-if [ -z "$BACKEND_POD" ]; then
-  echo "SKIP: could not find backend pod"
-  exit 0
-fi
+begin_test "Locate backend pod"
+k8s_require_pod BACKEND_POD "$AK_BACKEND_SELECTOR" backend
+echo "  Backend pod: ${BACKEND_POD}"
+pass
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -51,10 +50,12 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Make storage directory read-only"
-chmod_result=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
-  chmod 444 /data 2>&1) || true
-if echo "$chmod_result" | grep -qi "operation not permitted\|permission denied"; then
-  skip "cannot chmod /data (insufficient permissions in container)"
+# Judge by kubectl's exit status, not by grepping its output: a failed exec
+# (no chmod in the image, Forbidden) used to report /data as read-only.
+if ! chmod_result=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
+    chmod 444 /data 2>&1); then
+  echo "  ${chmod_result}"
+  skip "cannot chmod /data in the backend container"
 else
   echo "  /data set to read-only (444)"
   pass

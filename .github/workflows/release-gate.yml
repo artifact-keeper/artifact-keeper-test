@@ -2569,13 +2569,14 @@ jobs:
   #      ephemeral namespace, so test-full-reboot.sh cannot scale the backend
   #      ("Error from server (Forbidden): ... cannot patch resource
   #      deployments/scale").
-  #   2. The resilience harness selects backend pods with
-  #      `-l app=artifact-keeper-backend` while this workflow waits on them
-  #      with `-l app.kubernetes.io/component=backend` (see lines ~594 and
-  #      ~1331). The selector matches nothing, so test-pvc-remount and
-  #      test-pod-reschedule fail with "no backend pod found".
-  #   3. Meilisearch does not recover inside test-meilisearch-restart.sh's
-  #      90s budget.
+  #   2. FIXED (artifact-keeper-test#354): the harness selected backend pods
+  #      with `-l app=artifact-keeper-backend`, a label the chart never set,
+  #      so kills were vacuous and readiness waits skipped. Selection now
+  #      lives in tests/lib/k8s.sh on app.kubernetes.io/component=<name>, and
+  #      a selector that matches nothing aborts the script as INFRA (exit 11).
+  #   3. FIXED (artifact-keeper-test#354): "Meilisearch did not recover" was
+  #      the same defect. The stack runs OpenSearch, so the meilisearch
+  #      selector matched nothing; the test is now test-opensearch-restart.sh.
   # Selector fix (2) will likely surface MORE failures, including in the
   # now-blocking legs, because it also makes some currently-vacuous PASSes
   # real. That is intended. Nothing here is fixed by this waiver — restart

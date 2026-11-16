@@ -8,6 +8,7 @@
 # Requires: kubectl, NAMESPACE
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "restart-full-reboot"
 require_cmd kubectl
@@ -68,6 +69,13 @@ fi
 # Scale down to zero
 # ---------------------------------------------------------------------------
 
+begin_test "Locate backend pod"
+# Proves the selector matches before the reboot, so the "no running pods"
+# check below cannot be satisfied by a selector that never matches anything.
+k8s_require_pod PRE_REBOOT_POD "$AK_BACKEND_SELECTOR" backend
+echo "  Backend pod before reboot: ${PRE_REBOOT_POD}"
+pass
+
 begin_test "Scale backend to zero replicas"
 if kubectl scale deployment/artifact-keeper-backend --replicas=0 \
     -n "${NAMESPACE}" 2>&1; then
@@ -78,7 +86,7 @@ fi
 
 begin_test "Verify no running pods"
 sleep 10
-running=$(kubectl get pods -l app=artifact-keeper-backend \
+running=$(kubectl get pods -l "$AK_BACKEND_SELECTOR" \
   -n "${NAMESPACE}" --field-selector=status.phase=Running \
   -o jsonpath='{.items}' 2>/dev/null || echo "[]")
 pod_count=$(echo "$running" | jq 'length' 2>/dev/null || echo "0")
@@ -104,23 +112,9 @@ else
 fi
 
 begin_test "Wait for pod to become ready"
-elapsed=0
-pod_ready=false
-while [ "$elapsed" -lt 90 ]; do
-  ready=$(kubectl get pods -l app=artifact-keeper-backend \
-    -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
-  if [ "$ready" = "true" ]; then
-    pod_ready=true
-    break
-  fi
-  sleep 3
-  elapsed=$(( elapsed + 3 ))
-done
-if [ "$pod_ready" = true ]; then
-  echo "  Pod ready after ${elapsed}s"
+if k8s_wait_ready "$AK_BACKEND_SELECTOR" backend 90 "$PRE_REBOOT_POD_UID"; then
+  echo "  Pod ${K8S_READY_POD} ready after ${K8S_READY_ELAPSED}s"
   pass
-else
-  skip "ARC runner timing: pod did not become ready within 90s"
 fi
 
 begin_test "Wait for health endpoint"
