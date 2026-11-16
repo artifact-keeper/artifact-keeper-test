@@ -49,6 +49,9 @@ on:
       - 'scripts/run-suite.sh'
       - 'scripts/clean-install-smoke.sh'
       - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
+      - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'scripts/ci/**'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
@@ -57,6 +60,9 @@ on:
       - 'scripts/run-suite.sh'
       - 'scripts/clean-install-smoke.sh'
       - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
+      - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'scripts/ci/**'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -105,3 +111,9 @@ jobs:
       # (artifact-keeper-test#725).
       - name: Run fetch-all-pages self-test
         run: bash tests/lib/selftest-fetch-all-pages.sh
+
+      # The dtf-advisory outcome mapper and run-tiers.sh's aggregate exit
+      # code: INFRA is retried once and warned about, a product FAIL is red
+      # (artifact-keeper-test#378).
+      - name: Run dtf-advisory outcome self-test
+        run: bash scripts/ci/selftest-dtf-advisory-outcome.sh
