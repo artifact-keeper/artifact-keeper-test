@@ -823,6 +823,58 @@ api_get() {
   curl -sf $CURL_TIMEOUT -H "$(auth_header)" "$@" "${BASE_URL}${path}"
 }
 
+# fetch_all_pages PATH OUT_FILE [HEADER]
+#
+# Walk a paginated `{items, pagination: {page, per_page, total, total_pages}}`
+# listing (users, repositories, ...) page by page at per_page=100 and write
+# every item into OUT_FILE as `{"items": [...]}`. A suite that looks for its
+# own fixture in page 1 of a listing passes on a fresh gate install and fails
+# on any instance holding more than 20 rows of prior state
+# (artifact-keeper-test#725); this reads all of them.
+#
+# HEADER is passed to curl as one -H (e.g. "$(auth_header)"); omit it for an
+# anonymous listing. A bare JSON array answer is accepted as a single page.
+# Sets FETCH_ALL_STATUS to the last HTTP status. Returns 0 when every page
+# answered 200; otherwise returns 1 with that page's body left in OUT_FILE,
+# so a caller can still judge a 401/403 the way it judged page 1 before.
+# Stops after FETCH_ALL_MAX_PAGES (default 200) pages.
+fetch_all_pages() {
+  local path="$1" out="$2" header="${3:-}"
+  local sep='?' page=1 total_pages=1 max="${FETCH_ALL_MAX_PAGES:-200}"
+  local tmp="${out}.page" acc="${out}.acc"
+  local -a args
+  [[ "$path" == *\?* ]] && sep='&'
+  printf '[]' > "$acc"
+  FETCH_ALL_STATUS=000
+  while :; do
+    args=(-s -o "$tmp" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}")
+    [ -n "$header" ] && args+=(-H "$header")
+    FETCH_ALL_STATUS=$(curl "${args[@]}" "${BASE_URL}${path}${sep}page=${page}&per_page=100" 2>/dev/null) \
+      || FETCH_ALL_STATUS=000
+    if [ "$FETCH_ALL_STATUS" != "200" ]; then
+      mv -f "$tmp" "$out" 2>/dev/null || : > "$out"
+      rm -f "$acc"
+      return 1
+    fi
+    if ! jq -s '.[0] + (.[1] | if type == "array" then . else (.items // []) end)' \
+        "$acc" "$tmp" > "${acc}.next" 2>/dev/null; then
+      mv -f "$tmp" "$out"
+      rm -f "$acc" "${acc}.next"
+      return 1
+    fi
+    mv -f "${acc}.next" "$acc"
+    total_pages=$(jq -r 'if type == "object" then (.pagination.total_pages // 1) else 1 end' "$tmp" 2>/dev/null) || total_pages=1
+    [[ "$total_pages" =~ ^[0-9]+$ ]] || total_pages=1
+    if [ "$page" -ge "$total_pages" ] || [ "$page" -ge "$max" ]; then
+      break
+    fi
+    page=$(( page + 1 ))
+  done
+  jq '{items: .}' "$acc" > "$out"
+  rm -f "$acc" "$tmp"
+  return 0
+}
+
 # api_get_with_retry - GET an idempotent management-API endpoint with a bounded
 # retry-with-backoff on TRANSIENT failures only. On success it echoes the
 # response body on stdout and returns 0, so it is a drop-in replacement for

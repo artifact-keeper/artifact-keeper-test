@@ -154,8 +154,12 @@ else
 fi
 
 begin_test "Anonymous repository listing does not expose upstream credentials"
-status=$(curl -s -o "${WORK_DIR}/anon-list.json" -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" \
-  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || status="000"
+# Every page of the anonymous listing: the fixture is one row among however
+# many repositories the instance holds, and the leak check must cover all of
+# them, not page 1 only (artifact-keeper-test#725). A 401/403 on the first
+# page is left in the file and judged as before.
+fetch_all_pages "/api/v1/repositories" "${WORK_DIR}/anon-list.json" || true
+status="$FETCH_ALL_STATUS"
 
 if [ "$status" = "401" ] || [ "$status" = "403" ]; then
   # Listing is not anonymous on this deployment; nothing can leak.
