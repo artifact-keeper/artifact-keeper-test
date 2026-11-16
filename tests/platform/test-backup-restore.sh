@@ -166,11 +166,13 @@ fi
 begin_test "Archived artifacts still download intact"
 ALL_OK=true
 for i in 1 2 3; do
+  # /download/ serves the bytes; GET /artifacts/{path} answers the metadata
+  # document, which is what the old restore check (never reached) read.
   content=$(curl -sf -H "$(auth_header)" $CURL_TIMEOUT \
-    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/data/file-${i}.txt" 2>/dev/null) || content=""
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/data/file-${i}.txt" 2>/dev/null) || content=""
   if [ "$content" != "backup-content-${i}-${RUN_ID}" ]; then
     ALL_OK=false
-    fail "file-${i}.txt content mismatch after the backup run"
+    fail "file-${i}.txt content mismatch after the backup run" "${content:0:200}"
     break
   fi
 done
