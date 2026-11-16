@@ -39,6 +39,9 @@ name: Nightly S3 Formats
 # its reason, in the batch's step summary.
 # ---------------------------------------------------------------------
 on:
+  # TEMPORARY (validation of the review fixes; removed before merge)
+  pull_request:
+    paths: ['.github/workflows/nightly-s3-formats.yml']
   workflow_call:
     inputs:
       backend_tag:
@@ -96,14 +99,15 @@ permissions:
   packages: read
 
 env:
-  BACKEND_TAG: ${{ inputs.backend_tag }}
+  BACKEND_TAG: ${{ inputs.backend_tag || 'sha-2ae12c7' }}
   BACKEND_DIGEST: ${{ inputs.backend_digest }}
   IAC_REF: ${{ inputs.iac_ref || 'main' }}
   WEB_TAG: ${{ inputs.web_tag || 'latest' }}
-  BATCHES: ${{ inputs.batches }}
+  BATCHES: ${{ inputs.batches || 'python' }}
 
 jobs:
   deploy-s3:
+    if: github.event_name != 'pull_request' || github.head_ref == 'ci/6121-nightly-s3-formats'
     runs-on: ak-e2e-runners
     timeout-minutes: 15
     outputs:
@@ -401,7 +405,7 @@ jobs:
 
   collect-results:
     needs: [deploy-s3, format-tests-s3, s3-storage-census, teardown]
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.head_ref == 'ci/6121-nightly-s3-formats')
     runs-on: ubuntu-latest
     steps:
       - name: Lane verdict
