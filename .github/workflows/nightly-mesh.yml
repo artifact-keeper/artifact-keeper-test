@@ -1,0 +1,505 @@
+name: Nightly Mesh
+
+# Nightly mesh lane: three real backend instances (a hub and two peers), plus
+# a release/1.11.x peer for the mixed-version tier, in ONE throwaway namespace
+# on ak-e2e-runners. Advisory, outside the release gate
+# (artifact-keeper/artifact-keeper#6120, epic #6081).
+#
+# Called by artifact-keeper's nightly-release-gate.yml after every gate line
+# has finished (it never overlaps the gate on rocky), and dispatchable by hand
+# for iteration. The caller grants `contents: read, packages: read`; this file
+# asks for nothing more.
+#
+# Reporting contract (scripts/ci/nightly-gate-report.js in the backend repo):
+# every job below is a TIER, keyed by its job name. `collect-results` decides
+# the lane verdict. Every tier blocks the lane verdict (the lane itself blocks
+# nothing: it is advisory to the release). A skipped tier is not evidence: mesh-mixed-version is skipped only when the
+# caller passes no peer_backend_tag (the 1.11.x line did not resolve).
+#
+# Why not the gate's mesh-tests: see helm/values-nightly-mesh.yaml. In short,
+# that job installs four namespaces with the per-node identity flags
+# documented but never passed, and the scripts treat a missing replication
+# as a SKIP, so it can be green while nothing replicated. Here every instance
+# has its own identity, Postgres and storage in one namespace, peers are
+# linked with keys minted on the peer, and a skip in a blocking tier is red
+# (scripts/mesh/junit-no-skips.sh).
+
+on:
+  workflow_call:
+    inputs:
+      backend_tag:
+        description: Backend image tag under test (main's newest good Docker Publish, sha-<7>)
+        required: true
+        type: string
+      backend_digest:
+        description: 'Manifest-list digest (sha256:...) pinning backend_tag. Empty = tag only.'
+        required: false
+        type: string
+        default: ''
+      peer_backend_tag:
+        description: Backend image tag for the mixed-version peer (release/1.11.x line). Empty skips mesh-mixed-version.
+        required: false
+        type: string
+        default: ''
+      peer_backend_digest:
+        description: 'Digest pinning peer_backend_tag. Empty = tag only.'
+        required: false
+        type: string
+        default: ''
+      iac_ref:
+        description: artifact-keeper-iac git ref for the Helm chart
+        required: false
+        type: string
+        default: main
+      web_tag:
+        description: Unused (no web is deployed); accepted so callers can pass one shape to every lane.
+        required: false
+        type: string
+        default: latest
+    secrets:
+      GHCR_DOCKER_CONFIG:
+        description: >-
+          Accepted for interface parity with the other lanes and unused: the
+          backend images are public, and the chart only plumbs pull secrets
+          onto the scanner-adapter, which this lane does not deploy.
+        required: false
+  workflow_dispatch:
+    inputs:
+      backend_tag:
+        description: Backend image tag under test (sha-<7>)
+        required: true
+        type: string
+      backend_digest:
+        description: 'Manifest-list digest (sha256:...). Empty = tag only.'
+        required: false
+        type: string
+        default: ''
+      peer_backend_tag:
+        description: Backend image tag for the 1.11.x peer. Empty skips mesh-mixed-version.
+        required: false
+        type: string
+        default: ''
+      peer_backend_digest:
+        description: 'Digest pinning peer_backend_tag. Empty = tag only.'
+        required: false
+        type: string
+        default: ''
+      iac_ref:
+        description: artifact-keeper-iac git ref
+        required: false
+        type: string
+        default: main
+      web_tag:
+        description: Unused
+        required: false
+        type: string
+        default: latest
+
+permissions:
+  contents: read
+
+# One mesh lane on rocky at a time: a hand dispatch queues behind the
+# nightly (and vice versa) instead of doubling the load on the shared node.
+concurrency:
+  group: nightly-mesh-rocky
+  cancel-in-progress: false
+
+env:
+  # One namespace per workflow run. Every job derives it the same way, so
+  # teardown finds it even when mesh-deploy was cancelled half way.
+  MESH_NS: test-mesh-${{ github.run_id }}
+  ADMIN_PASS: TestRunner!2026secure
+  # The tests come from this repository: the branch under test when it is
+  # dispatched here, main when another repository calls the workflow.
+  TESTS_REF: ${{ github.repository == 'artifact-keeper/artifact-keeper-test' && github.sha || 'main' }}
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Tier: the topology itself. A red here is infrastructure or an install
+  # regression (chart or backend boot), and every other tier is skipped.
+  # -------------------------------------------------------------------------
+  mesh-deploy:
+    runs-on: ak-e2e-runners
+    timeout-minutes: 10
+    outputs:
+      hub_url: ${{ steps.deploy.outputs.hub_url }}
+      peer1_url: ${{ steps.deploy.outputs.peer1_url }}
+      peer2_url: ${{ steps.deploy.outputs.peer2_url }}
+      legacy_url: ${{ steps.deploy.outputs.legacy_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+          ref: ${{ env.TESTS_REF }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+        with:
+          # rocky's API server is v1.31.14; stay within one minor of it.
+          version: v1.31.14
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Same pin as the gate: Helm 4's --wait watches kinds the runner's
+          # service account cannot watch.
+          version: v3.22.1
+
+      - name: Validate inputs
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+          PEER_BACKEND_TAG: ${{ inputs.peer_backend_tag }}
+          PEER_BACKEND_DIGEST: ${{ inputs.peer_backend_digest }}
+          IAC_REF: ${{ inputs.iac_ref }}
+        run: |
+          tag_re='^[A-Za-z0-9._-]{1,128}$'
+          dig_re='^sha256:[0-9a-f]{64}$'
+          ref_re='^[A-Za-z0-9._/-]{1,128}$'
+          bad=0
+          [[ "$BACKEND_TAG" =~ $tag_re ]] || { echo "::error::backend_tag '${BACKEND_TAG}' is not a tag"; bad=1; }
+          [ -z "$BACKEND_DIGEST" ] || [[ "$BACKEND_DIGEST" =~ $dig_re ]] || { echo "::error::backend_digest is not sha256:<64 hex>"; bad=1; }
+          [ -z "$PEER_BACKEND_TAG" ] || [[ "$PEER_BACKEND_TAG" =~ $tag_re ]] || { echo "::error::peer_backend_tag '${PEER_BACKEND_TAG}' is not a tag"; bad=1; }
+          [ -z "$PEER_BACKEND_DIGEST" ] || [[ "$PEER_BACKEND_DIGEST" =~ $dig_re ]] || { echo "::error::peer_backend_digest is not sha256:<64 hex>"; bad=1; }
+          if [ -n "$PEER_BACKEND_DIGEST" ] && [ -z "$PEER_BACKEND_TAG" ]; then
+            echo "::error::peer_backend_digest without peer_backend_tag"; bad=1
+          fi
+          [[ "${IAC_REF:-main}" =~ $ref_re ]] || { echo "::error::iac_ref '${IAC_REF}' is not a ref"; bad=1; }
+          exit "$bad"
+
+      - name: Sweep mesh namespaces left by older runs
+        run: scripts/mesh/teardown-mesh.sh --namespace "${MESH_NS}" --sweep-older-than 6 --logs-dir "${RUNNER_TEMP}/sweep"
+
+      - name: Deploy hub, peer1, peer2 (and the 1.11.x peer)
+        id: deploy
+        env:
+          BACKEND_TAG: ${{ inputs.backend_tag }}
+          BACKEND_DIGEST: ${{ inputs.backend_digest }}
+          PEER_BACKEND_TAG: ${{ inputs.peer_backend_tag }}
+          PEER_BACKEND_DIGEST: ${{ inputs.peer_backend_digest }}
+          IAC_REF: ${{ inputs.iac_ref || 'main' }}
+        run: |
+          start=$(date +%s)
+          args=(--namespace "${MESH_NS}" --backend-image "${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}" --iac-ref "${IAC_REF}")
+          if [ -n "${PEER_BACKEND_TAG}" ]; then
+            args+=(--peer-backend-image "${PEER_BACKEND_TAG}${PEER_BACKEND_DIGEST:+@${PEER_BACKEND_DIGEST}}")
+          fi
+          scripts/mesh/deploy-mesh.sh "${args[@]}"
+          echo "Deployed in $(( $(date +%s) - start ))s" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Record instance versions and namespace requests
+        if: always()
+        run: |
+          {
+            echo "### Mesh namespace \`${MESH_NS}\`"
+            echo '```'
+            kubectl -n "${MESH_NS}" get pods -o wide 2>&1 || true
+            kubectl -n "${MESH_NS}" describe resourcequota nightly-mesh-cap 2>&1 | sed -n '/Resource/,$p' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for r in ak-hub ak-peer1 ak-peer2 ak-legacy; do
+            u="http://${r}-backend.${MESH_NS}.svc.cluster.local:8080"
+            v=$(curl -sf --max-time 5 "$u/health" | jq -r '.version // "?"' 2>/dev/null) || continue
+            echo "${r}: backend ${v}" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+  # -------------------------------------------------------------------------
+  # Order. mesh-replication runs first and alone: the gate's
+  # test-artifact-sync.sh it reuses leaves `peer_selector: {all: true}`
+  # policies behind, and every peer registered after that inherits
+  # retroactive tasks that 404 and back the new link off. Its last step
+  # deletes them. Then mesh-schedule, mesh-delete-propagation and
+  # mesh-mixed-version run in parallel (direct subscriptions only, unique
+  # names, no shared state). mesh-partition-heal runs last and alone, because
+  # it cuts the hub off from peer1. Each later tier runs when mesh-deploy
+  # succeeded, whatever the earlier tiers concluded: each is its own evidence.
+  # Budget (45 min): the critical path is mesh-deploy 10 + mesh-replication 6
+  # + the slowest middle tier 10 + mesh-partition-heal 13 + mesh-teardown 7
+  # job-minute caps, about 25 min when nothing times out.
+  # Re-run a failed lane with "Re-run all jobs": teardown already deleted the
+  # namespace, so re-running only the failed jobs has nothing to test.
+  # -------------------------------------------------------------------------
+
+  # -------------------------------------------------------------------------
+  # Tier: push replication hub -> each peer, with checksums. Reuses the gate's
+  # tests/mesh/test-artifact-sync.sh once per peer. (The gate's registration,
+  # heartbeat, bandwidth and schedule scripts register peers with made-up keys,
+  # so on any topology they prove bookkeeping, not replication. They stay with
+  # the gate's mesh-tests waiver, artifact-keeper-test#327.)
+  # -------------------------------------------------------------------------
+  mesh-replication:
+    needs: [mesh-deploy]
+    runs-on: ak-e2e-runners
+    timeout-minutes: 6
+    env:
+      TEST_TIMEOUT: '300'
+      RELEASE_GATE: '1'
+      MAIN_URL: ${{ needs.mesh-deploy.outputs.hub_url }}
+      BASE_URL: ${{ needs.mesh-deploy.outputs.hub_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+          ref: ${{ env.TESTS_REF }}
+      # common.sh names a JUnit file after the suite, not the run, so each
+      # run of the same script gets its own directory or it overwrites the last.
+      - name: Hub -> peer1
+        env:
+          PEER1_URL: ${{ needs.mesh-deploy.outputs.peer1_url }}
+          JUNIT_OUTPUT_DIR: ${{ github.workspace }}/junit/peer1
+        run: scripts/run-suite.sh --suite mesh --filter test-artifact-sync --run-id "nm-${{ github.run_id }}-p1"
+      - name: Hub -> peer2
+        if: ${{ !cancelled() }}
+        env:
+          PEER1_URL: ${{ needs.mesh-deploy.outputs.peer2_url }}
+          JUNIT_OUTPUT_DIR: ${{ github.workspace }}/junit/peer2
+        run: scripts/run-suite.sh --suite mesh --filter test-artifact-sync --run-id "nm-${{ github.run_id }}-p2"
+      - name: Remove the all-peer policies the script leaves on the hub
+        if: always()
+        run: scripts/mesh/clear-sync-policies.sh "$MAIN_URL"
+      - name: No skipped case counts as a pass
+        if: ${{ !cancelled() }}
+        run: scripts/mesh/junit-no-skips.sh junit
+      - name: Upload JUnit
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-mesh-replication
+          path: junit/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Tier: the replication schedule. A mirror subscription with a cron
+  # schedule replicates pre-existing artifacts through a scheduled pass, an
+  # unscheduled one does not, and the schedule recurs.
+  # -------------------------------------------------------------------------
+  mesh-schedule:
+    needs: [mesh-deploy, mesh-replication]
+    if: ${{ !cancelled() && needs.mesh-deploy.result == 'success' }}
+    runs-on: ak-e2e-runners
+    timeout-minutes: 10
+    env:
+      JUNIT_OUTPUT_DIR: ${{ github.workspace }}/junit
+      TEST_TIMEOUT: '420'
+      RELEASE_GATE: '1'
+      MAIN_URL: ${{ needs.mesh-deploy.outputs.hub_url }}
+      BASE_URL: ${{ needs.mesh-deploy.outputs.hub_url }}
+      PEER1_URL: ${{ needs.mesh-deploy.outputs.peer1_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+          ref: ${{ env.TESTS_REF }}
+      - name: Mirror schedule fires, and only when scheduled
+        run: scripts/run-suite.sh --suite mesh-nightly --filter test-schedule-mirror-pass --run-id "nm-${{ github.run_id }}-sched"
+      - name: No skipped case counts as a pass
+        if: ${{ !cancelled() }}
+        run: scripts/mesh/junit-no-skips.sh junit
+      - name: Upload JUnit
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-mesh-schedule
+          path: junit/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Tier: delete propagation, hub -> peer1 + peer2.
+  # -------------------------------------------------------------------------
+  mesh-delete-propagation:
+    needs: [mesh-deploy, mesh-replication]
+    if: ${{ !cancelled() && needs.mesh-deploy.result == 'success' }}
+    runs-on: ak-e2e-runners
+    timeout-minutes: 10
+    env:
+      JUNIT_OUTPUT_DIR: ${{ github.workspace }}/junit
+      TEST_TIMEOUT: '480'
+      RELEASE_GATE: '1'
+      SRC_URL: ${{ needs.mesh-deploy.outputs.hub_url }}
+      BASE_URL: ${{ needs.mesh-deploy.outputs.hub_url }}
+      DST_URLS: ${{ needs.mesh-deploy.outputs.peer1_url }} ${{ needs.mesh-deploy.outputs.peer2_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+          ref: ${{ env.TESTS_REF }}
+      - name: Delete on the hub reaches both peers
+        run: scripts/run-suite.sh --suite mesh-nightly --filter test-delete-propagation --run-id "nm-${{ github.run_id }}-del"
+      - name: No skipped case counts as a pass
+        if: ${{ !cancelled() }}
+        run: scripts/mesh/junit-no-skips.sh junit
+      - name: Upload JUnit
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-mesh-delete-propagation
+          path: junit/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Tier: mixed versions. A main hub and a release/1.11.x peer replicate
+  # pushes (checksummed) and deletes BOTH ways. Skipped (not failed) only
+  # when the caller had no 1.11.x image to pass.
+  # -------------------------------------------------------------------------
+  mesh-mixed-version:
+    needs: [mesh-deploy, mesh-replication]
+    if: ${{ !cancelled() && needs.mesh-deploy.result == 'success' && inputs.peer_backend_tag != '' }}
+    runs-on: ak-e2e-runners
+    timeout-minutes: 10
+    env:
+      TEST_TIMEOUT: '480'
+      RELEASE_GATE: '1'
+      HUB: ${{ needs.mesh-deploy.outputs.hub_url }}
+      LEGACY: ${{ needs.mesh-deploy.outputs.legacy_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+          ref: ${{ env.TESTS_REF }}
+      - name: The two instances really run different backend versions
+        run: |
+          hv=$(curl -sf --max-time 10 "$HUB/health" | jq -r '.version // empty')
+          lv=$(curl -sf --max-time 10 "$LEGACY/health" | jq -r '.version // empty')
+          echo "hub ${hv}, legacy peer ${lv}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -z "$hv" ] || [ -z "$lv" ] || [ "$hv" = "$lv" ]; then
+            echo "::error::expected two different backend versions, got hub='${hv}' legacy='${lv}'"
+            exit 1
+          fi
+      - name: main hub -> 1.11.x peer (push, delete, re-upload)
+        if: ${{ !cancelled() }}
+        env:
+          BASE_URL: ${{ env.HUB }}
+          SRC_URL: ${{ env.HUB }}
+          DST_URLS: ${{ env.LEGACY }}
+          JUNIT_OUTPUT_DIR: ${{ github.workspace }}/junit/main-to-1.11
+        run: scripts/run-suite.sh --suite mesh-nightly --filter test-delete-propagation --run-id "nm-${{ github.run_id }}-mx1"
+      - name: 1.11.x hub -> main peer (push, delete, re-upload)
+        if: ${{ !cancelled() }}
+        env:
+          BASE_URL: ${{ env.LEGACY }}
+          SRC_URL: ${{ env.LEGACY }}
+          DST_URLS: ${{ env.HUB }}
+          JUNIT_OUTPUT_DIR: ${{ github.workspace }}/junit/1.11-to-main
+        run: scripts/run-suite.sh --suite mesh-nightly --filter test-delete-propagation --run-id "nm-${{ github.run_id }}-mx2"
+      - name: No skipped case counts as a pass
+        if: ${{ !cancelled() }}
+        run: scripts/mesh/junit-no-skips.sh junit
+      - name: Upload JUnit
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-mesh-mixed-version
+          path: junit/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Tier: partition-heal between the hub and peer1, fault injected from an
+  # ephemeral netadmin debug container (tests/lib/netfault.sh). Runs ALONE,
+  # after every other tier, because it cuts the hub off from peer1.
+  # -------------------------------------------------------------------------
+  mesh-partition-heal:
+    needs: [mesh-deploy, mesh-replication, mesh-schedule, mesh-delete-propagation, mesh-mixed-version]
+    if: ${{ !cancelled() && needs.mesh-deploy.result == 'success' }}
+    runs-on: ak-e2e-runners
+    timeout-minutes: 13
+    env:
+      JUNIT_OUTPUT_DIR: ${{ github.workspace }}/junit
+      TEST_TIMEOUT: '660'
+      RELEASE_GATE: '1'
+      MAIN_URL: ${{ needs.mesh-deploy.outputs.hub_url }}
+      BASE_URL: ${{ needs.mesh-deploy.outputs.hub_url }}
+      PEER1_URL: ${{ needs.mesh-deploy.outputs.peer1_url }}
+      PEER2_URL: ${{ needs.mesh-deploy.outputs.peer2_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+          ref: ${{ env.TESTS_REF }}
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+        with:
+          version: v1.31.14
+      - name: Partition hub <-> peer1, heal, converge
+        env:
+          MESH_NAMESPACE: ${{ env.MESH_NS }}
+        run: scripts/run-suite.sh --suite mesh-nightly --filter test-partition-heal --run-id "nm-${{ github.run_id }}-part"
+      - name: No skipped case counts as a pass
+        if: ${{ !cancelled() }}
+        run: scripts/mesh/junit-no-skips.sh junit
+      - name: Upload JUnit
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-mesh-partition-heal
+          path: junit/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Teardown: always, including on cancel. Collects every container's log,
+  # then deletes the namespace and waits for it to go. Red only when the
+  # namespace is not confirmed gone (a leak on rocky needs a human).
+  # -------------------------------------------------------------------------
+  mesh-teardown:
+    needs: [mesh-deploy, mesh-replication, mesh-schedule, mesh-delete-propagation, mesh-mixed-version, mesh-partition-heal]
+    if: always()
+    runs-on: ak-e2e-runners
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+          ref: ${{ env.TESTS_REF }}
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+        with:
+          version: v1.31.14
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.22.1
+      - name: Collect logs and delete the namespace
+        run: scripts/mesh/teardown-mesh.sh --namespace "${MESH_NS}" --logs-dir "${RUNNER_TEMP}/mesh-logs"
+      - name: Upload instance logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mesh-instance-logs
+          path: ${{ runner.temp }}/mesh-logs
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Verdict. Every tier blocks: mesh-deploy, mesh-replication, mesh-schedule,
+  # mesh-delete-propagation, mesh-partition-heal, mesh-teardown, and
+  # mesh-mixed-version when a peer tag was given (skipped otherwise).
+  # -------------------------------------------------------------------------
+  collect-results:
+    needs: [mesh-deploy, mesh-replication, mesh-schedule, mesh-delete-propagation, mesh-mixed-version, mesh-partition-heal, mesh-teardown]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Lane verdict
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          PEER_TAG: ${{ inputs.peer_backend_tag }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          bad=0
+          for t in mesh-deploy mesh-replication mesh-schedule mesh-delete-propagation mesh-partition-heal mesh-teardown; do
+            r=$(echo "$NEEDS" | jq -r --arg t "$t" '.[$t].result')
+            if [ "$r" != "success" ]; then
+              echo "::error::blocking tier ${t}: ${r}"; bad=1
+            fi
+          done
+          r=$(echo "$NEEDS" | jq -r '."mesh-mixed-version".result')
+          if [ -n "$PEER_TAG" ] && [ "$r" != "success" ]; then
+            echo "::error::blocking tier mesh-mixed-version: ${r}"; bad=1
+          elif [ -z "$PEER_TAG" ]; then
+            echo "mesh-mixed-version skipped: no peer_backend_tag (the 1.11.x line did not resolve)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$bad" -eq 0 ]; then
+            echo "Mesh lane: GREEN" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Mesh lane: RED" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$bad"

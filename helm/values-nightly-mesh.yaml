@@ -1,0 +1,142 @@
+# values-nightly-mesh.yaml - one instance of the nightly mesh lane
+# (artifact-keeper/artifact-keeper#6120)
+#
+# scripts/mesh/deploy-mesh.sh installs this file several times into ONE
+# namespace (hub, peer1, peer2, and the optional 1.11.x peer "legacy"), one
+# Helm release per instance. Each release gets its own Postgres StatefulSet
+# and its own storage PVC. It sets these per instance with --set:
+#   fullnameOverride                  ak-hub / ak-peer1 / ak-peer2 / ak-legacy
+#   backend.image.tag                 the instance's backend image
+#   backend.env.PEER_INSTANCE_NAME    the instance's mesh identity
+#   backend.env.PEER_PUBLIC_ENDPOINT  http://<fullname>-backend.<ns>.svc.cluster.local:8080
+#   backend.env.PEER_API_KEY          a random per-instance key
+#   secrets.jwtSecret                 a random per-instance signing secret
+#
+# Why this is not helm/values-test-mesh.yaml: that overlay (the gate's
+# mesh-tests job) documents the same per-node --set flags, but the gate never
+# passes them. Its four installs all boot as the default identity
+# "artifact-keeper-local" at "http://localhost:8080" with a random
+# PEER_API_KEY, and the scripts register peers by hand on the main instance
+# only. So no peer has a row for main and no instance can name itself, which
+# is what the "reverse sync not configured" and "aggregation" skips are.
+# The sync worker itself always runs: backend main.rs spawns it
+# unconditionally. The "sync worker not running in ephemeral env" skip
+# reasons are the scripts' guesses about a replication that never had a
+# route: test-bandwidth-limit.sh registers peer1 with a made-up api_key
+# ("fed-test-key") and never creates the repo on peer1. Every push it queues
+# is refused. The heartbeat and stale knobs below are compressed so that
+# detection fits a CI budget. The defaults are a 60 s probe and a 300 s
+# transfer backoff, which no 90 s wait can observe.
+#
+# Sized for rocky, a single node that also runs production: requests are
+# small, and nothing optional is enabled (no web, OpenSearch, Trivy,
+# scanner-adapter, Dependency-Track). The namespace is capped by a
+# ResourceQuota that deploy-mesh.sh applies before the first install.
+
+backend:
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-backend
+    tag: dev
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Throwaway test install: ADMIN_PASSWORD and PEER_API_KEY ride in
+  # backend.env, which the chart refuses to render unless this is set
+  # (artifact-keeper-iac#375). Production uses backend.environmentSecrets.
+  allowCredentialsInEnv: true
+  env:
+    ENVIRONMENT: mesh-test
+    RUST_LOG: "info,artifact_keeper_backend::services::sync_worker=debug"
+    ADMIN_PASSWORD: TestRunner!2026secure
+    ACCOUNT_LOCKOUT_THRESHOLD: "0"
+    RATE_LIMIT_EXEMPT_USERNAMES: "admin"
+    RATE_LIMIT_ENABLED: "false"
+    # Peers register each other at their in-cluster Service names, which
+    # resolve to the kubeadm Service CIDR (10.96.0.0/12). The pod CIDR is
+    # 10.244.0.0/16. Peer endpoints are admin-registered, but allow both
+    # ranges explicitly so the SSRF guard never decides a mesh verdict.
+    AK_SSRF_ALLOW_PRIVATE_CIDRS: "10.96.0.0/12,10.244.0.0/16"
+    UPSTREAM_ALLOW_PRIVATE_IPS: "1"
+    # Mesh detection knobs, compressed for CI (all env-overridable in the
+    # sync worker, main and release/1.11.x alike):
+    #   heartbeat probe every 10 s (default 60 s), 5 s probe timeout;
+    #   stale check every 2 ticks (20 s), stale after 1 min of no heartbeat,
+    #   so a partitioned peer is marked offline within about 80 s;
+    #   connect timeout 3 s, so a dropped SYN fails a transfer fast;
+    #   transfer backoff 5 s doubling to 30 s (default 300 s flat), so a
+    #   healed peer is retried within 30 s instead of 5 min.
+    # SYNC_TASK_MAX_RETRIES stays at the product default (3). The
+    # partition-heal tier writes only once the hub has marked the peer
+    # offline, so dispatch spends no retries during the partition.
+    PEER_HEARTBEAT_INTERVAL_SECS: "10"
+    PEER_HEARTBEAT_TIMEOUT_SECS: "5"
+    PEER_STALE_THRESHOLD_MINUTES: "1"
+    PEER_STALE_CHECK_INTERVAL_TICKS: "2"
+    SYNC_PEER_CONNECT_TIMEOUT_SECS: "3"
+    SYNC_TASK_RETRY_BACKOFF_BASE_SECS: "5"
+    SYNC_TASK_RETRY_BACKOFF_MAX_SECS: "30"
+  persistence:
+    enabled: true
+    size: 1Gi
+  scanWorkspace:
+    enabled: false
+  autoscaling:
+    enabled: false
+
+web:
+  enabled: false
+
+edge:
+  enabled: false
+
+postgres:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    size: 1Gi
+  auth:
+    username: registry
+    password: "mesh-test-db-password"
+    database: artifact_registry
+
+opensearch:
+  enabled: false
+
+trivy:
+  enabled: false
+
+scannerAdapter:
+  enabled: false
+
+dependencyTrack:
+  enabled: false
+
+imageBuilder:
+  enabled: false
+
+ingress:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+cosign:
+  enabled: false
+
+pdb:
+  enabled: false

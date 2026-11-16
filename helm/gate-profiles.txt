@@ -18,8 +18,11 @@
 #   values-test-mesh        create-test-namespace.sh --values helm/values-test-mesh.yaml (mesh-tests)
 #   values-smoke-with-deps  tests/release-gate/clean-install-smoke-with-deps.sh
 #   clean-install-smoke     scripts/clean-install-smoke.sh
+#   values-nightly-mesh     scripts/mesh/deploy-mesh.sh (nightly-mesh.yml, not the gate; rendered here so a
+#                           chart change that refuses it fails on the chart PR, artifact-keeper#6120)
 values-test             helm/values-test.yaml
 values-test-full        helm/values-test-full.yaml
 values-test-mesh        helm/values-test.yaml helm/values-test-mesh.yaml
 values-smoke-with-deps  helm/values-smoke-with-deps.yaml
 clean-install-smoke     chart:values-production.yaml helm/smoke-overrides.yaml
+values-nightly-mesh     helm/values-nightly-mesh.yaml
