@@ -210,7 +210,14 @@ st_g="$(cget "/conda/${CG}/noarch/${GVULN}" gv_conda)"
 cfg="$(scan_config "$CG" '{"scan_enabled":false,"scan_on_proxy":false,"proxy_scan_action":"fail_closed"}')"
 c1="$(blocked_count)"
 st_r="$(cget "/api/v1/repositories/${GR}/download/noarch/${GVULN}" gv_gen)"
-gen_cached="$(psql_q "SELECT count(*) FROM proxy_cache_artifacts pca JOIN repositories r ON r.id = pca.repository_id WHERE r.key = '${GR}' AND pca.checksum_sha256 = '$(sha_of "$WORK/pkgs/$GVULN")'")"
+# The streaming tee writes the catalog row from its writer task after the
+# client response completes, so the row can trail the 200 by a moment.
+gen_cached=0
+for _ in $(seq 1 20); do
+  gen_cached="$(psql_q "SELECT count(*) FROM proxy_cache_artifacts pca JOIN repositories r ON r.id = pca.repository_id WHERE r.key = '${GR}' AND pca.checksum_sha256 = '$(sha_of "$WORK/pkgs/$GVULN")'")"
+  [ "$gen_cached" = "0" ] || break
+  sleep 0.5
+done
 gv_row="$(verdict_row "$GVULN")"
 c2="$(blocked_count)"
 if [ "$st_r" != "200" ] || ! cmp -s "$WORK/gv_gen" "$WORK/pkgs/$GVULN"; then
