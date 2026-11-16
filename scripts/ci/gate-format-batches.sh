@@ -21,9 +21,13 @@ WF="${GATE_WORKFLOW:-.github/workflows/release-gate.yml}"
 [[ -f "$WF" ]] || { echo "::error title=Gate format batches::cannot read ${WF}" >&2; exit 1; }
 
 # The format-tests job body: from `  format-tests:` to the next job key.
+# The awk programs never `exit` early: under pipefail an upstream writer that
+# outlives its reader takes SIGPIPE and fails the pipeline. A done flag reads
+# to EOF instead.
 job_body() {
-  awk '/^  format-tests:[[:space:]]*$/{in_job=1; next}
-       in_job && /^  [a-z0-9][a-z0-9-]*:[[:space:]]*$/{exit}
+  awk 'done{next}
+       /^  format-tests:[[:space:]]*$/{in_job=1; next}
+       in_job && /^  [a-z0-9][a-z0-9-]*:[[:space:]]*$/{done=1; next}
        in_job{print}' "$WF"
 }
 
@@ -64,13 +68,14 @@ case "$cmd" in
     # The step's `run: |` block, de-indented. It reads the batch from the
     # expression ${{ matrix.batch.name }}; substitute the literal name.
     script="$(job_body | awk '
+      done { next }
       /^[[:space:]]+- name: Install test dependencies[[:space:]]*$/ { found=1; next }
       found && !inrun && /^[[:space:]]+run: \|[[:space:]]*$/ { inrun=1; next }
       inrun {
         if ($0 ~ /^[[:space:]]*$/) { print ""; next }
         match($0, /^[[:space:]]*/); ind=RLENGTH
         if (base == "") base=ind
-        if (ind < base) exit
+        if (ind < base) { done=1; next }
         print substr($0, base+1)
       }')"
     [[ -n "$script" ]] || { echo "::error title=Gate format batches::no 'Install test dependencies' run block in format-tests of ${WF}" >&2; exit 1; }
@@ -83,7 +88,8 @@ case "$cmd" in
       exit 1
     fi
     if [[ "${INSTALL_DRY_RUN:-0}" == "1" ]]; then printf '%s\n' "$script"; exit 0; fi
-    bash -euo pipefail -c "$script"
+    # The gate runs this step under GitHub's default `bash -e {0}`; match it.
+    bash -e -c "$script"
     ;;
   *)
     echo "Usage: gate-format-batches.sh list | scripts <batch> | install-deps <batch>" >&2

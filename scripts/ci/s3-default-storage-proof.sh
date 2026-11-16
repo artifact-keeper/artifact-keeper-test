@@ -136,11 +136,14 @@ case "$PHASE" in
     [[ -n "$pod" ]] && root=$(kubectl -n "$NAMESPACE" exec "$pod" -- printenv STORAGE_PATH 2>/dev/null | tr -d '\r' || true)
     if [[ -z "$pod" || -z "$root" ]]; then
       fail "could not find the running backend pod or its STORAGE_PATH (pod '${pod}')"
-    elif ! kubectl -n "$NAMESPACE" exec "$pod" -- ls -laR "$root" > "${WORK_DIR}/fs.txt" 2>&1; then
-      fail "could not list ${root} in ${pod}" "$(tail -n 20 "${WORK_DIR}/fs.txt")"
+    elif ! kubectl -n "$NAMESPACE" exec "$pod" -- ls -d "$root" > "${WORK_DIR}/fs.txt" 2>&1; then
+      fail "could not read ${root} in ${pod}" "$(tail -n 20 "${WORK_DIR}/fs.txt")"
     else
-      # ls -R prints "<dir>:" headers, then entries; keep regular files whose
-      # name is a sha256 and prefix them with their directory.
+      # ls -laR prints "<dir>:" headers, then entries; keep regular files whose
+      # name is a sha256 and prefix them with their directory. Its exit code is
+      # ignored (an unreadable lost+found makes it non-zero); the ls -d above
+      # proved the root itself is readable.
+      kubectl -n "$NAMESPACE" exec "$pod" -- ls -laR "$root" > "${WORK_DIR}/fs.txt" 2>/dev/null || true
       awk '/:$/ { dir=substr($0, 1, length($0)-1); next }
            /^-/ && $NF ~ /^[0-9a-f]{64}$/ { print dir "/" $NF " (" $5 " bytes)" }' "${WORK_DIR}/fs.txt" > "${WORK_DIR}/fs-cas.txt"
       echo "  ${root}: $(grep -c '^-' "${WORK_DIR}/fs.txt" || true) regular files, $(wc -l < "${WORK_DIR}/fs-cas.txt") content-addressed"

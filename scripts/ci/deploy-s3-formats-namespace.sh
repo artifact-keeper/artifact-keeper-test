@@ -74,9 +74,10 @@ if [[ -n "${GHCR_DOCKER_CONFIG:-}" ]]; then
     --dry-run=client -o yaml | kubectl apply -f -
 fi
 
-# MinIO only: the documents of storage-emulators.yaml that do not name Azurite.
+# MinIO only: the documents of storage-emulators.yaml whose metadata.name is
+# storage-minio (Deployment, Service) or storage-minio-init (Job).
 echo "Deploying MinIO (bucket ak-e2e)"
-awk 'function flush(){ if (doc != "" && doc !~ /azurite/) printf "---\n%s", doc; doc="" }
+awk 'function flush(){ if (doc ~ /\nmetadata:\n  name: storage-minio(-init)?\n/) printf "---\n%s", doc; doc="" }
      /^---[[:space:]]*$/ { flush(); next }
      { doc = doc $0 "\n" }
      END { flush() }' "${REPO_ROOT}/helm/storage-emulators.yaml" \

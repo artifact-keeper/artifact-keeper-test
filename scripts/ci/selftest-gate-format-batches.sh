@@ -69,6 +69,16 @@ for f in test-npm.sh test-pypi.sh test-maven.sh test-oci.sh test-cargo.sh test-n
   grep -qw -- "$f" <<<"$all_scripts" && ok "covers ${f}" || bad "no batch runs ${f}"
 done
 
+# The nightly's skip baseline: <batch> TAB <suite> TAB <check> TAB <why>, and
+# every batch it names is a gate batch (a renamed batch would otherwise turn
+# its known skips into failures, or a dead entry into a silent allowance).
+BASELINE="${REPO_ROOT}/scripts/ci/s3-formats-skip-baseline.txt"
+bl_bad=$(awk -F'\t' -v names=" $(python3 -c 'import json,sys; print(" ".join(json.loads(sys.argv[1])))' "$json") " '
+  /^#/ || /^[[:space:]]*$/ { next }
+  NF != 4 || $4 == "" { print NR ": not 4 fields"; next }
+  index(names, " " $1 " ") == 0 { print NR ": unknown batch " $1 }' "$BASELINE")
+[[ -z "$bl_bad" ]] && ok "skip baseline is well-formed" || bad "skip baseline: ${bl_bad}"
+
 printf 'name: x\njobs:\n  other:\n    runs-on: x\n' > "$TMP/no-formats.yml"
 GATE_WORKFLOW="$TMP/no-formats.yml" bash "$SUT" list >/dev/null 2>&1 && bad "a gate without format-tests listed batches" || ok "a gate without format-tests is an error"
 sub=$(bash "$SUT" list "mcp node")

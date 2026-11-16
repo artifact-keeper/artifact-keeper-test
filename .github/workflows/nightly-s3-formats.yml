@@ -33,9 +33,10 @@ name: Nightly S3 Formats
 # RELEASE_GATE=1, as in the gate: skip_suite() (a suite that cannot exercise
 # its subject at all) is a failure, not a skip. That is the point of this lane:
 # a format suite that stands down on S3 would otherwise pass having certified
-# nothing about S3. Per-check skip() stays a skip, and every one is listed,
-# with its reason, in the batch's step summary and as a ::warning, so no skip
-# is silent.
+# nothing about S3. A per-check skip() is allowed only when it is listed in
+# scripts/ci/s3-formats-skip-baseline.txt (with the reason it cannot be
+# observed here); any other skip fails its batch. Every skip is shown, with
+# its reason, in the batch's step summary.
 # ---------------------------------------------------------------------
 on:
   workflow_call:
@@ -59,11 +60,6 @@ on:
         required: false
         type: string
         default: 'latest'
-      batches:
-        description: 'Space-separated format-tests batches to run (for narrow validation runs). Empty = every gate batch.'
-        required: false
-        type: string
-        default: ''
     secrets:
       GHCR_DOCKER_CONFIG:
         required: false
@@ -89,7 +85,7 @@ on:
         type: string
         default: 'latest'
       batches:
-        description: 'Space-separated format-tests batches to run (for narrow validation runs). Empty = every gate batch.'
+        description: 'Space-separated format-tests batches to run (dispatch only: a narrow validation run). Empty = every gate batch.'
         required: false
         type: string
         default: ''
@@ -109,7 +105,7 @@ env:
 jobs:
   deploy-s3:
     runs-on: ak-e2e-runners
-    timeout-minutes: 20
+    timeout-minutes: 15
     outputs:
       run_id: ${{ steps.setup.outputs.run_id }}
       namespace: ${{ steps.setup.outputs.namespace }}
@@ -196,7 +192,7 @@ jobs:
     name: format-tests-s3 (${{ matrix.batch }})
     needs: deploy-s3
     runs-on: ak-e2e-runners
-    timeout-minutes: 30
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -249,30 +245,51 @@ jobs:
           done
           exit $exit_code
 
-      - name: List every skip with its reason
+      - name: Every skip is a known one, listed with its reason
         if: always()
         run: |
-          python3 - "$JUNIT_OUTPUT_DIR" "${{ matrix.batch }}" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          # A skip not in scripts/ci/s3-formats-skip-baseline.txt fails the
+          # batch: a check that stands down only on S3 must not pass quietly.
+          python3 - "$JUNIT_OUTPUT_DIR" "${{ matrix.batch }}" scripts/ci/s3-formats-skip-baseline.txt <<'PY'
           import glob, os, sys, xml.etree.ElementTree as ET
-          d, batch = sys.argv[1], sys.argv[2]
+          d, batch, baseline = sys.argv[1:4]
+          known = set()
+          for line in open(baseline, encoding="utf-8"):
+              if line.startswith("#") or not line.strip():
+                  continue
+              f = line.rstrip("\n").split("\t")
+              if len(f) >= 3:
+                  known.add((f[0], f[1], f[2]))
+          def flat(t):
+              return " ".join((t or "").split())
+          def esc(t):  # workflow-command data escaping
+              return t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
           rows, total = [], 0
           for f in sorted(glob.glob(os.path.join(d, "*.xml"))):
               try:
                   root = ET.parse(f).getroot()
               except ET.ParseError as e:
-                  print(f"::warning title=Unreadable JUnit::{f}: {e}", file=sys.stderr)
+                  print(f"::warning title=Unreadable JUnit::{esc(f + ': ' + str(e))}")
                   continue
               for tc in root.iter("testcase"):
                   total += 1
                   sk = tc.find("skipped")
                   if sk is not None:
-                      rows.append((tc.get("classname") or "", tc.get("name") or "", (sk.get("message") or "").replace("|", "/")))
-          print(f"## format-tests-s3 ({batch}): {total} checks, {len(rows)} skipped\n")
-          if rows:
-              print("| Suite | Check | Reason |\n|---|---|---|")
-              for s, n, m in rows:
-                  print(f"| {s} | {n} | {m} |")
-                  print(f"::warning title=S3 skip ({batch})::{s}: {n}: {m}", file=sys.stderr)
+                      s, n = flat(tc.get("classname")), flat(tc.get("name"))
+                      rows.append((s, n, flat(sk.get("message")), (batch, s, n) in known))
+          new = [r for r in rows if not r[3]]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write(f"## format-tests-s3 ({batch}): {total} checks, {len(rows)} skipped, {len(new)} not in the baseline\n\n")
+              if rows:
+                  out.write("| Suite | Check | Reason | Baseline |\n|---|---|---|---|\n")
+                  for s, n, m, k in rows:
+                      out.write("| {} | {} | {} | {} |\n".format(*(x.replace("|", "/") for x in (s, n, m)), "yes" if k else "**NEW**"))
+          for s, n, m, k in rows:
+              level = "warning" if k else "error"
+              print(f"::{level} title=S3 skip ({batch})::{esc(s + ': ' + n + ': ' + m)}")
+          if new:
+              print(f"{len(new)} skip(s) not in {baseline}; fix the suite on S3, or add the check there with the reason it cannot be observed")
+              sys.exit(1)
           PY
 
       - name: Upload test results
@@ -285,9 +302,11 @@ jobs:
 
   s3-storage-census:
     needs: [deploy-s3, format-tests-s3]
-    if: always() && needs.deploy-s3.result == 'success'
+    # Not always(): a cancelled night (the nightly yields to a release
+    # candidate) goes straight to teardown instead of holding a runner here.
+    if: ${{ !cancelled() && needs.deploy-s3.result == 'success' }}
     runs-on: ak-e2e-runners
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -320,7 +339,7 @@ jobs:
     needs: [deploy-s3, format-tests-s3, s3-storage-census]
     if: always() && needs.deploy-s3.outputs.run_id != ''
     runs-on: ak-e2e-runners
-    timeout-minutes: 15
+    timeout-minutes: 12
     outputs:
       ended_at: ${{ steps.gone.outputs.ended_at }}
     steps:
@@ -336,7 +355,7 @@ jobs:
         with:
           version: v3.22.1
 
-      - name: Record peak namespace requests
+      - name: Record namespace requests in use at teardown
         continue-on-error: true
         env:
           NAMESPACE: ${{ needs.deploy-s3.outputs.namespace }}
@@ -352,16 +371,24 @@ jobs:
         env:
           NAMESPACE: ${{ needs.deploy-s3.outputs.namespace }}
         run: |
+          # Gone only when the API answers and the namespace is absent: an API
+          # error is never read as "deleted" (teardown-test-namespace.sh skips
+          # a namespace it cannot get, so this also re-issues the delete).
           for _ in $(seq 1 60); do
-            if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
-              echo "${NAMESPACE} deleted"
-              echo "ended_at=$(date +%s)" >> "$GITHUB_OUTPUT"
-              exit 0
+            if out=$(kubectl get namespace "$NAMESPACE" --ignore-not-found -o name 2>&1); then
+              if [ -z "$out" ]; then
+                echo "${NAMESPACE} deleted"
+                echo "ended_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              kubectl delete namespace "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
+            else
+              echo "kubectl get namespace failed: ${out}"
             fi
             sleep 10
           done
           phase=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-          echo "::error title=Leaked namespace::${NAMESPACE} still exists (${phase:-unknown}) 10 minutes after teardown"
+          echo "::error title=Leaked namespace::${NAMESPACE} still exists (${phase:-unknown}, or the API never answered) 10 minutes after teardown"
           exit 1
 
       - name: Upload pod logs

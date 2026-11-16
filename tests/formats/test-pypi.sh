@@ -159,8 +159,9 @@ fi
 begin_test "Verify installed package content"
 if [ -d "${WORK_DIR}/pip-install-test" ] && command -v python3 &>/dev/null; then
   export PYTHONPATH="${WORK_DIR}/pip-install-test:${PYTHONPATH:-}"
-  # PKG_NAME uses underscores for the Python module name
-  if output=$(python3 -c "from ${PKG_NAME} import hello; print(hello())" 2>&1); then
+  # The module is named after PKG_NAME, which keeps its dashes, so it is not a
+  # valid identifier for an import statement; importlib loads it by file name.
+  if output=$(python3 -c "import importlib; print(importlib.import_module('${PKG_NAME}').hello())" 2>&1); then
     if assert_contains "$output" "Hello from ${PKG_NAME}"; then
       pass
     fi
