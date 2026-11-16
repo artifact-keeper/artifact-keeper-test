@@ -35,6 +35,13 @@
 #   3  /readyz did not return 200 within timeout
 #   4  Self-test mode: gate did NOT fail when --expect-failure was set
 #      (used by the smoke meta-test that pins the gate's semantics)
+#   11 INFRA: the in-cluster /readyz probe could not be set up (the
+#      ephemeral probe pod could not be created or did not become Ready
+#      within the budget, after one retry on an image-pull failure). The
+#      candidate was never probed, so this is NOT a product verdict. Same
+#      number as the DTF's INFRA/SETUP code (deploy-test/harness/lib/
+#      exit_codes.sh). Under --expect-failure it is passed through, not
+#      counted as the gate rejecting the fixture.
 
 set -euo pipefail
 
@@ -50,6 +57,17 @@ IAC_REF="main"
 TIMEOUT_SECONDS=300
 KEEP_NAMESPACE=false
 EXPECT_FAILURE=false
+
+# Exit code for "the probe could not be set up" (see the table above).
+SMOKE_EXIT_INFRA=11
+
+# Image for the ephemeral /readyz probe pod, used only when the backend image
+# has neither wget nor curl. It is the ghcr.io/artifact-keeper/ci-mirror copy of
+# docker.io/library/alpine:3.24 (byte-identical multi-arch index), pinned by
+# digest: reproducible, and not exposed to Docker Hub pull latency or rate
+# limits the way the old unpinned curlimages/curl:8.10.1 tag was
+# (artifact-keeper-test#835). Busybox wget does the probe.
+PROBE_IMAGE="${SMOKE_PROBE_IMAGE:-ghcr.io/artifact-keeper/ci-mirror/alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf}"
 
 # Track resources to clean up. Set after first use.
 CHART_TMPDIR=""
@@ -138,8 +156,12 @@ cleanup() {
 
   # Self-test mode: invert the meaning of exit code so a *real* failure
   # is reported as success and a missing-failure is reported as code 4.
+  # An INFRA exit says nothing about the fixture, so it is never inverted.
   if [ "$EXPECT_FAILURE" = "true" ]; then
-    if [ "$exit_code" -eq 0 ]; then
+    if [ "$exit_code" -eq "$SMOKE_EXIT_INFRA" ]; then
+      echo "" >&2
+      echo "ERROR: --expect-failure was set but the gate could not run its probe (INFRA, exit ${SMOKE_EXIT_INFRA}); the fixture was not judged." >&2
+    elif [ "$exit_code" -eq 0 ]; then
       echo "" >&2
       echo "ERROR: --expect-failure was set but the gate passed. The gate is broken or the test fixture is wrong." >&2
       exit_code=4
@@ -492,15 +514,107 @@ watch_rollout "ak-smoke-web"     "web"     || exit $?
 # A backend that booted but cannot serve will trip this even when
 # rollout status reports Ready.
 #
-# We exec into the backend pod itself rather than spinning up a curl pod
-# per iteration. This avoids depending on `curlimages/curl` being pullable
-# (Docker Hub rate limit risk), avoids per-iteration pod-create races,
-# and is faster.
+# We exec into the backend pod itself when it has wget or curl. Otherwise one
+# long-lived probe pod is started from the digest-pinned PROBE_IMAGE and
+# reused for every iteration.
+#
+# Budget: TIMEOUT_SECONDS starts when the rollout completes and covers the
+# probe pod start AND the /readyz polling, so a slow probe pod cannot push the
+# job past its timeout. At least one /readyz probe always runs once the probe
+# pod is Ready, so the backend always gets its full TIMEOUT_SECONDS of wall
+# clock after rollout before a non-200 is reported.
+#
+# Exit 3 means the probe ran and /readyz never returned 200 (product).
+# Exit SMOKE_EXIT_INFRA means the probe pod could not be created or started
+# (infra): the candidate was never probed.
 # ---------------------------------------------------------------------------
+
+# Print the probe pod's waiting reason, describe tail and events.
+probe_pod_diagnostics() {
+  local pod="$1"
+  echo "Probe pod ${pod} state:" >&2
+  kubectl get pod "$pod" -n "$NAMESPACE" -o wide >&2 2>&1 || true
+  echo "Probe pod ${pod} describe (tail):" >&2
+  kubectl describe pod "$pod" -n "$NAMESPACE" 2>&1 | tail -30 >&2 || true
+  echo "Probe pod ${pod} events:" >&2
+  kubectl get events -n "$NAMESPACE" \
+    --field-selector "involvedObject.name=${pod}" \
+    --sort-by='.lastTimestamp' 2>&1 | tail -20 >&2 || true
+}
+
+# Wait until the probe pod is Ready or the deadline passes.
+#   0  Ready
+#   1  did not become Ready (pending past the deadline, failed, or vanished)
+#   2  image-pull failure (ErrImagePull / ImagePullBackOff)
+# The last observed state is left in PROBE_POD_STATE for the error message.
+PROBE_POD_STATE=""
+wait_probe_pod_ready() {
+  local pod="$1" deadline="$2" now phase ready reason
+  while true; do
+    PROBE_POD_STATE=$(kubectl get pod "$pod" -n "$NAMESPACE" \
+      -o jsonpath='{.status.phase}|{.status.containerStatuses[0].ready}|{.status.containerStatuses[0].state.waiting.reason}' \
+      2>/dev/null || true)
+    IFS='|' read -r phase ready reason <<<"$PROBE_POD_STATE"
+    if [ "$ready" = "true" ]; then
+      return 0
+    fi
+    case "$reason" in
+      ErrImagePull|ImagePullBackOff) return 2 ;;
+    esac
+    case "$phase" in
+      Failed|Succeeded) return 1 ;;
+    esac
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+# Create the probe pod and wait for it, retrying ONCE on an image-pull
+# failure. Prints the Ready pod's name on stdout; returns non-zero if no probe
+# pod could be started.
+start_probe_pod() {
+  local deadline="$1" base="ak-smoke-probe-${RUN_ID}" attempt pod rc
+  for attempt in 1 2; do
+    pod="$base"
+    [ "$attempt" -gt 1 ] && pod="${base}-retry"
+    echo "Provisioning ephemeral probe pod ${pod} (image ${PROBE_IMAGE}, attempt ${attempt}/2)" >&2
+    if ! kubectl run "$pod" -n "$NAMESPACE" \
+        --image="$PROBE_IMAGE" \
+        --image-pull-policy=IfNotPresent \
+        --restart=Never \
+        --labels="app.kubernetes.io/component=smoke-probe" \
+        --command -- sleep 600 >/dev/null 2>&1; then
+      echo "ERROR: INFRA: could not create ephemeral probe pod ${pod}" >&2
+      return 1
+    fi
+    rc=0
+    wait_probe_pod_ready "$pod" "$deadline" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      echo "$pod"
+      return 0
+    fi
+    echo "ERROR: INFRA: probe pod ${pod} did not become Ready (phase|ready|waiting-reason: ${PROBE_POD_STATE:-unknown})" >&2
+    probe_pod_diagnostics "$pod"
+    if [ "$rc" -ne 2 ] || [ "$attempt" -ge 2 ]; then
+      return 1
+    fi
+    echo "Image-pull failure on the probe pod; retrying once with a fresh pod" >&2
+    kubectl delete pod "$pod" -n "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
+    sleep 5
+  done
+  return 1
+}
 
 readyz_probe_loop() {
   local service_url="http://ak-smoke-backend.${NAMESPACE}.svc.cluster.local:8080"
   echo ""
+
+  local start deadline now elapsed output
+  start=$(date +%s)
+  deadline=$(( start + TIMEOUT_SECONDS ))
 
   local backend_pod
   backend_pod=$(kubectl get pods -n "$NAMESPACE" \
@@ -513,71 +627,52 @@ readyz_probe_loop() {
 
   # Pick a probe pod. Preference order:
   #   1. Backend pod if it has wget or curl (no extra image pull)
-  #   2. Ephemeral curl pod in the same namespace (one image pull, reused
+  #   2. Ephemeral probe pod in the same namespace (one image pull, reused
   #      across all probe iterations)
   #
   # Production backend images on the v1.1.x line are slim and may have
-  # neither curl nor wget. Falling back to a curl pod keeps the smoke
+  # neither curl nor wget. Falling back to a probe pod keeps the smoke
   # test functional without requiring shell utilities in production
   # images. The ephemeral pod is reaped automatically when the namespace
   # is torn down.
+  #
+  # GNU wget indents response headers with two spaces; busybox wget uses
+  # one. Match either with `-i 'HTTP/'`.
+  local wget_cmd="wget -q --timeout=5 -O - --server-response ${service_url}/readyz 2>&1 | grep -i 'HTTP/'"
   local probe_pod="$backend_pod"
   local probe_cmd=""
   if kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c 'command -v wget >/dev/null' 2>/dev/null; then
-    # GNU wget indents response headers with two spaces; busybox wget
-    # uses one. Match either with `-i 'HTTP/'`.
-    probe_cmd="wget -q --timeout=5 -O - --server-response ${service_url}/readyz 2>&1 | grep -i 'HTTP/'"
+    probe_cmd="$wget_cmd"
     echo "Polling ${service_url}/readyz from backend pod (wget; timeout: ${TIMEOUT_SECONDS}s)"
   elif kubectl exec -n "$NAMESPACE" "$backend_pod" -- sh -c 'command -v curl >/dev/null' 2>/dev/null; then
     probe_cmd="curl -fsS -o /dev/null -w '%{http_code}\n' --max-time 5 ${service_url}/readyz"
     echo "Polling ${service_url}/readyz from backend pod (curl; timeout: ${TIMEOUT_SECONDS}s)"
   else
-    # Backend image has neither curl nor wget. Provision a long-lived
-    # ephemeral curl pod to use for the probe loop. Single image pull
-    # (cached by the ARC runner pull-through cache when configured), and
-    # exec into the same pod each iteration for speed.
-    local probe_pod_name="ak-smoke-probe-${RUN_ID}"
-    echo "Backend image has no curl/wget; provisioning ephemeral curl pod ${probe_pod_name}"
-    if ! kubectl run "$probe_pod_name" -n "$NAMESPACE" \
-        --image=curlimages/curl:8.10.1 \
-        --restart=Never \
-        --labels="app.kubernetes.io/component=smoke-probe" \
-        --command -- sleep 600 >/dev/null 2>&1; then
-      echo "ERROR: failed to create ephemeral curl pod for /readyz probe" >&2
-      return 3
+    echo "Backend image has no curl/wget; provisioning an ephemeral probe pod"
+    if ! probe_pod=$(start_probe_pod "$deadline"); then
+      echo "ERROR: INFRA: no /readyz probe pod could be started within the ${TIMEOUT_SECONDS}s budget; the candidate was NOT probed (exit ${SMOKE_EXIT_INFRA})" >&2
+      return "$SMOKE_EXIT_INFRA"
     fi
-    if ! kubectl wait --for=condition=Ready \
-        -n "$NAMESPACE" "pod/${probe_pod_name}" \
-        --timeout=60s >/dev/null 2>&1; then
-      echo "ERROR: ephemeral curl pod did not become Ready within 60s" >&2
-      kubectl describe pod -n "$NAMESPACE" "$probe_pod_name" 2>&1 | tail -20 >&2 || true
-      return 3
-    fi
-    probe_pod="$probe_pod_name"
-    probe_cmd="curl -fsS -o /dev/null -w '%{http_code}\n' --max-time 5 ${service_url}/readyz"
-    echo "Polling ${service_url}/readyz from ${probe_pod_name} (curl; timeout: ${TIMEOUT_SECONDS}s)"
+    probe_cmd="$wget_cmd"
+    echo "Polling ${service_url}/readyz from ${probe_pod} (wget; timeout: ${TIMEOUT_SECONDS}s, $(( $(date +%s) - start ))s used by the probe pod)"
   fi
 
-  local start now elapsed deadline output
-  start=$(date +%s)
-  deadline=$(( start + TIMEOUT_SECONDS ))
-
   while true; do
+    if output=$(kubectl exec -n "$NAMESPACE" "$probe_pod" -- sh -c "$probe_cmd" 2>&1); then
+      if echo "$output" | grep -qE '\b200\b'; then
+        elapsed=$(( $(date +%s) - start ))
+        echo "Backend /readyz returned 200 (took ${elapsed}s after rollout completed)"
+        return 0
+      fi
+    fi
+
     now=$(date +%s)
     if [ "$now" -ge "$deadline" ]; then
       echo "ERROR: /readyz did not return 200 within ${TIMEOUT_SECONDS}s" >&2
       echo ""
       echo "Last probe output:"
-      kubectl exec -n "$NAMESPACE" "$probe_pod" -- sh -c "$probe_cmd" 2>&1 | tail -5 || true
+      echo "$output" | tail -5 || true
       return 3
-    fi
-
-    if output=$(kubectl exec -n "$NAMESPACE" "$probe_pod" -- sh -c "$probe_cmd" 2>&1); then
-      if echo "$output" | grep -qE '\b200\b'; then
-        elapsed=$(( now - start ))
-        echo "Backend /readyz returned 200 (took ${elapsed}s after rollout completed)"
-        return 0
-      fi
     fi
 
     printf "."

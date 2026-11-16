@@ -47,12 +47,16 @@ on:
       # adding one anywhere has to re-run this job.
       - 'tests/**'
       - 'scripts/run-suite.sh'
+      - 'scripts/clean-install-smoke.sh'
+      - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
     paths:
       - 'tests/**'
       - 'scripts/run-suite.sh'
+      - 'scripts/clean-install-smoke.sh'
+      - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -79,3 +83,7 @@ jobs:
       - name: Run k8s selector self-test
         run: bash tests/lib/selftest-k8s-selectors.sh
 
+      # clean-install-smoke's /readyz probe exit codes (artifact-keeper-test#835):
+      # a probe pod that cannot start is INFRA (11), /readyz non-200 stays 3.
+      - name: Run clean-install-smoke exit-code self-test
+        run: bash scripts/tests/test-clean-install-smoke-exit-codes.sh
