@@ -62,6 +62,11 @@ on:
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
+      - 'scripts/ci/**'
+      - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'scripts/clean-install-smoke.sh'
+      - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
@@ -79,6 +84,11 @@ on:
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
+      - 'scripts/ci/**'
+      - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'scripts/clean-install-smoke.sh'
+      - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -98,6 +108,17 @@ jobs:
         run: |
           chmod +x tests/lib/selftest-release-gate-contract.sh
           ./tests/lib/selftest-release-gate-contract.sh
+
+      # The resilience suites' pod selection and readiness classification
+      # (tests/lib/k8s.sh, artifact-keeper-test#354): a selector that matches
+      # nothing is INFRA, never a pass or a skip.
+      - name: Run k8s selector self-test
+        run: bash tests/lib/selftest-k8s-selectors.sh
+
+      # Work dirs default under DTF_WORK_PARENT / RUNNER_TEMP so a dind
+      # daemon can see them as bind-mount sources (artifact-keeper-test#732).
+      - name: Run work-dir parent self-test
+        run: bash tests/lib/selftest-work-parent.sh
 
       # The release gate's input validator (scripts/validate-gate-inputs.sh):
       # the values callers pass are accepted, everything else is refused.
@@ -133,3 +154,20 @@ jobs:
       # (artifact-keeper-test#725).
       - name: Run fetch-all-pages self-test
         run: bash tests/lib/selftest-fetch-all-pages.sh
+
+      # The release gate's runner-toolchain installer (scripts/ci/apt-install-retry.sh):
+      # a mirror blip retries, a persistent failure or a missing tool fails
+      # loudly as INFRA, never silently (#728).
+      - name: Run apt install retry helper self-test
+        run: bash scripts/ci/selftest-apt-install-retry.sh
+
+      # The dtf-advisory outcome mapper and run-tiers.sh's aggregate exit
+      # code: INFRA is retried once and warned about, a product FAIL is red
+      # (artifact-keeper-test#378).
+      - name: Run dtf-advisory outcome self-test
+        run: bash scripts/ci/selftest-dtf-advisory-outcome.sh
+
+      # clean-install-smoke's /readyz probe exit codes (artifact-keeper-test#835):
+      # a probe pod that cannot start is INFRA (11), /readyz non-200 stays 3.
+      - name: Run clean-install-smoke exit-code self-test
+        run: bash scripts/tests/test-clean-install-smoke-exit-codes.sh

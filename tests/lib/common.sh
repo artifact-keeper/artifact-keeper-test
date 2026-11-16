@@ -2371,6 +2371,26 @@ totp_code() {
 # ---------------------------------------------------------------------------
 # Temp directory with automatic cleanup
 # ---------------------------------------------------------------------------
+#
+# Work directories default under a parent the DOCKER DAEMON can see, not just
+# this shell (artifact-keeper-test#732). On the gate's dind runner pool
+# (ak-docker-runners) the daemon runs in a sidecar that shares only the
+# runner's work volume (/home/runner/_work, which holds RUNNER_TEMP and the
+# checkout), not the runner's /tmp. A bind mount of a /tmp/... path therefore
+# shows up EMPTY inside the container, and the tier fails or reads as INFRA
+# instead of giving its verdict, while passing on every non-dind host
+# (1.12.0 candidate run 42767020927: secrets-file-env, #729, and
+# repo-delete-reclaims-storage-job, #731).
+#
+# Parent, first set wins:
+#   DTF_WORK_PARENT   explicit override (any shared directory)
+#   RUNNER_TEMP       set by the GitHub Actions runner on every job
+#   TMPDIR, /tmp      local runs
+#
+# Any work dir (or subdirectory of one) that is passed to `docker run -v`,
+# `--mount` or a compose `volumes:` entry must come from setup_workdir or
+# dtf_mktemp_dir, never from a bare `mktemp -d`. Pure-local temp files are fine
+# anywhere.
 
 WORK_DIR=""
 
@@ -2380,9 +2400,75 @@ _workdir_cleanup() {
   fi
 }
 
+# dtf_work_parent: print the directory work dirs are created under.
+dtf_work_parent() {
+  printf '%s\n' "${DTF_WORK_PARENT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
+}
+
+# dtf_mktemp_dir VAR [PREFIX] [PARENT]
+#   Create a fresh directory under PARENT (default: dtf_work_parent), store
+#   its path in the caller's variable VAR, and register an EXIT handler that
+#   removes it. It sets a variable instead of printing because the cleanup has
+#   to be registered in the caller's shell, which a $(...) subshell cannot do.
+#   An empty PARENT means the default, so a tier-local knob can be passed
+#   through as "${KNOB:-}". If the parent is not writable it falls back to
+#   ${TMPDIR:-/tmp} with a warning on stderr (the dir then may not be visible
+#   to a dind daemon; a bind_mount_visible preflight reports that as INFRA).
+dtf_mktemp_dir() {
+  local _dmd_var="${1:?dtf_mktemp_dir: variable name required}"
+  local _dmd_prefix="${2:-dtf-work}"
+  local _dmd_parent="${3:-}"
+  local _dmd_dir=""
+  [ -n "$_dmd_parent" ] || _dmd_parent="$(dtf_work_parent)"
+  mkdir -p "$_dmd_parent" 2>/dev/null || true
+  _dmd_dir="$(mktemp -d "${_dmd_parent%/}/${_dmd_prefix}.XXXXXX" 2>/dev/null)" || _dmd_dir=""
+  if [ -z "$_dmd_dir" ]; then
+    echo "dtf_mktemp_dir: cannot create a directory under ${_dmd_parent}; falling back to ${TMPDIR:-/tmp} (may be invisible to a dind daemon)" >&2
+    _dmd_dir="$(mktemp -d "${TMPDIR:-/tmp}/${_dmd_prefix}.XXXXXX")" || return 1
+  fi
+  printf -v "$_dmd_var" '%s' "$_dmd_dir"
+  add_exit_handler "rm -rf $(printf '%q' "$_dmd_dir")"
+}
+
 setup_workdir() {
-  WORK_DIR="$(mktemp -d)"
-  add_exit_handler "rm -rf \"$WORK_DIR\""
+  dtf_mktemp_dir WORK_DIR dtf-work
+}
+
+# dtf_bind_mount_visible DIR IMAGE
+#   Prove the docker daemon sees DIR as a bind-mount source: write a sentinel
+#   into DIR and `test -s` it from a throwaway IMAGE container (needs sh).
+#   Returns 0 when the container sees it, 1 when the container ran and the
+#   sentinel was MISSING (an unshared path), and 2 when the probe itself could
+#   not run (no image, docker error), so the caller can let the tier judge.
+dtf_bind_mount_visible() {
+  local dir="${1:?dtf_bind_mount_visible: dir required}" img="${2:-}"
+  local sentinel=".dtf-bind-mount-probe.$$" out=""
+  [ -n "$img" ] || return 2
+  printf 'dtf\n' > "${dir}/${sentinel}" 2>/dev/null || return 2
+  out="$(docker run --rm --security-opt label=disable --entrypoint sh \
+    -v "${dir}:/dtf-bind-probe:ro" "$img" \
+    -c "if test -s /dtf-bind-probe/${sentinel}; then echo SEEN; else echo MISSING; fi" 2>/dev/null)" || true
+  rm -f "${dir}/${sentinel}" 2>/dev/null || true
+  case "$out" in
+    *SEEN*) return 0 ;;
+    *MISSING*) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# assert_bind_mount_visible DIR IMAGE [HINT]
+#   Suite-level preflight (call after begin_suite): when a container provably
+#   does not see DIR, record an INFRA case and end the suite with
+#   DTF_EXIT_INFRA (11), never a product verdict. A probe that cannot run
+#   returns 0 and leaves the judgement to the tier's own assertions.
+assert_bind_mount_visible() {
+  local dir="$1" img="${2:-}" hint="${3:-set DTF_WORK_PARENT to a directory the docker daemon shares}"
+  local rc=0
+  dtf_bind_mount_visible "$dir" "$img" || rc=$?
+  [ "$rc" -eq 1 ] || return 0
+  begin_test "setup: the docker daemon can see ${dir} as a bind-mount source"
+  infra_fail "a container mounting ${dir} does not see a file the harness wrote there; the daemon does not share this path (${hint}). Not a product verdict."
+  end_suite
 }
 
 # enable_expect_failure_trap: deprecated no-op shim.

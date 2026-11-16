@@ -30,11 +30,11 @@ R_A="rdrs-a-${SLOT}-${SUF}"; R_B="rdrs-b-${SLOT}-${SUF}"; R_E="rdrs-e-${SLOT}-${
 # the docker DAEMON can see. On the gate's dind pool the daemon shares only the
 # runner's work volume (which holds RUNNER_TEMP), not the runner's /tmp: a
 # mktemp -d under /tmp mounts EMPTY and the seed reads as 0/25 objects
-# (1.12.0 candidate run 42767020927). Same fix as secrets-file-env.
-RDRS_PARENT="${RDRS_WORK_PARENT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
-mkdir -p "$RDRS_PARENT" 2>/dev/null || true
-W="$(mktemp -d "${RDRS_PARENT%/}/dtf-rdrs-XXXXXX" 2>/dev/null || mktemp -d -t dtf-rdrs-XXXXXX)"
-trap 'rm -rf "$W"' EXIT
+# (1.12.0 candidate run 42767020927). dtf_mktemp_dir (common.sh, #732) puts it
+# under DTF_WORK_PARENT / RUNNER_TEMP and registers its cleanup; RDRS_WORK_PARENT
+# (#731) is kept as a tier-local alias that wins over both.
+W=""
+dtf_mktemp_dir W dtf-rdrs "${RDRS_WORK_PARENT:-}"
 
 psqlq() { docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -qAtc "$1" 2>/dev/null; }
 code() { curl -s -o "$W/last" -w '%{http_code}' --max-time 120 "$@" 2>/dev/null || echo 000; }
@@ -115,7 +115,7 @@ mcx "mc mirror --quiet /seed local/${BUCKET}/${PREFIX%/}/ >/dev/null 2>&1; mc fi
 ROWS_A="$(psqlq "SELECT count(*) FROM artifacts WHERE repository_id='${RID_A}'")"
 SAMPLE_PRESENT="$(sampled_present)"
 [ "$ROWS_A" = "$((N + 1))" ] || SF="${SF} rows=${ROWS_A}"
-[ "$SAMPLE_PRESENT" = "25" ] || SF="${SF} seeded-objects=${SAMPLE_PRESENT}/25 (if 0: the daemon does not see ${W}/seed as a bind-mount source; set RDRS_WORK_PARENT to a shared directory)"
+[ "$SAMPLE_PRESENT" = "25" ] || SF="${SF} seeded-objects=${SAMPLE_PRESENT}/25 (if 0: the daemon does not see ${W}/seed as a bind-mount source; set DTF_WORK_PARENT or RDRS_WORK_PARENT to a shared directory)"
 if [ -n "$SF" ]; then infra_fail "setup failed:${SF}" "$(cat "$W/mirror.out" 2>/dev/null | tail -2)"; end_suite; fi
 note "A=${R_A} rows=${ROWS_A} prefix='${PREFIX}' shared=${SHARED_KEY}"
 pass
