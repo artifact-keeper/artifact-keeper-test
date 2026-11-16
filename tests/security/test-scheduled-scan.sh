@@ -104,7 +104,7 @@ if [ -z "$POLICY_ID" ]; then
   skip "no policy id from create step"
 else
   trigger_start=$(date -u +%s)
-  sleep 2
+  sleep 2  # sleep-ok: timestamp separation: trigger_start must sit a whole second before the trigger
   ft_status=$(curl -s -o "${WORK_DIR}/trigger.json" -w '%{http_code}' $CURL_TIMEOUT \
     -X POST -H "$(auth_header)" \
     "${BASE_URL}/api/v1/security/scan-schedules/${POLICY_ID}/trigger") || ft_status="000"
@@ -128,7 +128,7 @@ else
             observed=1; break
           fi
         fi
-        sleep 3
+        sleep 3  # sleep-ok: poll interval
         elapsed=$(( elapsed + 3 ))
       done
       if [ "$observed" = "1" ]; then
@@ -161,7 +161,7 @@ else
           if [ "$fresh" != "0" ] && [ -n "$fresh" ]; then
             observed=1; break
           fi
-          sleep 5
+          sleep 5  # sleep-ok: poll interval
           elapsed=$(( elapsed + 5 ))
         done
         if [ "$observed" = "1" ]; then

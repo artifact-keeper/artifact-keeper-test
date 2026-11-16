@@ -298,7 +298,7 @@ else
   elif ! wait_until "the worker calls tools/list" "$PROBE_WAIT_SECS" _listed; then
     fail "no tools/list from the worker within ${PROBE_WAIT_SECS}s" "$(head -c 800 "${REC_target_DIR}/log.jsonl")"
   else
-    sleep 5
+    sleep 5  # sleep-ok: negative window: any tools/call the worker sends after tools/list must land before the log is judged
     log="${REC_target_DIR}/log.jsonl"
     first=$(jq -r 'select(.method != null) | .method' "$log" | head -1)
     calls=$(jq -r 'select(.method == "tools/call") | .method' "$log" | grep -c . || true)
@@ -329,7 +329,7 @@ else
   if ! wait_until "the worker reaches the redirector" "$PROBE_WAIT_SECS" _redirected; then
     fail "the worker never reached the redirecting remote (positive leg prerequisite)"
   else
-    sleep 10
+    sleep 10  # sleep-ok: negative window: a followed redirect would reach the final recorder within it
     if [ "$(rec_count "$REC_final_DIR")" = "0" ]; then
       pass
     else

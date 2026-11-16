@@ -78,8 +78,9 @@ begin_test "Logout invalidates token"
 if [ -n "${ACCESS_TOKEN:-}" ]; then
   curl -sf $CURL_TIMEOUT -X POST "${BASE_URL}/api/v1/auth/logout" \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" > /dev/null 2>&1 || true
-  # After logout, token should be rejected
-  sleep 1
+  # After logout, token should be rejected. No settle: logout revokes the
+  # session's refresh-token family before it answers (auth.rs logout), so
+  # there is no background step to wait for (artifact-keeper-test#364).
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" \
     "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || true

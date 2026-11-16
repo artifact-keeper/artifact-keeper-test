@@ -136,8 +136,16 @@ case "$upload_status" in
   *)       fail "upload returned ${upload_status}" ;;
 esac
 
-TEST_START_EPOCH=$(date -u +%s)
-sleep 3
+# The upload answered 2xx. Wait, bounded, for its artifacts row to be readable
+# by path (the row the id is resolved from) instead of guessing with a fixed
+# sleep (artifact-keeper-test#364). A row that never appears is a product
+# failure, and the resolve step below fails on it.
+_artifact_row_readable() {
+  curl -sf -o /dev/null --max-time 10 -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH}"
+}
+wait_until "artifacts row for ${ARTIFACT_PATH} readable in ${REPO_KEY}" 30 _artifact_row_readable \
+  || echo "  upload answered 2xx but its artifacts row is not readable; the resolve step below fails on it"
 
 # Resolve artifact id.
 begin_test "Resolve artifact_id"

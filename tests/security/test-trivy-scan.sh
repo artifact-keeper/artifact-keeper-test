@@ -194,7 +194,7 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
     scan_state=$(echo "$scan_body" | jq -r '.status // .state // "unknown"' 2>/dev/null) || true
     if [ "$scan_state" = "pending" ] || [ "$scan_state" = "in_progress" ] || [ "$scan_state" = "queued" ]; then
       echo "  scan status: ${scan_state}, waiting..."
-      sleep 5
+      sleep 5  # sleep-ok: poll interval
       elapsed=$((elapsed + 5))
       continue
     fi
@@ -208,12 +208,12 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
       scan_ready="skipped"
       break
     fi
-    sleep 5
+    sleep 5  # sleep-ok: poll interval
     elapsed=$((elapsed + 5))
     continue
   else
     echo "  scan endpoint returned ${scan_status}, retrying..."
-    sleep 5
+    sleep 5  # sleep-ok: poll interval
     elapsed=$((elapsed + 5))
   fi
 done

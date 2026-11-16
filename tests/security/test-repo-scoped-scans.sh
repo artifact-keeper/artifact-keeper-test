@@ -130,8 +130,9 @@ EOFM
     skip "OCI push incomplete (cfg=${cfg_put} layer=${layer_put} manifest=${manifest_status}); will test listing on empty repo"
   fi
 
-  # Give the upload pipeline a chance to flush before we list scans.
-  sleep 3
+  # No settle before listing: none of the assertions below needs a scan row to
+  # exist (they hold on an empty repo too), so a sleep here waited for nothing
+  # (artifact-keeper-test#364).
 fi
 
 # ---------------------------------------------------------------------------

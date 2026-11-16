@@ -115,7 +115,7 @@ if [ -n "${API_TOKEN:-}" ] && [ "$API_TOKEN" != "null" ]; then
       break
     fi
     echo "  attempt ${attempt}/5: revoked token still accepted (HTTP ${status}), waiting 2s..."
-    sleep 2
+    sleep 2  # sleep-ok: poll interval
   done
 
   if [ "$rejected" = "true" ]; then

@@ -120,8 +120,9 @@ else
   fail "could not create Remote PyPI repo against ${UPSTREAM_URL}"
 fi
 
-# Brief settle before the first proxy fetch.
-sleep 2
+# No settle before the first proxy fetch: the create answered with the stored
+# row, and nothing about the repo is applied in the background
+# (artifact-keeper-test#364).
 
 # -------------------------------------------------------------------------
 # Prime the proxy with one real project before checking the root index.
@@ -153,9 +154,32 @@ else
     "$(head -c 300 "$PRIME_TMP" 2>/dev/null)"
 fi
 
-# Brief settle so the proxy cache write for the primed project is visible to
-# the subsequent root-index list.
-sleep 2
+# The prime answering 200 does NOT mean flake8 is cached yet: the proxy-cache
+# entry is published by a writer task that outlives the client response, and
+# simple_root lists only projects whose cache keys exist
+# (list_cached_pypi_packages). A root fetched inside that window has no entry
+# to list, which is the race the old `sleep 2` guessed at.
+#
+# wait_for_proxy_cache_warm cannot be used here: it needs the mock upstream's
+# per-path counter, and this suite fronts real pypi.org. Wait instead on the
+# writer's own completion signal: its proxy_cache_artifacts catalog row, written
+# with the __cache_meta__ sidecar after the content key is in place, and read
+# by the Remote's artifact listing. That surface is independent of /simple/,
+# so the root-index assertions below stay meaningful (artifact-keeper-test#364).
+_flake8_cached() {
+  curl -sf --max-time 10 -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/artifacts?per_page=100" 2>/dev/null \
+    | jq -e '[(if type == "array" then . else (.items // []) end)[]? | (.path // "") | ascii_downcase | select(test("^/?simple/flake8(/|$)"))] | length > 0' >/dev/null
+}
+if [ "$PRIME_STATUS" = "200" ]; then
+  begin_test "Primed project's proxy-cache entry is committed"
+  if wait_until "flake8 proxy-cache entry committed in ${REMOTE_KEY}" 60 _flake8_cached; then
+    pass
+  else
+    fail "the 200 prime of simple/flake8/ never produced a committed proxy-cache entry (no catalog row under simple/flake8/ in ${REMOTE_KEY} within 60s)" \
+      "$(curl -s --max-time 10 -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/artifacts?per_page=100" 2>/dev/null | head -c 600)"
+  fi
+fi
 
 # -------------------------------------------------------------------------
 # Assertion (a) part 1: /simple/ returns 200 with non-empty HTML.
@@ -218,7 +242,9 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Second GET /simple/ also returns non-empty HTML"
-sleep 1
+# No settle: this check holds whether the second fetch is served from the
+# root's cache entry or rebuilt, so a sleep here waited for nothing
+# (artifact-keeper-test#364).
 SECOND_TMP="${WORK_DIR}/simple-root-second.html"
 SECOND_STATUS=$(curl -s -o "$SECOND_TMP" -w '%{http_code}' \
   $CURL_TIMEOUT \

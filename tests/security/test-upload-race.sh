@@ -98,7 +98,8 @@ fi
 # Download and verify integrity
 # ---------------------------------------------------------------------------
 
-sleep 1
+# No settle: both uploads have answered (wait above), so whichever write won
+# is already the stored artifact (artifact-keeper-test#364).
 
 begin_test "Downloaded artifact matches one of the uploaded files"
 DOWNLOAD_PATH="/api/v1/repositories/${REPO_KEY}/download/race-pkg/v1/payload.bin"
