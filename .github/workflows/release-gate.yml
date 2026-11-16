@@ -2790,8 +2790,13 @@ jobs:
     # not just the functional dozen -- the nine added below were outside the
     # barrier and could be mid-request when stress began degrading the backend,
     # producing reds that look like product defects. See test#365.
+    # cli-smoke and format-tests-audit joined the gate after that fix and sat
+    # outside the barrier again; scripts/selftest-release-gate-verdict.sh now
+    # fails the harness self-test when any job that reads deploy's
+    # backend_url is neither listed here nor downstream of this job.
     needs: [deploy, format-tests, repo-tests, promotion-tests, rbac-tests, lifecycle-tests, webhook-tests, search-tests, platform-tests, auth-tests, security-tests, compatibility-tests,
-            admin-tests, real-flow-smoke, scan-completion-gate, scan-completion-gate-scaffolds-pending, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, security-grype-scan-completes, pullthrough-tests]
+            admin-tests, real-flow-smoke, scan-completion-gate, scan-completion-gate-scaffolds-pending, sbom-correctness-gate, pinned-cve-gate, pinned-cve-image-gate, security-grype-scan-completes, pullthrough-tests,
+            cli-smoke, format-tests-audit]
     continue-on-error: true
     if: |
       always() &&

@@ -26,6 +26,11 @@
 #   * teardown runs only when deploy ran and left a run id
 #     (artifact-keeper-test#839), so a skipped deploy does not add a red
 #     cleanup job that says nothing.
+#   * the destructive-phase barrier: every job that talks to the shared
+#     instance (reads `needs.deploy.outputs.backend_url`) is in
+#     `stress-tests.needs` or runs after stress-tests, so stress and
+#     resilience never degrade the backend under a functional suite
+#     mid-request (artifact-keeper-test#365).
 #
 # The checker is exercised against fixtures first (a compliant workflow and
 # one broken copy per rule), so a checker that stops detecting anything turns
@@ -51,6 +56,8 @@ GATE_JOB = "collect-results"
 # delegates to scripts/gate-subset-verdict.sh, whose lists
 # selftest-gate-subset-verdict.sh pins to this predicate.
 GATE_STEP = "Gate check - fail if any required suite"
+# The destructive phase (stress, then resilience) starts here.
+BARRIER_JOB = "stress-tests"
 
 
 def problems(path):
@@ -105,6 +112,32 @@ def problems(path):
             if need not in cond:
                 out.append(f"teardown runs without `{need}` in its if: (artifact-keeper-test#839)")
 
+    # #365: the destructive-phase barrier.
+    barrier = jobs.get(BARRIER_JOB)
+    if barrier is not None:
+        def needs_of(n):
+            v = (jobs.get(n) or {}).get("needs") or []
+            return {v} if isinstance(v, str) else set(v)
+
+        def after_barrier(n, seen=()):
+            for d in needs_of(n):
+                if d == BARRIER_JOB or (d not in seen and after_barrier(d, seen + (n,))):
+                    return True
+            return False
+
+        held = needs_of(BARRIER_JOB)
+        for name, job in jobs.items():
+            if name in ("deploy", BARRIER_JOB, GATE_JOB) or name in held:
+                continue
+            if "needs.deploy.outputs.backend_url" not in str(job):
+                continue
+            if not after_barrier(name):
+                out.append(
+                    f"job '{name}' talks to the shared instance (needs.deploy.outputs.backend_url) "
+                    f"but is neither in {BARRIER_JOB}.needs nor after it: the destructive phase "
+                    f"can degrade the backend under it mid-request (artifact-keeper-test#365)"
+                )
+
     for name in sorted(on_predicate - needs):
         out.append(f"predicate names '{name}', which is not in {GATE_JOB}.needs (its clause can never fire)")
     for name in sorted(on_predicate - set(jobs)):
@@ -140,24 +173,38 @@ jobs:
   suite-a:
     needs: deploy
     runs-on: x
+    env: {BASE_URL: "${{ needs.deploy.outputs.backend_url }}"}
     steps: [{run: "true"}]
   soft:
     needs: deploy
     continue-on-error: true
     runs-on: x
+    env: {BASE_URL: "${{ needs.deploy.outputs.backend_url }}"}
+    steps: [{run: "true"}]
+  stress-tests:
+    needs: [deploy, suite-a, soft]
+    continue-on-error: true
+    runs-on: x
+    env: {BASE_URL: "${{ needs.deploy.outputs.backend_url }}"}
+    steps: [{run: "true"}]
+  late:
+    needs: [deploy, stress-tests]
+    runs-on: x
+    env: {BASE_URL: "${{ needs.deploy.outputs.backend_url }}"}
     steps: [{run: "true"}]
   collect-results:
-    needs: [deploy, suite-a, soft]
+    needs: [deploy, suite-a, soft, stress-tests, late]
     if: always()
     runs-on: x
     steps:
       - name: Summary
         run: |
-          for job in deploy suite-a soft; do echo "$job"; done
+          for job in deploy suite-a soft stress-tests late; do echo "$job"; done
       - name: Gate check - fail if any required suite did not succeed
         if: >-
           needs.deploy.result != 'success' ||
-          needs.suite-a.result != 'success'
+          needs.suite-a.result != 'success' ||
+          needs.late.result != 'success'
         run: exit 1
   teardown:
     needs: [deploy, collect-results]
@@ -199,15 +246,22 @@ PY
 python3 - "${WORK}/good.yml" "${WORK}/predicate-not-needed.yml" <<'PY'
 import sys
 s = open(sys.argv[1]).read()
-s = s.replace("    needs: [deploy, suite-a, soft]\n", "    needs: [deploy, soft]\n", 1)
-s = s.replace("for job in deploy suite-a soft;", "for job in deploy soft;", 1)
+s = s.replace("    needs: [deploy, suite-a, soft, stress-tests, late]\n", "    needs: [deploy, soft, stress-tests, late]\n", 1)
+s = s.replace("for job in deploy suite-a soft stress-tests late;", "for job in deploy soft stress-tests late;", 1)
 open(sys.argv[2], "w").write(s)
 PY
 # Rule 3: a needed job missing from the summary loop.
 python3 - "${WORK}/good.yml" "${WORK}/summary-missing.yml" <<'PY'
 import sys
 s = open(sys.argv[1]).read()
-s = s.replace("for job in deploy suite-a soft;", "for job in deploy soft;", 1)
+s = s.replace("for job in deploy suite-a soft stress-tests late;", "for job in deploy soft stress-tests late;", 1)
+open(sys.argv[2], "w").write(s)
+PY
+# Rule 6 (#365): a job on the shared instance outside the barrier.
+python3 - "${WORK}/good.yml" "${WORK}/barrier-gap.yml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace("  stress-tests:\n    needs: [deploy, suite-a, soft]\n", "  stress-tests:\n    needs: [deploy, suite-a]\n", 1)
 open(sys.argv[2], "w").write(s)
 PY
 
@@ -235,6 +289,7 @@ expect "post-verdict cleanup without c-o-e vetoes"     1 "${WORK}/veto-teardown.
 expect "teardown without the deploy/run-id guard"       1 "${WORK}/teardown-unguarded.yml"   "teardown runs without"
 expect "predicate clause on an unlisted job"           1 "${WORK}/predicate-not-needed.yml" "predicate names 'suite-a'"
 expect "needed job missing from the summary"           1 "${WORK}/summary-missing.yml"      "'suite-a' is in collect-results.needs but missing"
+expect "instance job outside the destructive barrier"  1 "${WORK}/barrier-gap.yml"          "job 'soft' talks to the shared instance"
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "checker self-test failed (${FAILURES}); not trusting it on ${TARGET}"
