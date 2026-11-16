@@ -25,6 +25,8 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "platform-backup-restore"
 auth_admin
 setup_workdir
+# Bounded waits only; single requests are covered by the default margin.
+require_wait_budget 65 "backup execute poll (30 s of 409 retries, then one 30 s execute)"
 
 REPO_KEY="backup-test-${RUN_ID}"
 REPO_ID=""
@@ -68,7 +70,13 @@ else
   resp=$(api_post "/api/v1/admin/backups" \
     "{\"type\":\"full\",\"repository_ids\":[\"${REPO_ID}\"]}" 2>/dev/null) || resp=""
   BACKUP_ID=$(echo "$resp" | jq -r '.id // empty' 2>/dev/null) || BACKUP_ID=""
-  if [ -n "$BACKUP_ID" ] && [ "$BACKUP_ID" != "null" ]; then pass; else skip "backup API not available"; fi
+  if [ -n "$BACKUP_ID" ] && [ "$BACKUP_ID" != "null" ]; then
+    pass
+  else
+    # Under RELEASE_GATE=1 a missing backup id is a failure: every later step
+    # would skip and the suite would certify nothing about backup.
+    require_or_fail "POST /admin/backups returned no backup id" "${resp:0:300}"
+  fi
 fi
 
 begin_test "List backups includes our backup"
@@ -81,36 +89,43 @@ fi
 
 # POST /execute runs the backup to its terminal state before answering
 # (200 + the persisted row; a failed run is status=failed with error_message,
-# #3327). 409 means another backup run holds the executor; that is contention,
-# so retry it within a bound instead of guessing a sleep.
+# #3327). The handler documents 409 "another backup is already in progress";
+# it is retried within a bound rather than failed, should it ever surface.
 EXEC_BODY="${WORK_DIR}/execute.json"
 _execute_backup() {
-  local code
-  code=$(curl -s -o "$EXEC_BODY" -w '%{http_code}' $CURL_TIMEOUT -X POST \
+  local code rc=0
+  code=$(curl -s -o "$EXEC_BODY" -w '%{http_code}' --connect-timeout 10 --max-time 30 -X POST \
     -H "$(auth_header)" \
-    "${BASE_URL}/api/v1/admin/backups/${BACKUP_ID}/execute" 2>/dev/null) || code=000
-  echo "$code" > "${EXEC_BODY}.code"
+    "${BASE_URL}/api/v1/admin/backups/${BACKUP_ID}/execute" 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] || code=000
+  echo "$code $rc" > "${EXEC_BODY}.code"
   [ "$code" != "409" ]
 }
 
 begin_test "Execute the backup: completed, with the test artifacts archived"
 if [ -z "${BACKUP_ID:-}" ] || [ "$BACKUP_ID" = "null" ]; then
   skip "no backup was created"
-elif ! wait_until "backup executor free (no 409)" 60 _execute_backup; then
-  fail "POST /admin/backups/${BACKUP_ID}/execute answered 409 (another backup in progress) for 60s"
+elif ! wait_until "backup executor free (no 409)" 30 _execute_backup; then
+  fail "POST /admin/backups/${BACKUP_ID}/execute answered 409 (another backup in progress) for 30s"
 else
-  code=$(cat "${EXEC_BODY}.code")
+  read -r code curl_rc < "${EXEC_BODY}.code"
   body=$(cat "$EXEC_BODY" 2>/dev/null)
   status=$(echo "$body" | jq -r '.status // empty' 2>/dev/null)
   count=$(echo "$body" | jq -r '.artifact_count // 0' 2>/dev/null)
-  if [ "$code" != "200" ]; then
+  if [ "$curl_rc" = "28" ]; then
+    fail "POST /admin/backups/${BACKUP_ID}/execute did not finish within 30s"
+  elif [ "$code" = "000" ]; then
+    infra_fail "POST /admin/backups/${BACKUP_ID}/execute got no HTTP answer (curl exit ${curl_rc}: connection refused or reset)"
+  elif [ "$code" != "200" ]; then
     fail "execute returned HTTP ${code}, expected 200" "${body:0:300}"
   elif [ "$status" != "completed" ]; then
     fail "backup run ended in status '${status}', expected completed: $(echo "$body" | jq -r '.error_message // empty' 2>/dev/null)" "${body:0:300}"
-  elif ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -lt 3 ]; then
-    # artifact_count counts archived objects: the three distinct files in the
-    # scoped repo, plus any OCI blob objects the archive carries (#5654).
-    fail "completed backup archived ${count} objects, expected at least the 3 uploaded to ${REPO_KEY}" "${body:0:300}"
+  elif [ "$count" != "3" ]; then
+    # artifact_count counts the distinct objects archived for the backup's
+    # repositories (artifact and OCI blob objects alike are filtered by
+    # repository_ids): exactly the three distinct files in ${REPO_KEY}. More
+    # would mean the scope was ignored and other repositories were archived.
+    fail "completed backup archived ${count} objects, expected exactly the 3 uploaded to ${REPO_KEY}" "${body:0:300}"
   else
     pass
   fi

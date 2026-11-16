@@ -92,8 +92,11 @@ fi
 # =========================================================================
 
 # Sum of every ak_http_requests_total sample except the scrape endpoint's
-# own series (each poll is itself a request): grows by one per completed
-# request the registry has recorded.
+# own series (each poll is itself a request). The middleware counts a request
+# as it is handled, so this is normally satisfied on the first scrape; the
+# poll replaces the old fixed pause and costs nothing when it is. The sum is
+# per replica: behind more than one replica it may not reach the target, and
+# the wait then falls through after its bound to the strict checks below.
 requests_total() {
   fetch_metrics | awk '/^ak_http_requests_total[{ ]/ && !/admin\/metrics/ { s += $NF } END { printf "%d\n", s }'
 }

@@ -25,7 +25,7 @@ auth_admin
 begin_test "POST /admin/reindex completes and reports what it indexed"
 RESP_FILE=$(mktemp)
 curl_rc=0
-status=$(curl -s -o "$RESP_FILE" -w '%{http_code}' --max-time 60 \
+status=$(curl -s -o "$RESP_FILE" -w '%{http_code}' --connect-timeout 10 --max-time 60 \
   -X POST \
   -H "$(auth_header)" \
   -H "Content-Type: application/json" \
@@ -53,12 +53,12 @@ elif [ "$status" = "404" ]; then
   else
     skip "endpoint not mounted in this build"
   fi
-elif [ "$curl_rc" -eq 28 ]; then
-  # The request reached the backend and the reindex did not finish: that is
-  # the product, not the harness.
+elif [ "$curl_rc" -eq 28 ] && curl -s -o /dev/null --connect-timeout 10 --max-time 10 "${BASE_URL}/health" 2>/dev/null; then
+  # Timed out, yet the backend still answers: the reindex itself did not
+  # finish. That is the product, not the harness.
   fail "POST /api/v1/admin/reindex did not finish within 60s"
 elif [ "$status" = "000" ]; then
-  infra_fail "POST /api/v1/admin/reindex got no HTTP answer (curl exit ${curl_rc}: connection refused or reset)"
+  infra_fail "POST /api/v1/admin/reindex got no HTTP answer and the backend is unreachable (curl exit ${curl_rc})"
 else
   fail "expected 200 from a completed reindex, got ${status}" "${resp:0:300}"
 fi

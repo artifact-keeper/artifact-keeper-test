@@ -24,7 +24,7 @@ _artifact_listed() {
   api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null | jq -e '
     (if type == "array" then . elif .items then .items else [] end) | length > 0' > /dev/null
 }
-wait_until "uploaded artifact listed in ${REPO_KEY}" 30 _artifact_listed || true
+wait_until "uploaded artifact listed in ${REPO_KEY}" 20 _artifact_listed || true
 
 begin_test "Set labels on artifact"
 ARTIFACT_ID=""
