@@ -59,6 +59,14 @@ backend:
     # functional correctness, not rate-limiting (the rate-limit suite skips here),
     # so disable the limiter for the test deploy.
     RATE_LIMIT_ENABLED: "false"
+    # Guest-access posture, declared rather than inherited from the backend
+    # default (artifact-keeper-test#423). Setting it pins the switch for the
+    # run (a stored runtime row cannot override an explicit env value), so
+    # every suite sees the posture the auth-tests job declares: KEEP IN SYNC
+    # with AK_GUEST_ACCESS_ENABLED on that job in release-gate.yml, which
+    # tests/auth/test-public-repo-guest-disabled.sh verifies against the
+    # running backend.
+    AK_GUEST_ACCESS_ENABLED: "true"
     # SSRF private-IP allowlist for the test deploy.
     #
     # The gate runs INSIDE the cluster on ARC runner pods. Two suites need

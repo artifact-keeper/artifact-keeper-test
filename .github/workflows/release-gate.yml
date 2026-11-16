@@ -2620,10 +2620,10 @@ jobs:
       # Mirror of the gate backend's guest-access posture for
       # tests/auth/test-public-repo-guest-disabled.sh (#3855), which fails
       # under RELEASE_GATE=1 when the posture is undeclared. The gate deploy
-      # sets no AK_GUEST_ACCESS_ENABLED and stores no runtime setting, so the
-      # backend runs with guest access enabled (the default since #867); the
-      # suite then proves a public create really succeeds. KEEP THIS IN SYNC
-      # if the gate deploy ever disables guest access.
+      # pins AK_GUEST_ACCESS_ENABLED=true in helm/values-test.yaml and
+      # helm/values-test-full.yaml (artifact-keeper-test#423) instead of
+      # relying on the backend default; the suite then proves a public create
+      # really succeeds. KEEP THIS IN SYNC with those values files.
       AK_GUEST_ACCESS_ENABLED: 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
