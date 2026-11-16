@@ -91,7 +91,12 @@ on:
         type: string
         default: ''
       scanner_adapter_tag:
-        description: 'Scanner-adapter image tag for the scanner-adapter-features-1.12.0 DTF tiers. Empty = backend_tag (the sha-<7> adapter Docker Publish builds from the same commit). The adapter has its own VERSION, so a backend release tag (X.Y.Z) names no adapter image: pass the adapter''s tag then.'
+        description: 'Scanner-adapter image tag the gate deploys (the k8s stack and the scanner-adapter-features-1.12.0 DTF tiers). Empty = the chart''s pinned adapter in the k8s stack, and backend_tag (the sha-<7> adapter Docker Publish builds from the same commit) in those DTF tiers. The adapter has its own VERSION, so a backend release tag (X.Y.Z) names no adapter image: pass the adapter''s tag then.'
+        required: false
+        type: string
+        default: ''
+      scanner_adapter_digest:
+        description: 'Manifest-list digest (sha256:...) to pin the scanner-adapter to, with scanner_adapter_tag (required with it). The Release Candidate passes the certified adapter digest (artifact-keeper-test#380). Empty = tag only.'
         required: false
         type: string
         default: ''
@@ -146,7 +151,12 @@ on:
         type: string
         default: ''
       scanner_adapter_tag:
-        description: 'Scanner-adapter image tag for the scanner-adapter-features-1.12.0 DTF tiers. Empty = backend_tag (the sha-<7> adapter Docker Publish builds from the same commit). The adapter has its own VERSION, so a backend release tag (X.Y.Z) names no adapter image: pass the adapter''s tag then.'
+        description: 'Scanner-adapter image tag the gate deploys (the k8s stack and the scanner-adapter-features-1.12.0 DTF tiers). Empty = the chart''s pinned adapter in the k8s stack, and backend_tag (the sha-<7> adapter Docker Publish builds from the same commit) in those DTF tiers. The adapter has its own VERSION, so a backend release tag (X.Y.Z) names no adapter image: pass the adapter''s tag then.'
+        required: false
+        type: string
+        default: ''
+      scanner_adapter_digest:
+        description: 'Manifest-list digest (sha256:...) to pin the scanner-adapter to, with scanner_adapter_tag (required with it). The Release Candidate passes the certified adapter digest (artifact-keeper-test#380). Empty = tag only.'
         required: false
         type: string
         default: ''
@@ -292,6 +302,7 @@ jobs:
           TEST_SUITE: ${{ inputs.test_suite }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
           SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
+          SCANNER_ADAPTER_DIGEST: ${{ inputs.scanner_adapter_digest }}
         run: scripts/validate-gate-inputs.sh
 
       # only_jobs against THIS workflow file (main's, before the tree moves to
@@ -695,6 +706,8 @@ jobs:
           BACKEND_TAG: ${{ inputs.backend_tag }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
           WEB_TAG: ${{ inputs.web_tag }}
+          SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
+          SCANNER_ADAPTER_DIGEST: ${{ inputs.scanner_adapter_digest }}
           # No Trivy DB pull token is injected here. #298 passed the deploy job's
           # automatic GITHUB_TOKEN as SCANNER_TRIVY_PULL_TOKEN, but that token
           # has a ~1h TTL and expires before late gate jobs (pinned-cve-image-gate
@@ -708,6 +721,19 @@ jobs:
           # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
           # plain tag (byte-identical to the pre-digest behaviour).
           BACKEND_TAG_PINNED="${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}"
+          # The scanner-adapter being released, not the chart's pin
+          # (artifact-keeper-test#380): the Release Candidate passes the
+          # certified adapter as tag + manifest-list digest. Through a values
+          # file rather than a new create-test-namespace.sh flag, so a
+          # maintenance line's tests tree (switch-tests-ref.sh above) needs no
+          # change for it. Nothing passed = the chart's adapter, as before.
+          EXTRA_VALUES=()
+          if [ -n "${SCANNER_ADAPTER_TAG}" ]; then
+            ADAPTER_TAG_PINNED="${SCANNER_ADAPTER_TAG}${SCANNER_ADAPTER_DIGEST:+@${SCANNER_ADAPTER_DIGEST}}"
+            printf 'scannerAdapter:\n  image:\n    tag: "%s"\n' "${ADAPTER_TAG_PINNED}" > .release-gate-adapter.values.yaml
+            EXTRA_VALUES=(--values .release-gate-adapter.values.yaml)
+            echo "scanner-adapter: ${ADAPTER_TAG_PINNED}"
+          fi
           # --full-stack enables Trivy + scan workspace so the security
           # tests actually exercise the scanner instead of false-passing
           # against a no-scanner stack (#888 silent-success class).
@@ -715,6 +741,7 @@ jobs:
             --run-id "${RUN_ID}" \
             --backend-tag "${BACKEND_TAG_PINNED}" \
             --web-tag "${WEB_TAG}" \
+            "${EXTRA_VALUES[@]}" \
             --full-stack
 
           NAMESPACE="test-${RUN_ID}"
@@ -799,6 +826,35 @@ jobs:
               echo "OK: pinned digest present in the pod imageID or the requested image ref";;
             *)
               echo "::error::neither pod imageID (${IMGID}) nor requested image (${SPECIMG}) references pinned ${BACKEND_DIGEST}"
+              exit 1;;
+          esac
+
+      # The same proof for the scanner-adapter (artifact-keeper-test#380):
+      # the certified adapter digest is what the k8s stack runs, so the
+      # adapter attestation is proof that the gate exercised those bytes.
+      - name: Assert the scanner-adapter pod runs the pinned digest
+        if: inputs.scanner_adapter_digest != ''
+        env:
+          RUN_ID: ${{ steps.setup.outputs.run_id }}
+          SCANNER_ADAPTER_DIGEST: ${{ inputs.scanner_adapter_digest }}
+        run: |
+          NAMESPACE="test-${RUN_ID}"
+          # app.kubernetes.io/component=scanner-adapter is the selector
+          # create-test-namespace.sh's Trivy DB pre-seed already uses.
+          IMGID=$(kubectl -n "${NAMESPACE}" get pods \
+                    -l app.kubernetes.io/component=scanner-adapter \
+                    -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
+          SPECIMG=$(kubectl -n "${NAMESPACE}" get pods \
+                    -l app.kubernetes.io/component=scanner-adapter \
+                    -o jsonpath='{.items[0].spec.containers[0].image}')
+          echo "scanner-adapter pod imageID:   ${IMGID}"
+          echo "scanner-adapter requested img: ${SPECIMG}"
+          echo "pinned digest:                 ${SCANNER_ADAPTER_DIGEST}"
+          case "${IMGID}::${SPECIMG}" in
+            *"${SCANNER_ADAPTER_DIGEST}"*)
+              echo "OK: pinned adapter digest present in the pod imageID or the requested image ref";;
+            *)
+              echo "::error::neither scanner-adapter imageID (${IMGID}) nor requested image (${SPECIMG}) references pinned ${SCANNER_ADAPTER_DIGEST}"
               exit 1;;
           esac
 
@@ -3172,6 +3228,7 @@ jobs:
           TEST_SUITE: ${{ inputs.test_suite }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
           SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
+          SCANNER_ADAPTER_DIGEST: ${{ inputs.scanner_adapter_digest }}
         run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
@@ -3333,6 +3390,7 @@ jobs:
           TEST_SUITE: ${{ inputs.test_suite }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
           SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
+          SCANNER_ADAPTER_DIGEST: ${{ inputs.scanner_adapter_digest }}
         run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
@@ -4359,7 +4417,13 @@ jobs:
       # (Docker Publish tags the adapter it builds from a commit sha-<7>, the
       # same tag release-candidate.yml passes as backend_tag). Its red/green
       # axis is the adapter, and :1 moves only in the post-gate promotion.
-      SCANNER_ADAPTER_IMAGE: ${{ matrix.adapter == 'candidate' && format('ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:{0}', inputs.scanner_adapter_tag || inputs.backend_tag) || 'ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:1' }}
+      # With scanner_adapter_digest (the Release Candidate's certified
+      # adapter, artifact-keeper-test#380) EVERY group runs that adapter,
+      # pinned by digest, except scanner-server: trivy-server-mode pairs the
+      # adapter's bundled trivy with its own trivy server image, so it keeps
+      # the published :1 it is written against. The digest always comes with
+      # its tag (validate-gate-inputs.sh).
+      SCANNER_ADAPTER_IMAGE: ${{ ((matrix.adapter == 'candidate' || inputs.scanner_adapter_digest != '') && matrix.group != 'scanner-server') && format('ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:{0}{1}', inputs.scanner_adapter_tag || inputs.backend_tag, inputs.scanner_adapter_digest != '' && format('@{0}', inputs.scanner_adapter_digest) || '') || 'ghcr.io/artifact-keeper/artifact-keeper-scanner-adapter:1' }}
       TRIVY_DB_REPOSITORY: ghcr.io/artifact-keeper/trivy-db
       # Authenticated DB pull so the adapter's trivy is not at the mercy
       # of ghcr anonymous-token throttling (see waiver above). The DTF
@@ -4725,6 +4789,7 @@ jobs:
           TEST_SUITE: ${{ inputs.test_suite }}
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
           SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
+          SCANNER_ADAPTER_DIGEST: ${{ inputs.scanner_adapter_digest }}
         run: scripts/validate-gate-inputs.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line

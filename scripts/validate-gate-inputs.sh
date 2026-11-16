@@ -20,6 +20,9 @@
 #   TEST_SUITE      name
 #   BACKEND_DIGEST  sha256:<64 hex>, or empty for tag-only
 #   SCANNER_ADAPTER_TAG  an image tag (no '/'), or empty for backend_tag
+#   SCANNER_ADAPTER_DIGEST  sha256:<64 hex>, or empty for tag-only; needs
+#                   SCANNER_ADAPTER_TAG (a digest pins a tag, it names no
+#                   adapter on its own) (artifact-keeper-test#380)
 #   GATE_ONLY_JOBS  the only_jobs input: empty for the full gate, else gate job
 #                   ids and dtf-gate/<group> tokens separated by single spaces
 #                   (artifact-keeper-test#830). Whether each token names a real
@@ -66,6 +69,11 @@ check cli_tag        "${CLI_TAG-}"        "$NAME_RE"   1
 check test_suite     "${TEST_SUITE-}"     "$NAME_RE"   1
 check backend_digest "${BACKEND_DIGEST-}" "$DIGEST_RE" 1
 check scanner_adapter_tag "${SCANNER_ADAPTER_TAG-}" "$TAG_RE" 1
+check scanner_adapter_digest "${SCANNER_ADAPTER_DIGEST-}" "$DIGEST_RE" 1
+if [[ -n "${SCANNER_ADAPTER_DIGEST-}" && -z "${SCANNER_ADAPTER_TAG-}" ]]; then
+  echo "::error title=Invalid release-gate input::scanner_adapter_digest needs scanner_adapter_tag: the digest pins the adapter the tag names." >&2
+  bad=1
+fi
 check tests_sha      "${GATE_TESTS_SHA-}" "$SHA_RE"    1
 check only_jobs      "${GATE_ONLY_JOBS-}" "$ONLY_RE"   1
 only_jobs="${GATE_ONLY_JOBS-}"
