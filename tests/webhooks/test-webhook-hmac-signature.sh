@@ -218,7 +218,7 @@ fi
 # -------------------------------------------------------------------------
 # Legacy X-Webhook-Signature header presence + value. The documented legacy
 # form is `sha256=<hex>` over the raw body (no timestamp, secret-only); see
-# the value test below for what 1.11.x actually signs. Removed in v1.3.0 per
+# the value test below for what each 1.11.x release signs. Removed in v1.3.0 per
 # the deprecation plan; still emitted in v1.2.0.
 # -------------------------------------------------------------------------
 
@@ -240,25 +240,41 @@ else
   fi
 fi
 
-# The documented legacy value is sha256=HMAC(secret, body), but the backend
-# only emits that from 1.12.0 (artifact-keeper#5234). Every 1.11.x release
-# signs the legacy header over the same "<t>.<body>" bytes as the v1 token,
-# with t taken from the X-ArtifactKeeper-Signature t= field. Fixed in 1.12.0;
-# release/1.11.x asserts the shipped 1.11 form.
-begin_test "Legacy X-Webhook-Signature equals sha256=HMAC(secret, <t>.<body>) (1.11.x form)"
+# The documented legacy value is sha256=HMAC(secret, body). Backends up to
+# 1.11.13 signed the legacy header over the same "<t>.<body>" bytes as the v1
+# token (t from the X-ArtifactKeeper-Signature t= field); 1.11.14 and 1.12.0
+# sign the body alone (artifact-keeper#5234, backported in #5648). Pick the
+# form from the backend version so the line branch certifies both.
+LEGACY_BODY_ONLY_MIN_VERSION="1.11.14"
+LEGACY_BACKEND_VERSION=$(get_backend_version)
+begin_test "Legacy X-Webhook-Signature matches the form the backend version signs"
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$LEGACY_SIG_HEADER" ] || [ -z "$LATEST_BODY" ] || [ -z "$NEW_SIG_TS" ]; then
   skip "no legacy signature, body, or t= timestamp"
+elif [ "$LEGACY_BACKEND_VERSION" = "unknown" ]; then
+  if [ "${RELEASE_GATE:-0}" = "1" ]; then
+    infra_fail "could not determine backend version from ${BASE_URL}/health; cannot pick the legacy signature form"
+  else
+    skip "could not determine backend version, cannot pick the legacy signature form"
+  fi
 else
-  expected_hex=$(printf '%s.%s' "$NEW_SIG_TS" "$LATEST_BODY" \
-    | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" 2>/dev/null \
-    | awk '{print $NF}')
+  if version_ge "$LEGACY_BACKEND_VERSION" "$LEGACY_BODY_ONLY_MIN_VERSION"; then
+    signed_desc="<body>"
+    expected_hex=$(printf '%s' "$LATEST_BODY" \
+      | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" 2>/dev/null \
+      | awk '{print $NF}')
+  else
+    signed_desc="${NEW_SIG_TS}.<body>"
+    expected_hex=$(printf '%s.%s' "$NEW_SIG_TS" "$LATEST_BODY" \
+      | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" 2>/dev/null \
+      | awk '{print $NF}')
+  fi
   expected="sha256=${expected_hex}"
   if [ -z "$expected_hex" ]; then
     fail "openssl produced empty legacy HMAC"
   elif [ "$LEGACY_SIG_HEADER" = "$expected" ]; then
     pass
   else
-    fail "legacy signature mismatch: header='${LEGACY_SIG_HEADER}' expected='${expected}' (signed bytes: '${NEW_SIG_TS}.<body>')"
+    fail "legacy signature mismatch on backend ${LEGACY_BACKEND_VERSION}: header='${LEGACY_SIG_HEADER}' expected='${expected}' (signed bytes: '${signed_desc}')"
   fi
 fi
 
