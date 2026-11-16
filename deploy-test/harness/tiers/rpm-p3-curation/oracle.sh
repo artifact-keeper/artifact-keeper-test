@@ -62,7 +62,11 @@ api_call() { # METHOD PATH [BODY] -> sets API_STATUS + API_BODY (no subshell)
   API_BODY="$(cat "$tmp")"; rm -f "$tmp"
 }
 
-WD="$(mktemp -d)"
+# "$WD/srv" is a BIND-MOUNT SOURCE (the nginx mock below): dtf_mktemp_dir puts
+# it where a dind daemon can see it (DTF_WORK_PARENT / RUNNER_TEMP, #732)
+# and registers its removal. Under /tmp the mock would serve an empty root.
+WD=""
+dtf_mktemp_dir WD dtf-rpmp3
 
 # --- mock upstream on the DTF network ----------------------------------------
 # The @N package path fetches from the CURATION-CONFIG upstream, so we need a
@@ -75,6 +79,8 @@ printf 'EVIL-RPM-PAYLOAD-%s' "$SUF" > "$WD/srv/Packages/evil.rpm"
 GOOD_SHA="$(sha256sum "$WD/srv/Packages/alpha.rpm" | awk '{print $1}')"
 EVIL_SHA="$(sha256sum "$WD/srv/Packages/evil.rpm" | awk '{print $1}')"
 chmod -R a+rX "$WD"
+# INFRA (exit 11), not a verdict, when the daemon provably cannot see the root.
+assert_bind_mount_visible "$WD/srv" "$MOCK_IMAGE"
 docker rm -f "$MOCK" >/dev/null 2>&1 || true
 MOCK_UP=0
 # label=disable: on an SELinux-enforcing host the bind mount is otherwise

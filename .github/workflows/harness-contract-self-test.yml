@@ -107,6 +107,11 @@ jobs:
       - name: Run k8s selector self-test
         run: bash tests/lib/selftest-k8s-selectors.sh
 
+      # Work dirs default under DTF_WORK_PARENT / RUNNER_TEMP so a dind
+      # daemon can see them as bind-mount sources (artifact-keeper-test#732).
+      - name: Run work-dir parent self-test
+        run: bash tests/lib/selftest-work-parent.sh
+
       # The release gate's input validator (scripts/validate-gate-inputs.sh):
       # the values callers pass are accepted, everything else is refused.
       - name: Run gate-input validator self-test

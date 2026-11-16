@@ -42,12 +42,11 @@ W="$WORK_DIR"
 # not the runner's /tmp: a mktemp -d under /tmp is mounted as an EMPTY directory
 # and every *_FILE read fails with ENOENT, which reads as a product failure.
 # (1.12.0 candidate run 42767020927: even the deliberately empty file was
-# "No such file or directory".) Put it under RUNNER_TEMP when there is one.
-SF_PARENT="${SF_SECRETS_PARENT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
-mkdir -p "$SF_PARENT" 2>/dev/null || true
-SECRETS="$(mktemp -d "${SF_PARENT%/}/dtf-sf-secrets.XXXXXX" 2>/dev/null || true)"
-[ -n "$SECRETS" ] || { SECRETS="${W}/secrets"; mkdir -p "$SECRETS"; }
-add_exit_handler "rm -rf \"$SECRETS\""
+# "No such file or directory".) dtf_mktemp_dir (common.sh, #732) puts it under
+# DTF_WORK_PARENT / RUNNER_TEMP and registers its cleanup; SF_SECRETS_PARENT
+# (#729) is kept as a tier-local alias that wins over both.
+dtf_mktemp_dir SECRETS dtf-sf-secrets "${SF_SECRETS_PARENT:-}" \
+  || { SECRETS="${W}/secrets"; mkdir -p "$SECRETS"; }
 
 # common.sh may run under `set -e`: every probe below swallows its own failure
 # and the assertion that reads the (possibly empty) value judges it.
@@ -159,7 +158,7 @@ begin_suite "secrets-file-env"
 
 if ! mount_visible; then
   begin_test "setup: the docker daemon can see the oracle's secrets directory as a bind-mount source"
-  infra_fail "a container mounting ${SECRETS} at ${MOUNT_DIR} does not see the files the oracle wrote there; the daemon does not share this path (set SF_SECRETS_PARENT to a shared directory). Not a product verdict."
+  infra_fail "a container mounting ${SECRETS} at ${MOUNT_DIR} does not see the files the oracle wrote there; the daemon does not share this path (set DTF_WORK_PARENT or SF_SECRETS_PARENT to a shared directory). Not a product verdict."
   end_suite
 fi
 
