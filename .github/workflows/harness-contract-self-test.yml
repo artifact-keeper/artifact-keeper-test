@@ -62,6 +62,7 @@ on:
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
+      - 'scripts/ci/**'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
@@ -79,6 +80,7 @@ on:
       # The subset self-test reads the job ids, the dtf-gate groups and the
       # full-run predicate from the gate itself.
       - '.github/workflows/release-gate.yml'
+      - 'scripts/ci/**'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -139,3 +141,9 @@ jobs:
       # (artifact-keeper-test#725).
       - name: Run fetch-all-pages self-test
         run: bash tests/lib/selftest-fetch-all-pages.sh
+
+      # The release gate's runner-toolchain installer (scripts/ci/apt-install-retry.sh):
+      # a mirror blip retries, a persistent failure or a missing tool fails
+      # loudly as INFRA, never silently (#728).
+      - name: Run apt install retry helper self-test
+        run: bash scripts/ci/selftest-apt-install-retry.sh

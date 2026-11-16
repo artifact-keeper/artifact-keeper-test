@@ -798,9 +798,12 @@ jobs:
 
       - name: Install npm (real-flow uses the npm native client)
         run: |
+          # Retries an apt mirror blip; fails as INFRA, never silently (#728). A
+          # release/X.Y.x tests ref may predate scripts/ci/: use main's copy then.
+          apt_install() { local h=scripts/ci/apt-install-retry.sh; if [ ! -f "$h" ]; then h="$RUNNER_TEMP/apt-install-retry.sh"; git show origin/main:scripts/ci/apt-install-retry.sh > "$h" || return 1; fi; bash "$h" "$@"; }
           if ! command -v npm >/dev/null 2>&1; then
             curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - > /dev/null 2>&1
-            sudo apt-get install -y -qq nodejs > /dev/null
+            apt_install --require-cmd npm nodejs
           fi
           npm --version
 
@@ -1487,28 +1490,31 @@ jobs:
         run: |
           BATCH="${{ matrix.batch.name }}"
           echo "Installing dependencies for batch: $BATCH"
+          # Retries an apt mirror blip; fails as INFRA, never silently (#728). A
+          # release/X.Y.x tests ref may predate scripts/ci/: use main's copy then.
+          apt_install() { local h=scripts/ci/apt-install-retry.sh; if [ ! -f "$h" ]; then h="$RUNNER_TEMP/apt-install-retry.sh"; git show origin/main:scripts/ci/apt-install-retry.sh > "$h" || return 1; fi; bash "$h" "$@"; }
 
           # Common: ensure zip is available (used by maven, swift, vscode, go)
           if ! command -v zip &>/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq zip > /dev/null
+            apt_install --require-cmd zip zip
           fi
 
           case "$BATCH" in
             node)
               if ! command -v npm &>/dev/null; then
                 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - > /dev/null 2>&1
-                sudo apt-get install -y -qq nodejs > /dev/null
+                apt_install --require-cmd npm nodejs
               fi
               ;;
             python)
               if ! command -v python3 &>/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-pip python3-setuptools python3-venv > /dev/null
+                apt_install --require-cmd python3 python3 python3-pip python3-setuptools python3-venv
               fi
               # python3-venv is required by test-pypi-native-client.sh; install
               # it even if python3 is already present, since the bundled
               # interpreter may have ensurepip stripped out.
               if ! python3 -c 'import venv; venv.EnvBuilder().ensure_directories' &>/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq python3-venv > /dev/null || true
+                apt_install python3-venv
               fi
               ;;
             jvm)
@@ -1516,13 +1522,13 @@ jobs:
               # auto-skipped if maven is missing, but we install it here so
               # the gate actually exercises native-client coverage.
               if ! command -v mvn &>/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq maven > /dev/null || true
+                apt_install --require-cmd mvn maven
               fi
               # test-maven-prefixes.sh runs Maven 4, which needs Java 17+, and
               # its skip_suite on an older JDK is a hard fail under
               # RELEASE_GATE=1. Add a 17 JDK when the runner's default is older.
               if ! java -version 2>&1 | grep -Eq 'version "(1[7-9]|[2-9][0-9])'; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-17-jdk-headless > /dev/null || true
+                apt_install --require-cmd java openjdk-17-jdk-headless
               fi
               ;;
             rust-go-swift)
@@ -1548,25 +1554,25 @@ jobs:
               # checksummed) by the scripts themselves.
               if ! command -v npm &>/dev/null; then
                 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - > /dev/null 2>&1
-                sudo apt-get install -y -qq nodejs > /dev/null
+                apt_install --require-cmd npm nodejs
               fi
               ;;
             system-packages)
               # ar (from binutils) for Debian package assembly
               if ! command -v ar &>/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq binutils > /dev/null
+                apt_install --require-cmd ar binutils
               fi
               # python3 parses APKINDEX stanzas in test-alpine-apkindex-parity.sh
               # (the apk client it runs is apk.static, fetched by the script).
               if ! command -v python3 &>/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq python3 > /dev/null
+                apt_install --require-cmd python3 python3
               fi
               ;;
             generic-protocol)
               # python3 builds the .deb and parses Packages stanzas in
               # test-generic-upload-native-parity.sh.
               if ! command -v python3 &>/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y -qq python3 > /dev/null
+                apt_install --require-cmd python3 python3
               fi
               ;;
           esac
@@ -1685,11 +1691,14 @@ jobs:
           # missing here reads as a failing suite. ruby provides `gem` for
           # test-rubygems-native-client.sh; zstd builds the .conda fixtures in
           # test-conda-native-conformance.sh.
+          # Retries an apt mirror blip; fails as INFRA, never silently (#728). A
+          # release/X.Y.x tests ref may predate scripts/ci/: use main's copy then.
+          apt_install() { local h=scripts/ci/apt-install-retry.sh; if [ ! -f "$h" ]; then h="$RUNNER_TEMP/apt-install-retry.sh"; git show origin/main:scripts/ci/apt-install-retry.sh > "$h" || return 1; fi; bash "$h" "$@"; }
           missing=""
           command -v gem  &>/dev/null || missing="$missing ruby"
           command -v zstd &>/dev/null || missing="$missing zstd"
           if [ -n "$missing" ]; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq $missing > /dev/null
+            apt_install --require-cmd gem --require-cmd zstd $missing
           fi
 
       - name: Run formats audit lane
@@ -2643,9 +2652,11 @@ jobs:
         # the Ubuntu archive.
         run: |
           set -euo pipefail
+          # Retries an apt mirror blip; fails as INFRA, never silently (#728). A
+          # release/X.Y.x tests ref may predate scripts/ci/: use main's copy then.
+          apt_install() { local h=scripts/ci/apt-install-retry.sh; if [ ! -f "$h" ]; then h="$RUNNER_TEMP/apt-install-retry.sh"; git show origin/main:scripts/ci/apt-install-retry.sh > "$h" || return 1; fi; bash "$h" "$@"; }
           if ! command -v oathtool >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq oathtool > /dev/null
+            apt_install --require-cmd oathtool oathtool
           fi
           oathtool --version | head -1
 
