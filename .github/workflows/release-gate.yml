@@ -95,6 +95,16 @@ on:
         required: false
         type: string
         default: ''
+      only_jobs:
+        description: 'Run only these gate jobs: job ids, and dtf-gate/<group> for one DTF leg, separated by single spaces. Empty = the full gate. For candidate reruns (artifact-keeper#6076).'
+        required: false
+        type: string
+        default: ''
+      tests_sha:
+        description: 'Run the suite from exactly this commit of artifact-keeper-test (40-hex; must be on main, or on the release/X.Y.x the candidate is gated by). Empty = the branch tip.'
+        required: false
+        type: string
+        default: ''
       run_smoke_with_deps:
         description: |
           Run the clean-install-smoke-with-deps variant (issue #53).
@@ -140,6 +150,21 @@ on:
         required: false
         type: string
         default: ''
+      # Subset runs and a pinned tests tree (artifact-keeper-test#830). The
+      # artifact-keeper Release Candidate passes `tests_sha` on every run so
+      # every job runs one tree, and `only_jobs` on a rerun of the groups the
+      # original run did not pass (artifact-keeper#6076). Both empty = today's
+      # full gate on each job's checkout of the branch tip.
+      only_jobs:
+        description: 'Run only these gate jobs: job ids, and dtf-gate/<group> for one DTF leg, separated by single spaces. Empty = the full gate.'
+        required: false
+        type: string
+        default: ''
+      tests_sha:
+        description: 'Run the suite from exactly this commit of artifact-keeper-test (40-hex; must be on the branch switch-tests-ref.sh picks). Empty = the branch tip.'
+        required: false
+        type: string
+        default: ''
       run_smoke_with_deps:
         required: false
         type: boolean
@@ -180,6 +205,12 @@ concurrency:
 env:
   NAMESPACE_CPU: ${{ vars.TEST_NAMESPACE_CPU || '4000m' }}
   NAMESPACE_MEMORY: ${{ vars.TEST_NAMESPACE_MEMORY || '8Gi' }}
+  # Workflow-level so every job sees them without each step passing them:
+  # validate-gate-inputs.sh checks both shapes, switch-tests-ref.sh honours
+  # GATE_TESTS_SHA, and gate-selection.sh / gate-subset-verdict.sh read
+  # GATE_ONLY_JOBS (artifact-keeper-test#830).
+  GATE_ONLY_JOBS: ${{ inputs.only_jobs }}
+  GATE_TESTS_SHA: ${{ inputs.tests_sha }}
 
 jobs:
   # -------------------------------------------------------------------
@@ -213,6 +244,9 @@ jobs:
     # and stays available even when the ARC pool is saturated or down.
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      subset: ${{ steps.selection.outputs.subset }}
+      cluster: ${{ steps.selection.outputs.cluster }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -230,6 +264,16 @@ jobs:
           BACKEND_DIGEST: ${{ inputs.backend_digest }}
           SCANNER_ADAPTER_TAG: ${{ inputs.scanner_adapter_tag }}
         run: scripts/validate-gate-inputs.sh
+
+      # only_jobs against THIS workflow file (main's, before the tree moves to
+      # a release line or a pinned commit): every token must be a job, or a
+      # dtf-gate group, or the run is refused before anything is deployed.
+      # Also decides whether the selection needs the cluster deploy.
+      - name: Check the job selection
+        id: selection
+        env:
+          GATE_RUN_SMOKE_WITH_DEPS: ${{ inputs.run_smoke_with_deps }}
+        run: scripts/gate-selection.sh
 
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
@@ -298,6 +342,9 @@ jobs:
   # -------------------------------------------------------------------
   clean-install-smoke:
     needs: version-set-integrity
+    # Always in a full run. In a subset run (only_jobs) only when a selected job
+    # needs the cluster: gate-selection.sh decides, in version-set-integrity.
+    if: inputs.only_jobs == '' || needs.version-set-integrity.outputs.cluster == 'true'
     runs-on: ak-e2e-runners
     timeout-minutes: 12
     steps:
@@ -398,7 +445,7 @@ jobs:
     # dispatching workflow explicitly opts in. The dispatching
     # workflow can override to true when running against a beefier
     # runner pool.
-    if: ${{ inputs.run_smoke_with_deps == true }}
+    if: (inputs.run_smoke_with_deps == true) && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' clean-install-smoke-with-deps '))
     runs-on: ak-e2e-runners
     timeout-minutes: 20
     steps:
@@ -474,6 +521,7 @@ jobs:
   # -------------------------------------------------------------------
   chart-upgrade-smoke:
     needs: clean-install-smoke
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' chart-upgrade-smoke '))
     runs-on: ak-e2e-runners
     timeout-minutes: 25
     steps:
@@ -725,6 +773,7 @@ jobs:
   # -------------------------------------------------------------------
   real-flow-smoke:
     needs: deploy
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' real-flow-smoke '))
     runs-on: ak-e2e-runners
     timeout-minutes: 8
     env:
@@ -782,6 +831,7 @@ jobs:
   # -------------------------------------------------------------------
   cli-smoke:
     needs: deploy
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' cli-smoke '))
     runs-on: ak-e2e-runners
     timeout-minutes: 8
     continue-on-error: true
@@ -853,6 +903,7 @@ jobs:
   # -------------------------------------------------------------------
   scan-completion-gate:
     needs: deploy
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' scan-completion-gate '))
     runs-on: ak-e2e-runners
     timeout-minutes: 8
     strategy:
@@ -936,6 +987,7 @@ jobs:
   # -------------------------------------------------------------------
   scan-completion-gate-scaffolds-pending:
     needs: deploy
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' scan-completion-gate-scaffolds-pending '))
     runs-on: ak-e2e-runners
     timeout-minutes: 2
     steps:
@@ -962,6 +1014,7 @@ jobs:
   # -------------------------------------------------------------------
   sbom-correctness-gate:
     needs: deploy
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' sbom-correctness-gate '))
     runs-on: ak-e2e-runners
     timeout-minutes: 6
     env:
@@ -1016,6 +1069,7 @@ jobs:
   # -------------------------------------------------------------------
   pinned-cve-gate:
     needs: deploy
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' pinned-cve-gate '))
     runs-on: ak-e2e-runners
     timeout-minutes: 8
     env:
@@ -1276,6 +1330,7 @@ jobs:
   # -------------------------------------------------------------------
   pinned-cve-image-gate:
     needs: deploy
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' pinned-cve-image-gate '))
     runs-on: ak-e2e-runners
     timeout-minutes: 10
     env:
@@ -1345,7 +1400,7 @@ jobs:
   # -------------------------------------------------------------------
   format-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'formats'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'formats') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' format-tests '))
     runs-on: ak-e2e-runners
     strategy:
       fail-fast: false
@@ -1579,7 +1634,7 @@ jobs:
   # -------------------------------------------------------------------
   format-tests-audit:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'formats'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'formats') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' format-tests-audit '))
     runs-on: ak-e2e-runners
     continue-on-error: true
     # 58 not-yet-blocking scripts today, each capped at TEST_TIMEOUT (120s
@@ -1674,6 +1729,7 @@ jobs:
   # ride through green.
   # -------------------------------------------------------------------
   format-tests-registration-check:
+    if: (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' format-tests-registration-check '))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1713,7 +1769,7 @@ jobs:
     # `--exclude` and re-run soft in the `security-grype-scan-completes` job,
     # which carries a NAMED WAIVER (owner + expiry). See that job for the
     # rationale and the expiry. Nothing else in the suite is waivered.
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'security'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'security') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' security-tests '))
     runs-on: ak-e2e-runners
     timeout-minutes: 20
     env:
@@ -1957,7 +2013,7 @@ jobs:
     # documented Grype-DB flake cannot block a release. Excluded from the
     # collect-results blocking predicate; its outcome is shown in the summary.
     continue-on-error: true
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'security'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'security') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' security-grype-scan-completes '))
     runs-on: ak-e2e-runners
     timeout-minutes: 20
     env:
@@ -2015,7 +2071,7 @@ jobs:
   # -------------------------------------------------------------------
   pullthrough-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'pullthrough'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'pullthrough') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' pullthrough-tests '))
     runs-on: ak-e2e-runners
     timeout-minutes: 15
     env:
@@ -2120,7 +2176,7 @@ jobs:
   # -------------------------------------------------------------------
   compatibility-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'compatibility'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'compatibility') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' compatibility-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2161,7 +2217,7 @@ jobs:
   # -------------------------------------------------------------------
   repo-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'repos'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'repos') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' repo-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2202,7 +2258,7 @@ jobs:
   # -------------------------------------------------------------------
   promotion-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'promotion'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'promotion') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' promotion-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2243,7 +2299,7 @@ jobs:
   # -------------------------------------------------------------------
   rbac-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'rbac'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'rbac') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' rbac-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2284,7 +2340,7 @@ jobs:
   # -------------------------------------------------------------------
   lifecycle-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'lifecycle'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'lifecycle') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' lifecycle-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2331,7 +2387,7 @@ jobs:
   # -------------------------------------------------------------------
   webhook-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'webhooks'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'webhooks') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' webhook-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2427,7 +2483,7 @@ jobs:
   # -------------------------------------------------------------------
   search-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'search'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'search') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' search-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2481,7 +2537,7 @@ jobs:
   # -------------------------------------------------------------------
   platform-tests:
     needs: [deploy, auth-tests]
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'platform'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'platform') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' platform-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2522,7 +2578,7 @@ jobs:
   # -------------------------------------------------------------------
   auth-tests:
     needs: deploy
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'auth'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'auth') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' auth-tests ') || contains(format(' {0} ', inputs.only_jobs), ' platform-tests ') || contains(format(' {0} ', inputs.only_jobs), ' admin-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2611,7 +2667,7 @@ jobs:
   # -------------------------------------------------------------------
   admin-tests:
     needs: [deploy, auth-tests]
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'admin'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'admin') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' admin-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2699,7 +2755,8 @@ jobs:
     if: |
       always() &&
       needs.deploy.result == 'success' &&
-      (inputs.test_suite == 'all' || inputs.test_suite == 'stress')
+      (inputs.test_suite == 'all' || inputs.test_suite == 'stress') &&
+      (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' stress-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
@@ -2889,7 +2946,8 @@ jobs:
     if: |
       always() &&
       needs.deploy.result == 'success' &&
-      (inputs.test_suite == 'all' || inputs.test_suite == 'resilience')
+      (inputs.test_suite == 'all' || inputs.test_suite == 'resilience') &&
+      (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' resilience-tests '))
     runs-on: ak-e2e-runners
     strategy:
       fail-fast: false
@@ -3010,7 +3068,8 @@ jobs:
     if: |
       always() &&
       (inputs.test_suite == 'all' || inputs.test_suite == 'mesh') &&
-      (needs.resilience-tests.result == 'success' || needs.resilience-tests.result == 'skipped')
+      (needs.resilience-tests.result == 'success' || needs.resilience-tests.result == 'skipped') &&
+      (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' mesh-tests '))
     runs-on: ak-e2e-runners
     env:
       RUN_ID: ${{ needs.deploy.outputs.run_id }}
@@ -3165,7 +3224,7 @@ jobs:
   # aarch64 build leg here and select by `uname -m` when staging.
   # -------------------------------------------------------------------
   build-dtf-probes:
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' build-dtf-probes ') || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate/'))
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -3314,14 +3373,24 @@ jobs:
   # see the invocation-paths comment at the top of this file.
   # -------------------------------------------------------------------
   dtf-gate:
+    # Named by its group alone, so a leg's name is stable and short: the
+    # artifact-keeper Release Candidate reads a failed leg's group from it to
+    # rerun just that leg (dtf-gate/<group> in only_jobs, artifact-keeper#6076).
+    name: dtf-gate (${{ matrix.group }})
     needs: [version-set-integrity, build-dtf-probes]
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate/'))
     # Logs in to ghcr with the job token (Trivy DB pull, and the fallback when
     # GHCR_DOCKER_CONFIG is absent): see the top-level permissions comment.
     permissions:
       contents: read
       packages: read
-    runs-on: ak-docker-runners
+    # LEG SELECTION (artifact-keeper-test#830). A job-level `if:` cannot see
+    # the matrix, so a leg that only_jobs does not name still starts: on a
+    # hosted runner instead of a dind one, with every step skipped by
+    # DTF_LEG_SELECTED, and it reports success without running a tier. The
+    # subset verdict judges dtf-gate as a whole, which then means exactly
+    # "every selected leg passed". In a full run every leg is selected.
+    runs-on: ${{ (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group))) && 'ak-docker-runners' || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -3951,6 +4020,7 @@ jobs:
           - group: fixes-1.12.0-backup-fresh-server
             tiers: backup-restore-fresh-server
     env:
+      DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
       TIERS_LIST: ${{ matrix.tiers }}
@@ -3959,17 +4029,24 @@ jobs:
       # No other dtf-gate tier reads it.
       OPENSCAP_IMAGE: ghcr.io/artifact-keeper/artifact-keeper-openscap:${{ inputs.backend_tag }}
     steps:
+      - name: Leg not selected by only_jobs
+        if: env.DTF_LEG_SELECTED != 'true'
+        run: echo "::notice title=dtf-gate (${{ matrix.group }}) not selected::only_jobs does not name this leg; no tier runs in it."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.DTF_LEG_SELECTED == 'true'
         with:
           repository: artifact-keeper/artifact-keeper-test
 
       - name: Run the suite from the tests ref that matches the candidate's line
+        if: env.DTF_LEG_SELECTED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BACKEND_TAG: ${{ inputs.backend_tag }}
         run: scripts/switch-tests-ref.sh
 
       - name: Authenticate docker to ghcr
+        if: env.DTF_LEG_SELECTED == 'true'
         env:
           GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
           GH_ACTOR: ${{ github.actor }}
@@ -3990,14 +4067,14 @@ jobs:
       # anyway so that renaming or moving the sso tier cannot drop the probe
       # from the group that runs the SAML binding cases.
       - name: Download the prebuilt DTF probes
-        if: contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls') || contains(matrix.tiers, 'sso-login-browser-binding')
+        if: env.DTF_LEG_SELECTED == 'true' && (contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls') || contains(matrix.tiers, 'sso-login-browser-binding'))
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dtf-probes
           path: /tmp/dtf-probes
 
       - name: Stage the SAML XSW probe for the sso, deps-1.12.0-controls and sso-login-browser-binding tiers
-        if: contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls') || contains(matrix.tiers, 'sso-login-browser-binding')
+        if: env.DTF_LEG_SELECTED == 'true' && (contains(matrix.tiers, 'sso') || contains(matrix.tiers, 'deps-1.12.0-controls') || contains(matrix.tiers, 'sso-login-browser-binding'))
         run: |
           set -euo pipefail
           ARCH="$(uname -m)"
@@ -4022,6 +4099,7 @@ jobs:
           echo ">> SAML XSW probe staged and smoke-checked at ${DEST}/dtf-saml-xsw-probe"
 
       - name: Run DTF tiers (${{ matrix.group }}) against the pinned candidate
+        if: env.DTF_LEG_SELECTED == 'true'
         run: |
           # Compose the digest-pinned image ref. Empty BACKEND_DIGEST =>
           # plain tag (same composition as the k8s deploy jobs above).
@@ -4032,7 +4110,7 @@ jobs:
           ./deploy-test/harness/run-tiers.sh --backend-image "${IMG}" "${TIERS[@]}"
 
       - name: Upload DTF tier results
-        if: always()
+        if: always() && env.DTF_LEG_SELECTED == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: junit-dtf-${{ matrix.group }}
@@ -4112,7 +4190,7 @@ jobs:
   dtf-advisory:
     needs: version-set-integrity
     continue-on-error: true
-    if: inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf'
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'security' || inputs.test_suite == 'dtf') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-advisory '))
     # Logs in to ghcr with the job token (Trivy DB pull, and the fallback when
     # GHCR_DOCKER_CONFIG is absent): see the top-level permissions comment.
     permissions:
@@ -4378,7 +4456,13 @@ jobs:
         # So we list the required suites explicitly here. If you add a
         # new required suite, add it to this list. Soft-failing suites
         # stay off the list.
+        #
+        # A SUBSET run (only_jobs, artifact-keeper-test#830) is judged by the
+        # next step instead: this predicate would fail every unselected
+        # strict gate and pass a selected loose job that skipped. The full-run
+        # predicate itself is unchanged, only guarded by `only_jobs == ''`.
         if: >-
+          inputs.only_jobs == '' && (
           needs.version-set-integrity.result == 'failure' || needs.version-set-integrity.result == 'cancelled' ||
           needs.clean-install-smoke.result == 'failure' || needs.clean-install-smoke.result == 'cancelled' ||
           needs.clean-install-smoke-with-deps.result == 'failure' || needs.clean-install-smoke-with-deps.result == 'cancelled' ||
@@ -4403,7 +4487,7 @@ jobs:
           needs.platform-tests.result == 'failure' || needs.platform-tests.result == 'cancelled' ||
           needs.auth-tests.result == 'failure' || needs.auth-tests.result == 'cancelled' ||
           needs.admin-tests.result == 'failure' || needs.admin-tests.result == 'cancelled' ||
-          needs.resilience-tests.result == 'failure' || needs.resilience-tests.result == 'cancelled'
+          needs.resilience-tests.result == 'failure' || needs.resilience-tests.result == 'cancelled' )
         run: |
           echo "::error::Release gate FAILED - one or more required test suites did not pass"
           echo "Review the workflow summary above for details"
@@ -4411,12 +4495,34 @@ jobs:
           echo "Note: resilience-tests is blocking for the crash, data and network categories only; its restart and storage categories are non-blocking under a named waiver on that job (artifact-keeper-test#338)"
           exit 1
 
+      # The subset verdict (scripts/gate-subset-verdict.sh): every selected
+      # required job must SUCCEED, and no unselected one may fail. The script
+      # is main's copy, like validate-gate-inputs.sh: the tree is not moved to
+      # a release line or a pinned commit here. Its required lists are pinned
+      # to the predicate above by scripts/selftest-gate-subset-verdict.sh.
+      - name: Checkout the gate's verdict script (subset run)
+        if: always() && inputs.only_jobs != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+          path: .gate-verdict
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Gate check - subset run (only_jobs)
+        if: always() && inputs.only_jobs != ''
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          CLUSTER: ${{ needs.version-set-integrity.outputs.cluster }}
+        run: bash .gate-verdict/scripts/gate-subset-verdict.sh
+
   # -------------------------------------------------------------------
   # Teardown
   # -------------------------------------------------------------------
   teardown:
     needs: [deploy, collect-results]
-    if: always() && inputs.skip_teardown != true
+    if: (always() && inputs.skip_teardown != true) && (inputs.only_jobs == '' || needs.deploy.result != 'skipped')
     runs-on: ak-e2e-runners
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

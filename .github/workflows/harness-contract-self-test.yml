@@ -49,6 +49,14 @@ on:
       - 'scripts/run-suite.sh'
       - 'scripts/validate-gate-inputs.sh'
       - 'scripts/selftest-validate-gate-inputs.sh'
+      - 'scripts/switch-tests-ref.sh'
+      - 'scripts/selftest-switch-tests-ref.sh'
+      - 'scripts/gate-selection.sh'
+      - 'scripts/gate-subset-verdict.sh'
+      - 'scripts/selftest-gate-subset-verdict.sh'
+      # The subset self-test reads the job ids, the dtf-gate groups and the
+      # full-run predicate from the gate itself.
+      - '.github/workflows/release-gate.yml'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
@@ -57,6 +65,14 @@ on:
       - 'scripts/run-suite.sh'
       - 'scripts/validate-gate-inputs.sh'
       - 'scripts/selftest-validate-gate-inputs.sh'
+      - 'scripts/switch-tests-ref.sh'
+      - 'scripts/selftest-switch-tests-ref.sh'
+      - 'scripts/gate-selection.sh'
+      - 'scripts/gate-subset-verdict.sh'
+      - 'scripts/selftest-gate-subset-verdict.sh'
+      # The subset self-test reads the job ids, the dtf-gate groups and the
+      # full-run predicate from the gate itself.
+      - '.github/workflows/release-gate.yml'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -81,3 +97,14 @@ jobs:
       # the values callers pass are accepted, everything else is refused.
       - name: Run gate-input validator self-test
         run: bash scripts/selftest-validate-gate-inputs.sh
+
+      # The tests-tree pin (GATE_TESTS_SHA, artifact-keeper-test#830): a pin
+      # lands on exactly the commit asked for, or fails the job.
+      - name: Run switch-tests-ref self-test
+        run: bash scripts/selftest-switch-tests-ref.sh
+
+      # Subset runs (only_jobs, artifact-keeper-test#830): what may be
+      # selected, how a subset is judged, and that the subset verdict's
+      # required lists match the full-run predicate.
+      - name: Run gate subset-run self-test
+        run: bash scripts/selftest-gate-subset-verdict.sh

@@ -29,10 +29,22 @@
 # tiers onto this repository's release/X.Y.x in the same cycle
 # (artifact-keeper-test#424), or the line's gate skips them by name.
 #
+# PINNING THE TREE (artifact-keeper-test#830). Each job checks this repository
+# out at main when the JOB starts, so a gate run spanning a merge used to mix
+# two test trees, and a candidate rerun (artifact-keeper#6076) had no way to
+# ask for the tree its original ran. With GATE_TESTS_SHA set, the tree is
+# moved to exactly that commit instead of the branch tip. It must be reachable
+# from the branch this script would have picked anyway (release/X.Y.x for the
+# candidate's line, else main), so a pin can name an earlier state of the
+# suite the candidate is gated by, never an unmerged or another line's tree.
+# The marker is written by the branch picked, as without a pin.
+#
 # Inputs (environment):
-#   BACKEND_TAG   sha-<short>  (what release-candidate.yml passes), or X.Y.Z
-#   BACKEND_REPO  owner/name of the backend (default artifact-keeper/artifact-keeper)
-#   GH_TOKEN      optional; raises the API rate limit for the one Cargo.toml read
+#   BACKEND_TAG     sha-<short>  (what release-candidate.yml passes), or X.Y.Z
+#   BACKEND_REPO    owner/name of the backend (default artifact-keeper/artifact-keeper)
+#   GH_TOKEN        optional; raises the API rate limit for the one Cargo.toml read
+#   GATE_TESTS_SHA  optional; a 40-hex commit of this repository to run instead
+#                   of the branch tip (the gate's tests_sha input)
 set -euo pipefail
 
 BACKEND_TAG="${BACKEND_TAG:?BACKEND_TAG is required}"
@@ -45,6 +57,36 @@ note() { echo "switch-tests-ref: $*"; }
 # switch made by this run may mark the tree as a release line.
 MARKER="$(git rev-parse --show-toplevel)/deploy-test/.tests-ref"
 rm -f "$MARKER"
+
+TESTS_SHA="${GATE_TESTS_SHA:-}"
+if [[ -n "$TESTS_SHA" && ! "$TESTS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "::error title=Invalid tests_sha::GATE_TESTS_SHA must be a full 40-hex commit of this repository." >&2
+  exit 1
+fi
+
+# Moves the tree to GATE_TESTS_SHA when one is set; a no-op otherwise. <branch>
+# is the branch the tree is gated by: the pinned commit must be reachable from
+# it. Fails the job, never falls back to the tip: a pin that cannot be honoured
+# would run a different suite than the one the caller recorded.
+pin_tree() { # <branch>
+  local branch="$1" shallow=()
+  [[ -n "$TESTS_SHA" ]] || return 0
+  if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then shallow=(--unshallow); fi
+  git fetch --quiet --no-tags "${shallow[@]}" origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+  if ! git cat-file -e "${TESTS_SHA}^{commit}" 2>/dev/null \
+     || ! git merge-base --is-ancestor "$TESTS_SHA" "refs/remotes/origin/${branch}"; then
+    echo "::error title=tests_sha is not on ${branch}::${TESTS_SHA} is not a commit reachable from ${branch} of this repository, the branch the candidate is gated by. Refusing to run a tree that is not part of that suite." >&2
+    exit 1
+  fi
+  git checkout --quiet --detach "$TESTS_SHA"
+  note "tests pinned to ${TESTS_SHA:0:12} (reachable from ${branch})"
+  echo "::notice title=Tests ref pinned::${branch} @ ${TESTS_SHA:0:12}"
+}
+
+stay_on_main() {
+  pin_tree main
+  exit 0
+}
 
 version=""
 case "$BACKEND_TAG" in
@@ -66,21 +108,26 @@ case "$BACKEND_TAG" in
     note "backend tag '${BACKEND_TAG}' names no version; staying on main"
     ;;
 esac
-[[ -n "$version" ]] || exit 0
+[[ -n "$version" ]] || stay_on_main
 
 if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+ ]]; then
   note "version '${version}' is not X.Y.Z; staying on main"
-  exit 0
+  stay_on_main
 fi
 branch="release/${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.x"
 
 if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-  git fetch --quiet --depth 1 origin "$branch"
-  git checkout --quiet --detach FETCH_HEAD
+  if [[ -n "$TESTS_SHA" ]]; then
+    pin_tree "$branch"
+  else
+    git fetch --quiet --depth 1 origin "$branch"
+    git checkout --quiet --detach FETCH_HEAD
+  fi
   short=$(git rev-parse --short HEAD)
   printf '%s\n' "$branch" > "$MARKER"
   note "candidate is ${version}: running the suite from ${branch} @ ${short}"
   echo "::notice title=Tests ref::candidate ${version} is gated by ${branch} @ ${short}, not main"
 else
   note "candidate is ${version}: this repository has no ${branch}; running the suite from main"
+  pin_tree main
 fi

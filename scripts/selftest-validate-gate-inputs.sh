@@ -44,6 +44,10 @@ expect 0 "optional inputs empty"                        BACKEND_TAG=1.12.0 WEB_T
 expect 0 "an adapter sha tag"                           BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=sha-a94c2fd
 expect 0 "an adapter version tag"                       BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=1.3.2
 expect 0 "scanner_adapter_tag empty"                    BACKEND_TAG=sha-a94c2fd SCANNER_ADAPTER_TAG=
+expect 0 "only_jobs: one job"                           BACKEND_TAG=sha-a94c2fd GATE_ONLY_JOBS=webhook-tests
+expect 0 "only_jobs: jobs and DTF legs"                 BACKEND_TAG=sha-a94c2fd GATE_ONLY_JOBS='collect-results dtf-gate/storage-1.11.0 dtf-gate/conda-1.11.0-b pullthrough-tests'
+expect 0 "tests_sha: a full commit"                     BACKEND_TAG=sha-a94c2fd GATE_TESTS_SHA=0495cf0389b14ecb63bc62b510d58e9c33425d6c
+expect 0 "only_jobs and tests_sha empty"                BACKEND_TAG=sha-a94c2fd GATE_ONLY_JOBS= GATE_TESTS_SHA=
 expect 0 "a 128-character name"                         BACKEND_TAG="$(printf 'a%.0s' $(seq 128))"
 
 echo "validate-gate-inputs.sh: everything else is refused"
@@ -65,6 +69,16 @@ expect 1 "digest: 65 hex digits"                        BACKEND_TAG=1.12.0 BACKE
 expect 1 "adapter tag: a slash"                         BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=a/b
 expect 1 "adapter tag: an @ (a digest suffix)"          BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=1@sha256
 expect 1 "adapter tag: a leading -"                     BACKEND_TAG=1.12.0 SCANNER_ADAPTER_TAG=-x
+expect 1 "tests_sha: short"                             BACKEND_TAG=1.12.0 GATE_TESTS_SHA=0495cf0
+expect 1 "tests_sha: a branch name"                     BACKEND_TAG=1.12.0 GATE_TESTS_SHA=main
+expect 1 "tests_sha: upper-case hex"                    BACKEND_TAG=1.12.0 GATE_TESTS_SHA=0495CF0389B14ECB63BC62B510D58E9C33425D6C
+expect 1 "only_jobs: a comma"                           BACKEND_TAG=1.12.0 GATE_ONLY_JOBS='repo-tests,auth-tests'
+expect 1 "only_jobs: two spaces"                        BACKEND_TAG=1.12.0 GATE_ONLY_JOBS='repo-tests  auth-tests'
+expect 1 "only_jobs: a leading space"                   BACKEND_TAG=1.12.0 GATE_ONLY_JOBS=' repo-tests'
+expect 1 "only_jobs: upper case"                        BACKEND_TAG=1.12.0 GATE_ONLY_JOBS=Repo-Tests
+expect 1 "only_jobs: a quote"                           BACKEND_TAG=1.12.0 GATE_ONLY_JOBS="repo-tests'"
+expect 1 "only_jobs: two slashes"                       BACKEND_TAG=1.12.0 GATE_ONLY_JOBS=dtf-gate/a/b
+expect 1 "only_jobs: a newline"                         BACKEND_TAG=1.12.0 GATE_ONLY_JOBS=$'repo-tests\nauth-tests'
 expect 1 "digest: wrong algorithm"                      BACKEND_TAG=1.12.0 BACKEND_DIGEST="sha512:${DIGEST#sha256:}"
 
 if [ "$fails" -ne 0 ]; then
