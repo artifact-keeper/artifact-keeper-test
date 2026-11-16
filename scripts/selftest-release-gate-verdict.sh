@@ -26,12 +26,12 @@
 #   * teardown runs only when deploy ran and left a run id
 #     (artifact-keeper-test#839), so a skipped deploy does not add a red
 #     cleanup job that says nothing.
-#   * the summary's ADVISORY_JOBS list is exactly the job-level
-#     continue-on-error jobs in `collect-results.needs`, so the "Advisory"
+#   * the summary's ADVISORY_JOBS list is exactly the jobs in
+#     `collect-results.needs` that are off the gate predicate, so the "Advisory"
 #     table never hides a voting job or shows a non-voting one as required
 #     (artifact-keeper-test#423);
-#   * the destructive-phase barrier: every job that talks to the shared
-#     instance (reads `needs.deploy.outputs.backend_url`) is in
+#   * the destructive-phase barrier: every job that runs against the
+#     deployed instance (needs `deploy`; teardown excepted) is in
 #     `stress-tests.needs` or runs after stress-tests, so stress and
 #     resilience never degrade the backend under a functional suite
 #     mid-request (artifact-keeper-test#365).
@@ -122,18 +122,24 @@ def problems(path):
         m = re.search(r'ADVISORY_JOBS="([^"]*)"', str(s.get("run", "")))
         if m:
             advisory = set(m.group(1).split())
-    non_voting = {n for n in needs if (jobs.get(n) or {}).get("continue-on-error") is True}
+    # Non-voting = needed but off the predicate. continue-on-error does not
+    # change needs.<job>.result, so a job that carries it AND sits on the
+    # predicate still votes and must show as required. Rule 1 already forces
+    # every job off the predicate to carry continue-on-error.
+    non_voting = needs - on_predicate
     if advisory is None:
         out.append(f"no ADVISORY_JOBS=\"...\" list in {GATE_JOB}'s summary (artifact-keeper-test#423)")
     else:
         for name in sorted(non_voting - advisory):
-            out.append(f"'{name}' is non-voting (continue-on-error) but missing from ADVISORY_JOBS, so the summary shows it as required")
+            out.append(f"'{name}' is non-voting (off the gate predicate) but missing from ADVISORY_JOBS, so the summary shows it as required")
         for name in sorted(advisory - non_voting):
-            out.append(f"'{name}' is in ADVISORY_JOBS but is not a non-voting job in {GATE_JOB}.needs")
+            out.append(f"'{name}' is in ADVISORY_JOBS but votes (it is on the gate predicate) or is not in {GATE_JOB}.needs")
 
     # #365: the destructive-phase barrier.
     barrier = jobs.get(BARRIER_JOB)
-    if barrier is not None:
+    if barrier is None:
+        out.append(f"no {BARRIER_JOB} job: the destructive-phase barrier rule cannot be checked (artifact-keeper-test#365)")
+    else:
         def needs_of(n):
             v = (jobs.get(n) or {}).get("needs") or []
             return {v} if isinstance(v, str) else set(v)
@@ -146,13 +152,16 @@ def problems(path):
 
         held = needs_of(BARRIER_JOB)
         for name, job in jobs.items():
-            if name in ("deploy", BARRIER_JOB, GATE_JOB) or name in held:
+            # Anything that needs deploy runs against the deployed namespace
+            # (backend_url, namespace, kubectl); only post-verdict cleanup is
+            # exempt.
+            if name in ("deploy", BARRIER_JOB, GATE_JOB, "teardown") or name in held:
                 continue
-            if "needs.deploy.outputs.backend_url" not in str(job):
+            if "deploy" not in needs_of(name):
                 continue
             if not after_barrier(name):
                 out.append(
-                    f"job '{name}' talks to the shared instance (needs.deploy.outputs.backend_url) "
+                    f"job '{name}' runs against the deployed instance (needs deploy) "
                     f"but is neither in {BARRIER_JOB}.needs nor after it: the destructive phase "
                     f"can degrade the backend under it mid-request (artifact-keeper-test#365)"
                 )
@@ -291,6 +300,25 @@ s = open(sys.argv[1]).read()
 s = s.replace('ADVISORY_JOBS=" soft stress-tests "', 'ADVISORY_JOBS=" soft stress-tests suite-a "', 1)
 open(sys.argv[2], "w").write(s)
 PY
+# Rule 5c: a continue-on-error job that is ALSO on the predicate votes, so it
+# must not be listed as advisory.
+python3 - "${WORK}/good.yml" "${WORK}/advisory-coe-voting.yml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace("          needs.late.result != 'success'\n", "          needs.late.result != 'success' ||\n          needs.soft.result != 'success'\n", 1)
+open(sys.argv[2], "w").write(s)
+PY
+# Rule 6b: the barrier job is missing.
+python3 - "${WORK}/good.yml" "${WORK}/barrier-missing.yml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace("  stress-tests:\n", "  stress-renamed:\n", 1)
+s = s.replace("needs: [deploy, stress-tests]", "needs: [deploy, stress-renamed]", 1)
+s = s.replace("soft, stress-tests, late]", "soft, stress-renamed, late]", 1)
+s = s.replace("soft stress-tests late;", "soft stress-renamed late;", 1)
+s = s.replace('ADVISORY_JOBS=" soft stress-tests "', 'ADVISORY_JOBS=" soft stress-renamed "', 1)
+open(sys.argv[2], "w").write(s)
+PY
 # Rule 6 (#365): a job on the shared instance outside the barrier.
 python3 - "${WORK}/good.yml" "${WORK}/barrier-gap.yml" <<'PY'
 import sys
@@ -325,7 +353,9 @@ expect "predicate clause on an unlisted job"           1 "${WORK}/predicate-not-
 expect "needed job missing from the summary"           1 "${WORK}/summary-missing.yml"      "'suite-a' is in collect-results.needs but missing"
 expect "non-voting job missing from ADVISORY_JOBS"     1 "${WORK}/advisory-missing.yml"     "'soft' is non-voting"
 expect "voting job listed in ADVISORY_JOBS"            1 "${WORK}/advisory-voting.yml"      "'suite-a' is in ADVISORY_JOBS"
-expect "instance job outside the destructive barrier"  1 "${WORK}/barrier-gap.yml"          "job 'soft' talks to the shared instance"
+expect "c-o-e job on the predicate listed as advisory"  1 "${WORK}/advisory-coe-voting.yml"  "'soft' is in ADVISORY_JOBS but votes"
+expect "instance job outside the destructive barrier"  1 "${WORK}/barrier-gap.yml"          "job 'soft' runs against the deployed instance"
+expect "barrier job missing"                           1 "${WORK}/barrier-missing.yml"      "no stress-tests job"
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "checker self-test failed (${FAILURES}); not trusting it on ${TARGET}"
