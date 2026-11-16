@@ -174,7 +174,7 @@ if [ "$DEL_STATUS" = "202" ]; then
     # completed_with_errors (artifact-keeper#5655): rows gone, some objects
     # left for storage GC. Terminal; the row cascade below can be judged.
     case "$DEL_JOB_STATUS" in completed|completed_with_errors|failed) break ;; esac
-    sleep 1
+    sleep 1  # sleep-ok: poll interval (loop bounded by REPO_DELETE_TIMEOUT)
   done
 fi
 

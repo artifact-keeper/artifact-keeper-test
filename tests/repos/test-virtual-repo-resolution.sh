@@ -10,10 +10,26 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "virtual-repo-resolution"
 auth_admin
 setup_workdir
+# Member-listing poll (15 s) plus member-upload listing poll (20 s); each
+# normally ends on its first probe.
+require_wait_budget 35 "member and listing polls"
 
 LOCAL_A="test-virt-local-a-${RUN_ID}"
 LOCAL_B="test-virt-local-b-${RUN_ID}"
 VIRTUAL_KEY="test-virt-virtual-${RUN_ID}"
+
+# members_listed: wait_until predicate, the virtual repo lists >= 1 member.
+members_listed() {
+  local n
+  n=$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/members" 2>/dev/null | jq '.items | length' 2>/dev/null)
+  [ "${n:-0}" -ge 1 ] 2>/dev/null
+}
+
+# member_uploads_listed: wait_until predicate, both member repos list the
+# artifact uploaded to them (what the virtual listing aggregates).
+member_uploads_listed() {
+  repo_lists_artifact "$LOCAL_A" "shared/file.txt" && repo_lists_artifact "$LOCAL_B" "only-in-b/file.txt"
+}
 
 # -------------------------------------------------------------------------
 # Create two local repos and one virtual repo
@@ -60,9 +76,13 @@ else
   fi
 fi
 
-# Verify members were added
-sleep 1
+# Verify members were added. The member write commits before it answers;
+# bounded wait for the listing, the check below judges it either way.
 begin_test "Verify members were added"
+# common.sh runs under set -e: a timeout must not abort the script before
+# the check below records its verdict.
+wait_until "members listed on ${VIRTUAL_KEY}" 15 members_listed \
+  || echo "  continuing to the check below after the wait timed out" >&2
 if resp=$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/members" 2>/dev/null); then
   count=$(echo "$resp" | jq '.items | length' 2>/dev/null) || count=0
   if [ "$count" -ge 1 ]; then
@@ -100,10 +120,11 @@ fi
 # Resolve artifacts through the virtual repo
 # -------------------------------------------------------------------------
 
-sleep 2
-
 begin_test "Virtual repo lists aggregated artifacts"
-if resp=$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/artifacts" 2>/dev/null); then
+# Precondition: each member repo lists its own upload.
+if ! wait_until "uploads listed in ${LOCAL_A} and ${LOCAL_B}" 20 member_uploads_listed; then
+  fail "the uploads to ${LOCAL_A} and ${LOCAL_B} were not both listed in their own repos within 20s"
+elif resp=$(api_get "/api/v1/repositories/${VIRTUAL_KEY}/artifacts" 2>/dev/null); then
   # Virtual repo should aggregate artifacts from both local repos
   if [[ "$resp" == *"file.txt"* ]]; then
     pass

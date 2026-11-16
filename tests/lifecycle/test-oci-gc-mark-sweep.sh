@@ -226,7 +226,7 @@ b1_final=""
 gc_deadline=$(( $(date +%s) + GC_DEADLINE_SECS ))
 while :; do
   api_post "/api/v1/admin/storage-gc" '{"dry_run":false}' >/dev/null 2>&1 || true
-  sleep 3
+  sleep 3  # sleep-ok: interval between GC sweeps (loop bounded by GC_DEADLINE_SECS)
   b1_final=$(blob_status "$IMG_A" "$B1_DIGEST")
   [ "$b1_final" = "404" ] && break
   [ "$(date +%s)" -ge "$gc_deadline" ] && break

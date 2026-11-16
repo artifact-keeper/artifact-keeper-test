@@ -16,6 +16,15 @@ UPSTREAM_KEY="test-dkr-upstream-${RUN_ID}"
 REMOTE_KEY="test-dkr-remote-${RUN_ID}"
 IMAGE_NAME="test-image"
 TAG="latest"
+MANIFEST_PUSHED=0
+
+# upstream_manifest_served: wait_until predicate, the upstream answers the
+# pushed manifest (what the remote proxy will fetch on the pull below).
+upstream_manifest_served() {
+  curl -sf -o /dev/null $CURL_TIMEOUT -H "$(auth_header)" \
+    -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+    "${BASE_URL}/v2/${UPSTREAM_KEY}/${IMAGE_NAME}/manifests/${TAG}"
+}
 
 # -------------------------------------------------------------------------
 # Create upstream local docker repo
@@ -79,6 +88,7 @@ if curl -sf $CURL_TIMEOUT -X PUT \
     -H "Content-Type: application/vnd.oci.image.manifest.v1+json" \
     --data-binary "@${WORK_DIR}/manifest.json" \
     "${BASE_URL}/v2/${UPSTREAM_KEY}/${IMAGE_NAME}/manifests/${TAG}" > /dev/null 2>&1; then
+  MANIFEST_PUSHED=1
   pass
 else
   skip "docker manifest push not supported via API"
@@ -100,10 +110,12 @@ fi
 # Pull manifest through the remote proxy
 # -------------------------------------------------------------------------
 
-sleep 2
-
 begin_test "Pull manifest via remote proxy"
-if resp=$(curl -sf $CURL_TIMEOUT \
+# The pull's precondition is the upstream serving the manifest pushed above.
+if [ "$MANIFEST_PUSHED" = "1" ] \
+    && ! wait_until "upstream ${UPSTREAM_KEY} serves ${IMAGE_NAME}:${TAG}" 20 upstream_manifest_served; then
+  fail "the manifest pushed to ${UPSTREAM_KEY} was not served by the upstream within 20s"
+elif resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(auth_header)" \
     -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
     "${BASE_URL}/v2/${REMOTE_KEY}/${IMAGE_NAME}/manifests/${TAG}" 2>/dev/null); then

@@ -11,6 +11,9 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "promotion-flow"
 auth_admin
 setup_workdir
+# Three listing polls of at most 20 s each (upload, promotion landing, second
+# upload); each normally ends on its first probe.
+require_wait_budget 60 "artifact listing polls"
 
 STAGING_KEY="test-promo-staging-${RUN_ID}"
 RELEASE_KEY="test-promo-release-${RUN_ID}"
@@ -46,15 +49,15 @@ else
   fail "upload to staging failed"
 fi
 
-sleep 2
-
 # -------------------------------------------------------------------------
 # Get artifact ID for promotion
 # -------------------------------------------------------------------------
 
 begin_test "Get artifact ID from staging"
 ARTIFACT_ID=""
-if resp=$(api_get "/api/v1/repositories/${STAGING_KEY}/artifacts" 2>/dev/null); then
+if ! wait_until "app.jar listed in ${STAGING_KEY}" 20 repo_lists_artifact "$STAGING_KEY" "app.jar"; then
+  fail "uploaded app.jar never appeared in the ${STAGING_KEY} listing within 20s"
+elif resp=$(api_get "/api/v1/repositories/${STAGING_KEY}/artifacts" 2>/dev/null); then
   ARTIFACT_ID=$(echo "$resp" | jq -r '
     if type == "array" then .[0].id // .[0].artifact_id // empty
     elif .items then .items[0].id // .items[0].artifact_id // empty
@@ -89,10 +92,12 @@ fi
 # Verify artifact in release repo
 # -------------------------------------------------------------------------
 
-sleep 2
-
 begin_test "Verify artifact exists in release repo"
-if resp=$(api_get "/api/v1/repositories/${RELEASE_KEY}/artifacts" 2>/dev/null); then
+# Wait for the promotion to land (the copied artifact row listed in the
+# target), then assert on the listing as before.
+if ! wait_until "app.jar listed in ${RELEASE_KEY}" 20 repo_lists_artifact "$RELEASE_KEY" "app.jar"; then
+  fail "promoted app.jar never appeared in the ${RELEASE_KEY} listing within 20s"
+elif resp=$(api_get "/api/v1/repositories/${RELEASE_KEY}/artifacts" 2>/dev/null); then
   if assert_contains "$resp" "app.jar"; then
     pass
   fi
@@ -125,9 +130,13 @@ else
   echo "reject-candidate-${RUN_ID}" > "${WORK_DIR}/reject.jar"
   api_upload "/api/v1/repositories/${STAGING_KEY}/artifacts/com/app/reject.jar" \
     "${WORK_DIR}/reject.jar" > /dev/null 2>&1 || true
-  sleep 2
 
-  # Get the new artifact ID
+  # Get the new artifact ID, once the upload is listed. Without the row the
+  # "last artifact" fallback below would pick app.jar and reject the wrong one.
+  REJECT_LISTED=0
+  if wait_until "reject.jar listed in ${STAGING_KEY}" 20 repo_lists_artifact "$STAGING_KEY" "reject.jar"; then
+    REJECT_LISTED=1
+  fi
   reject_list=$(api_get "/api/v1/repositories/${STAGING_KEY}/artifacts" 2>/dev/null) || true
   REJECT_ARTIFACT_ID=$(echo "$reject_list" | jq -r '
     if type == "array" then [.[] | select(.path // .name | test("reject"))] | .[0].id // .[0].artifact_id // empty
@@ -144,7 +153,9 @@ else
       end' 2>/dev/null) || true
   fi
 
-  if [ -n "$REJECT_ARTIFACT_ID" ] && [ "$REJECT_ARTIFACT_ID" != "null" ]; then
+  if [ "$REJECT_LISTED" -ne 1 ]; then
+    fail "uploaded reject.jar never appeared in the ${STAGING_KEY} listing within 20s"
+  elif [ -n "$REJECT_ARTIFACT_ID" ] && [ "$REJECT_ARTIFACT_ID" != "null" ]; then
     reject_resp=$(api_post "/api/v1/promotion/repositories/${STAGING_KEY}/artifacts/${REJECT_ARTIFACT_ID}/reject" \
       '{"reason":"test rejection"}' 2>/dev/null) || true
     if [ -n "$reject_resp" ] && echo "$reject_resp" | jq -e '.rejected // .rejection_id // .id' > /dev/null 2>&1; then

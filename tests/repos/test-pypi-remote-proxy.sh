@@ -11,11 +11,26 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "pypi-remote-proxy"
 auth_admin
 setup_workdir
+# Upload-row poll plus upstream-index poll, at most 20 s each.
+require_wait_budget 40 "upstream listing and index polls"
 
 UPSTREAM_KEY="test-pypi-upstream-${RUN_ID}"
 REMOTE_KEY="test-pypi-proxy-remote-${RUN_ID}"
 PKG_NAME="e2e-testpkg"
 PKG_VERSION="1.0.0"
+PYPI_UPLOADED=0
+
+# upstream_lists_upload: wait_until predicate, the upstream's artifact listing
+# holds the uploaded sdist row (stored under the PEP 503 name, which PKG_NAME
+# already is). Independent of the simple index the next check reads.
+upstream_lists_upload() { repo_lists_artifact "$UPSTREAM_KEY" "$PKG_NAME"; }
+
+# upstream_index_lists_pkg: wait_until predicate, the upstream simple index
+# lists the package (what the remote proxies on its first request).
+upstream_index_lists_pkg() {
+  curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null | grep -qF "$PKG_NAME"
+}
 
 # -------------------------------------------------------------------------
 # Create upstream local PyPI repo
@@ -57,9 +72,11 @@ if curl -sf $CURL_TIMEOUT -X POST \
     -F "filetype=sdist" \
     -F "content=@${WORK_DIR}/${PKG_NAME}-${PKG_VERSION}.tar.gz" \
     "${BASE_URL}/pypi/${UPSTREAM_KEY}/" > /dev/null 2>&1; then
+  PYPI_UPLOADED=1
   pass
 elif api_upload "/api/v1/repositories/${UPSTREAM_KEY}/artifacts/${PKG_NAME}/${PKG_VERSION}/${PKG_NAME}-${PKG_VERSION}.tar.gz" \
     "${WORK_DIR}/${PKG_NAME}-${PKG_VERSION}.tar.gz" "application/gzip" > /dev/null 2>&1; then
+  PYPI_UPLOADED=1
   pass
 else
   skip "could not upload PyPI package to upstream"
@@ -70,8 +87,11 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Upstream simple index lists the package"
-sleep 1
-if resp=$(curl -sf $CURL_TIMEOUT \
+# Precondition: the accepted upload's artifact row is listed in the upstream.
+if [ "$PYPI_UPLOADED" = "1" ] \
+    && ! wait_until "${PKG_NAME} upload listed in ${UPSTREAM_KEY}" 20 upstream_lists_upload; then
+  fail "the ${PKG_NAME} upload accepted by ${UPSTREAM_KEY} was not listed there within 20s"
+elif resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null); then
   if assert_contains "$resp" "${PKG_NAME}"; then
@@ -105,9 +125,14 @@ fi
 # Fetch simple index through the remote proxy
 # -------------------------------------------------------------------------
 
-sleep 2
-
 begin_test "Fetch simple index via remote proxy"
+# Precondition: the upstream simple index lists the package (judged by the
+# upstream check above; this bounded wait only covers the window, and the
+# checks below judge the proxied index either way).
+# common.sh runs under set -e: a timeout must not abort the script before
+# the check below records its verdict.
+wait_until "upstream ${UPSTREAM_KEY} simple index lists ${PKG_NAME}" 20 upstream_index_lists_pkg \
+  || echo "  continuing to the check below after the wait timed out" >&2
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${BASE_URL}/pypi/${REMOTE_KEY}/simple/${PKG_NAME}/" 2>/dev/null); then

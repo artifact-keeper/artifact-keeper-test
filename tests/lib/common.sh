@@ -2754,6 +2754,26 @@ require_wait_budget() {
   return 0
 }
 
+# repo_lists_artifact REPO_KEY NEEDLE
+#
+# A wait_until predicate: true when GET /api/v1/repositories/REPO_KEY/artifacts
+# answers 2xx and its body contains NEEDLE (an artifact path or file name).
+# Use it in place of `sleep N` between a write that lands an artifact row
+# (PUT upload, promotion copy) and the step that reads it back by listing, so
+# the wait ends the moment the row is listable and a row that never lands is a
+# named timeout, not an empty-listing assertion a step later:
+#
+#   wait_until "app.jar listed in ${KEY}" 20 repo_lists_artifact "$KEY" app.jar \
+#     || fail "app.jar never appeared in ${KEY} within 20s"
+repo_lists_artifact() {
+  local body
+  body=$(api_get "/api/v1/repositories/${1}/artifacts" 2>/dev/null) || return 1
+  case "$body" in
+    *"$2"*) return 0 ;;
+  esac
+  return 1
+}
+
 wait_for_file_value() {
   local file="$1"
   local pattern="$2"

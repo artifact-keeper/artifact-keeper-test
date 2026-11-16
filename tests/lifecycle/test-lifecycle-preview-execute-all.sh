@@ -34,6 +34,7 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "lifecycle-preview-execute-all"
 auth_admin
 setup_workdir
+require_wait_budget 30 "execute-all removal poll"
 
 REPO_A="test-lc-a-${RUN_ID}"
 REPO_B="test-lc-b-${RUN_ID}"
@@ -137,6 +138,12 @@ count_versions() {
   echo "$n"
 }
 
+# both_repos_pruned: wait_until predicate for the post-execute-all state the
+# last test asserts (<= 2 of v1..v4 still resolving on each repo).
+both_repos_pruned() {
+  [ "$(count_versions "$REPO_A")" -le 2 ] && [ "$(count_versions "$REPO_B")" -le 2 ]
+}
+
 # -------------------------------------------------------------------------
 # 6.5: Preview must be a true dry-run.
 # -------------------------------------------------------------------------
@@ -236,16 +243,19 @@ begin_test "After execute-all, both repos have <= 2 versions remaining"
 if [ "$EXEC_STATUS" != "200" ]; then
   skip "execute-all did not return 200"
 else
-  # Give the policy engine a moment in case execution is async.
-  sleep 5
-  REM_A=$(count_versions "$REPO_A")
-  REM_B=$(count_versions "$REPO_B")
+  # execute-all runs every enabled policy before it answers
+  # (LifecycleService::execute_all_enabled awaits each one), so the removals
+  # are committed by the 200. Poll the download path for them instead of a
+  # fixed sleep: it normally settles on the first probe, and a removal that
+  # never becomes visible fails below with the counts it settled at.
   # max_versions=1, so ideally REM == 1. Tolerate up to 2 to absorb
   # batching / clock-window edge cases.
-  if [ "$REM_A" -le 2 ] 2>/dev/null && [ "$REM_B" -le 2 ] 2>/dev/null; then
+  if wait_until "execute-all removals visible on ${REPO_A} and ${REPO_B}" 30 both_repos_pruned; then
     pass
   else
-    fail "expected <= 2 versions on each repo after execute-all; got A=${REM_A}, B=${REM_B}"
+    REM_A=$(count_versions "$REPO_A")
+    REM_B=$(count_versions "$REPO_B")
+    fail "expected <= 2 versions on each repo within 30s of execute-all; got A=${REM_A}, B=${REM_B}"
   fi
 fi
 

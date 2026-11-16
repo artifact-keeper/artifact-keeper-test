@@ -126,7 +126,7 @@ else
 fi
 
 begin_test "The refused override did not copy the artifact"
-sleep 1
+sleep 1  # sleep-ok: negative check, give a wrongly-accepted copy time to land before asserting it did not
 if resp=$(api_get "/api/v1/repositories/${RELEASE_KEY}/artifacts" 2>/dev/null); then
   if echo "$resp" | grep -q "app.bin"; then
     fail "the rule-blocked artifact was promoted by a non-admin skip_policy_check" "$resp"

@@ -24,6 +24,20 @@ SCOPE="e2escope"
 PKG_SHORT="testpkg"
 SCOPED_NAME="@${SCOPE}/${PKG_SHORT}"
 PKG_VERSION="1.0.$(date +%s)"
+NPM_PUBLISHED=0
+
+# upstream_serves_scoped: wait_until predicate, the upstream's packument for
+# the scoped package lists the version just published (what the remote proxy
+# fetches on its first request below).
+upstream_serves_scoped() {
+  local enc
+  for enc in "%2F" "/"; do
+    curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+      "${BASE_URL}/npm/${UPSTREAM_KEY}/@${SCOPE}${enc}${PKG_SHORT}" 2>/dev/null \
+      | jq -e --arg v "$PKG_VERSION" '.versions[$v]' > /dev/null 2>&1 && return 0
+  done
+  return 1
+}
 
 # ---------------------------------------------------------------------------
 # Create upstream local npm repo
@@ -42,8 +56,10 @@ fi
 
 begin_test "Publish scoped package to upstream"
 
-cd "$WORK_DIR"
-mkdir -p scoped-pkg && cd scoped-pkg
+if ! { cd "$WORK_DIR" && mkdir -p scoped-pkg && cd scoped-pkg; }; then
+  infra_fail "could not create the package dir under ${WORK_DIR}"
+  end_suite
+fi
 
 cat > package.json <<EOF
 {
@@ -68,6 +84,7 @@ registry=${UPSTREAM_REGISTRY}
 EOF
 
 if npm publish --registry "${UPSTREAM_REGISTRY}" 2>/dev/null; then
+  NPM_PUBLISHED=1
   pass
 else
   fail "npm publish of scoped package failed"
@@ -85,15 +102,17 @@ else
   fail "could not create remote npm repo"
 fi
 
-sleep 2
-
 # ---------------------------------------------------------------------------
 # Fetch scoped package metadata through remote (uses %2F encoding)
 # ---------------------------------------------------------------------------
 
 begin_test "Fetch scoped metadata via remote proxy"
-# The backend must encode @scope/pkg as @scope%2Fpkg when requesting upstream
-if resp=$(curl -sf $CURL_TIMEOUT \
+# The backend must encode @scope/pkg as @scope%2Fpkg when requesting upstream.
+# Precondition: the upstream serves the version just published.
+if [ "$NPM_PUBLISHED" = "1" ] \
+    && ! wait_until "upstream ${UPSTREAM_KEY} serves ${SCOPED_NAME}@${PKG_VERSION}" 20 upstream_serves_scoped; then
+  fail "${SCOPED_NAME}@${PKG_VERSION} published to ${UPSTREAM_KEY} was not served by the upstream within 20s"
+elif resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${BASE_URL}/npm/${REMOTE_KEY}/@${SCOPE}/${PKG_SHORT}" 2>/dev/null); then
   if echo "$resp" | jq -e '.name' > /dev/null 2>&1; then
