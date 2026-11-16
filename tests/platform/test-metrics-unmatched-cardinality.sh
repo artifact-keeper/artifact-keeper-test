@@ -91,6 +91,26 @@ fi
 # Section 2: probe junk paths + one matched route, then scrape
 # =========================================================================
 
+# Sum of every ak_http_requests_total sample except the scrape endpoint's
+# own series (each poll is itself a request). The middleware counts a request
+# as it is handled, so this is normally satisfied on the first scrape; the
+# poll replaces the old fixed pause and costs nothing when it is. The sum is
+# per replica: behind more than one replica it may not reach the target, and
+# the wait then falls through after its bound to the strict checks below.
+requests_total() {
+  fetch_metrics | awk '/^ak_http_requests_total[{ ]/ && !/admin\/metrics/ { s += $NF } END { printf "%d\n", s }'
+}
+REQUESTS_BEFORE=$(requests_total) || REQUESTS_BEFORE=0
+[[ "$REQUESTS_BEFORE" =~ ^[0-9]+$ ]] || REQUESTS_BEFORE=0
+# The probes below are recorded once the registry's request total has grown
+# by at least as many requests as we sent (sibling traffic only makes it
+# arrive sooner, never later).
+_probes_recorded() {
+  local now
+  now=$(requests_total) || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] && [ "$now" -ge $(( REQUESTS_BEFORE + ${#JUNK_PATHS[@]} + 3 )) ]
+}
+
 begin_test "Probe unmatched junk paths and a matched route"
 for p in "${JUNK_PATHS[@]}"; do
   curl -s -o /dev/null --max-time 10 "${BASE_URL}${p}" > /dev/null 2>&1 || true
@@ -99,8 +119,9 @@ done
 for _i in $(seq 1 3); do
   curl -s -o /dev/null --max-time 10 "${BASE_URL}/health" > /dev/null 2>&1 || true
 done
-# Give the registry a moment to record the completed requests.
-sleep 2
+# Wait until the registry has recorded the completed requests, so the
+# no-leak check below is not vacuously true against a stale scrape.
+wait_until "probe requests recorded in ak_http_requests_total" 20 _probes_recorded || true
 METRICS="$(fetch_metrics || true)"
 if [ -n "$METRICS" ]; then
   pass
