@@ -42,6 +42,13 @@ fi
 
 # -------------------------------------------------------------------------
 # Run audit log cleanup (validates the audit subsystem works)
+#
+# Instance-wide but inert on the gate (artifact-keeper-test#365): the
+# backend deletes only entries older than audit_retention_days, and does
+# nothing when that is 0 (admin.rs audit_cleanup_applies). The gate deploys
+# a fresh namespace per run, so no audit row a sibling suite reads is old
+# enough to be removed. Do not add a retention override here: a lowered
+# retention would turn this into a purge under every concurrent suite.
 # -------------------------------------------------------------------------
 
 begin_test "Audit log cleanup runs successfully"

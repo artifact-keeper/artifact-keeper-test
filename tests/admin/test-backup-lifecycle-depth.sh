@@ -197,7 +197,7 @@ else
       if [ -n "$observed" ]; then
         break
       fi
-      sleep 1
+      sleep 1  # sleep-ok: poll interval of a bounded 10-try loop
     done
     if [ -n "$observed" ]; then
       echo "  observed post-execute marker: ${observed}"
