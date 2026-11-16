@@ -9,6 +9,7 @@
 # Note: Backend pod must have NET_ADMIN capability for iptables.
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "network-partition-heal"
 require_cmd kubectl
@@ -22,12 +23,10 @@ REPO_KEY="net-partition-${RUN_ID}"
 # Identify pods
 # ---------------------------------------------------------------------------
 
-BACKEND_POD=$(kubectl get pods -l app=artifact-keeper-backend \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-if [ -z "$BACKEND_POD" ]; then
-  echo "SKIP: could not find backend pod"
-  exit 0
-fi
+begin_test "Locate backend pod"
+k8s_require_pod BACKEND_POD "$AK_BACKEND_SELECTOR" backend
+echo "  Backend pod: ${BACKEND_POD}"
+pass
 
 # ---------------------------------------------------------------------------
 # Upload baseline data
@@ -59,10 +58,12 @@ fi
 
 begin_test "Block backend connectivity to PostgreSQL (port 5432)"
 IPTABLES_AVAILABLE=false
-iptables_output=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
-  iptables -A OUTPUT -p tcp --dport 5432 -j DROP 2>&1) || true
-if echo "$iptables_output" | grep -qi "not found\|operation not permitted\|permission denied"; then
-  skip "iptables not available in backend pod (need NET_ADMIN capability)"
+# Judge by kubectl's exit status, not by grepping its output (see
+# test-latency-injection.sh).
+if ! iptables_output=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
+    iptables -A OUTPUT -p tcp --dport 5432 -j DROP 2>&1); then
+  echo "  ${iptables_output}"
+  skip "iptables could not be applied in backend pod (need NET_ADMIN capability)"
 else
   echo "  Blocked outbound TCP to port 5432"
   IPTABLES_AVAILABLE=true

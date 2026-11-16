@@ -11,6 +11,7 @@
 # available, the test will skip.
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "network-latency"
 require_cmd kubectl
@@ -24,12 +25,10 @@ REPO_KEY="net-latency-${RUN_ID}"
 # Identify backend pod
 # ---------------------------------------------------------------------------
 
-BACKEND_POD=$(kubectl get pods -l app=artifact-keeper-backend \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-if [ -z "$BACKEND_POD" ]; then
-  echo "SKIP: could not find backend pod"
-  exit 0
-fi
+begin_test "Locate backend pod"
+k8s_require_pod BACKEND_POD "$AK_BACKEND_SELECTOR" backend
+echo "  Backend pod: ${BACKEND_POD}"
+pass
 
 # ---------------------------------------------------------------------------
 # Baseline: upload artifacts at normal speed
@@ -61,10 +60,14 @@ fi
 
 begin_test "Inject 500ms latency via tc netem"
 TC_AVAILABLE=false
-tc_output=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
-  tc qdisc add dev eth0 root netem delay 500ms 2>&1) || true
-if echo "$tc_output" | grep -qi "not found\|no such file\|operation not permitted\|permission denied"; then
-  skip "tc/netem not available in backend pod (need iproute2 and NET_ADMIN capability)"
+# Judge by kubectl's exit status, not by grepping its output: an exec that
+# failed for any reason the grep did not list (Forbidden, container not
+# found) used to count as "applied" and every later check graded a backend
+# that was never degraded.
+if ! tc_output=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
+    tc qdisc add dev eth0 root netem delay 500ms 2>&1); then
+  echo "  ${tc_output}"
+  skip "tc/netem could not be applied in backend pod (need iproute2 and NET_ADMIN capability)"
 else
   echo "  Latency injection applied"
   TC_AVAILABLE=true

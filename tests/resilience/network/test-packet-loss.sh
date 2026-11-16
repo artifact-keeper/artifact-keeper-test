@@ -9,6 +9,7 @@
 # Note: Backend pod needs iproute2 and NET_ADMIN capability.
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "network-packet-loss"
 require_cmd kubectl
@@ -22,12 +23,10 @@ REPO_KEY="net-pktloss-${RUN_ID}"
 # Identify backend pod
 # ---------------------------------------------------------------------------
 
-BACKEND_POD=$(kubectl get pods -l app=artifact-keeper-backend \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-if [ -z "$BACKEND_POD" ]; then
-  echo "SKIP: could not find backend pod"
-  exit 0
-fi
+begin_test "Locate backend pod"
+k8s_require_pod BACKEND_POD "$AK_BACKEND_SELECTOR" backend
+echo "  Backend pod: ${BACKEND_POD}"
+pass
 
 # ---------------------------------------------------------------------------
 # Baseline uploads
@@ -59,10 +58,12 @@ fi
 
 begin_test "Inject 10% packet loss via tc netem"
 TC_AVAILABLE=false
-tc_output=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
-  tc qdisc add dev eth0 root netem loss 10% 2>&1) || true
-if echo "$tc_output" | grep -qi "not found\|no such file\|operation not permitted\|permission denied"; then
-  skip "tc/netem not available in backend pod (need iproute2 and NET_ADMIN capability)"
+# Judge by kubectl's exit status, not by grepping its output (see
+# test-latency-injection.sh).
+if ! tc_output=$(kubectl exec "$BACKEND_POD" -n "${NAMESPACE}" -- \
+    tc qdisc add dev eth0 root netem loss 10% 2>&1); then
+  echo "  ${tc_output}"
+  skip "tc/netem could not be applied in backend pod (need iproute2 and NET_ADMIN capability)"
 else
   echo "  Packet loss injection applied (10%)"
   TC_AVAILABLE=true

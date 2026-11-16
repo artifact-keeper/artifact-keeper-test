@@ -11,6 +11,7 @@
 # The test creates a ballast file via fallocate or dd to consume space.
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "storage-disk-full"
 require_cmd kubectl
@@ -20,12 +21,10 @@ setup_workdir
 NAMESPACE="${NAMESPACE:-ak-test-${RUN_ID}}"
 REPO_KEY="store-full-${RUN_ID}"
 
-BACKEND_POD=$(kubectl get pods -l app=artifact-keeper-backend \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-if [ -z "$BACKEND_POD" ]; then
-  echo "SKIP: could not find backend pod"
-  exit 0
-fi
+begin_test "Locate backend pod"
+k8s_require_pod BACKEND_POD "$AK_BACKEND_SELECTOR" backend
+echo "  Backend pod: ${BACKEND_POD}"
+pass
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -64,8 +63,9 @@ if [ "${avail:-999999}" -lt 1024 ] 2>/dev/null; then
   echo "  Disk is full (less than 1MB free)"
   pass
 else
-  echo "  Could not fully fill disk (${avail}KB free). Test may be less reliable."
-  pass
+  # Not a pass: the suite's subject (a full volume) was not reached.
+  echo "  fill output: ${fill_result}"
+  skip "could not fill the storage volume (${avail}KB free); the disk-full checks below do not apply"
 fi
 
 # ---------------------------------------------------------------------------

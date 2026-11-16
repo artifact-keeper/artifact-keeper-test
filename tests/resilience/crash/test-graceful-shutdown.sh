@@ -9,6 +9,7 @@
 # Requires: kubectl, NAMESPACE
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "crash-graceful-shutdown"
 require_cmd kubectl
@@ -44,6 +45,9 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Start background upload and trigger graceful shutdown"
+# Resolve the pod first: a selector that matches nothing must abort as INFRA,
+# not let the suite "shut down" nothing and grade an untouched backend.
+k8s_require_pod TERMINATED_POD "$AK_BACKEND_SELECTOR" backend
 # Generate a larger file to increase the chance it is in-flight during shutdown
 dd if=/dev/urandom bs=1048576 count=20 of="${WORK_DIR}/large.bin" 2>/dev/null
 
@@ -63,11 +67,17 @@ BG_PID=$!
 sleep 2
 
 # Graceful delete (no --force, respects terminationGracePeriodSeconds)
-kubectl delete pod -l app=artifact-keeper-backend -n "${NAMESPACE}" 2>&1 || true
-
-# Wait for background upload to finish
-wait "$BG_PID" 2>/dev/null || true
-pass
+echo "  Gracefully deleting pod: ${TERMINATED_POD}"
+if del_out=$(kubectl delete pod "$TERMINATED_POD" -n "${NAMESPACE}" 2>&1); then
+  echo "$del_out"
+  # Wait for background upload to finish
+  wait "$BG_PID" 2>/dev/null || true
+  pass
+else
+  wait "$BG_PID" 2>/dev/null || true
+  infra_fail "kubectl delete pod ${TERMINATED_POD} failed; the graceful shutdown this suite exists to test never happened" "$del_out"
+  end_suite
+fi
 
 # ---------------------------------------------------------------------------
 # Check background upload result
@@ -101,23 +111,9 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Wait for new backend pod"
-elapsed=0
-pod_ready=false
-while [ "$elapsed" -lt 120 ]; do
-  ready=$(kubectl get pods -l app=artifact-keeper-backend \
-    -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
-  if [ "$ready" = "true" ]; then
-    pod_ready=true
-    break
-  fi
-  sleep 3
-  elapsed=$(( elapsed + 3 ))
-done
-if [ "$pod_ready" = true ]; then
-  echo "  Pod ready after ${elapsed}s"
+if k8s_wait_ready "$AK_BACKEND_SELECTOR" backend 120 "$TERMINATED_POD_UID"; then
+  echo "  Replacement pod ${K8S_READY_POD} ready after ${K8S_READY_ELAPSED}s"
   pass
-else
-  skip "ARC runner timing: new pod did not become ready within 120s"
 fi
 
 begin_test "Wait for health endpoint"

@@ -8,6 +8,7 @@
 # Requires: kubectl, NAMESPACE
 
 source "$(dirname "$0")/../../lib/common.sh"
+source "$(dirname "$0")/../../lib/k8s.sh"
 
 begin_suite "restart-pod-reschedule"
 require_cmd kubectl
@@ -49,17 +50,14 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Delete specific backend pod"
-POD_NAME=$(kubectl get pods -l app=artifact-keeper-backend \
-  -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-if [ -z "$POD_NAME" ]; then
-  fail "could not find backend pod"
+k8s_require_pod POD_NAME "$AK_BACKEND_SELECTOR" backend
+echo "  Deleting pod: ${POD_NAME}"
+if del_out=$(kubectl delete pod "$POD_NAME" -n "${NAMESPACE}" 2>&1); then
+  echo "$del_out"
+  pass
 else
-  echo "  Deleting pod: ${POD_NAME}"
-  if kubectl delete pod "$POD_NAME" -n "${NAMESPACE}" 2>&1; then
-    pass
-  else
-    fail "kubectl delete pod failed"
-  fi
+  infra_fail "kubectl delete pod ${POD_NAME} failed; the reschedule this suite exists to test never happened" "$del_out"
+  end_suite
 fi
 
 # ---------------------------------------------------------------------------
@@ -67,26 +65,10 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Wait for replacement pod"
-elapsed=0
-pod_ready=false
-while [ "$elapsed" -lt 120 ]; do
-  ready=$(kubectl get pods -l app=artifact-keeper-backend \
-    -n "${NAMESPACE}" -o jsonpath='{.items[*].status.containerStatuses[0].ready}' 2>/dev/null || true)
-  if [ "$ready" = "true" ]; then
-    NEW_POD=$(kubectl get pods -l app=artifact-keeper-backend \
-      -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-    echo "  New pod: ${NEW_POD}"
-    pod_ready=true
-    break
-  fi
-  sleep 3
-  elapsed=$(( elapsed + 3 ))
-done
-if [ "$pod_ready" = true ]; then
-  echo "  Pod ready after ${elapsed}s"
+if k8s_wait_ready "$AK_BACKEND_SELECTOR" backend 120 "$POD_NAME_UID"; then
+  echo "  New pod: ${K8S_READY_POD}"
+  echo "  Pod ready after ${K8S_READY_ELAPSED}s"
   pass
-else
-  skip "ARC runner timing: replacement pod did not become ready within 120s"
 fi
 
 begin_test "Wait for health endpoint"
