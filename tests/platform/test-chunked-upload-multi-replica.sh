@@ -344,7 +344,7 @@ else
   for _ in $(seq 1 10); do
     n=$(staged_object_count "$BAD_SID") || n="?"
     [ "$n" = "0" ] && break
-    sleep 1
+    sleep 1  # sleep-ok: poll interval of a bounded 10-try loop
   done
   echo "  staged objects under upload-staging/${BAD_SID}/: ${n}"
   if [ "$n" = "0" ]; then

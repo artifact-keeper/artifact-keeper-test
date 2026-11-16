@@ -23,7 +23,13 @@ else
   fail "could not create repo"
 fi
 
-sleep 2
+# The listing below picks the artifact id. Wait for the upload to be listed
+# instead of guessing a pause (artifact-keeper-test#364).
+_artifact_listed() {
+  api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null | jq -e '
+    (if type == "array" then . elif .items then .items else [] end) | length > 0' > /dev/null
+}
+wait_until "uploaded artifact listed in ${REPO_KEY}" 30 _artifact_listed || true
 
 begin_test "Generate SBOM"
 # Get artifact ID
@@ -66,6 +72,10 @@ fi
 begin_test "Get SBOM content by artifact"
 SBOM_CONTENT=""
 if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" != "null" ]; then
+  # Some backends answer POST /sbom synchronously, others queue the
+  # generation; wait for the document to be retrievable before reading it.
+  _sbom_retrievable() { api_get "/api/v1/sbom/by-artifact/${ARTIFACT_ID}" > /dev/null 2>&1; }
+  wait_until "SBOM for artifact ${ARTIFACT_ID} retrievable" 60 _sbom_retrievable || true
   if content_resp=$(api_get "/api/v1/sbom/by-artifact/${ARTIFACT_ID}" 2>/dev/null); then
     SBOM_CONTENT="$content_resp"
     pass
