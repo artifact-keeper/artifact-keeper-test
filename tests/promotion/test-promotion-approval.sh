@@ -47,15 +47,17 @@ else
   fail "upload failed"
 fi
 
-sleep 2
-
 # -------------------------------------------------------------------------
 # Request approval for promotion
 # -------------------------------------------------------------------------
 
 begin_test "Request promotion approval"
-# Get artifact ID
+# Get artifact ID, once the upload is listed
 ARTIFACT_ID=""
+ARTIFACT_LISTED=0
+if wait_until "artifact.bin listed in ${STAGING_KEY}" 20 repo_lists_artifact "$STAGING_KEY" "artifact.bin"; then
+  ARTIFACT_LISTED=1
+fi
 if resp=$(api_get "/api/v1/repositories/${STAGING_KEY}/artifacts" 2>/dev/null); then
   ARTIFACT_ID=$(echo "$resp" | jq -r '
     if type == "array" then .[0].id // empty
@@ -64,7 +66,9 @@ if resp=$(api_get "/api/v1/repositories/${STAGING_KEY}/artifacts" 2>/dev/null); 
     end' 2>/dev/null) || true
 fi
 
-if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
+if [ "$ARTIFACT_LISTED" -ne 1 ]; then
+  fail "uploaded artifact.bin never appeared in the ${STAGING_KEY} listing within 20s"
+elif [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
   skip "could not get artifact ID"
 else
   APPROVAL_PAYLOAD='{

@@ -10,6 +10,7 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "lifecycle-policies"
 auth_admin
 setup_workdir
+require_wait_budget 30 "policy-execute removal poll"
 
 REPO_KEY="test-lifecycle-${RUN_ID}"
 POLICY_NAME="cleanup-${RUN_ID}"
@@ -132,17 +133,28 @@ begin_test "Verify old versions removed"
 if [ -z "${POLICY_ID:-}" ] || [ "$POLICY_ID" = "null" ]; then
   skip "no policy was created"
 else
-  sleep 5
-  remaining=0
-  for i in 1 2 3 4 5; do
-    status=$(curl -s -o /dev/null -w "%{http_code}" -H "$(auth_header)" $CURL_TIMEOUT \
-      "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/pkg/v${i}/file.txt" 2>&1) || true
-    if [ "$status" = "200" ]; then remaining=$((remaining + 1)); fi
-  done
-  if [ "$remaining" -le 2 ]; then
+  # POST /admin/lifecycle/{id}/execute runs the policy before it answers, so
+  # the removals are committed by the 200. Poll the download path for them
+  # instead of a fixed sleep: it normally settles on the first probe.
+  remaining_versions() {
+    local n=0 i status
+    for i in 1 2 3 4 5; do
+      status=$(curl -s -o /dev/null -w "%{http_code}" -H "$(auth_header)" $CURL_TIMEOUT \
+        "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/pkg/v${i}/file.txt" 2>&1) || true
+      case "$status" in
+        200) n=$((n + 1)) ;;
+        404) ;;
+        # A backend error or dropped probe must not read as "removed".
+        *) echo "unsettled"; return 0 ;;
+      esac
+    done
+    echo "$n"
+  }
+  at_most_two_remaining() { local n; n=$(remaining_versions); [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -le 2 ]; }
+  if wait_until "old versions removed from ${REPO_KEY}" 30 at_most_two_remaining; then
     pass
   else
-    fail "expected <= 2 versions remaining, found ${remaining}"
+    fail "expected <= 2 versions remaining within 30s of execute, found $(remaining_versions)"
   fi
 fi
 

@@ -207,7 +207,7 @@ while [ "$ATTEMPTS" -lt "$MAX_ATTEMPTS" ]; do
     200) break ;;
     404)
       # Not yet materialised; wait and retry.
-      sleep 2
+      sleep 2  # sleep-ok: poll interval (loop bounded by MAX_ATTEMPTS)
       ;;
     501)
       skip "report endpoint not implemented (HTTP 501)"

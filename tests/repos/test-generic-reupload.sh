@@ -10,9 +10,16 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "generic-reupload"
 auth_admin
 setup_workdir
+# Three listing polls of at most 20 s each; each normally ends on its first
+# probe (upload and delete commit the row change before they answer).
+require_wait_budget 60 "artifact listing polls"
 
 REPO_KEY="test-reupload-${RUN_ID}"
 ARTIFACT_PATH="libs/reupload-test.jar"
+
+# not_listed: wait_until predicate, the deleted artifact is gone from the
+# listing (or the listing itself is gone, which the check below also accepts).
+not_listed() { ! repo_lists_artifact "$REPO_KEY" "reupload-test"; }
 
 # -------------------------------------------------------------------------
 # Setup
@@ -39,8 +46,9 @@ else
 fi
 
 begin_test "Verify artifact appears in listing"
-sleep 1
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
+if ! wait_until "reupload-test listed in ${REPO_KEY}" 20 repo_lists_artifact "$REPO_KEY" "reupload-test"; then
+  fail "uploaded artifact never appeared in the ${REPO_KEY} listing within 20s"
+elif resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
   if assert_contains "$resp" "reupload-test"; then
     pass
   fi
@@ -60,7 +68,11 @@ else
 fi
 
 begin_test "Verify artifact is gone from listing"
-sleep 1
+# Bounded wait for the delete to leave the listing. On timeout wait_until
+# logs it and the check below judges the listing (common.sh runs under
+# set -e, so the timeout must not abort the script).
+wait_until "reupload-test gone from ${REPO_KEY}" 20 not_listed \
+  || echo "  continuing to the check below after the wait timed out" >&2
 if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
   # Empty result or no mention of the artifact both count
   count=$(echo "$resp" | jq '
@@ -96,8 +108,9 @@ else
 fi
 
 begin_test "Verify re-uploaded artifact appears in listing"
-sleep 1
-if resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
+if ! wait_until "re-uploaded reupload-test listed in ${REPO_KEY}" 20 repo_lists_artifact "$REPO_KEY" "reupload-test"; then
+  fail "re-uploaded artifact never appeared in the ${REPO_KEY} listing within 20s"
+elif resp=$(api_get "/api/v1/repositories/${REPO_KEY}/artifacts" 2>/dev/null); then
   if assert_contains "$resp" "reupload-test"; then
     pass
   fi

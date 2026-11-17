@@ -11,9 +11,12 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "remote-repo-proxy"
 auth_admin
 setup_workdir
+# Upstream-serves poll plus cache-row poll, at most 20 s each.
+require_wait_budget 20 "cache-row poll"
 
 UPSTREAM_KEY="test-remote-upstream-${RUN_ID}"
 REMOTE_KEY="test-remote-proxy-${RUN_ID}"
+PROXY_FETCHED=0
 
 # -------------------------------------------------------------------------
 # Create upstream local repo and seed it with an artifact
@@ -51,22 +54,19 @@ fi
 # Fetch artifact through the remote repo (proxy)
 # -------------------------------------------------------------------------
 
-sleep 2
-
 begin_test "Fetch artifact via remote proxy"
-if resp=$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts" 2>/dev/null); then
-  if [[ "$resp" == *"artifact"* ]]; then
-    pass
-  else
-    skip "remote proxy did not auto-cache artifact on creation"
-  fi
-elif curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
+# Always fetch THROUGH the proxy: the old first branch listed the remote's
+# artifacts instead, which answers 2xx for any existing repo, so the proxy
+# fetch (and the cache check after it) never ran. No wait before it: the
+# upload above answered with the stored row.
+if curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
     -o "${WORK_DIR}/proxied.txt" \
     "${BASE_URL}/generic/${REMOTE_KEY}/libs/artifact.jar" 2>/dev/null; then
+  PROXY_FETCHED=1
   if [ -s "${WORK_DIR}/proxied.txt" ]; then
     pass
   else
-    skip "proxied artifact is empty, proxy fetch may not be supported"
+    fail "proxy fetch of libs/artifact.jar through ${REMOTE_KEY} answered 2xx with an empty body"
   fi
 else
   skip "remote proxy fetch not supported for this configuration"
@@ -77,15 +77,16 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify artifact cached in remote repo"
-sleep 2
-if resp=$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts" 2>/dev/null); then
-  if [[ "$resp" == *"artifact"* ]]; then
-    pass
-  else
-    skip "artifact not yet cached by remote proxy"
-  fi
+# The proxy writes its cache row (proxy_cache_artifacts, listed by the
+# remote's artifact listing) from a writer task that outlives the client
+# response, so after a fetch through the proxy wait, bounded, for the row.
+if [ "$PROXY_FETCHED" != "1" ]; then
+  skip "no fetch went through the proxy, so there is nothing to have cached"
+elif wait_until "cache row for libs/artifact.jar in ${REMOTE_KEY}" 20 repo_lists_artifact "$REMOTE_KEY" "artifact.jar"; then
+  pass
 else
-  skip "remote repo artifact listing not supported"
+  fail "a 2xx fetch through ${REMOTE_KEY} left no cache row for libs/artifact.jar in its listing within 20s" \
+    "$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts" 2>/dev/null | head -c 300)"
 fi
 
 # -------------------------------------------------------------------------

@@ -258,7 +258,7 @@ while [ "$ATTEMPTS" -lt "$MAX_ATTEMPTS" ]; do
   elif [ "$GET_HTTP" = "404" ] || [ "$GET_HTTP" = "202" ]; then
     : # still in progress
   fi
-  sleep 2
+  sleep 2  # sleep-ok: poll interval (loop bounded by MAX_ATTEMPTS)
   ATTEMPTS=$(( ATTEMPTS + 1 ))
 done
 
