@@ -31,7 +31,7 @@ import sys
 
 import yaml
 
-TOKEN = re.compile(r"\s*(?:(?P<str>'(?:[^']|'')*')|(?P<op>&&|\|\||==|!=|\(|\)|,)|(?P<bool>true|false)\b|(?P<id>[A-Za-z_][A-Za-z0-9_.-]*))")
+TOKEN = re.compile(r"\s*(?:(?P<str>'(?:[^']|'')*')|(?P<op>&&|\|\||==|!=|!|\(|\)|,)|(?P<bool>true|false)\b|(?P<id>[A-Za-z_][A-Za-z0-9_.-]*))")
 
 
 def tokenize(src):
@@ -96,6 +96,9 @@ class P:
 
     def atom(self):
         kind, val = self.take()
+        if (kind, val) == ("op", "!"):
+            v = self.atom()
+            return True if v is UNKNOWN else not v
         if kind in ("str", "lit"):
             return val
         if (kind, val) == ("op", "("):
@@ -106,13 +109,20 @@ class P:
             while self.peek() == ("op", ","):
                 self.take(); args.append(self.or_())
             self.take(")")
+            if val in ("always", "success", "failure") and not args:
+                return True
+            if val == "cancelled" and not args:
+                return False
             if val == "contains" and len(args) == 2:
                 return str(args[1]).lower() in str(args[0]).lower()
             if val == "format":
                 return re.sub(r"\{(\d+)\}", lambda m: str(args[1 + int(m.group(1))]), args[0])
             raise ValueError(f"unsupported function {val}()")
         if kind == "id" and val.startswith("inputs."):
-            return self.ctx[val.split(".", 1)[1]]
+            key = val.split(".", 1)[1]
+            if key not in self.ctx:
+                raise ValueError(f"no value for inputs.{key}; add it to the checker's context")
+            return self.ctx[key]
         if kind == "id" and val.startswith("needs."):
             return UNKNOWN
         raise ValueError(f"unsupported token {val!r}")
@@ -144,12 +154,18 @@ def problems(path):
     jobs = wf["jobs"]
     on = wf.get("on", wf.get(True))
     suites = on["workflow_dispatch"]["inputs"]["test_suite"]["options"]
+    # Every suite a caller can pass: the dispatch choices plus every literal the
+    # workflow compares test_suite with (workflow_call takes a free string).
+    suites = sorted(set(suites) | set(re.findall(r"inputs\.test_suite\s*==\s*'([a-z-]+)'", open(path).read())))
     out, pairs = [], 0
     for j, d in jobs.items():
-        if tolerant(d.get("if")):
-            continue
+        cond = d.get("if")
         needs = d.get("needs") or []
         needs = [needs] if isinstance(needs, str) else needs
+        if tolerant(cond):
+            # A tolerant job still depends on the prerequisites it demands
+            # succeeded (stress-tests and resilience-tests on deploy).
+            needs = [k for k in needs if re.search(r"needs\.%s\.result\s*==\s*'success'" % re.escape(k), str(cond))]
         for k in needs:
             pairs += 1
             for suite in suites:
@@ -157,17 +173,36 @@ def problems(path):
                     ctx = {"test_suite": suite, "only_jobs": only, "run_smoke_with_deps": True,
                            "skip_teardown": False}
                     try:
-                        jv, kv = ev(d.get("if"), ctx), ev(jobs[k].get("if"), ctx)
+                        jv, kv = ev(cond, ctx), ev(jobs[k].get("if"), ctx)
                     except ValueError as e:
                         return [f"cannot evaluate {j} or {k}: {e}"]
                     if jv and not kv:
                         out.append(f"{j} runs for test_suite={suite} only_jobs={only!r} but its prerequisite {k} does not, so {j} would skip")
+    # gate-selection.sh skips clean-install-smoke (and so deploy) when only
+    # its NO_CLUSTER jobs are selected: none of them may need the cluster.
+    gs = open(sys.argv[3]).read()
+    m = re.search(r'^NO_CLUSTER="([^"]*)"', gs, flags=re.M)
+    if not m:
+        out.append("cannot read NO_CLUSTER from gate-selection.sh")
+    else:
+        def closure(j, seen):
+            n = jobs[j].get("needs") or []
+            for k in ([n] if isinstance(n, str) else n):
+                if k not in seen:
+                    seen.add(k); closure(k, seen)
+            return seen
+        for j in m.group(1).split():
+            if j == "collect-results":
+                continue  # always(): reads every result, needs none of them to succeed
+            bad = closure(j, set()) & {"clean-install-smoke", "deploy"}
+            if bad:
+                out.append(f"{j} is a no-cluster job in gate-selection.sh but needs {sorted(bad)}")
     if pairs == 0:
         out.append("no job/prerequisite pairs found; the checker read nothing")
     return out
 
 
-path, expect = sys.argv[1], sys.argv[2]
+path, expect = sys.argv[1], sys.argv[2]  # argv[3]: gate-selection.sh
 found = problems(path)
 if expect == "clean":
     if found:
@@ -190,6 +225,23 @@ sed "s/(inputs.test_suite == 'all' || inputs.test_suite == 'auth' || inputs.test
 sed "/' auth-tests '/s/ || contains(format(' {0} ', inputs.only_jobs), ' admin-tests '))/)/" \
   "$TARGET" > "${WORK}/no-admin-closure.yml"
 
-python3 "${WORK}/check.py" "${WORK}/old-auth.yml" "auth-tests skipping for test_suite=admin|platform"
-python3 "${WORK}/check.py" "${WORK}/no-admin-closure.yml" "auth-tests skipping for only_jobs=admin-tests"
-python3 "${WORK}/check.py" "$TARGET" clean
+# Fixture: only the admin clause removed (admin is reachable by workflow_call
+# and by the dispatch choice).
+sed "/' auth-tests '/s/ || inputs.test_suite == 'admin')/)/" "$TARGET" > "${WORK}/no-admin-suite.yml"
+# Fixture: deploy narrowed so a stress-only run skips it under the tolerant job.
+python3 - "$TARGET" "${WORK}/narrow-deploy.yml" <<'NARROW'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace("  deploy:\n    needs: clean-install-smoke\n", "  deploy:\n    needs: clean-install-smoke\n    if: inputs.test_suite == 'all'\n", 1)
+open(sys.argv[2], "w").write(s)
+NARROW
+GS="${REPO_ROOT}/scripts/gate-selection.sh"
+# Fixture: a no-cluster job that needs deploy.
+sed 's/^NO_CLUSTER=" /NO_CLUSTER=" admin-tests /' "$GS" > "${WORK}/gs-bad.sh"
+
+python3 "${WORK}/check.py" "${WORK}/old-auth.yml" "auth-tests skipping for test_suite=admin|platform" "$GS"
+python3 "${WORK}/check.py" "${WORK}/no-admin-closure.yml" "auth-tests skipping for only_jobs=admin-tests" "$GS"
+python3 "${WORK}/check.py" "${WORK}/no-admin-suite.yml" "auth-tests skipping for test_suite=admin" "$GS"
+python3 "${WORK}/check.py" "${WORK}/narrow-deploy.yml" "a narrowed deploy if:" "$GS"
+python3 "${WORK}/check.py" "$TARGET" "a no-cluster job that needs deploy" "${WORK}/gs-bad.sh"
+python3 "${WORK}/check.py" "$TARGET" clean "$GS"

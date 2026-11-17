@@ -67,6 +67,7 @@ on:
           - search
           - platform
           - auth
+          - admin
           - stress
           - resilience
           - security
