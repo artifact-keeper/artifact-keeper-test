@@ -157,7 +157,7 @@ own_repos_in_catalog() {
   local all="${WORK_DIR}/catalog-all.txt" page="${WORK_DIR}/catalog-walk.json"
   local last="" enc status k pages=0
   : > "$all"
-  while [ "$pages" -lt 100 ]; do
+  while [ "$pages" -lt 20 ]; do
     pages=$(( pages + 1 ))
     enc=""
     [ -n "$last" ] && enc="&last=$(printf '%s' "$last" | jq -sRr @uri)"

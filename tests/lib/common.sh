@@ -2929,16 +2929,25 @@ artifact_listed() {
 # recorded); a caller that must branch on it uses
 # `wait_until ... artifact_listed ...` directly. A row that never appears is a
 # product failure (a 2xx upload that did not persist), never a skip.
+# After the first precondition timeout in a script, later waits get a short
+# budget: an upload path that regressed across the whole suite must not spend
+# 30 s per call site and run past run-suite.sh's TEST_TIMEOUT (exit 124, no
+# JUnit), which would lose the very Precondition cases that name the failure.
+_AWAIT_LISTED_TIMED_OUT=0
 await_artifact_listed() {
   local repo_key="$1" needle="$2" version="${3:-}" timeout="${4:-30}"
+  if [ "$_AWAIT_LISTED_TIMED_OUT" -gt 0 ] && [ "$timeout" -gt 3 ]; then
+    timeout=3
+  fi
   local what="'${needle}'${version:+ version ${version}} listed in ${repo_key}"
   if wait_until "$what" "$timeout" artifact_listed "$repo_key" "$needle" "$version"; then
     return 0
   fi
+  _AWAIT_LISTED_TIMED_OUT=$(( _AWAIT_LISTED_TIMED_OUT + 1 ))
   local saved_name="${_TEST_NAME:-}" saved_start="${_TEST_START:-$(date +%s)}"
   _TEST_NAME="Precondition: ${what}"
   _TEST_START=$(( $(date +%s) - timeout ))
-  fail "upload answered 2xx but no artifacts row for ${needle}${version:+ ${version}} appeared in GET /api/v1/repositories/${repo_key}/artifacts within ${timeout}s"
+  fail "no artifacts row for ${needle}${version:+ ${version}} appeared in GET /api/v1/repositories/${repo_key}/artifacts within ${timeout}s after the upload"
   _TEST_NAME="$saved_name"
   _TEST_START="$saved_start"
   return 0

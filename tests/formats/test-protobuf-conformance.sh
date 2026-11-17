@@ -206,6 +206,11 @@ if resp=$(curl -sf $CURL_TIMEOUT -X POST "$UPLOAD_URL" \
     -H "Content-Type: application/json" \
     -d "$UPLOAD_BODY_V2" 2>&1); then
   COMMIT2=$(echo "$resp" | jq -r '.commits[0].digest.value // empty' 2>/dev/null) || COMMIT2=""
+  # Without the second digest the wait below would be satisfied by commit 1's
+  # row, so a missing digest is itself the failure.
+  if [ -z "$COMMIT2" ]; then
+    fail "second upload answered 2xx without a commit digest" "${resp:0:300}"
+  fi
   await_artifact_listed "$REPO_KEY" "modules/${OWNER}/${MODULE}/commits/" "$COMMIT2"
   # List commits to verify multiple versions exist
   COMMITS_URL="${PROTO_BASE}/buf.registry.module.v1.CommitService/ListCommits"

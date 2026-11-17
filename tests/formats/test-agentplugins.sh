@@ -314,7 +314,7 @@ for _ in 1 2 3 4; do
     -d "{\"key\":\"${REPO_KEY}\",\"name\":\"${REPO_KEY}\",\"format\":\"agentplugins\",\"repo_type\":\"local\",\"is_public\":true}" \
     "${BASE_URL}/api/v1/repositories" 2>/dev/null) || CREATE_STATUS="000"
   case "$CREATE_STATUS" in
-    000|401|429|503) sleep 2 ;;
+    000|401|429|503) sleep 2 ;;  # sleep-ok: retry backoff of a bounded retry loop
     *) break ;;
   esac
 done

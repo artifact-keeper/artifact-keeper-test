@@ -551,9 +551,10 @@ npm_publish "$PRE_PKG" "1.0.0-alpha.1" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0-beta.2" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0-rc.1" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0" "prerelease test" > /dev/null 2>&1
-# Needle is the stable version's path segment: a bare "1.0.0" version filter
-# would also match the 1.0.0-alpha.1 path.
-await_artifact_listed "$REPO_KEY" "${PRE_PKG}/1.0.0/"
+# Needle is the stable version's exact tarball path (hosted npm stores
+# <pkg>/-/<pkg>-<ver>.tgz): a bare "1.0.0" version filter would also match the
+# 1.0.0-alpha.1 tarball.
+await_artifact_listed "$REPO_KEY" "${PRE_PKG}/-/${PRE_PKG}-1.0.0.tgz"
 
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \

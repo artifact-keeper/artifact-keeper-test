@@ -111,7 +111,7 @@ begin_test "Upload finalizes"
 if [ "$upload_status" = "202" ]; then
   if [ -z "$UPLOAD_SESSION_ID" ]; then
     fail "202 Accepted carried no session_id; cannot confirm finalize completed"
-  elif wait_for_incus_upload_finalized "$REPO_KEY" "$UPLOAD_SESSION_ID" 240; then
+  elif wait_for_incus_upload_finalized "$REPO_KEY" "$UPLOAD_SESSION_ID" 60; then
     pass
   else
     fail "upload session ${UPLOAD_SESSION_ID} did not reach 'completed'"
