@@ -21,7 +21,7 @@
 # they count as selected. dtf-gate counts as selected when the job or any of
 # its legs is named, and only for the suites that run it, like security-tests.
 # Advisory jobs (cli-smoke, format-tests-audit, security-grype-scan-completes,
-# stress-tests, mesh-tests, dtf-advisory) are reported, never judged, exactly
+# stress-tests, dtf-advisory) are reported, never judged, exactly
 # as in a full run.
 #
 # The REQUIRED lists below mirror that predicate. selftest-gate-subset-verdict.sh

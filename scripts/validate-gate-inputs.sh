@@ -10,7 +10,7 @@
 # than failing them. This runs before anything consumes a value, in
 # version-set-integrity (which every cluster job depends on) and in the jobs
 # that read an input without depending on it succeeding: build-dtf-probes,
-# and mesh-tests and teardown, which run under `always()`.
+# and teardown, which runs under `always()`.
 #
 # Inputs (environment; empty means "not supplied" where the input is optional):
 #   BACKEND_TAG     required name

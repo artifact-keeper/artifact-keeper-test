@@ -15,7 +15,7 @@
 # KEEP IN STEP with the installs that consume these files:
 #   values-test             scripts/create-test-namespace.sh (default)
 #   values-test-full        scripts/create-test-namespace.sh --full-stack (deploy job)
-#   values-test-mesh        create-test-namespace.sh --values helm/values-test-mesh.yaml (mesh-tests)
+#   values-test-mesh        create-test-namespace.sh --values helm/values-test-mesh.yaml (mesh-tests.yml; no longer in the release gate, artifact-keeper#6135)
 #   values-smoke-with-deps  tests/release-gate/clean-install-smoke-with-deps.sh
 #   clean-install-smoke     scripts/clean-install-smoke.sh
 values-test             helm/values-test.yaml
