@@ -3355,12 +3355,13 @@ jobs:
   # that path risks the probe's signature byte-compatibility with the
   # backend verifier, so we keep the exact dep/feature set and build an
   # ordinary glibc binary on the OLDEST supported glibc (ubuntu-22.04) for
-  # forward-compatibility with the dind pool — then VALIDATE BY EXECUTION
-  # (a local smoke-exec here, plus the arch-check and keygen smoke-exec at
-  # stage time on the actual dind runner) rather than by a static-link
+  # forward-compatibility with the DTF runner (hosted ubuntu-24.04, or the
+  # dind pool via DTF_RUNNER) — then VALIDATE BY EXECUTION (a local
+  # smoke-exec here, plus the arch-check and keygen smoke-exec at stage
+  # time on the actual DTF runner) rather than by a static-link
   # string check.
   #
-  # Target arch: x86_64 only, matching the ak-docker-runners pool. The
+  # Target arch: x86_64 only, matching both DTF runners. The
   # staging step below asserts the runner really is x86_64 and fails
   # loudly if not. If the pool ever gains arm64 runners, add an
   # aarch64 build leg here and select by `uname -m` when staging.
@@ -3508,10 +3509,20 @@ jobs:
   # backport (artifact-keeper-test#424), or the line's gate skips the line's
   # own fixes by name. On main (no marker) a missing manifest is exit 4, RED.
   #
-  # Runs on the dind pool (ak-docker-runners): the DTF harness is
-  # docker-compose based and the ak-e2e-runners k8s pods have no docker
-  # daemon. Needs only version-set-integrity (image-existence check),
-  # not the k8s deploy job — the DTF stands up its own stacks.
+  # DTF runner selection (artifact-keeper-test#856). The DTF harness is
+  # docker-compose based and stands up its own stacks: it needs only a
+  # docker daemon and ghcr, never the k8s deploy job, backend_url, kubectl
+  # or anything in rocky's cluster (the ak-e2e-runners k8s pods have no
+  # docker daemon). So dtf-gate and dtf-advisory run on GitHub's hosted
+  # `ubuntu-24.04` (4 vCPU / 16 GB, free for this public repo, no queue for
+  # a self-hosted slot) by default. The configuration variable DTF_RUNNER
+  # names another runner label for both jobs; set it to
+  # `ak-docker-runners` to put them back on rocky's dind pool:
+  #   gh variable set DTF_RUNNER --org artifact-keeper --visibility all --body ak-docker-runners
+  # Set it at the ORG level: on the workflow_call path the vars context is
+  # the CALLER's (artifact-keeper), on dispatch it is this repo's.
+  # Delete it to return to hosted. A repo-level DTF_RUNNER overrides the
+  # org's; the value is a single runner label.
   #
   # Registry access: GHCR_DOCKER_CONFIG (the normal secret path, same as
   # clean-install-smoke) with a GITHUB_TOKEN docker-login fallback for
@@ -3538,10 +3549,15 @@ jobs:
     # DTF_LEG_SELECTED, and it reports success without running a tier. The
     # subset verdict judges dtf-gate as a whole, which then means exactly
     # "every selected leg passed". In a full run every leg is selected.
-    runs-on: ${{ (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group))) && 'ak-docker-runners' || 'ubuntu-latest' }}
+    # A selected leg runs on vars.DTF_RUNNER (see "DTF runner selection" above).
+    runs-on: ${{ (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group))) && (vars.DTF_RUNNER || 'ubuntu-24.04') || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      # At most 30 legs at once: the org's hosted runners are 60 concurrent
+      # jobs (Team plan) shared with every repo's PR CI, and a full gate has
+      # 60 legs plus dtf-advisory's 9 (artifact-keeper-test#856).
+      max-parallel: 30
       matrix:
         include:
           - group: core
@@ -4363,7 +4379,8 @@ jobs:
     permissions:
       contents: read
       packages: read
-    runs-on: ak-docker-runners
+    # Same runner as dtf-gate: vars.DTF_RUNNER (see "DTF runner selection").
+    runs-on: ${{ vars.DTF_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
