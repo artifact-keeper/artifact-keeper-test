@@ -140,7 +140,7 @@ elif require_feature "user_deactivation_token_flush"; then
       rejected=true
       break
     fi
-    sleep 2
+    sleep 2  # sleep-ok: poll interval
   done
   if [ "$rejected" = "true" ]; then
     pass

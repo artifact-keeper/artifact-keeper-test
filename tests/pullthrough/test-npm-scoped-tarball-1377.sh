@@ -95,8 +95,8 @@ if create_remote_repo "$REMOTE_KEY" "npm" "$UPSTREAM_URL"; then
 else
   fail "could not create Remote npm repo against ${UPSTREAM_URL}"
 fi
-
-sleep 2
+# No settle: the create answered with the stored row, and nothing about the
+# repo is applied in the background (artifact-keeper-test#364).
 
 # -------------------------------------------------------------------------
 # Assertion (c) part 1: scoped metadata fetches end-to-end.

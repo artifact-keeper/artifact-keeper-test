@@ -106,7 +106,7 @@ if [ -n "${TOKEN_T1:-}" ]; then
     case "$pwc_status" in
       000|429|5*)
         echo "  attempt ${pwc_attempt}/3: password change returned HTTP ${pwc_status}, retrying..."
-        sleep 2
+        sleep 2  # sleep-ok: retry interval
         ;;
       *)
         break
@@ -146,7 +146,7 @@ if [ -n "${TOKEN_T1:-}" ] && [ "$PASSWORD_CHANGED" = "true" ]; then
       break
     fi
     echo "  attempt ${attempt}/5: old token still accepted (HTTP ${status}), waiting 2s..."
-    sleep 2
+    sleep 2  # sleep-ok: poll interval
   done
 
   if [ "$rejected" = "true" ]; then

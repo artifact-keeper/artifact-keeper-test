@@ -131,8 +131,16 @@ case "$upload_status" in
   *) fail "upload returned ${upload_status}"; end_suite; exit 1 ;;
 esac
 
-# Give the artifact pipeline a beat before we look it up.
-sleep 2
+# The upload answered 2xx. Wait, bounded, for its artifacts row to be readable
+# by path (the row the id is resolved from) instead of guessing with a fixed
+# sleep (artifact-keeper-test#364). A row that never appears is a product
+# failure, and the resolve step below fails on it.
+_artifact_row_readable() {
+  curl -sf -o /dev/null --max-time 10 -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH}"
+}
+wait_until "artifacts row for ${ARTIFACT_PATH} readable in ${REPO_KEY}" 30 _artifact_row_readable \
+  || echo "  upload answered 2xx but its artifacts row is not readable; the resolve step below fails on it"
 
 begin_test "Resolve artifact_id"
 ARTIFACT_ID=""
@@ -197,7 +205,7 @@ if [ -n "$SBOM_ID" ]; then
       ORIGINAL_FORMAT=$(jq -r '.format // empty' "$WORK_DIR/sbom.json" 2>/dev/null || echo "$ORIGINAL_FORMAT")
       break
     fi
-    sleep 3
+    sleep 3  # sleep-ok: poll interval
     elapsed=$(( elapsed + 3 ))
   done
   if [ "$ready" = "1" ]; then

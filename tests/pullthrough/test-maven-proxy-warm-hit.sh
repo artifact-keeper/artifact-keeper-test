@@ -172,8 +172,31 @@ else
   pass
 fi
 
-# Let U's download telemetry settle before snapshotting the counter.
-sleep 2
+# The warm-hit contract below is about a PREVIOUSLY-CACHED jar, so establish
+# both halves of "the cold fetch is done" before snapshotting U, instead of the
+# old `sleep 2` guess (artifact-keeper-test#364):
+#   - R's cache entry is committed. The cold GET's 200 does not prove it: the
+#     entry is published by a writer task that outlives the response, and a
+#     warm GET inside that window misses and re-contacts U, which would read as
+#     a warm-hit re-fetch. R's proxy_cache_artifacts row is written with the
+#     __cache_meta__ sidecar, after the content key, so R listing the jar means
+#     the entry is readable.
+#   - U has counted the cold fetch's one download (>= 1). Counting it later
+#     would move U's counter across the warm GETs.
+# When U's count is not observable at all (empty), only the first half gates;
+# the U assertion below skips on that, as before.
+_cold_fetch_settled() {
+  local u
+  [ -n "$(r_jar_dl_count)" ] || return 1
+  u=$(u_jar_dl_count)
+  [ -z "$u" ] || [ "$u" -ge 1 ] 2>/dev/null
+}
+begin_test "Cold fetch settled: R's cache entry committed and U counted the download"
+if wait_until "R's cache entry for ${JAR_NAME} committed and U's cold download counted" 30 _cold_fetch_settled; then
+  pass
+else
+  fail "after the cold GET, R never listed a committed cache entry for ${JAR_PATH} or U never counted the cold download within 30s (R count '$(r_jar_dl_count)', U count '$(u_jar_dl_count)')"
+fi
 U_COUNT_BEFORE=$(u_jar_dl_count)
 
 # ---------------------------------------------------------------------------
@@ -207,7 +230,7 @@ begin_test "Warm hits do not re-contact upstream U (content or .sha1 sidecar)"
 if [ -z "$U_COUNT_BEFORE" ]; then
   skip "U download_count not observable via artifacts list; upstream-contact assertion unobservable"
 else
-  sleep 2
+  sleep 2  # sleep-ok: negative window: a warm hit that re-fetched U would land in U's deferred download telemetry within it
   U_COUNT_AFTER=$(u_jar_dl_count)
   if [ -z "$U_COUNT_AFTER" ]; then
     skip "U download_count disappeared from artifacts list; upstream-contact assertion unobservable"
@@ -230,7 +253,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   if [ -n "$R_COUNT" ] && [ "$R_COUNT" -ge 1 ] 2>/dev/null; then
     break
   fi
-  sleep 1
+  sleep 1  # sleep-ok: poll interval
 done
 R_LISTING=$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts?per_page=100" 2>/dev/null || true)
 if printf '%s' "$R_LISTING" | jq -e --arg p "$JAR_PATH" '(.items // .)[]? | select(.path == $p)' >/dev/null 2>&1; then

@@ -257,7 +257,7 @@ ok=false
 for _ in 1 2 3 4 5; do
   mcp_publish "$KEY" "$(remote_doc "${NS}/deact" 1.0.1)" "$TOK_DEACT_API"
   [ "$MCP_STATUS" = "401" ] && { ok=true; break; }
-  sleep 1
+  sleep 1  # sleep-ok: poll interval
 done
 if $ok; then
   expect_problem 401 mcp_unauthorized "deactivated token publish"

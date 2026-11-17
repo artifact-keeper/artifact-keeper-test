@@ -135,7 +135,7 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
          break ;;
     esac
   fi
-  sleep 5
+  sleep 5  # sleep-ok: poll interval
   elapsed=$(( elapsed + 5 ))
 done
 
@@ -169,7 +169,7 @@ if [ -z "$INITIAL_STABLE" ] || [ "$INITIAL_STABLE" = "null" ]; then
 fi
 
 begin_test "Refetch after 10s: stable fields unchanged"
-sleep 10
+sleep 10  # sleep-ok: persistence over time: the row must be unchanged 10 s after it was first read
 resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" "${BASE_URL}${SCAN_LIST_PATH}" 2>/dev/null) || resp=""
 later_body=$(echo "$resp" | jq -c --arg id "$final_scan_id" '.items[] | select(.id == $id)' 2>/dev/null || echo "")
 LATER_STABLE=$(extract_stable "$later_body")
@@ -180,7 +180,7 @@ else
 fi
 
 begin_test "Refetch after 20s: stable fields STILL unchanged"
-sleep 10
+sleep 10  # sleep-ok: persistence over time: the row must be unchanged 20 s after it was first read
 resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" "${BASE_URL}${SCAN_LIST_PATH}" 2>/dev/null) || resp=""
 later_body=$(echo "$resp" | jq -c --arg id "$final_scan_id" '.items[] | select(.id == $id)' 2>/dev/null || echo "")
 LATER_STABLE=$(extract_stable "$later_body")
@@ -231,7 +231,7 @@ else
       completed|clean|failed|error|timeout) reuse_done=1; break ;;
       *) ;;
     esac
-    sleep 2
+    sleep 2  # sleep-ok: poll interval
     reuse_elapsed=$(( reuse_elapsed + 2 ))
   done
 

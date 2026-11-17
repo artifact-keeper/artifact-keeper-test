@@ -108,7 +108,7 @@ _probe() {
       echo "$status"
       return 0
     fi
-    sleep 1
+    sleep 1  # sleep-ok: retry interval
   done
   echo "$status"
 }
@@ -124,7 +124,7 @@ _probe_authed() {
       echo "$status"
       return 0
     fi
-    sleep 1
+    sleep 1  # sleep-ok: retry interval
   done
   echo "$status"
 }

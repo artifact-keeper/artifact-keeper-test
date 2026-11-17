@@ -62,11 +62,18 @@ setup_workdir
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SP_ENTITY_ID="artifact-keeper"
-ADMIN_GROUP="ak-admins"
 SUF="${RUN_ID:-local}-$(date +%s)"
+# Run-scoped, never the fixed `ak-admins`: the provider maps this group to
+# admin, and the forged/XSW payloads claim it, so a fixed name would collide
+# with any other provider or run on the same instance (artifact-keeper-test#365).
+ADMIN_GROUP="ak-admins-${SUF}"
 IDP_ENTITY="https://idp.saml-sig-test.local/${SUF}"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK" 2>/dev/null || true' EXIT
+# Inside setup_workdir's WORK_DIR, so its exit handler removes it. A bare
+# `trap ... EXIT` here used to REPLACE common.sh's composable exit trap, which
+# silently dropped every add_exit_handler cleanup, the provider delete below
+# included (artifact-keeper-test#365).
+WORK="${WORK_DIR}/saml"
+mkdir -p "$WORK"
 
 # ---------------------------------------------------------------------------
 # Helpers (mirror deploy-test/harness/tiers/sso/oracle.sh, provider-scoped API)
@@ -106,6 +113,22 @@ saml_admin_api_available() {
   esac
 }
 
+# delete_saml_provider -> delete the ephemeral provider, once. Idempotent so it
+# can be both the explicit end of the provider window and the exit handler.
+delete_saml_provider() {
+  [ -n "${PROVIDER:-}" ] && [ "$PROVIDER" != "null" ] || return 0
+  PROVIDER_DELETE_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X DELETE \
+    "${BASE_URL}/api/v1/admin/sso/saml/${PROVIDER}" \
+    -H "$(auth_header)" 2>/dev/null) || PROVIDER_DELETE_STATUS="000"
+  DELETED_PROVIDER="$PROVIDER"
+  # Forget the provider only once it is really gone; on a failed DELETE keep
+  # it so the exit handler retries (an enabled provider left behind is the
+  # #365 hazard itself).
+  case "$PROVIDER_DELETE_STATUS" in
+    2??|404) PROVIDER="" ;;
+  esac
+}
+
 # provider_request_id <pid> -> the AuthnRequest ID to echo as InResponseTo
 provider_request_id() {
   local pid="$1" loc
@@ -136,6 +159,18 @@ post_acs_status() {
     -H 'Content-Type: application/x-www-form-urlencoded' \
     --data-urlencode "SAMLResponse=$2" --data-urlencode 'RelayState=forged' \
     "$1" 2>/dev/null || echo "000"
+}
+
+# post_acs_once <acs_url> <b64payload> -> sets ACS_ST and ACS_BODY from ONE
+# POST. Inside the provider window each case posts once: the status and the
+# body then describe the same response (a second POST of the same assertion is
+# a replay), and the window holds no redundant requests.
+post_acs_once() {
+  ACS_ST=$(curl -s -o "${WORK}/acs-body" -w '%{http_code}' $CURL_TIMEOUT -X POST \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-urlencode "SAMLResponse=$2" --data-urlencode 'RelayState=forged' \
+    "$1" 2>/dev/null) || ACS_ST="000"
+  ACS_BODY=$(cat "${WORK}/acs-body" 2>/dev/null || true)
 }
 
 # post_acs_body <acs_url> <b64payload> -> response body
@@ -312,10 +347,18 @@ else
     openssl req -x509 -newkey rsa:2048 -nodes -keyout "$PROVIDER_KEY" \
       -out "$PROVIDER_CERT" -days 2 -subj "/CN=saml-sig-test-${SUF}" >/dev/null 2>&1 || true
   fi
+  # The provider is created enabled (the ACS only serves an enabled one), and
+  # an enabled provider is INSTANCE-GLOBAL state: while it exists, local login
+  # is disabled for every non-admin user backend-wide and the SSO posture other
+  # suites can observe flips (artifact-keeper-test#365). Everything that does
+  # not need it (probe build, keygen, cert) is done above, the window closes
+  # right after the last ACS POST, and the exit handler guarantees the delete
+  # if the script dies inside the window.
   if [ -s "$PROVIDER_CERT" ]; then
     PROVIDER="$(create_saml_provider "$PROVIDER_CERT")"
   fi
   if [ -n "$PROVIDER" ] && [ "$PROVIDER" != "null" ]; then
+    add_exit_handler 'delete_saml_provider'
     pass
   else
     fail "could not provision a SAML provider via /api/v1/admin/sso/saml" \
@@ -325,6 +368,25 @@ fi
 
 if [ -n "$PROVIDER" ] && [ "$PROVIDER" != "null" ]; then
   ACS_URL="${BASE_URL}/api/v1/auth/sso/saml/${PROVIDER}/acs"
+
+  # ---- BREAK-GLASS under an enabled provider (artifact-keeper-test#365).
+  # This window is the only place in the gate where an SSO provider is known
+  # to be enabled, so the SSO-on branch of the local-login gate is asserted
+  # here, deterministically, instead of by test-sso-breakglass.sh sampling a
+  # posture a sibling may or may not have set.
+  begin_test "Break-glass: local admin login holds while a SAML provider is enabled"
+  bg_code=$(curl -s -o "${WORK_DIR}/saml-breakglass.json" -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST "${BASE_URL}/api/v1/auth/login" -H "Content-Type: application/json" \
+    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) || bg_code="000"
+  bg_token=$(jq -r '.token // .access_token // empty' "${WORK_DIR}/saml-breakglass.json" 2>/dev/null) || bg_token=""
+  if [ "$bg_code" = "200" ] && [ -n "$bg_token" ]; then
+    pass
+  elif [ "$bg_code" = "000" ]; then
+    infra_fail "POST /api/v1/auth/login got no HTTP answer"
+  else
+    fail "local admin login refused while a SAML provider is enabled (HTTP ${bg_code}); the verified-admin break-glass must hold" \
+      "$(head -c 300 "${WORK_DIR}/saml-breakglass.json" 2>/dev/null)"
+  fi
 
   # ---- SIGNED POSITIVE CONTROL (proves the verifier is not reject-everything)
   begin_test "Validly-signed assertion authenticates (positive control)"
@@ -337,8 +399,8 @@ if [ -n "$PROVIDER" ] && [ "$PROVIDER" != "null" ]; then
     if [ -z "$SIGNED_B64" ]; then
       fail "signer probe produced no signed assertion (craft failed)"
     else
-      st=$(post_acs_status "$ACS_URL" "$SIGNED_B64")
-      body=$(post_acs_body "$ACS_URL" "$SIGNED_B64")
+      post_acs_once "$ACS_URL" "$SIGNED_B64"
+      st="$ACS_ST"; body="$ACS_BODY"
       # Accept = authenticated: a redirect/2xx that is NOT a rejection.
       if [ "$st" -ge 200 ] 2>/dev/null && [ "$st" -lt 400 ] 2>/dev/null; then
         pass
@@ -356,8 +418,8 @@ if [ -n "$PROVIDER" ] && [ "$PROVIDER" != "null" ]; then
   NID="saml-sig-forged-${SUF}"
   RID="$(provider_request_id "$PROVIDER")"
   FORGED_B64="$(forged_unsigned_b64 "$NID" "$RID")"
-  st=$(post_acs_status "$ACS_URL" "$FORGED_B64")
-  body=$(post_acs_body "$ACS_URL" "$FORGED_B64")
+  post_acs_once "$ACS_URL" "$FORGED_B64"
+  st="$ACS_ST"; body="$ACS_BODY"
   assert_forged_rejected "provider ACS" "$ACS_URL" "$st" "$body"
 
   # ---- XSW NEGATIVES (the actual #2449 defect class) ----
@@ -399,10 +461,23 @@ if [ -n "$PROVIDER" ] && [ "$PROVIDER" != "null" ]; then
            "Without the payload this gate cannot exercise the #2449 XSW class at all."
       continue
     fi
-    st=$(post_acs_status "$ACS_URL" "$XSW_B64")
-    body=$(post_acs_body "$ACS_URL" "$XSW_B64")
+    post_acs_once "$ACS_URL" "$XSW_B64"
+    st="$ACS_ST"; body="$ACS_BODY"
     assert_forged_rejected "XSW ${xsw_case} @ provider ACS" "$ACS_URL" "$st" "$body"
   done
+
+  # ---- Close the provider window now, not at the end of the script.
+  delete_saml_provider
+  begin_test "Ephemeral SAML provider is removed (instance SSO posture restored)"
+  gone_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/admin/sso/saml/${DELETED_PROVIDER}" 2>/dev/null) || gone_status="000"
+  if [ "$gone_status" = "404" ]; then
+    pass
+  else
+    fail "the ephemeral SAML provider ${DELETED_PROVIDER} is still present after DELETE (DELETE HTTP ${PROVIDER_DELETE_STATUS}, GET HTTP ${gone_status})" \
+         "An enabled provider left behind disables local login for every non-admin user on this instance (auth.rs local-login SSO policy) and poisons sibling suites."
+  fi
 
 else
   # ---- FALLBACK: no provider (old backend line). Still a REAL reject check
@@ -464,17 +539,13 @@ point of this suite."
 fi
 
 # ---------------------------------------------------------------------------
-# Cleanup: delete the ephemeral provider (best-effort, does not change the
-# suite result). This is load-bearing on a SHARED gate backend: an enabled
+# Cleanup. The provider is deleted (and its removal asserted) right after the
+# last ACS POST above; the exit handler registered at creation deletes it on
+# any earlier exit. This is load-bearing on a SHARED gate backend: an enabled
 # SSO provider left behind disables LOCAL login for every non-admin user
 # backend-wide (auth.rs local-login SSO policy), so a leftover fixture from
 # this suite would poison any later suite/test that logs a plain user in with
 # a password ("Local login is disabled when SSO is configured", 401).
 # ---------------------------------------------------------------------------
-if [ -n "${PROVIDER:-}" ] && [ "$PROVIDER" != "null" ]; then
-  curl -s -o /dev/null $CURL_TIMEOUT -X DELETE \
-    "${BASE_URL}/api/v1/admin/sso/saml/${PROVIDER}" \
-    -H "$(auth_header)" 2>/dev/null || true
-fi
 
 end_suite

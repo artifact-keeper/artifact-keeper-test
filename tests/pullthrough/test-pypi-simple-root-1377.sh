@@ -120,8 +120,9 @@ else
   fail "could not create Remote PyPI repo against ${UPSTREAM_URL}"
 fi
 
-# Brief settle before the first proxy fetch.
-sleep 2
+# No settle before the first proxy fetch: the create answered with the stored
+# row, and nothing about the repo is applied in the background
+# (artifact-keeper-test#364).
 
 # -------------------------------------------------------------------------
 # Prime the proxy with one real project before checking the root index.
@@ -153,9 +154,27 @@ else
     "$(head -c 300 "$PRIME_TMP" 2>/dev/null)"
 fi
 
-# Brief settle so the proxy cache write for the primed project is visible to
-# the subsequent root-index list.
-sleep 2
+# The prime answering 200 does not mean flake8 is cached yet: the proxy-cache
+# entry is published by a writer task that outlives the client response, and
+# simple_root lists only projects whose cache keys exist. simple_root walks
+# those storage keys (list_cached_pypi_packages) on EVERY request and caches
+# only the upstream root body, so polling /simple/ is safe: a probe made inside
+# the window does not pin an empty listing, and the next probe sees the key
+# once it is committed. (The Remote's artifact listing is no signal here: it
+# filters cached index responses out.)
+#
+# Poll the root until it lists at least one project, bounded, instead of the
+# old fixed `sleep 2` (artifact-keeper-test#364). The poll does not judge: the
+# assertions below fetch again and decide, so a root that never lists anything
+# still fails them.
+_root_lists_a_project() {
+  curl -s --max-time 30 -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${REMOTE_KEY}/simple/" 2>/dev/null | grep -qE '<a [^>]*>'
+}
+if [ "$PRIME_STATUS" = "200" ]; then
+  wait_until "/simple/ root of ${REMOTE_KEY} lists a project" 45 _root_lists_a_project \
+    || echo "  /simple/ still lists no project after 45s; the assertions below judge it"
+fi
 
 # -------------------------------------------------------------------------
 # Assertion (a) part 1: /simple/ returns 200 with non-empty HTML.
@@ -218,7 +237,9 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Second GET /simple/ also returns non-empty HTML"
-sleep 1
+# No settle: this check holds whether the second fetch is served from the
+# root's cache entry or rebuilt, so a sleep here waited for nothing
+# (artifact-keeper-test#364).
 SECOND_TMP="${WORK_DIR}/simple-root-second.html"
 SECOND_STATUS=$(curl -s -o "$SECOND_TMP" -w '%{http_code}' \
   $CURL_TIMEOUT \
