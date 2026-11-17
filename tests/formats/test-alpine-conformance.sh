@@ -101,7 +101,8 @@ else
   fail "upload returned HTTP ${upload_status}, expected 2xx"
 fi
 
-sleep 1
+# Hosted APKINDEX.tar.gz is generated on request from the artifacts rows.
+await_artifact_listed "$REPO_KEY" "${PKG_NAME}-${PKG_VERSION}.apk"
 
 # ---------------------------------------------------------------------------
 # 2. GET APKINDEX.tar.gz returns valid tar.gz containing APKINDEX
@@ -241,7 +242,7 @@ upload2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/alpine/${REPO_KEY}/${BRANCH}/${REPOSITORY}/${ARCH}/${PKG_NAME_2}-${PKG_VERSION_2}.apk") || true
 
 if [ "$upload2_status" -ge 200 ] 2>/dev/null && [ "$upload2_status" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${PKG_NAME_2}-${PKG_VERSION_2}.apk"
   # Re-fetch APKINDEX
   APKINDEX_FILE_2="${WORK_DIR}/APKINDEX-multi.tar.gz"
   curl -sf $CURL_TIMEOUT \

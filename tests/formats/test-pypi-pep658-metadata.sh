@@ -128,8 +128,10 @@ else
   fail "wheel upload failed" "HTTP ${upload_status} body=$(head -c 400 "${WORK_DIR}/upload.out" 2>/dev/null)"
 fi
 
-# Indexer / metadata extractor needs a moment.
-sleep 2
+# The upload handler extracts the wheel METADATA inline (awaited
+# spawn_blocking in pypi.rs upload) before it answers, so the version row is
+# the only precondition for the index and .metadata reads (#364).
+await_artifact_listed "$REPO_KEY" "$NORMALIZED_NAME" "$PKG_VERSION"
 
 # ---------------------------------------------------------------------------
 # Fetch the simple index and look for PEP 658 advertising

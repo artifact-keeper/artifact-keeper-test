@@ -87,7 +87,7 @@ create_ap_repo() {
       -d "{\"key\":\"${key}\",\"name\":\"${key}\",\"format\":\"agentplugins\",\"repo_type\":\"local\",\"is_public\":${is_public}}" \
       "${BASE_URL}/api/v1/repositories" 2>/dev/null) || status="000"
     case "$status" in
-      000|401|429|503) sleep 2 ;;
+      000|401|429|503) sleep 2 ;;  # sleep-ok: retry backoff of a bounded retry loop
       *) break ;;
     esac
   done

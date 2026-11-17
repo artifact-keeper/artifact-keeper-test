@@ -99,7 +99,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Verify PEP 503 root index"
-sleep 1
+await_artifact_listed "$REPO_KEY" "$(echo "$PKG_NAME" | tr '_' '-')" "$PKG_VERSION"
 
 # PyPI normalizes names: underscores become dashes in the simple index
 NORMALIZED_NAME=$(echo "$PKG_NAME" | tr '_' '-')
@@ -356,7 +356,8 @@ elif { [ "$st1" = "200" ] || [ "$st1" = "201" ]; } && { [ "$st2" = "200" ] || [ 
 else
   fail "upload failed: +cpu wheel HTTP ${st1}, ${entries}-entry wheel HTTP ${st2}" "$(head -c 400 "${PEP658_DIR}/upload.out")"
 fi
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PL_NAME"
+await_artifact_listed "$REPO_KEY" "$PB_NAME"
 
 begin_test "#3886 local: simple index advertises PEP 658 for the +cpu wheel"
 pep658_check_index "$PYPI_URL" "$PL_NAME" "$(basename "$PL_WHEEL")" local-small

@@ -49,7 +49,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Create test model files"
-cd "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
 
 # Create a model metadata file
 cat > model-metadata.json <<EOF
@@ -116,7 +116,9 @@ begin_test "Download model metadata"
 if [ "$WASM_AVAILABLE" = false ]; then
   skip "mlmodel WASM plugin not loaded"
 else
-  sleep 1
+  # No sleep: the /ext route is stateless. wasm_proxy::handle_wasm_request hands the plugin
+  # a read-only artifact snapshot and the plugin WIT has no write import, so the PUT above
+  # leaves no row or blob to wait for (#364).
   DL_PATH="/ext/mlmodel/${REPO_KEY}/${MODEL_NAME}/${MODEL_VERSION}/model-metadata.json"
   if resp=$(curl -sf "${BASE_URL}${DL_PATH}" -H "$(format_auth_header)"); then
     if assert_contains "$resp" "$MODEL_NAME" "metadata should contain model name"; then

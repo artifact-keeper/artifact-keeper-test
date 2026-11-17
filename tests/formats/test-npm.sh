@@ -142,7 +142,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Verify package metadata via API"
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PKG_NAME" "$PKG_VERSION"
 if resp=$(api_get "/npm/${REPO_KEY}/${PKG_NAME}"); then
   if assert_contains "$resp" "$PKG_VERSION" "metadata should contain version"; then
     if assert_contains "$resp" "$PKG_NAME" "metadata should contain package name"; then

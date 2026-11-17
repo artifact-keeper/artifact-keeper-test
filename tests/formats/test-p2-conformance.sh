@@ -105,7 +105,7 @@ else
   fail "plugin JAR upload returned HTTP ${upload_status}, expected 2xx"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "plugins/${PLUGIN_ID}_${PLUGIN_VERSION}.jar"
 
 # ---------------------------------------------------------------------------
 # 2. GET content.xml or content.jar returns repository metadata

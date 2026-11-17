@@ -99,7 +99,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify version list endpoint"
-sleep 1
+await_artifact_listed "$REPO_KEY" "example.com/testmod/${MODULE_VERSION}/go.mod"
 if resp=$(curl -sf -u "${ADMIN_USER}:${ADMIN_PASS}" \
     "${BASE_URL}/go/${REPO_KEY}/example.com/testmod/@v/list" 2>/dev/null); then
   if assert_contains "$resp" "${MODULE_VERSION}"; then

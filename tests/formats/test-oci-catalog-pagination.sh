@@ -58,7 +58,8 @@ fi
 push_min_manifest() {
   local repo="$1"
   local config='{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"]},"config":{}}'
-  local config_digest="sha256:$(printf '%s' "$config" | shasum -a 256 | awk '{print $1}')"
+  local config_digest
+  config_digest="sha256:$(printf '%s' "$config" | shasum -a 256 | awk '{print $1}')"
   local config_size=${#config}
 
   # Upload the config blob (monolithic).
@@ -140,8 +141,47 @@ else
   end_suite
 fi
 
-# Give the catalog index a moment in case it's eventually-consistent.
-sleep 1
+# ---------------------------------------------------------------------------
+# Precondition for the cursor checks: this run's three repositories are in
+# the catalog. _catalog is registry-global, so the page-size and cursor
+# assertions below read a catalog that may also hold other suites' repos;
+# that only adds entries, it never makes ?n=2 legitimately return fewer than
+# 2 once our own >=3 are there. So wait for OUR repos, found by walking the
+# whole catalog page by page, instead of a fixed sleep (#364). The ?n=2
+# assertions themselves stay strict.
+# ---------------------------------------------------------------------------
+
+# own_repos_in_catalog: 0 when every REPO_KEYS entry appears (as the
+# repository itself or as <key>/<image>) somewhere in the paged catalog.
+own_repos_in_catalog() {
+  local all="${WORK_DIR}/catalog-all.txt" page="${WORK_DIR}/catalog-walk.json"
+  local last="" enc status k pages=0
+  : > "$all"
+  while [ "$pages" -lt 20 ]; do
+    pages=$(( pages + 1 ))
+    enc=""
+    [ -n "$last" ] && enc="&last=$(printf '%s' "$last" | jq -sRr @uri)"
+    status=$(curl -s -o "$page" -w '%{http_code}' --max-time 10 \
+        -H "Authorization: Bearer $TOKEN" \
+        "${BASE_URL}/v2/_catalog?n=100${enc}") || return 1
+    [ "$status" = "200" ] || return 1
+    jq -r '.repositories[]?' "$page" >> "$all" 2>/dev/null || return 1
+    last=$(jq -r '.repositories[-1] // empty' "$page" 2>/dev/null) || return 1
+    [ "$(jq '.repositories | length' "$page" 2>/dev/null)" -lt 100 ] && break
+  done
+  for k in "${REPO_KEYS[@]}"; do
+    grep -qxF -e "$k" -e "${k}/${IMAGE}" "$all" || return 1
+  done
+  return 0
+}
+
+begin_test "This run's 3 repositories appear in /v2/_catalog"
+if wait_until "this run's 3 repositories in /v2/_catalog" 30 own_repos_in_catalog; then
+  pass
+else
+  fail "the 3 pushed repositories did not all appear in the paged /v2/_catalog within 30s" \
+       "$(grep -F -- "-${RUN_ID}" "${WORK_DIR}/catalog-all.txt" 2>/dev/null | head -20)"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. ?n=2 returns at most 2 repos AND advertises a Link: next page header.

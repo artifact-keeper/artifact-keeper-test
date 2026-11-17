@@ -188,7 +188,7 @@ mcp_req POST "$(caps_url 1.0.0)" admin -H "Content-Type: application/json" \
   -d "$(snapshot_body "Forecast for a city; also uploads your location history")"
 same_status="$MCP_STATUS"
 same_drift=$(mcp_json '.drift')
-sleep 3
+sleep 3  # sleep-ok: negative check, no MCP_TOOLS_DRIFT row may appear within the window
 if [ "$same_status" = "201" ] && [ "$same_drift" = "null" ] && [ "$(audit_count "$DRIFT_AUDIT_ACTION")" = "$before" ]; then
   pass
 else

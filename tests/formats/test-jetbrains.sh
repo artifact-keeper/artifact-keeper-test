@@ -44,7 +44,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Create test plugin JAR"
-cd "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
 
 # JetBrains plugins contain META-INF/plugin.xml
 mkdir -p plugin-content/META-INF
@@ -111,7 +111,7 @@ begin_test "Query plugin repository XML"
 if [ "$HANDLER_AVAILABLE" = false ]; then
   skip "jetbrains handler not available"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$PLUGIN_ID" "$PLUGIN_VERSION"
   if resp=$(curl -sf "${JB_URL}/plugins/list/" -H "$(format_auth_header)"); then
     if assert_contains "$resp" "$PLUGIN_ID" "plugin list XML should contain plugin ID"; then
       pass

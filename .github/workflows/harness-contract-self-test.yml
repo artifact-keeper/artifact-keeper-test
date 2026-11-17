@@ -164,6 +164,13 @@ jobs:
       - name: Run fetch-all-pages self-test
         run: bash tests/lib/selftest-fetch-all-pages.sh
 
+      # artifact_listed / await_artifact_listed (tests/lib/common.sh): the
+      # bounded wait that replaced `upload; sleep 1; assert the index` in the
+      # format suites; a row that never lands is a named FAIL, never a pass
+      # (artifact-keeper-test#364).
+      - name: Run artifact-listed self-test
+        run: bash tests/lib/selftest-artifact-listed.sh
+
       # The release gate's runner-toolchain installer (scripts/ci/apt-install-retry.sh):
       # a mirror blip retries, a persistent failure or a missing tool fails
       # loudly as INFRA, never silently (#728).

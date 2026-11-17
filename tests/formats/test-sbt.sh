@@ -130,7 +130,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Verify ivy.xml exists (HEAD)"
-sleep 1
+await_artifact_listed "$REPO_KEY" "$JAR_PATH"
 STATUS=$(curl -s $CURL_TIMEOUT -o /dev/null -w '%{http_code}' -X HEAD \
   -H "$(format_auth_header)" "${IVY_URL}/${IVY_PATH}") || true
 if [ "$STATUS" -ge 200 ] 2>/dev/null && [ "$STATUS" -lt 300 ] 2>/dev/null; then

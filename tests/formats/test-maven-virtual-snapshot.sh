@@ -168,8 +168,10 @@ else
   fail "group metadata upload failed"
 fi
 
-# Give indexers a moment to catch up.
-sleep 2
+# The two maven-metadata.xml PUTs are row-less: the stored document is written
+# before the 201 (maven.rs upload, row-less metadata branch). Wait on the POM,
+# the last row-backed upload, in the hosted member.
+await_artifact_listed "$HOSTED_KEY" "${ARTIFACT_ID}-${SNAP_VERSION}.pom"
 
 # -------------------------------------------------------------------------
 # Baseline: hosted repo serves its own content directly. If these fail,

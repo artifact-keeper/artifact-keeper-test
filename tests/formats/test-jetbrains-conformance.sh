@@ -99,7 +99,7 @@ else
   fi
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PLUGIN_NAME" "$PLUGIN_VERSION_1"
 
 # ---------------------------------------------------------------------------
 # 2. Download plugin by name and version
@@ -160,7 +160,7 @@ upload2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${JB_URL}/plugin/uploadPlugin") || true
 
 if [ "$upload2_status" -ge 200 ] 2>/dev/null && [ "$upload2_status" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$PLUGIN_NAME" "$PLUGIN_VERSION_2"
   # Verify v2 is downloadable
   v2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "$(format_auth_header)" \

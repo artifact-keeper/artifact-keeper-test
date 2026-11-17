@@ -127,8 +127,9 @@ fi
 # =========================================================================
 begin_test "Search stresslib* returns all 20 versions"
 
-# Brief pause to let indexing settle
-sleep 1
+# Uploads are sequential and each manifest publishes its revision before it
+# answers; $rev is the last one's (stresslib/1.0.19).
+await_artifact_listed "$REPO_KEY" "revisions/${rev}/files/conanmanifest.txt"
 
 search_resp=$(curl -s $CURL_TIMEOUT \
   -H "$(format_auth_header)" \

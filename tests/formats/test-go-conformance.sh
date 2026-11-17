@@ -97,7 +97,8 @@ else
   fail "failed to upload module ${MODULE_VERSION_2}"
 fi
 
-sleep 1
+# upload_go_module PUTs the zip then the go.mod; wait for the last row.
+await_artifact_listed "$REPO_KEY" "${MODULE_NAME}/${MODULE_VERSION_2}/go.mod"
 
 # ---------------------------------------------------------------------------
 # 1. GET /{module}/@v/list returns version list (one per line, plain text)
@@ -233,7 +234,8 @@ ENCODED_MODULE="example.com/!mixed!case"
 
 # Upload using original case
 upload_go_module "$MIXED_MODULE" "v0.1.0" "module ${MIXED_MODULE}\n\ngo 1.21" 2>/dev/null || true
-sleep 1
+# Rows are stored under the !-encoded module path (encode_module_path).
+await_artifact_listed "$REPO_KEY" "${ENCODED_MODULE}/v0.1.0/go.mod"
 
 # Try fetching with case-encoded path
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
@@ -328,7 +330,7 @@ RETRACT_MOD="module ${RETRACT_MODULE}\n\ngo 1.21\n\nretract ${RETRACT_VERSION}"
 upload_go_module "$RETRACT_MODULE" "$RETRACT_VERSION" "module ${RETRACT_MODULE}\n\ngo 1.21" 2>/dev/null || true
 # Upload a newer version that retracts the old one
 upload_go_module "$RETRACT_MODULE" "v1.0.0" "$RETRACT_MOD" 2>/dev/null || true
-sleep 1
+await_artifact_listed "$REPO_KEY" "${RETRACT_MODULE}/v1.0.0/go.mod"
 
 status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   -u "${ADMIN_USER}:${ADMIN_PASS}" \

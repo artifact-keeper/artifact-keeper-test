@@ -120,8 +120,7 @@ else
   fail "package push returned HTTP ${status}, expected 200 or 201"
 fi
 
-# Brief pause for indexing
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PACKAGE_ID_LOWER" "$PACKAGE_VERSION"
 
 # ---------------------------------------------------------------------------
 # 1. Service index
@@ -409,7 +408,7 @@ build_nupkg "$PACKAGE_ID" "$SEMVER2_VERSION" "$SEMVER2_NUPKG" "SemVer2 build met
 semver2_status=$(push_nupkg "$SEMVER2_NUPKG")
 if [ "$semver2_status" = "200" ] || [ "$semver2_status" = "201" ]; then
   # Verify the version appears in the flat container listing
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$PACKAGE_ID_LOWER" "$SEMVER2_VERSION"
   semver2_versions=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${NUGET_BASE}/v3/flatcontainer/${PACKAGE_ID_LOWER}/index.json" 2>/dev/null) || true
@@ -449,7 +448,7 @@ build_nupkg "$PACKAGE_ID" "$PACKAGE_VERSION_2" "$NUPKG_V2" "Second version for m
 
 v2_status=$(push_nupkg "$NUPKG_V2")
 if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$PACKAGE_ID_LOWER" "$PACKAGE_VERSION_2"
 
   multi_versions=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \

@@ -181,8 +181,10 @@ else
   fail "could not add remote repo as virtual member"
 fi
 
-# Short pause so the virtual repo membership propagates
-sleep 1
+# No wait for membership: add_virtual_member (api/handlers/repositories.rs)
+# commits and reads the member row back before it answers. The search reads
+# the local member, so wait on locallib's manifest, which publishes it.
+await_artifact_listed "$LOCAL_KEY" "revisions/${LOCAL_REVISION}/files/conanmanifest.txt"
 
 # =========================================================================
 # Test 9: Search through virtual repo for locallib

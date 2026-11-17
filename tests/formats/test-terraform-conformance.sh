@@ -160,7 +160,7 @@ else
 fi
 
 # Brief pause for indexing
-sleep 1
+await_artifact_listed "$REPO_KEY" "${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/" "$MODULE_VERSION"
 
 # ---------------------------------------------------------------------------
 # 3. Version listing
@@ -283,7 +283,7 @@ build_module_archive "$MODULE_NAME" "$MODULE_VERSION_2" "$MODULE_ARCHIVE_V2" "en
 
 v2_status=$(upload_module "$MODULE_ARCHIVE_V2" "$MODULE_NAMESPACE" "$MODULE_NAME" "$MODULE_PROVIDER" "$MODULE_VERSION_2")
 if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${MODULE_NAMESPACE}/${MODULE_NAME}/${MODULE_PROVIDER}/" "$MODULE_VERSION_2"
 
   multi_resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \

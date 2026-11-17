@@ -9,6 +9,9 @@
 source "$(dirname "$0")/../lib/common.sh"
 
 begin_suite "rpm-conformance"
+# Bounded waits: 20 s for the first row plus 35 s for each of two repodata
+# rebuilds (the background builder normally lands one in ~5 s).
+require_wait_budget 90 "artifact and repodata-rebuild polls"
 auth_admin
 setup_workdir
 
@@ -77,6 +80,18 @@ SPEC
   echo "${name}-${version}-${release}.${arch}" >> "$outfile"
 }
 
+# Hosted RPM repodata is built by a debounced background builder
+# (backend/src/services/rpm_repodata_builder.rs, default quiet 3 s, max_delay
+# 60 s): once a root has a stored revision, an upload is visible in
+# primary.xml.gz only after the next rebuild. True when the served
+# primary.xml.gz contains NEEDLE (fixed string).
+rpm_primary_mentions() {
+  local out="${WORK_DIR}/primary-poll.xml.gz"
+  curl -sf -H "$(format_auth_header)" -o "$out" \
+      "${BASE_URL}/rpm/${REPO_KEY}/repodata/primary.xml.gz" 2>/dev/null || return 1
+  gunzip -c "$out" 2>/dev/null | grep -qF -- "$1"
+}
+
 # -------------------------------------------------------------------------
 # Create repository
 # -------------------------------------------------------------------------
@@ -109,7 +124,9 @@ else
   fail "upload returned HTTP ${HTTP_CODE}, expected 2xx"
 fi
 
-sleep 1
+# First package of a never-built root: repodata renders on request from the
+# artifacts rows until the first background build, so the row is enough.
+await_artifact_listed "$REPO_KEY" "conftest-1.0.0-1.x86_64.rpm" "" 20
 
 # -------------------------------------------------------------------------
 # 2. GET repomd.xml returns valid XML with data entries
@@ -231,7 +248,10 @@ UPLOAD2_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
 if [ "$UPLOAD2_CODE" -lt 200 ] || [ "$UPLOAD2_CODE" -ge 300 ]; then
   fail "second RPM upload returned HTTP ${UPLOAD2_CODE}"
 else
-  sleep 1
+  # The root may already have a stored revision: wait for the rebuild.
+  wait_until "primary.xml.gz lists conftest2-2.0.0" 35 \
+    rpm_primary_mentions 'packages/conftest2-2.0.0-1.x86_64.rpm' \
+    || echo "  note: primary.xml.gz did not list it within 35s"
   if curl -sf -H "$(format_auth_header)" \
       -o "${WORK_DIR}/primary2.xml.gz" \
       "${BASE_URL}/rpm/${REPO_KEY}/repodata/primary.xml.gz" 2>/dev/null; then
@@ -318,16 +338,19 @@ UPLOAD3_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
 if [ "$UPLOAD3_CODE" -lt 200 ] || [ "$UPLOAD3_CODE" -ge 300 ]; then
   fail "new version upload returned HTTP ${UPLOAD3_CODE}"
 else
-  sleep 1
+  # The root has a stored revision by now: wait for the rebuild.
+  wait_until "primary.xml.gz lists conftest-2.0.0" 35 \
+    rpm_primary_mentions 'packages/conftest-2.0.0-1.x86_64.rpm' \
+    || echo "  note: primary.xml.gz did not list it within 35s"
   # Fetch primary.xml.gz and look for the new version
   if curl -sf -H "$(format_auth_header)" \
       -o "${WORK_DIR}/primary3.xml.gz" \
       "${BASE_URL}/rpm/${REPO_KEY}/repodata/primary.xml.gz" 2>/dev/null; then
     PRIMARY3=$(gunzip -c "${WORK_DIR}/primary3.xml.gz" 2>/dev/null) || true
-    if echo "$PRIMARY3" | grep -q "2.0.0"; then
+    if echo "$PRIMARY3" | grep -qF 'packages/conftest-2.0.0-1.x86_64.rpm'; then
       pass
     else
-      fail "primary.xml does not contain updated version 2.0.0"
+      fail "primary.xml does not list conftest-2.0.0-1.x86_64.rpm"
     fi
   else
     fail "could not fetch primary.xml.gz after update"

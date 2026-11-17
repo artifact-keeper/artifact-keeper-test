@@ -2910,6 +2910,69 @@ wait_for_incus_upload_finalized() {
   return 1
 }
 
+# artifact_listed REPO_KEY NEEDLE [VERSION]
+#
+# True when the repository's management listing
+# (GET /api/v1/repositories/{key}/artifacts?q=NEEDLE) holds a live `artifacts`
+# row whose name or path contains NEEDLE (case-insensitive) and, when VERSION
+# is given, whose version equals VERSION or whose path contains it. One short
+# request (10 s cap) so it can be polled.
+#
+# This is the row every hosted-format index, packument, catalog and download
+# handler reads, observed through a surface that is NOT the format's own
+# index, so waiting on it does not make an index assertion self-fulfilling.
+artifact_listed() {
+  local repo_key="$1" needle="$2" version="${3:-}" body
+  body=$(curl -sf --max-time 10 --connect-timeout 5 -H "$(auth_header)" -G \
+    --data-urlencode "q=${needle}" --data-urlencode "per_page=100" \
+    "${BASE_URL}/api/v1/repositories/${repo_key}/artifacts" 2>/dev/null) || return 1
+  jq -e --arg n "$needle" --arg v "$version" '
+    ($n | ascii_downcase) as $n
+    | [ (.items // [])[]
+        | select(((.name // "") | ascii_downcase | contains($n))
+                 or ((.path // "") | ascii_downcase | contains($n)))
+        | select($v == "" or (.version // "") == $v or ((.path // "") | contains($v))) ]
+    | length > 0' <<<"$body" >/dev/null 2>&1
+}
+
+# await_artifact_listed REPO_KEY NEEDLE [VERSION] [TIMEOUT_SECS]
+#
+# The replacement for the `upload; sleep 1; assert the index` shape
+# (artifact-keeper-test#364): blocks until artifact_listed is true, bounded at
+# TIMEOUT_SECS (default 30). On success it records nothing, so the suite's
+# test count is unchanged and the next assertion runs as before. On timeout it
+# records a FAIL case of its own, named after the precondition, and then
+# restores the current test's context, so the red case in JUnit says "the
+# upload never landed" instead of blaming whichever index check came next.
+#
+# Returns 0 either way (the suite runs under set -e and the failure is already
+# recorded); a caller that must branch on it uses
+# `wait_until ... artifact_listed ...` directly. A row that never appears is a
+# product failure (a 2xx upload that did not persist), never a skip.
+# After the first precondition timeout in a script, later waits get a short
+# budget: an upload path that regressed across the whole suite must not spend
+# 30 s per call site and run past run-suite.sh's TEST_TIMEOUT (exit 124, no
+# JUnit), which would lose the very Precondition cases that name the failure.
+_AWAIT_LISTED_TIMED_OUT=0
+await_artifact_listed() {
+  local repo_key="$1" needle="$2" version="${3:-}" timeout="${4:-30}"
+  if [ "$_AWAIT_LISTED_TIMED_OUT" -gt 0 ] && [ "$timeout" -gt 3 ]; then
+    timeout=3
+  fi
+  local what="'${needle}'${version:+ version ${version}} listed in ${repo_key}"
+  if wait_until "$what" "$timeout" artifact_listed "$repo_key" "$needle" "$version"; then
+    return 0
+  fi
+  _AWAIT_LISTED_TIMED_OUT=$(( _AWAIT_LISTED_TIMED_OUT + 1 ))
+  local saved_name="${_TEST_NAME:-}" saved_start="${_TEST_START:-$(date +%s)}"
+  _TEST_NAME="Precondition: ${what}"
+  _TEST_START=$(( $(date +%s) - timeout ))
+  fail "no artifacts row for ${needle}${version:+ ${version}} appeared in GET /api/v1/repositories/${repo_key}/artifacts within ${timeout}s after the upload"
+  _TEST_NAME="$saved_name"
+  _TEST_START="$saved_start"
+  return 0
+}
+
 # wait_for_counter_stable FILE TIMEOUT_SECS [STABLE_WINDOW_SECS]
 # Polls a numeric counter file (e.g. mock peak-inflight) until its value has
 # not changed for STABLE_WINDOW_SECS (default 0.6s) or TIMEOUT_SECS fires.

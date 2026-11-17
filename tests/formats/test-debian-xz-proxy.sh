@@ -91,8 +91,8 @@ else
   fail "pool upload returned HTTP ${HTTP_CODE}, expected 2xx"
 fi
 
-# Allow metadata generation to complete
-sleep 1
+# Packages indexes render on request from the artifacts rows.
+await_artifact_listed "$REPO_KEY" "xztest_1.0.0_${PKG_ARCH}.deb"
 
 # -------------------------------------------------------------------------
 # 2. Verify Packages.xz is served (the core .xz fix)

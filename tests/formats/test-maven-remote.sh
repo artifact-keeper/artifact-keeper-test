@@ -160,7 +160,8 @@ else
   fail "could not add local repo as virtual member"
 fi
 
-sleep 1
+# Virtual reads resolve through the hosted member; wait on its row.
+await_artifact_listed "$LOCAL_KEY" "$JAR_UPLOAD_PATH"
 
 begin_test "GET .sha256 checksum through virtual repo (bug #663)"
 VIRTUAL_MAVEN_URL="${BASE_URL}/maven/${VIRTUAL_KEY}"
@@ -235,7 +236,7 @@ else
 fi
 
 begin_test "Verify maven-metadata.xml version ordering (bug #568)"
-sleep 2
+await_artifact_listed "$LOCAL_KEY" "${VO_GROUP}/${VO_ARTIFACT}/2.0/${VO_ARTIFACT}-2.0.jar"
 META_URL="${LOCAL_MAVEN_URL}/${VO_GROUP}/${VO_ARTIFACT}/maven-metadata.xml"
 if metadata=$(curl -sf $CURL_TIMEOUT -u "${ADMIN_USER}:${ADMIN_PASS}" \
     "${META_URL}" 2>/dev/null); then

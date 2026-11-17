@@ -137,7 +137,7 @@ else
   fail "package upload returned ${status}, expected 200 or 201"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "${VENDOR}/${PACKAGE}/${PKG_VERSION}/"
 
 # ---------------------------------------------------------------------------
 # 3. GET /p2/{vendor}/{package}.json returns package metadata (v2 API)
@@ -273,7 +273,7 @@ status2=$(upload_composer_package "$PKG_ZIP_2")
 if [ "$status2" != "200" ] && [ "$status2" != "201" ]; then
   fail "second version upload returned ${status2}"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${VENDOR}/${PACKAGE}/${PKG_VERSION_2}/"
   # Check that metadata includes both versions
   multi_resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
@@ -321,7 +321,7 @@ dep_status=$(upload_composer_package "$DEP_ZIP")
 if [ "$dep_status" != "200" ] && [ "$dep_status" != "201" ]; then
   fail "dependency package upload returned ${dep_status}"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${VENDOR}/${DEP_PACKAGE}/${DEP_VERSION}/"
   # Fetch metadata and check that the require field is present
   dep_resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
