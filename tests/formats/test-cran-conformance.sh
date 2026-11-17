@@ -97,7 +97,7 @@ else
   fail "package upload returned ${upload_status}, expected 200 or 201"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PACKAGE_NAME" "$PACKAGE_VERSION"
 
 # =========================================================================
 # Test 2: GET src/contrib/PACKAGES returns package index
@@ -224,7 +224,7 @@ v2_status=$(curl -s -o /dev/null -w '%{http_code}' \
   "${CRAN_URL}/src/contrib/${PACKAGE_NAME_2}_${PACKAGE_VERSION_2}.tar.gz") || true
 
 if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$PACKAGE_NAME_2" "$PACKAGE_VERSION_2"
   # Re-fetch PACKAGES and check both package names appear
   if updated_packages=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \

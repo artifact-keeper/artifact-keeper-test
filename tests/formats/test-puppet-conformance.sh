@@ -110,7 +110,7 @@ else
   fail "puppet module upload returned HTTP ${upload_status}, expected 200 or 201"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "${OWNER}-${MOD_NAME}" "$MOD_VERSION"
 
 # ---------------------------------------------------------------------------
 # 2. GET /v3/modules/{owner}-{name} returns module metadata
@@ -252,7 +252,7 @@ build_puppet_module "$OWNER" "$MOD_NAME" "$MOD_VERSION_2" "$TARBALL_2"
 
 upload2_status=$(upload_puppet_module "$OWNER" "$MOD_NAME" "$MOD_VERSION_2" "$TARBALL_2") || true
 if [ "$upload2_status" = "200" ] || [ "$upload2_status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${OWNER}-${MOD_NAME}" "$MOD_VERSION_2"
   # Fetch releases list
   if releases_resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \

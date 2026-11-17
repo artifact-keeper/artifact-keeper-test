@@ -86,20 +86,41 @@ begin_test "Upload container image"
 IMAGE_FILE="${WORK_DIR}/${FILENAME}"
 build_incus_image "$PRODUCT" "$VERSION" "$IMAGE_FILE"
 
-upload_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+UPLOAD_BODY_FILE="${WORK_DIR}/incus-upload-response.json"
+upload_status=$(curl -s -o "$UPLOAD_BODY_FILE" -w '%{http_code}' $CURL_TIMEOUT \
   -X PUT \
   -H "$(format_auth_header)" \
   -H "Content-Type: application/gzip" \
   --data-binary "@${IMAGE_FILE}" \
   "${INCUS_URL}/images/${PRODUCT}/${VERSION}/${FILENAME}") || true
 
+UPLOAD_SESSION_ID=""
 if [ "$upload_status" -ge 200 ] 2>/dev/null && [ "$upload_status" -lt 300 ] 2>/dev/null; then
+  UPLOAD_SESSION_ID=$(jq -r '.session_id // empty' "$UPLOAD_BODY_FILE" 2>/dev/null) || UPLOAD_SESSION_ID=""
   pass
 else
   fail "image upload returned HTTP ${upload_status}, expected 2xx"
 fi
 
-sleep 1
+# The image PUT answers 202 and finalizes on a background task that writes the
+# `artifacts` row every SimpleStreams surface below reads (see
+# wait_for_incus_upload_finalized in tests/lib/common.sh). Wait on the upload
+# session, the product's own completion signal and independent of the catalog,
+# instead of a fixed sleep (artifact-keeper-test#362, #364).
+begin_test "Upload finalizes"
+if [ "$upload_status" = "202" ]; then
+  if [ -z "$UPLOAD_SESSION_ID" ]; then
+    fail "202 Accepted carried no session_id; cannot confirm finalize completed"
+  elif wait_for_incus_upload_finalized "$REPO_KEY" "$UPLOAD_SESSION_ID" 60; then
+    pass
+  else
+    fail "upload session ${UPLOAD_SESSION_ID} did not reach 'completed'"
+  fi
+else
+  # 200/201 is the older synchronous contract: the artifact was committed
+  # inside the request, so there is nothing to await.
+  pass
+fi
 
 # ---------------------------------------------------------------------------
 # 2. List images (SimpleStreams catalog)

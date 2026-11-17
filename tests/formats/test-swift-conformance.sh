@@ -108,7 +108,7 @@ else
 fi
 
 # Brief pause for indexing
-sleep 1
+await_artifact_listed "$REPO_KEY" "${SCOPE}/${PACKAGE_NAME}/" "$PACKAGE_VERSION"
 
 # ---------------------------------------------------------------------------
 # 1. List package releases
@@ -335,7 +335,7 @@ build_swift_archive "$SCOPE" "$PACKAGE_NAME" "$PACKAGE_VERSION_2" "$ARCHIVE_V2" 
 
 v2_status=$(publish_release "$ARCHIVE_V2" "$SCOPE" "$PACKAGE_NAME" "$PACKAGE_VERSION_2")
 if [ "$v2_status" -ge 200 ] 2>/dev/null && [ "$v2_status" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${SCOPE}/${PACKAGE_NAME}/" "$PACKAGE_VERSION_2"
 
   # Fetch manifest for v2 with swift-version=5.10
   manifest_v2=$(curl -sf $CURL_TIMEOUT \

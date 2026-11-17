@@ -76,6 +76,16 @@ upload_sdist() {
     -F "content=@${tarball};filename=${basename_file}" 2>/dev/null
 }
 
+# True once the simple index shows the yank in either PEP 592 form: the
+# yanked sdist anchor carries data-yanked, or it is gone from the index.
+yank_reflected_in_index() {
+  local html line
+  html=$(curl -sf $CURL_TIMEOUT -u "${ADMIN_USER}:${ADMIN_PASS}" \
+    "${PYPI_URL}/simple/${NORMALIZED_NAME}/" 2>/dev/null) || return 1
+  line=$(grep -E "${PKG_NAME}-${VERSION_YANK}\.tar\.gz" <<<"$html" || true)
+  [ -z "$line" ] || grep -qi 'data-yanked' <<<"$line"
+}
+
 # ---------------------------------------------------------------------------
 # Create repo + upload both versions
 # ---------------------------------------------------------------------------
@@ -107,7 +117,7 @@ else
   fail "publish ${VERSION_YANK} failed (HTTP ${status})"
 fi
 
-sleep 2
+await_artifact_listed "$REPO_KEY" "$NORMALIZED_NAME" "$VERSION_YANK"
 
 # ---------------------------------------------------------------------------
 # Yank: try the documented twine action and a few management-API fallbacks.
@@ -184,7 +194,11 @@ begin_test "Yanked version surfaces in simple index (data-yanked or excluded)"
 if [ "$YANKED" != "true" ]; then
   skip "yank step did not succeed; cannot verify index reflection"
 else
-  sleep 1
+  # No hosted PyPI yank handler exists on main to check for read-your-writes,
+  # so poll the index until it reflects the yank (either PEP 592 form); the
+  # strict assertion below still decides the case (#364).
+  wait_until "simple index reflects the yank of ${VERSION_YANK}" 30 yank_reflected_in_index \
+    || echo "  note: simple index did not reflect the yank within 30s"
   INDEX_HTML="${WORK_DIR}/simple-after-yank.html"
   idx_status=$(curl -s -o "$INDEX_HTML" -w '%{http_code}' $CURL_TIMEOUT \
     -u "${ADMIN_USER}:${ADMIN_PASS}" \

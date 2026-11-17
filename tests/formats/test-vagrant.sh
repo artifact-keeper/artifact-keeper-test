@@ -45,7 +45,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Create test box file"
-cd "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
 
 # A Vagrant box is a tar.gz containing metadata.json and a disk image.
 # Create a minimal box for testing.
@@ -68,6 +68,15 @@ dd if=/dev/urandom bs=1024 count=2 of=box-content/box-disk.vmdk 2>/dev/null
 tar czf "${WORK_DIR}/test.box" -C box-content .
 
 pass
+
+# True when the box listing or the root listing mentions BOX_NAME.
+vagrant_listing_mentions_box() {
+  local body
+  body=$(curl -sf "${EXT_URL}/${BOX_NAME}" -H "$(format_auth_header)" 2>/dev/null) \
+    || body=$(curl -sf "${EXT_URL}/" -H "$(format_auth_header)" 2>/dev/null) \
+    || return 1
+  grep -qF -- "$BOX_NAME" <<<"$body"
+}
 
 # ---------------------------------------------------------------------------
 # Upload box file via PUT
@@ -96,7 +105,11 @@ begin_test "Query box listing"
 if [ "$WASM_AVAILABLE" = false ]; then
   skip "vagrant WASM plugin not loaded"
 else
-  sleep 1
+  # The /ext route hands the WASM plugin the repo's artifact rows; the
+  # plugin's row layout is not fixed here, so wait on either listing the
+  # assertion below reads to mention the box.
+  wait_until "vagrant listing mentions ${BOX_NAME}" 30 vagrant_listing_mentions_box \
+    || echo "  note: listing did not mention the box within 30s"
   if resp=$(curl -sf "${EXT_URL}/${BOX_NAME}" -H "$(format_auth_header)"); then
     if assert_contains "$resp" "$BOX_NAME" "box listing should contain box name"; then
       pass

@@ -136,7 +136,7 @@ else
   fail "gem upload returned ${upload_status}, expected 200 or 201"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$GEM_NAME" "$GEM_VERSION"
 
 # ---------------------------------------------------------------------------
 # 2. GET /gems/{name}-{version}.gem downloads the gem
@@ -364,7 +364,7 @@ v2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
 if [ "$v2_status" != "200" ] && [ "$v2_status" != "201" ]; then
   fail "second gem upload returned ${v2_status}"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$GEM_NAME" "$GEM_VERSION_2"
 
   # Check for both versions via the versions API or gem info
   multi_found=false

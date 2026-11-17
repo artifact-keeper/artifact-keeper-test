@@ -128,8 +128,8 @@ else
   fail "upload of v${PKG_VERSION_2} failed"
 fi
 
-# Brief pause for indexing
-sleep 1
+# Wait for the second version's row before reading the indexes (#364).
+await_artifact_listed "$REPO_KEY" "$NORMALIZED_NAME" "$PKG_VERSION_2"
 
 # =========================================================================
 # PEP 503: HTML Simple Repository API

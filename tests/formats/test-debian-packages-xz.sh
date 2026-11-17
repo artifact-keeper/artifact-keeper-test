@@ -113,9 +113,9 @@ else
   end_suite
 fi
 
-# Allow async metadata generation. The xz indexer runs after the .deb
-# is committed to storage, same as Packages and Packages.gz.
-sleep 2
+# Packages, Packages.gz and Packages.xz are rendered on request from the
+# artifacts rows (debian.rs build_packages_xz), so the row is the precondition.
+await_artifact_listed "$REPO_KEY" "$DEB_FILE"
 
 DISTS_PREFIX="/debian/${REPO_KEY}/dists/${DISTRIBUTION}"
 BIN_PREFIX="${DISTS_PREFIX}/${COMPONENT}/binary-${PKG_ARCH}"

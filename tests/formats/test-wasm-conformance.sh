@@ -84,7 +84,7 @@ else
   fail "wasm upload returned HTTP ${upload_status}, expected 2xx"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$ARTIFACT_PATH"
 
 # ---------------------------------------------------------------------------
 # 2. Download .wasm module
@@ -144,7 +144,7 @@ v2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH_V2}") || true
 
 if [ "$v2_status" -ge 200 ] 2>/dev/null && [ "$v2_status" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$ARTIFACT_PATH_V2"
   # Verify both versions are downloadable
   DL_V1="${WORK_DIR}/dl-v1.wasm"
   DL_V2="${WORK_DIR}/dl-v2.wasm"

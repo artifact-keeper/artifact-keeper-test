@@ -184,7 +184,7 @@ for deploy_attempt in $(seq 1 "$deploy_attempts"); do
   fi
   if [ "$deploy_attempt" -lt "$deploy_attempts" ]; then
     echo "  mvn deploy:deploy-file attempt ${deploy_attempt}/${deploy_attempts} failed, retrying in 2s..."
-    sleep 2
+    sleep 2  # sleep-ok: retry backoff inside the bounded 3-attempt deploy loop
   fi
 done
 if $deploy_ok; then

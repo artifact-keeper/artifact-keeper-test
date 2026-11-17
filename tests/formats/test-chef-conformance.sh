@@ -96,7 +96,7 @@ else
   fail "cookbook upload returned ${upload_status}, expected 200 or 201"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$COOKBOOK_NAME" "$COOKBOOK_VERSION"
 
 # =========================================================================
 # Test 2: GET /api/v1/cookbooks/{name} lists versions
@@ -230,7 +230,7 @@ v2_status=$(build_and_upload_cookbook "$COOKBOOK_NAME" "$COOKBOOK_VERSION_2" \
   "Conformance test cookbook v2") || true
 
 if [ "$v2_status" = "200" ] || [ "$v2_status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$COOKBOOK_NAME" "$COOKBOOK_VERSION_2"
   # Verify both versions are listed
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \

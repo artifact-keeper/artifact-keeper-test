@@ -176,8 +176,10 @@ else
   end_suite
 fi
 
-# Allow async re-sign of Release after the upload.
-sleep 2
+# Release/InRelease are rendered and signed on request from the artifacts
+# rows (the signed-Release cache is keyed on the unsigned content), so the
+# row landing is the precondition.
+await_artifact_listed "$REPO_KEY" "$DEB_FILE"
 
 # ---------------------------------------------------------------------------
 # 4. Fetch and validate InRelease (inline-signed Release).

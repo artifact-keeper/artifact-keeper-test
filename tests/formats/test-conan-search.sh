@@ -127,8 +127,9 @@ if $upload_ok; then
   pass
 fi
 
-# Allow a moment for indexing
-sleep 1
+# conanmanifest.txt publishes the revision (clears `pending` in the same
+# transaction), so its row is what search waits on. other-pkg is last.
+await_artifact_listed "$REPO_KEY" "revisions/${REV_O1}/files/conanmanifest.txt"
 
 # -----------------------------------------------------------------------
 begin_test "Search exact name returns only that package"
@@ -216,7 +217,7 @@ s=$(upload_recipe "userlib" "1.0.0" "testuser" "stable" "$REV_U1")
 if [ "$s" -lt 200 ] 2>/dev/null || [ "$s" -ge 300 ] 2>/dev/null; then
   fail "userlib/1.0.0@testuser/stable upload returned HTTP ${s}"
 else
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "revisions/${REV_U1}/files/conanmanifest.txt"
   resp=$(conan_search "userlib*") || true
   if [ -z "$resp" ]; then
     fail "search for userlib* returned empty response"

@@ -110,8 +110,9 @@ if assert_http_2xx "$jar_a" "first jar PUT not 2xx (HTTP ${jar_a})"; then
   fi
 fi
 
-# Small gap so server-side timestamp ordering is unambiguous.
-sleep 1
+# No gap needed: snapshot ordering and each entry's <updated> come from the
+# timestamps in the filenames (TS_A < TS_B), not server time
+# (generate_snapshot_metadata_xml in backend maven.rs).
 
 # Second deploy uses a distinct classifier so that (classifier, extension) is
 # different from the first deploy. The backend (maven.rs:567-582) dedupes
@@ -129,8 +130,9 @@ if assert_http_2xx "$jar_b" "second jar PUT not 2xx (HTTP ${jar_b})"; then
   fi
 fi
 
-# Let the metadata generator catch up.
-sleep 3
+# Version-level SNAPSHOT metadata is generated on read from the artifacts
+# rows (collect_snapshot_entries); wait for the last one.
+await_artifact_listed "$REPO_KEY" "${ARTIFACT_ID}-${SNAP_VERSION_B}.pom"
 
 # ---------------------------------------------------------------------------
 # Fetch version-level maven-metadata.xml and assert auto-generation

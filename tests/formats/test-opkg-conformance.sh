@@ -119,7 +119,7 @@ else
   fail "ipk upload returned HTTP ${upload_status}, expected 2xx"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$IPK_FILENAME"
 
 # ---------------------------------------------------------------------------
 # 2. GET Packages returns package index

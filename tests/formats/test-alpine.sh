@@ -55,7 +55,7 @@ echo '#!/bin/sh' > "${APK_DIR}/usr/bin/${PKG_NAME}"
 echo "echo hello from ${PKG_NAME}" >> "${APK_DIR}/usr/bin/${PKG_NAME}"
 chmod 755 "${APK_DIR}/usr/bin/${PKG_NAME}"
 
-cd "${APK_DIR}"
+cd "${APK_DIR}" || exit 1
 tar czf "${WORK_DIR}/${APK_FILE}" .PKGINFO usr/
 
 if [ -s "${WORK_DIR}/${APK_FILE}" ]; then
@@ -87,7 +87,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify APKINDEX.tar.gz"
-sleep 1
+await_artifact_listed "$REPO_KEY" "$APK_FILE"
 if curl -sf -H "$(format_auth_header)" \
     -o "${WORK_DIR}/APKINDEX.tar.gz" \
     "${BASE_URL}/alpine/${REPO_KEY}/${BRANCH}/${REPOSITORY}/${ARCH}/APKINDEX.tar.gz" 2>/dev/null; then

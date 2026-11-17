@@ -117,7 +117,7 @@ else
   fail "podspec upload returned HTTP ${status}, expected 200 or 201"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$POD_NAME" "$POD_VERSION"
 
 # ---------------------------------------------------------------------------
 # 2. GET /Specs/{shard}/{name}/{version}/{name}.podspec.json returns the spec
@@ -166,7 +166,7 @@ begin_test "List available versions for pod"
 # Upload a second version first
 status2=$(upload_podspec "$POD_NAME" "$POD_VERSION_2") || true
 if [ "$status2" = "200" ] || [ "$status2" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$POD_NAME" "$POD_VERSION_2"
 fi
 
 # Try the all_specs endpoint

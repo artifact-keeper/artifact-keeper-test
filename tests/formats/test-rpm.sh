@@ -103,7 +103,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify repomd.xml"
-sleep 1
+await_artifact_listed "$REPO_KEY" "$RPM_FILE"
 if resp=$(api_get "/rpm/${REPO_KEY}/repodata/repomd.xml" 2>/dev/null); then
   if assert_contains "$resp" "repomd"; then
     pass

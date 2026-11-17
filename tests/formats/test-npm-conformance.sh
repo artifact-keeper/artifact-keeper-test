@@ -133,8 +133,8 @@ else
   fail "expected 200 or 201, got ${status}"
 fi
 
-# Brief pause for indexing
-sleep 1
+# Wait for the version row before reading the packument (#364).
+await_artifact_listed "$REPO_KEY" "$PKG_NAME" "$PKG_VERSION_1"
 
 # ---------------------------------------------------------------------------
 # 2. GET /{package} returns packument with versions, dist-tags, time
@@ -252,7 +252,7 @@ fi
 begin_test "dist-tags: latest updates after second publish"
 status2=$(npm_publish_curl "$PKG_NAME" "$PKG_VERSION_2") || true
 if [ "$status2" = "200" ] || [ "$status2" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$PKG_NAME" "$PKG_VERSION_2"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${NPM_REGISTRY}/${PKG_NAME}" 2>/dev/null); then
@@ -274,7 +274,7 @@ fi
 begin_test "Scoped package: publish and fetch"
 scoped_status=$(npm_publish_curl "$SCOPED_PKG_NAME" "$PKG_VERSION_1") || true
 if [ "$scoped_status" = "200" ] || [ "$scoped_status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${SCOPED_PKG_NAME#*/}" "$PKG_VERSION_1"
   # Scoped packages use URL-encoded slash: @scope%2fname
   encoded_scoped=$(echo "$SCOPED_PKG_NAME" | sed 's|/|%2f|g')
   if resp=$(curl -sf $CURL_TIMEOUT \
@@ -375,7 +375,8 @@ del_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${NPM_REGISTRY}/${PKG_NAME}/-/${PKG_NAME}-${PKG_VERSION_1}.tgz" 2>/dev/null) || true
 if [ "$del_status" = "200" ] || [ "$del_status" = "204" ]; then
   # Verify the version is gone from the packument
-  sleep 1
+  # No wait: unpublish_npm_rows (backend npm.rs) soft-deletes the row and
+  # rewrites dist-tags before the DELETE answers (read-your-writes).
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${NPM_REGISTRY}/${PKG_NAME}" 2>/dev/null); then
@@ -410,7 +411,7 @@ fi
 begin_test "Packument versions object lists all versions"
 # Re-publish v1 if it was removed, so we can test multi-version packument
 npm_publish_curl "$PKG_NAME" "$PKG_VERSION_1" >/dev/null 2>&1 || true
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PKG_NAME" "$PKG_VERSION_1"
 
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \

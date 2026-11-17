@@ -203,7 +203,9 @@ fi
 # =========================================================================
 
 begin_test "maven-metadata.xml lists deployed version"
-sleep 1
+# maven-metadata.xml is generated from the artifacts rows on read, and the
+# upload drops the per-GAV metadata cache before answering.
+await_artifact_listed "$REPO_KEY" "$POM_PATH"
 METADATA_PATH="${GROUP_PATH}/${ARTIFACT_ID}/maven-metadata.xml"
 if metadata=$(curl -sf $CURL_TIMEOUT -u "${ADMIN_USER}:${ADMIN_PASS}" \
     "${MAVEN_URL}/${METADATA_PATH}" 2>/dev/null); then
@@ -301,7 +303,7 @@ V2_JAR_PATH="${ARTIFACT_BASE_V2}/${ARTIFACT_ID}-${VERSION_2}.jar"
 if curl -sf $CURL_TIMEOUT -X PUT "${MAVEN_URL}/${V2_JAR_PATH}" \
     -u "${ADMIN_USER}:${ADMIN_PASS}" \
     --data-binary "@${V2_JAR}" > /dev/null 2>&1; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$V2_JAR_PATH"
   # Check metadata includes both versions
   if metadata=$(curl -sf $CURL_TIMEOUT -u "${ADMIN_USER}:${ADMIN_PASS}" \
       "${MAVEN_URL}/${METADATA_PATH}" 2>/dev/null); then
@@ -325,7 +327,7 @@ fi
 
 begin_test "Snapshot versioning resolves latest snapshot"
 # Deploy a second snapshot build
-sleep 1
+sleep 1  # sleep-ok: SNAP_TIMESTAMP2 is wall-clock seconds; keep it distinct from build 1's
 SNAP_TIMESTAMP2=$(date -u '+%Y%m%d.%H%M%S')
 SNAP_BUILD2=2
 SNAP_JAR_NAME2="${ARTIFACT_ID}-${SNAP_BASE_VERSION}-${SNAP_TIMESTAMP2}-${SNAP_BUILD2}.jar"

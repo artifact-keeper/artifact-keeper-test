@@ -468,7 +468,8 @@ else
 fi
 
 begin_test "Simple index lists both wheels by exact filename"
-sleep 1
+await_artifact_listed "$HOSTED_KEY" "$EXT_WHEEL_BASENAME"
+await_artifact_listed "$HOSTED_KEY" "$CTL_WHEEL_BASENAME"
 simple_ext=$(curl -sf --max-time 30 "${HOSTED_URL}/simple/${EXT_NAME}/" 2>/dev/null) || simple_ext=""
 simple_ctl=$(curl -sf --max-time 30 "${HOSTED_URL}/simple/${CTL_NAME}/" 2>/dev/null) || simple_ctl=""
 if printf '%s' "$simple_ext" | grep -qF -- "$EXT_WHEEL_BASENAME" \
@@ -696,7 +697,8 @@ fi
 
 begin_test "Remote JSON route answers through the proxy with urls rewritten to the remote"
 REMOTE_JSON="${WORK_DIR}/ext-remote.json"
-sleep 1
+# No wait: create_remote_repo committed before it answered, and the hosted
+# upstream's rows were awaited before the hosted index checks above.
 status=$(http_get "${REMOTE_BASE}/${EXT_JSON_NAME}/json" "$REMOTE_JSON")
 if [ "$status" != "200" ]; then
   fail "GET ${REMOTE_BASE}/${EXT_JSON_NAME}/json returned HTTP ${status}" "$(head -c 600 "$REMOTE_JSON")"
@@ -857,7 +859,7 @@ else
 fi
 
 begin_test "Virtual XML-RPC browse is the union over members: both releases, not the control"
-sleep 1
+await_artifact_listed "$HOSTED2_KEY" "$EXT2_WHEEL_BASENAME"
 status=$(xmlrpc_post "$VIRTUAL_BASE" "$BROWSE_BODY" "${WORK_DIR}/browse-virtual.out")
 if [ "$status" != "200" ]; then
   fail "POST ${VIRTUAL_BASE} browse returned HTTP ${status}" "$(head -c 600 "${WORK_DIR}/browse-virtual.out")"

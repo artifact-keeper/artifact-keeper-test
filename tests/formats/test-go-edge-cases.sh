@@ -130,7 +130,8 @@ CASE_VERSION="v1.0.0"
 
 # Upload using the original mixed-case path
 if upload_go_module "$CASE_MODULE" "$CASE_VERSION"; then
-  sleep 1
+  # Rows are stored under the !-encoded module path (encode_module_path).
+  await_artifact_listed "$REPO_KEY" "${CASE_ENCODED}/${CASE_VERSION}/go.mod"
 
   # The GOPROXY spec says clients encode uppercase as !lowercase when requesting.
   # The server must understand the encoded form.
@@ -173,7 +174,9 @@ done
 if [ "$upload_failures" -gt 0 ]; then
   fail "${upload_failures}/30 version uploads failed"
 else
-  sleep 2
+  # Uploads are sequential and each commits before answering; the last one
+  # (i=30 -> v1.3.0) landing means the earlier ones did too.
+  await_artifact_listed "$REPO_KEY" "${MANY_MODULE}/v1.3.0/go.mod"
 
   if list_resp=$(go_get "${MANY_MODULE}/@v/list"); then
     found=0
@@ -214,7 +217,7 @@ ORDER_MODULE="example.com/ordertest"
 upload_go_module "$ORDER_MODULE" "v1.0.0" 2>/dev/null || true
 upload_go_module "$ORDER_MODULE" "v2.0.0" 2>/dev/null || true
 upload_go_module "$ORDER_MODULE" "v1.1.0" 2>/dev/null || true
-sleep 1
+await_artifact_listed "$REPO_KEY" "${ORDER_MODULE}/v1.1.0/go.mod"
 
 if list_resp=$(go_get "${ORDER_MODULE}/@v/list"); then
   has_100=false
@@ -245,7 +248,7 @@ upload_go_module "$PRE_MODULE" "v1.0.0-alpha" 2>/dev/null || true
 upload_go_module "$PRE_MODULE" "v1.0.0-beta.1" 2>/dev/null || true
 upload_go_module "$PRE_MODULE" "v0.0.0-20210101000000-abcdef123456" 2>/dev/null || true
 upload_go_module "$PRE_MODULE" "v1.0.0" 2>/dev/null || true
-sleep 1
+await_artifact_listed "$REPO_KEY" "${PRE_MODULE}/v1.0.0/go.mod"
 
 if list_resp=$(go_get "${PRE_MODULE}/@v/list"); then
   found_alpha=false
@@ -380,7 +383,7 @@ GOMOD_VERSION="v1.2.3"
 GOMOD_CONTENT="module example.com/gomodcheck\n\ngo 1.22\n\nrequire (\n\tgolang.org/x/text v0.14.0\n)"
 
 if upload_go_module "$GOMOD_MODULE" "$GOMOD_VERSION" "$GOMOD_CONTENT"; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${GOMOD_MODULE}/${GOMOD_VERSION}/go.mod"
   if mod_resp=$(go_get "${GOMOD_MODULE}/@v/${GOMOD_VERSION}.mod"); then
     if assert_contains "$mod_resp" "module example.com/gomodcheck" "go.mod missing module directive"; then
       if assert_contains "$mod_resp" "go 1.22" "go.mod missing go version directive"; then
@@ -519,7 +522,7 @@ DEEP_MODULE="github.com/testorg/testrepo/sub/path/deep/nested"
 DEEP_VERSION="v0.1.0"
 
 if upload_go_module "$DEEP_MODULE" "$DEEP_VERSION"; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${DEEP_MODULE}/${DEEP_VERSION}/go.mod"
 
   # Verify all three endpoints work for the deeply nested path
   info_status=$(go_status "${DEEP_MODULE}/@v/${DEEP_VERSION}.info")
@@ -551,7 +554,7 @@ REPLACE_VERSION="v1.0.0"
 REPLACE_MOD="module example.com/replacedeps\n\ngo 1.21\n\nrequire (\n\texample.com/oldpkg v1.0.0\n)\n\nreplace example.com/oldpkg v1.0.0 => example.com/newpkg v2.0.0"
 
 if upload_go_module "$REPLACE_MODULE" "$REPLACE_VERSION" "$REPLACE_MOD"; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${REPLACE_MODULE}/${REPLACE_VERSION}/go.mod"
 
   if mod_resp=$(go_get "${REPLACE_MODULE}/@v/${REPLACE_VERSION}.mod"); then
     if assert_contains "$mod_resp" "replace" "go.mod should contain replace directive"; then
@@ -582,7 +585,7 @@ upload_go_module "$RETRACT_MODULE" "$RETRACTED_VERSION" 2>/dev/null || true
 
 # Upload a newer version whose go.mod retracts v0.9.0
 upload_go_module "$RETRACT_MODULE" "$RETRACT_STABLE" "$RETRACT_MOD" 2>/dev/null || true
-sleep 1
+await_artifact_listed "$REPO_KEY" "${RETRACT_MODULE}/${RETRACT_STABLE}/go.mod"
 
 # Verify the retracting go.mod is stored and returned correctly
 if mod_resp=$(go_get "${RETRACT_MODULE}/@v/${RETRACT_STABLE}.mod"); then

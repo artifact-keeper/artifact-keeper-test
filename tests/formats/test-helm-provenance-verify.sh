@@ -191,8 +191,10 @@ else
   end_suite
 fi
 
-# Allow index.yaml to refresh.
-sleep 2
+# index.yaml is generated on request from the artifacts rows, and the chart
+# and .prov rows commit in one transaction (helm.rs upload), so the .prov row
+# implies both.
+await_artifact_listed "$REPO_KEY" "${CHART_NAME}-${CHART_VERSION}.tgz.prov"
 
 # ---------------------------------------------------------------------------
 # 4. Positive control: helm pull --verify must SUCCEED.

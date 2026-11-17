@@ -139,7 +139,7 @@ else
   fail "upload returned HTTP ${status:-empty}, expected 2xx/3xx"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PKG_NAME" "$PKG_VERSION_1"
 
 # ---------------------------------------------------------------------------
 # 2. GET /api/packages/{name} returns package metadata with versions array
@@ -277,7 +277,7 @@ build_pub_package "$PKG_NAME" "$PKG_VERSION_2" "$PUB_ARCHIVE_2" "Conformance tes
 
 status2=$(upload_pub_package "$PUB_ARCHIVE_2") || true
 if [ -n "$status2" ] && [ "$status2" -ge 200 ] 2>/dev/null && [ "$status2" -lt 400 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$PKG_NAME" "$PKG_VERSION_2"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "Authorization: Basic ${BASIC_AUTH}" \
       "${PUB_URL}/api/packages/${PKG_NAME}" 2>/dev/null); then
