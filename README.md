@@ -165,7 +165,8 @@ Every helm install of the chart into a test namespace (`create-test-namespace.sh
 `clean-install-smoke.sh`, the with-deps and chart-upgrade smokes, the nightly S3
 deploy) puts all of its PVCs on the StorageClass in `AK_TEST_STORAGE_CLASS`
 (`tests/lib/storage-class.sh`). The chart has no working global storage class,
-so the helper sets each component's `persistence.storageClass` key.
+so the helper sets each component's storage class key (the list is in
+`tests/lib/storage-class.sh`).
 
 - Unset: `local-path-home`. On rocky that is the local-path provisioner with
   its volumes under `/home/local-path-provisioner` (1.8T). The default class
@@ -177,8 +178,10 @@ so the helper sets each component's `persistence.storageClass` key.
   default class is used. Use this on kind, microk8s or any cluster without
   `local-path-home`.
 
-If the class does not exist, the deploy stops before `helm install` with an
-error instead of leaving every PVC Pending.
+If kubectl can read StorageClasses and the class does not exist, the deploy
+stops before `helm install` with an error. Where the runner's role cannot read
+StorageClasses, the helper only warns and a missing class shows up as Pending
+PVCs.
 
 ## Running Tests Locally
 

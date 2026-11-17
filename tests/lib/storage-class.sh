@@ -56,29 +56,32 @@ ak_test_storage_class() {
 # the named helm argument array. Returns 1 (with a message) when the cluster
 # answers that the class does not exist, so a missing class fails the deploy
 # at once instead of leaving every PVC Pending until the helm --wait timeout.
-# Any other kubectl error (no RBAC on storageclasses, no kubectl) only warns:
-# helm still applies the setting.
+# That needs `get` on storage.k8s.io storageclasses. Any other kubectl error
+# (Forbidden because the runner's role lacks that rule, no kubectl) only
+# warns: helm still applies the setting, and a missing class then shows as
+# Pending PVCs.
+# ARRAY_NAME must not be one of this function's locals (_ak_sc_*).
 ak_test_storage_class_append() {
   local -n _ak_sc_args="$1"
-  local sc out key
-  sc="$(ak_test_storage_class)"
-  if [ -z "$sc" ]; then
+  local _ak_sc_class _ak_sc_out _ak_sc_key
+  _ak_sc_class="$(ak_test_storage_class)"
+  if [ -z "$_ak_sc_class" ]; then
     echo "  StorageClass: cluster default (AK_TEST_STORAGE_CLASS is empty)"
     return 0
   fi
   if command -v kubectl >/dev/null 2>&1; then
-    if ! out="$(kubectl get storageclass "$sc" -o name 2>&1)"; then
-      if grep -q 'NotFound' <<<"$out"; then
-        echo "ERROR: StorageClass '${sc}' does not exist on this cluster." >&2
+    if ! _ak_sc_out="$(kubectl get storageclass "$_ak_sc_class" -o name 2>&1)"; then
+      if grep -q 'NotFound' <<<"$_ak_sc_out"; then
+        echo "ERROR: StorageClass '${_ak_sc_class}' does not exist on this cluster." >&2
         echo "  Create it (rocky: artifact-keeper-arc-runners cluster/storageclass-local-path-home.yaml)," >&2
         echo "  or set AK_TEST_STORAGE_CLASS to another class, or to empty for the cluster default." >&2
         return 1
       fi
-      echo "  WARN: could not look up StorageClass '${sc}' (${out}); setting it anyway" >&2
+      echo "  WARN: could not look up StorageClass '${_ak_sc_class}' (${_ak_sc_out}); setting it anyway" >&2
     fi
   fi
-  echo "  StorageClass for every PVC: ${sc}"
-  for key in "${AK_TEST_STORAGE_CLASS_KEYS[@]}"; do
-    _ak_sc_args+=(--set-string "${key}=${sc}")
+  echo "  StorageClass for every PVC: ${_ak_sc_class}"
+  for _ak_sc_key in "${AK_TEST_STORAGE_CLASS_KEYS[@]}"; do
+    _ak_sc_args+=(--set-string "${_ak_sc_key}=${_ak_sc_class}")
   done
 }

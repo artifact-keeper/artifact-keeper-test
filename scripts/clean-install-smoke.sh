@@ -425,7 +425,9 @@ fi
 # local-path-home; tests/lib/storage-class.sh, artifact-keeper#6081).
 # shellcheck source=../tests/lib/storage-class.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/storage-class.sh"
-ak_test_storage_class_append HELM_OVERRIDES || exit 1
+# A missing class is gate infra, not a product verdict: exit INFRA so an
+# --expect-failure fixture cannot count it as the failure it wanted.
+ak_test_storage_class_append HELM_OVERRIDES || exit "$SMOKE_EXIT_INFRA"
 
 echo ""
 echo "Helm template dry-run (catches misnamed --set keys)"
