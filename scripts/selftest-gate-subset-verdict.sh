@@ -77,7 +77,7 @@ sel_case 0 true  false "every dtf-gate group by name"              GATE_ONLY_JOB
 
 # ---------------------------------------------------------------------------
 echo "gate-subset-verdict.sh: judging a subset run"
-ALL_JOBS="$(printf '%s\n' "$script_loose" "$script_strict" cli-smoke format-tests-audit security-grype-scan-completes stress-tests mesh-tests dtf-advisory | sort -u)"
+ALL_JOBS="$(printf '%s\n' "$script_loose" "$script_strict" cli-smoke format-tests-audit security-grype-scan-completes stress-tests dtf-advisory | sort -u)"
 # needs <default result> [job=result ...] -> a toJSON(needs)-shaped object
 needs() {
   local def="$1"; shift
@@ -112,7 +112,7 @@ v_case 1 "an unselected required job failed"               'webhook-tests' true 
 # shellcheck disable=SC2086
 v_case 1 "an unselected required job was cancelled"        'webhook-tests' true "$(needs skipped $CL webhook-tests=success pinned-cve-gate=cancelled)"
 v_case 0 "the opt-in smoke selected and skipped by design" 'dtf-gate/core clean-install-smoke-with-deps' false "$DTF_OK"
-v_case 0 "an advisory job selected and red is not judged"  'dtf-gate/core mesh-tests stress-tests' false "$(needs skipped version-set-integrity=success build-dtf-probes=success dtf-gate=success mesh-tests=failure stress-tests=failure)"
+v_case 0 "an advisory job selected and red is not judged"  'dtf-gate/core dtf-advisory stress-tests' false "$(needs skipped version-set-integrity=success build-dtf-probes=success dtf-gate=success dtf-advisory=failure stress-tests=failure)"
 # shellcheck disable=SC2086
 v_case 0 "pullthrough-tests selected and green (#359)"     'pullthrough-tests' true "$(needs skipped $CL pullthrough-tests=success)" pullthrough
 # shellcheck disable=SC2086

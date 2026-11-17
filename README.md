@@ -41,9 +41,6 @@ stress-tests
 resilience-tests (5 parallel categories)
     │
     ▼ (all pass)
-deploy-mesh-env (4 instances) ──► mesh-tests
-    │
-    ▼ (all pass)
 collect-results ──► teardown
 ```
 
@@ -100,6 +97,8 @@ resilience/
 ### Mesh Tests (5 scripts)
 
 Deployed as 4 separate instances (main + 3 peers), each with its own backend, database, and search engine. Tests validate the mesh replication protocol.
+
+Not part of the release gate: the gate's `mesh-tests` job was removed (artifact-keeper/artifact-keeper#6135) because it never exercised real replication. These scripts run on their own through `mesh-tests.yml`. Real multi-instance coverage is the nightly mesh lane (artifact-keeper/artifact-keeper#6120).
 
 ```
 ┌──────────┐     sync      ┌──────────┐

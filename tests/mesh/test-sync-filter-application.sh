@@ -99,8 +99,9 @@ fi
 
 # TODO(#78.4): The end-to-end check (upload .tar.gz + upload .txt, trigger
 # sync, assert only .tar.gz appears on peer) needs the sync worker which
-# is gated by artifact-keeper-fzj. Re-enable in the mesh release-gate job
-# once the worker is started in the test harness.
+# is gated by artifact-keeper-fzj. The release gate no longer runs mesh
+# (artifact-keeper#6135); real multi-instance coverage is the nightly mesh
+# lane (artifact-keeper#6120), where this check belongs.
 
 begin_test "Trigger manual sync run (best-effort)"
 if [ -z "${POLICY_ID:-}" ] || [ "$POLICY_ID" = "null" ]; then
