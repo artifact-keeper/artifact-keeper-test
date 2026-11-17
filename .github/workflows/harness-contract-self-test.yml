@@ -112,6 +112,13 @@ jobs:
       - name: Run fetch-all-pages self-test
         run: bash tests/lib/selftest-fetch-all-pages.sh
 
+      # artifact_listed / await_artifact_listed (tests/lib/common.sh): the
+      # bounded wait that replaced `upload; sleep 1; assert the index` in the
+      # format suites; a row that never lands is a named FAIL, never a pass
+      # (artifact-keeper-test#364).
+      - name: Run artifact-listed self-test
+        run: bash tests/lib/selftest-artifact-listed.sh
+
       # The dtf-advisory outcome mapper and run-tiers.sh's aggregate exit
       # code: INFRA is retried once and warned about, a product FAIL is red
       # (artifact-keeper-test#378).

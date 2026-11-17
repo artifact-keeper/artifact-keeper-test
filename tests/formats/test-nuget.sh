@@ -426,11 +426,18 @@ EOF
   else
     page_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -H "$(format_auth_header)" \
       "${BASE_URL}/nuget/${REM_REPO}/v3/registration/${FAIL_ID}/page/1.0.0/2.0.0.json") || page_status="000"
-    sleep 2
+    # The backend logs the failed step before it answers, but kubectl logs
+    # can lag the container: poll for the line instead of a fixed pause.
+    nuget3899_log_lines() {
+      kubectl -n "$AK_NAMESPACE" logs deploy/artifact-keeper-backend --since-time="$since" --all-containers 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g' \
+        | grep -E 'step(=|":)"?registration_page\b' | grep -E "repo_key(=|\":)\"?${REM_REPO}\b" || true
+    }
+    nuget3899_has_log_line() { [ -n "$(nuget3899_log_lines)" ]; }
+    wait_until "backend log line step=registration_page repo_key=${REM_REPO}" 30 nuget3899_has_log_line \
+      || echo "  note: log line not seen within 30s"
     upstream_hits=$(grep -c "/v3/registration/${FAIL_ID}/page/" "$MOCK_STATE_DIR/request-log.txt" || true)
-    lines=$(kubectl -n "$AK_NAMESPACE" logs deploy/artifact-keeper-backend --since-time="$since" --all-containers 2>/dev/null \
-      | sed 's/\x1b\[[0-9;]*m//g' \
-      | grep -E 'step(=|":)"?registration_page\b' | grep -E "repo_key(=|\":)\"?${REM_REPO}\b" || true)
+    lines=$(nuget3899_log_lines)
     if [ "${upstream_hits:-0}" = "0" ]; then
       fail "backend never fetched the page from the mock (client status ${page_status})"
     elif [ "$page_status" = "200" ]; then

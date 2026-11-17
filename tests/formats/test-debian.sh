@@ -57,21 +57,21 @@ if command -v dpkg-deb &>/dev/null; then
 else
   # Build a minimal .deb manually using ar (available on macOS via Xcode)
   # A .deb is an ar archive containing: debian-binary, control.tar.gz, data.tar.gz
-  cd "${WORK_DIR}"
+  cd "${WORK_DIR}" || exit 1
 
   # debian-binary
   echo "2.0" > debian-binary
 
   # control.tar.gz
-  cd "${DEB_DIR}/DEBIAN"
+  cd "${DEB_DIR}/DEBIAN" || exit 1
   tar czf "${WORK_DIR}/control.tar.gz" ./control
 
   # data.tar.gz
-  cd "${DEB_DIR}"
+  cd "${DEB_DIR}" || exit 1
   tar czf "${WORK_DIR}/data.tar.gz" ./usr
 
   # Assemble with ar
-  cd "${WORK_DIR}"
+  cd "${WORK_DIR}" || exit 1
   if command -v ar &>/dev/null; then
     ar rcs "${WORK_DIR}/${DEB_FILE}" debian-binary control.tar.gz data.tar.gz 2>/dev/null
   else
@@ -109,7 +109,7 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify Release file"
-sleep 1
+await_artifact_listed "$REPO_KEY" "$DEB_FILE"
 if resp=$(api_get "/debian/${REPO_KEY}/dists/${DISTRIBUTION}/Release" 2>/dev/null); then
   pass
 else

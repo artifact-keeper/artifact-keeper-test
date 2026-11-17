@@ -215,9 +215,17 @@ fi
 
 begin_test "Warm dist fetch still 2xx after upstream U removed (served from cache, not re-fetched)"
 api_delete "/api/v1/repositories/${UPSTREAM_KEY}" >/dev/null 2>&1 || true
-sleep 1
-after_status=$(fetch_dist "${WORK_DIR}/after.zip")
-if [ "$after_status" = "200" ]; then
+# delete_repository answers 202 and cleans up in a background job, but it
+# renames the key away in the enqueue transaction and drops the repo-key cache
+# before answering, so U's key misses from then on. Confirm that before the
+# fetch: if U were still reachable, a 2xx below would not prove a cache hit.
+upstream_key_gone() {
+  [ "$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${UPSTREAM_KEY}" 2>/dev/null)" = "404" ]
+}
+if ! wait_until "upstream ${UPSTREAM_KEY} lookup returns 404 after delete" 30 upstream_key_gone; then
+  fail "DELETE /api/v1/repositories/${UPSTREAM_KEY} did not take effect within 30s; the warm-hit check below would be meaningless"
+elif after_status=$(fetch_dist "${WORK_DIR}/after.zip") && [ "$after_status" = "200" ]; then
   after_sha=$(shasum -a 256 "${WORK_DIR}/after.zip" | awk '{print $1}')
   if [ "${COLD_SHA:-}" = "" ] || [ "$after_sha" = "$COLD_SHA" ]; then
     pass

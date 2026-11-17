@@ -106,7 +106,7 @@ else
   fail "collection upload returned HTTP ${UPLOAD_STATUS}"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "${NAMESPACE}-${COLL_NAME}" "1.0.0"
 
 # ---------------------------------------------------------------------------
 # 2. GET /api/v3/collections/{namespace}/{name}/ returns collection info
@@ -222,7 +222,7 @@ V2_STATUS=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${ANSIBLE_BASE}/api/v3/artifacts/collections/") || true
 
 if [ "$V2_STATUS" -ge 200 ] 2>/dev/null && [ "$V2_STATUS" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${NAMESPACE}-${COLL_NAME}" "2.0.0"
   # Check that the collection info reflects the dependency data
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \

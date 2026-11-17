@@ -48,7 +48,8 @@ begin_test "List versions via remote proxy"
 if [ "$UPSTREAM_REACHABLE" != "true" ]; then
   skip "upstream unreachable"
 else
-  sleep 1
+  # Nothing to wait for: the only prior write is create_remote_repo, which
+  # commits before it answers, and this is the first fetch through the proxy.
   if resp=$(curl -sf $CURL_TIMEOUT \
       -u "${ADMIN_USER}:${ADMIN_PASS}" \
       "${BASE_URL}/go/${REPO_KEY}/${MODULE_PATH}/@v/list" 2>/dev/null); then

@@ -105,7 +105,7 @@ else
   fail "box upload returned HTTP ${upload_status}, expected 2xx"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$ARTIFACT_PATH"
 
 # ---------------------------------------------------------------------------
 # 2. Box metadata via artifact listing
@@ -211,7 +211,7 @@ v2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH_V2}") || true
 
 if [ "$v2_status" -ge 200 ] 2>/dev/null && [ "$v2_status" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$ARTIFACT_PATH_V2"
   # Verify both versions are downloadable
   DL_V1="${WORK_DIR}/dl-v1.box"
   DL_V2="${WORK_DIR}/dl-v2.box"
@@ -258,7 +258,7 @@ p2_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${ARTIFACT_PATH_P2}") || true
 
 if [ "$p2_status" -ge 200 ] 2>/dev/null && [ "$p2_status" -lt 300 ] 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$ARTIFACT_PATH_P2"
   # Download both providers for the same version
   DL_P1="${WORK_DIR}/dl-vbox.box"
   DL_P2="${WORK_DIR}/dl-libvirt.box"

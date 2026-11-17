@@ -83,7 +83,7 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Query model listing"
-sleep 1
+await_artifact_listed "$REPO_KEY" "${MODEL_ID}/${REVISION}/model.safetensors"
 if resp=$(curl -sf "${HF_URL}/api/models" -H "$(format_auth_header)"); then
   if assert_contains "$resp" "$MODEL_ID" "model listing should contain model ID"; then
     pass

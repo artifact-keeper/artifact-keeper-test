@@ -222,7 +222,7 @@ NORM_PKG_EXPECTED="my-package-name"
 
 NORM_SDIST=$(build_sdist "$NORM_PKG_ORIGINAL" "$NORM_PKG_VERSION" "$WORK_DIR")
 if upload_sdist "$NORM_SDIST" "$NORM_PKG_ORIGINAL" "$NORM_PKG_VERSION" 2>&1; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$NORM_PKG_EXPECTED" "$NORM_PKG_VERSION"
   # The root index should list the normalized name
   ROOT_HTML=""
   ROOT_HTML=$(curl -sf $CURL_TIMEOUT \
@@ -276,7 +276,7 @@ for ver in "1.0.0" "2.0.0" "1.1.0" "10.0.0"; do
   fi
 done
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$VER_NORMALIZED" "10.0.0"
 VER_HTML=""
 VER_HTML=$(get_package_index "$VER_NORMALIZED") || true
 
@@ -326,7 +326,7 @@ if [ ! -f "$WHL_FILE" ]; then
   fail "failed to build wheel file"
 else
   if upload_wheel "$WHL_FILE" "$WHL_PKG" "$WHL_VERSION" 2>&1; then
-    sleep 1
+    await_artifact_listed "$REPO_KEY" "$WHL_NORMALIZED" "$WHL_VERSION"
     whl_html=$(get_package_index "$WHL_NORMALIZED") || whl_html=""
     if [ -z "$whl_html" ]; then
       fail "could not fetch wheel package index"
@@ -364,7 +364,7 @@ if $upload_ok && ! upload_wheel "$multi_whl" "$MULTI_PKG" "$MULTI_VER" 2>/dev/nu
 fi
 
 if $upload_ok; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$(basename "$multi_whl")"
   multi_html=$(get_package_index "$MULTI_NORMALIZED") || multi_html=""
   if [ -z "$multi_html" ]; then
     fail "could not fetch multifile package index"
@@ -421,7 +421,7 @@ LARGE_SHA=$(shasum -a 256 "$LARGE_TARBALL" | cut -d' ' -f1)
 LARGE_SIZE=$(wc -c < "$LARGE_TARBALL" | tr -d ' ')
 
 if upload_sdist "$LARGE_TARBALL" "$LARGE_PKG" "$LARGE_VER" 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$LARGE_NORMALIZED" "$LARGE_VER"
   # Extract download link from index
   large_html=$(get_package_index "$LARGE_NORMALIZED") || large_html=""
   file_href=$(echo "$large_html" | grep -oE 'href="[^"]*\.tar\.gz[^"]*"' | head -1 | sed 's/href="//;s/"//') || file_href=""
@@ -576,7 +576,7 @@ uni_sdist=$(build_sdist "$UNI_PKG" "$UNI_VER" "$WORK_DIR" "$UNI_DESC" "$UNI_AUTH
 if upload_sdist "$uni_sdist" "$UNI_PKG" "$UNI_VER" \
     -F "description=${UNI_DESC}" \
     -F "author=${UNI_AUTHOR}" 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$UNI_NORMALIZED" "$UNI_VER"
   uni_html=$(get_package_index "$UNI_NORMALIZED") || uni_html=""
   if [ -n "$uni_html" ]; then
     # The index itself does not need to display metadata, but the package
@@ -622,7 +622,7 @@ empty_tarball="${WORK_DIR}/${EMPTY_PKG}-${EMPTY_VER}.tar.gz"
 tar czf "$empty_tarball" -C "$WORK_DIR" "${EMPTY_PKG}-${EMPTY_VER}"
 
 if upload_sdist "$empty_tarball" "$EMPTY_PKG" "$EMPTY_VER" 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$EMPTY_NORMALIZED" "$EMPTY_VER"
   empty_html=$(get_package_index "$EMPTY_NORMALIZED") || empty_html=""
   if [ -n "$empty_html" ] && echo "$empty_html" | grep -q ".tar.gz"; then
     pass
@@ -652,7 +652,9 @@ for ver in "1.0.0a1" "1.0.0b2" "1.0.0rc1" "1.0.0"; do
   fi
 done
 
-sleep 1
+# Needle is the stable version's path segment: a bare "1.0.0" version filter
+# would also match the 1.0.0a1 path.
+await_artifact_listed "$REPO_KEY" "${PRE_NORMALIZED}/1.0.0/"
 pre_html=$(get_package_index "$PRE_NORMALIZED") || pre_html=""
 
 if [ -z "$pre_html" ]; then
@@ -690,7 +692,7 @@ for ver in "1.0.0" "1.0.0.post1" "1.0.0.dev3"; do
   fi
 done
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$POST_NORMALIZED" "1.0.0.dev3"
 post_html=$(get_package_index "$POST_NORMALIZED") || post_html=""
 
 if [ -z "$post_html" ]; then
@@ -771,7 +773,7 @@ mkdir -p "$WORK_DIR/long" 2>/dev/null || true
 long_sdist=$(build_sdist "$LONG_PKG" "$LONG_VER" "$WORK_DIR/long")
 
 if upload_sdist "$long_sdist" "$LONG_PKG" "$LONG_VER" 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$LONG_NORMALIZED" "$LONG_VER"
   long_html=$(get_package_index "$LONG_NORMALIZED") || long_html=""
   if [ -n "$long_html" ] && echo "$long_html" | grep -q ".tar.gz"; then
     pass
@@ -798,7 +800,7 @@ dep_sdist=$(build_sdist "$DEP_PKG" "$DEP_VER" "$WORK_DIR/dep" \
 if upload_sdist "$dep_sdist" "$DEP_PKG" "$DEP_VER" \
     -F "requires_dist=requests>=2.20" \
     -F "requires_dist=flask>=1.0" 2>/dev/null; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$DEP_NORMALIZED" "$DEP_VER"
   # Check PEP 691 JSON response for requires_dist or requires-python
   dep_json=$(get_package_index_json "$DEP_NORMALIZED") || dep_json=""
 

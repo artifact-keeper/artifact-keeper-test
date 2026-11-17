@@ -135,7 +135,7 @@ else
   fail "package upload returned ${status}, expected 200 or 201"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PACKAGE_NAME" "$PACKAGE_VERSION"
 
 # ---------------------------------------------------------------------------
 # 2. GET /packages/{name} returns package metadata
@@ -241,7 +241,7 @@ else
   fail "second version upload returned ${status2}, expected 200 or 201"
 fi
 
-sleep 1
+await_artifact_listed "$REPO_KEY" "$PACKAGE_NAME" "$PACKAGE_VERSION_2"
 
 # ---------------------------------------------------------------------------
 # 6. Download integrity verification

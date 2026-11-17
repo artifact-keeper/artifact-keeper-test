@@ -469,7 +469,8 @@ fi
 # ===========================================================================
 
 begin_test "List files in model repository via tree endpoint"
-sleep 1
+# README.md is the last file uploaded for MODEL_ID.
+await_artifact_listed "$REPO_KEY" "${MODEL_ID}/${REVISION}/README.md"
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${HF_URL}/api/models/${MODEL_ID}/tree/${REVISION}"); then
@@ -676,7 +677,7 @@ fi
 # ===========================================================================
 
 begin_test "Model info endpoint returns siblings and metadata"
-sleep 1
+await_artifact_listed "$REPO_KEY" "${MODEL_ID}/${REVISION}/README.md"
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${HF_URL}/api/models/${MODEL_ID}"); then
@@ -1014,7 +1015,8 @@ if hf_download "$DELETE_MODEL" "main" "to_delete.bin" "${WORK_DIR}/dl_before_del
 
   if [ "$del_status" -ge 200 ] && [ "$del_status" -lt 300 ]; then
     # Verify the file is no longer downloadable
-    sleep 1
+    # No wait: delete_artifact (api/handlers/repositories.rs) commits the soft
+    # delete before it answers 2xx, so the next read sees it (read-your-writes).
     get_status=$(hf_status "${HF_URL}/${DELETE_MODEL}/resolve/main/to_delete.bin")
     if [ "$get_status" = "404" ]; then
       pass
@@ -1058,7 +1060,8 @@ fi
 # ===========================================================================
 
 begin_test "Model listing contains multiple distinct models"
-sleep 1
+# SPECIAL_MODEL is the last model uploaded that is still live.
+await_artifact_listed "$REPO_KEY" "${SPECIAL_MODEL}/main/pytorch_model-00001-of-00002.bin"
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${HF_URL}/api/models"); then

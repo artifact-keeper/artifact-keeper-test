@@ -186,7 +186,7 @@ begin_test "Scoped package with URL-encoded slash"
 SCOPED_PKG="@edge-scope-${RUN_ID}/nested-pkg"
 status=$(npm_publish "$SCOPED_PKG" "1.0.0" "scoped package test") || true
 if [ "$status" = "200" ] || [ "$status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "${SCOPED_PKG#*/}" "1.0.0"
   # Fetch using the URL-encoded form (@scope%2fname)
   encoded=$(echo "$SCOPED_PKG" | sed 's|/|%2f|g')
   if resp=$(curl -sf $CURL_TIMEOUT \
@@ -228,7 +228,7 @@ TAG_PKG="edge-tags-${RUN_ID}"
 npm_publish "$TAG_PKG" "1.0.0" "dist-tag test" > /dev/null 2>&1
 npm_publish "$TAG_PKG" "2.0.0-beta.1" "dist-tag test" > /dev/null 2>&1
 npm_publish "$TAG_PKG" "3.0.0-canary.1" "dist-tag test" > /dev/null 2>&1
-sleep 1
+await_artifact_listed "$REPO_KEY" "$TAG_PKG" "3.0.0-canary.1"
 
 # Set custom dist-tags via PUT /-/package/{name}/dist-tags/{tag}
 beta_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
@@ -274,7 +274,7 @@ begin_test "GET specific version returns isolated version metadata"
 VER_PKG="edge-ver-${RUN_ID}"
 npm_publish "$VER_PKG" "1.0.0" "version metadata test" > /dev/null 2>&1
 npm_publish "$VER_PKG" "2.0.0" "version metadata test v2" > /dev/null 2>&1
-sleep 1
+await_artifact_listed "$REPO_KEY" "$VER_PKG" "2.0.0"
 
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
@@ -318,7 +318,7 @@ for i in $(seq 1 20); do
   fi
 done
 
-sleep 2
+await_artifact_listed "$REPO_KEY" "$RAPID_PKG" "1.0.20"
 # Verify all versions appear in the packument
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
@@ -488,7 +488,7 @@ extra_fields=$(jq -n --argjson deps "$deps_json" '{ dependencies: $deps }')
 status=$(npm_publish "$DEPS_PKG" "1.0.0" "many deps test" "$extra_fields") || true
 
 if [ "$status" = "200" ] || [ "$status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$DEPS_PKG" "1.0.0"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${NPM_REGISTRY}/${DEPS_PKG}" 2>/dev/null); then
@@ -515,7 +515,7 @@ SEM_PKG="edge-semver-${RUN_ID}"
 npm_publish "$SEM_PKG" "1.0.0" "semver test" > /dev/null 2>&1
 npm_publish "$SEM_PKG" "1.1.0" "semver test" > /dev/null 2>&1
 npm_publish "$SEM_PKG" "2.0.0" "semver test" > /dev/null 2>&1
-sleep 1
+await_artifact_listed "$REPO_KEY" "$SEM_PKG" "2.0.0"
 
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
@@ -551,7 +551,18 @@ npm_publish "$PRE_PKG" "1.0.0-alpha.1" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0-beta.2" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0-rc.1" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0" "prerelease test" > /dev/null 2>&1
-sleep 1
+# Wait for the four publishes to be visible in the packument the assertion
+# below reads, bounded; the assertion still judges it strictly. The artifacts
+# listing is not used here: on the gate (runs 43966445703, 43985375807) the
+# stable 1.0.0 tarball row of this package never appeared in it, under either
+# its <pkg>/1.0.0/ or its file-name needle, while the packument listed 1.0.0.
+# That listing discrepancy is tracked on artifact-keeper-test#367.
+_prerelease_versions_visible() {
+  curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" "${NPM_REGISTRY}/${PRE_PKG}" 2>/dev/null \
+    | jq -e '.versions | has("1.0.0-alpha.1") and has("1.0.0-beta.2") and has("1.0.0-rc.1") and has("1.0.0")' >/dev/null
+}
+wait_until "${PRE_PKG}: all four versions in the packument" 30 _prerelease_versions_visible \
+  || echo "  not all four versions visible after 30s; the check below judges it"
 
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
@@ -586,7 +597,7 @@ begin_test "Deprecation metadata in packument"
 DEPR_PKG="edge-deprecate-${RUN_ID}"
 npm_publish "$DEPR_PKG" "1.0.0" "deprecation test" > /dev/null 2>&1
 npm_publish "$DEPR_PKG" "2.0.0" "deprecation test" > /dev/null 2>&1
-sleep 1
+await_artifact_listed "$REPO_KEY" "$DEPR_PKG" "2.0.0"
 
 # npm deprecate sends a PUT with the version metadata containing a "deprecated" field.
 # We publish a modified packument that marks v1.0.0 as deprecated.
@@ -610,7 +621,8 @@ depr_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
   "${NPM_REGISTRY}/${DEPR_PKG}") || true
 
 if [ "$depr_status" = "200" ] || [ "$depr_status" = "201" ] || [ "$depr_status" = "204" ]; then
-  sleep 1
+  # No wait: the deprecation PUT goes through publish_package (backend npm.rs),
+  # which commits before it answers (read-your-writes).
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${NPM_REGISTRY}/${DEPR_PKG}" 2>/dev/null); then
@@ -645,7 +657,7 @@ extra_readme=$(jq -n --arg readme "$readme_text" '{ readme: $readme }')
 status=$(npm_publish "$README_PKG" "1.0.0" "readme test" "$extra_readme") || true
 
 if [ "$status" = "200" ] || [ "$status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$README_PKG" "1.0.0"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${NPM_REGISTRY}/${README_PKG}" 2>/dev/null); then
@@ -705,7 +717,7 @@ extra_deps=$(jq -n '{
 status=$(npm_publish "$OPT_PKG" "1.0.0" "optional deps test" "$extra_deps") || true
 
 if [ "$status" = "200" ] || [ "$status" = "201" ]; then
-  sleep 1
+  await_artifact_listed "$REPO_KEY" "$OPT_PKG" "1.0.0"
   if resp=$(curl -sf $CURL_TIMEOUT \
       -H "$(format_auth_header)" \
       "${NPM_REGISTRY}/${OPT_PKG}" 2>/dev/null); then
@@ -907,7 +919,7 @@ fi
 begin_test "Duplicate version publish returns 409 conflict"
 DUP_PKG="edge-dup-${RUN_ID}"
 npm_publish "$DUP_PKG" "1.0.0" "first publish" > /dev/null 2>&1
-sleep 1
+await_artifact_listed "$REPO_KEY" "$DUP_PKG" "1.0.0"
 
 # Attempt to publish the same version again
 dup_status=$(npm_publish "$DUP_PKG" "1.0.0" "duplicate publish") || true
