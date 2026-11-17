@@ -26,7 +26,9 @@
 #   3. The stats totals INCREASE across this suite's own pull-through:
 #      proxy_artifact_count by at least 1 and proxy_storage_bytes by at
 #      least the sdist's size, measured against a baseline snapshotted
-#      immediately before the pull.
+#      immediately before the pull. In the same window R's own
+#      storage_used_bytes must grow by at least the sdist's size, which only
+#      this suite can move.
 #
 # Why assertion 3 is a delta and not ">= 1"
 # -----------------------------------------
@@ -35,10 +37,30 @@
 # directory, so six other pullthrough suites have already populated cache rows
 # by the time this one starts: both counters are >= 1 before this script does
 # anything. An absolute ">= 1" check therefore passes even if this suite's own
-# pull-through never happens and even if the #3088 aggregation is wrong, which
-# is what it was doing. Anchoring on a pre-pull baseline is what actually
-# exercises the fix. The counters can still move under parallel suites, but
-# only upward within a run, so a floor of baseline+delta stays sound.
+# pull-through never happens and even if the #3088 aggregation is wrong.
+# Anchoring on a pre-pull baseline is what actually exercises the fix.
+#
+# Why assertion 3 gets more than one attempt (artifact-keeper-test#883)
+# ---------------------------------------------------------------------
+# Every gate job runs against the same backend, so sibling suites change these
+# totals while this one measures, and not only upward. In the backend,
+# proxy_artifact_count is COUNT(*) over proxy_cache_artifacts, and
+# proxy_storage_bytes is the usage ledger's proxy_bytes, which the migration-182
+# trigger keeps equal to SUM(size_bytes) of the same rows. A re-cache upserts
+# an existing row's size_bytes, so it moves the byte total either way without
+# moving the count. An eviction, or a sibling deleting its remote, lowers both.
+# The usage-ledger reconciler (about 200 s after startup, then every 30 min)
+# can also true proxy_bytes up or down mid-run.
+# In the 1.11.14 Release Candidate the count went 7 -> 8 and the bytes fell
+# 7154 below the baseline: this suite's row landed while a sibling shrank the
+# cache. So the delta is measured up to PCS_ATTEMPTS times, each time with a
+# fresh baseline and a version this suite has never pulled. One clean window
+# proves #3088. Churn cannot produce a false pass for the #3087 regression: on
+# a backend that leaves proxy_cache_artifacts out of the aggregate, no cache
+# write moves either counter, so every attempt fails. Sibling growth could
+# still lift the byte total past the floor on a backend whose count is right
+# but whose byte accounting ignores cache writes, so the winning window must
+# also show R's own storage_used_bytes growing by the sdist's size.
 #
 # Requires: curl, jq, tar
 
@@ -55,12 +77,22 @@ pass
 UPSTREAM_KEY="pcs-upstream-${RUN_ID}"
 REMOTE_KEY="pcs-remote-${RUN_ID}"
 PKG_NAME="pcspkg${RUN_ID//-/}"
-PKG_VERSION="1.0.0"
+# One version per assertion-3 attempt, all published before the first pull.
+# The warm-up GET caches R's simple index as a catalog row; with U unchanged
+# after that, a later refresh re-caches it at the same size, so a retry's
+# window holds only its own sdist's bytes from this suite.
+PKG_VERSIONS=(1.0.0 1.0.1 1.0.2)
+PCS_ATTEMPTS=${#PKG_VERSIONS[@]}
+PKG_VERSION="${PKG_VERSIONS[0]}"
 SDIST_BASENAME="${PKG_NAME}-${PKG_VERSION}.tar.gz"
 STATS_PATH="/api/v1/admin/stats"
-SDIST_SIZE=0
 BASE_PROXY_COUNT=0
 BASE_PROXY_BYTES=0
+BASE_REPO_BYTES=0
+declare -A SDIST_SIZES=()
+# Bounded waits: one 20 s row wait and one 20 s stats poll on attempt 1, then a
+# 20 s row wait and a 15 s stats poll on each retry.
+require_wait_budget $(( 20 + 20 + (PCS_ATTEMPTS - 1) * (20 + 15) )) "cache-row and stats polls"
 
 # read_proxy_stats - echo "<proxy_artifact_count> <proxy_storage_bytes>" from
 # the stats endpoint on stdout. Returns 1 (echoing nothing) if the GET failed,
@@ -75,6 +107,16 @@ read_proxy_stats() {
   [[ "$c" =~ ^[0-9]+$ ]] || c=0
   [[ "$b" =~ ^[0-9]+$ ]] || b=0
   echo "$c $b"
+}
+
+# read_repo_usage KEY - echo the repository's storage_used_bytes. Returns 1
+# (echoing nothing) if the GET failed or the field is not a number.
+read_repo_usage() {
+  local resp u
+  resp=$(api_get "/api/v1/repositories/$1" 2>/dev/null) || return 1
+  u=$(echo "$resp" | jq -r '.storage_used_bytes // empty' 2>/dev/null) || return 1
+  [[ "$u" =~ ^[0-9]+$ ]] || return 1
+  echo "$u"
 }
 
 # ---------------------------------------------------------------------------
@@ -95,47 +137,70 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Setup: upstream U with one published sdist, remote R pointing at U
+# Setup: upstream U with one published sdist per attempt, remote R pointing at U
 # ---------------------------------------------------------------------------
 
-begin_test "Create local PyPI upstream U and publish v${PKG_VERSION}"
-pkgdir="${WORK_DIR}/${PKG_NAME}-${PKG_VERSION}"
-mkdir -p "$pkgdir"
-cat > "${pkgdir}/PKG-INFO" <<EOF
+# build_sdist VERSION - write ${WORK_DIR}/${PKG_NAME}-VERSION.tar.gz.
+build_sdist() {
+  local v="$1" dir="${WORK_DIR}/${PKG_NAME}-$1"
+  mkdir -p "$dir" || return 1
+  cat > "${dir}/PKG-INFO" <<EOF
 Metadata-Version: 1.0
 Name: ${PKG_NAME}
-Version: ${PKG_VERSION}
+Version: ${v}
 Summary: proxy-cache stats probe
 EOF
-cat > "${pkgdir}/setup.py" <<EOF
+  cat > "${dir}/setup.py" <<EOF
 from setuptools import setup
-setup(name="${PKG_NAME}", version="${PKG_VERSION}")
+setup(name="${PKG_NAME}", version="${v}")
 EOF
-SDIST_FILE="${WORK_DIR}/${SDIST_BASENAME}"
-# A failed tar is a broken fixture, not a product verdict, and it must not be
-# swallowed: the byte-delta assertion below is measured against this file's
-# size, so a zero-byte or missing sdist would quietly weaken it.
-if ! tar -czf "$SDIST_FILE" -C "$WORK_DIR" "${PKG_NAME}-${PKG_VERSION}"; then
-  infra_fail "could not create the sdist fixture ${SDIST_BASENAME}"
-elif ! create_local_repo "$UPSTREAM_KEY" "pypi"; then
-  fail "could not create PyPI upstream"
-elif curl -sf $CURL_TIMEOUT -X POST \
+  tar -czf "${WORK_DIR}/${PKG_NAME}-${v}.tar.gz" -C "$WORK_DIR" "${PKG_NAME}-${v}"
+}
+
+# publish_sdist VERSION - upload the built sdist to U.
+publish_sdist() {
+  curl -sf $CURL_TIMEOUT -X POST \
     -H "$(format_auth_header)" \
     -F ":action=file_upload" \
     -F "name=${PKG_NAME}" \
-    -F "version=${PKG_VERSION}" \
+    -F "version=$1" \
     -F "filetype=sdist" \
-    -F "content=@${SDIST_FILE}" \
-    "${BASE_URL}/pypi/${UPSTREAM_KEY}/" > /dev/null 2>&1; then
-  pass
-else
-  fail "could not publish sdist to upstream U"
+    -F "content=@${WORK_DIR}/${PKG_NAME}-$1.tar.gz" \
+    "${BASE_URL}/pypi/${UPSTREAM_KEY}/" > /dev/null 2>&1
+}
+
+begin_test "Create local PyPI upstream U and publish ${PKG_VERSIONS[*]}"
+# A failed tar is a broken fixture, not a product verdict, and it must not be
+# swallowed: the byte-delta assertion below is measured against each file's
+# size, so a zero-byte or missing sdist would quietly weaken it.
+setup_err=""
+for v in "${PKG_VERSIONS[@]}"; do
+  if ! build_sdist "$v"; then
+    setup_err="infra:could not create the sdist fixture ${PKG_NAME}-${v}.tar.gz"
+    break
+  fi
+  # Fall back to 1 rather than 0 if the size is somehow unreadable, so the
+  # assertion still demands a strict increase.
+  sz=$(wc -c < "${WORK_DIR}/${PKG_NAME}-${v}.tar.gz" 2>/dev/null | tr -d '[:space:]') || sz=1
+  [[ "$sz" =~ ^[1-9][0-9]*$ ]] || sz=1
+  SDIST_SIZES[$v]="$sz"
+done
+if [ -z "$setup_err" ] && ! create_local_repo "$UPSTREAM_KEY" "pypi"; then
+  setup_err="could not create PyPI upstream"
 fi
-# Size of the object the pull-through will cache; the byte delta below is
-# measured against it. Fall back to 1 rather than 0 if the size is somehow
-# unreadable, so the assertion still demands a strict increase.
-SDIST_SIZE=$(wc -c < "$SDIST_FILE" 2>/dev/null | tr -d '[:space:]') || SDIST_SIZE=1
-[[ "$SDIST_SIZE" =~ ^[1-9][0-9]*$ ]] || SDIST_SIZE=1
+if [ -z "$setup_err" ]; then
+  for v in "${PKG_VERSIONS[@]}"; do
+    if ! publish_sdist "$v"; then
+      setup_err="could not publish sdist ${v} to upstream U"
+      break
+    fi
+  done
+fi
+case "$setup_err" in
+  "") pass ;;
+  infra:*) infra_fail "${setup_err#infra:}" ;;
+  *) fail "$setup_err" ;;
+esac
 
 begin_test "Create remote R pointing at U"
 if create_remote_repo "$REMOTE_KEY" "pypi" "${BASE_URL}/pypi/${UPSTREAM_KEY}"; then
@@ -150,83 +215,137 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Snapshot instance-wide proxy-cache totals before this suite pulls"
-if snapshot=$(read_proxy_stats); then
+if snapshot=$(read_proxy_stats) && BASE_REPO_BYTES=$(read_repo_usage "$REMOTE_KEY"); then
   BASE_PROXY_COUNT="${snapshot%% *}"
   BASE_PROXY_BYTES="${snapshot##* }"
-  echo "  baseline: proxy_artifact_count=${BASE_PROXY_COUNT}, proxy_storage_bytes=${BASE_PROXY_BYTES}"
+  echo "  baseline: proxy_artifact_count=${BASE_PROXY_COUNT}, proxy_storage_bytes=${BASE_PROXY_BYTES}, ${REMOTE_KEY} storage_used_bytes=${BASE_REPO_BYTES}"
   pass
 else
   # Without a baseline there is no delta to assert, and falling back to zero
   # would silently restore the vacuous ">= 1" check. That is a harness
   # problem, not a product verdict.
-  infra_fail "could not read ${STATS_PATH} for the pre-pull baseline; the delta assertion needs it"
+  infra_fail "could not read ${STATS_PATH} or ${REMOTE_KEY}'s storage_used_bytes for the pre-pull baseline; the delta assertion needs both"
 fi
 
 # ---------------------------------------------------------------------------
 # Assertion 2: pull through R and confirm a cache row exists
 # ---------------------------------------------------------------------------
 
+# pull_sdist VERSION - echo the HTTP status of pulling that sdist through R.
+# Warm the index first so the proxy has resolved the project, then fetch the
+# package file itself; the file bytes are what land in the cache catalog with a
+# real size.
+pull_sdist() {
+  local status
+  curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${REMOTE_KEY}/simple/${PKG_NAME}/" > /dev/null 2>&1 || true
+  status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+    -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${REMOTE_KEY}/simple/${PKG_NAME}/${PKG_NAME}-$1.tar.gz" 2>/dev/null) || status="000"
+  echo "${status:-000}"
+}
+
 begin_test "Pull sdist through R (pull-through cache write)"
-# Warm the index first so the proxy has resolved the project, then fetch
-# the package file itself; the file bytes are what land in the cache
-# catalog with a real size.
-curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
-  "${BASE_URL}/pypi/${REMOTE_KEY}/simple/${PKG_NAME}/" > /dev/null 2>&1 || true
-pull_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
-  -H "$(format_auth_header)" \
-  "${BASE_URL}/pypi/${REMOTE_KEY}/simple/${PKG_NAME}/${SDIST_BASENAME}" 2>/dev/null) || pull_status="000"
+pull_status=$(pull_sdist "$PKG_VERSION")
 if assert_http_2xx "$pull_status" "pull through remote R failed"; then
   pass
 fi
 
 begin_test "Cache row for the pulled sdist appears in R"
-cached=0
-deadline=$(( $(date +%s) + 20 ))
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  rows=$(api_get "/api/v1/repositories/${REMOTE_KEY}/artifacts" 2>/dev/null) || rows=""
-  if [ -n "$rows" ] && echo "$rows" | grep -q "$PKG_NAME"; then
-    cached=1
-    break
-  fi
-  sleep 2  # sleep-ok: poll interval
-done
-if [ "$cached" -eq 1 ]; then
+if wait_until "${SDIST_BASENAME} listed in ${REMOTE_KEY}" 20 \
+    repo_lists_artifact "$REMOTE_KEY" "$SDIST_BASENAME"; then
   pass
 else
-  fail "no cache row for ${PKG_NAME} appeared in ${REMOTE_KEY} within 20s"
+  fail "no cache row for ${SDIST_BASENAME} appeared in ${REMOTE_KEY} within 20s"
 fi
 
 # ---------------------------------------------------------------------------
 # Assertion 3: stats GREW by this suite's own cached object
 #
-# Against the pre-pull baseline, not against zero: see the header note on why
-# an absolute ">= 1" here was vacuous. The poll is retained because the cache
-# write and the stats aggregate are eventually consistent.
+# Against a pre-pull baseline, not against zero: see the header note on why an
+# absolute ">= 1" here was vacuous, and on why a sibling's re-cache or eviction
+# can mask one attempt. The poll is retained because the cache write and the
+# stats aggregate are eventually consistent.
 # ---------------------------------------------------------------------------
 
+# poll_growth BASE_COUNT BASE_BYTES BASE_REPO_BYTES SIZE TIMEOUT - poll until
+# the stats totals reach BASE+1 / BASE+SIZE and R's storage_used_bytes reaches
+# BASE_REPO_BYTES+SIZE in the same reading. Leaves the last readings in
+# proxy_count / proxy_bytes / repo_bytes ("?" if no read succeeded). Returns 0
+# once all three have grown.
+poll_growth() {
+  local want_c=$(( $1 + 1 )) want_b=$(( $2 + $4 )) want_r=$(( $3 + $4 )) deadline snap r
+  proxy_count="?"
+  proxy_bytes="?"
+  repo_bytes="?"
+  deadline=$(( $(date +%s) + $5 ))
+  while :; do
+    if r=$(read_repo_usage "$REMOTE_KEY"); then
+      repo_bytes="$r"
+    fi
+    if snap=$(read_proxy_stats); then
+      proxy_count="${snap%% *}"
+      proxy_bytes="${snap##* }"
+      if [ "$proxy_count" -ge "$want_c" ] && [ "$proxy_bytes" -ge "$want_b" ] \
+          && [ "$repo_bytes" != "?" ] && [ "$repo_bytes" -ge "$want_r" ]; then
+        return 0
+      fi
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep 2  # sleep-ok: poll interval
+  done
+}
+
 begin_test "Stats proxy-cache totals grow by this suite's cached object"
-WANT_COUNT=$(( BASE_PROXY_COUNT + 1 ))
-WANT_BYTES=$(( BASE_PROXY_BYTES + SDIST_SIZE ))
-proxy_count=0
-proxy_bytes=0
-deadline=$(( $(date +%s) + 20 ))
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  if snapshot=$(read_proxy_stats); then
-    proxy_count="${snapshot%% *}"
-    proxy_bytes="${snapshot##* }"
+grew=0
+attempt_log=""
+for (( i = 0; i < PCS_ATTEMPTS; i++ )); do
+  v="${PKG_VERSIONS[$i]}"
+  size="${SDIST_SIZES[$v]:-1}"
+  if [ "$i" -gt 0 ]; then
+    # Fresh baseline and a never-pulled version, so this attempt's window
+    # covers only its own cache write plus whatever siblings do meanwhile.
+    if ! snapshot=$(read_proxy_stats) || ! BASE_REPO_BYTES=$(read_repo_usage "$REMOTE_KEY"); then
+      attempt_log+="attempt $(( i + 1 )) (${v}): could not read ${STATS_PATH} or ${REMOTE_KEY} for a baseline"$'\n'
+      continue
+    fi
+    BASE_PROXY_COUNT="${snapshot%% *}"
+    BASE_PROXY_BYTES="${snapshot##* }"
+    pull_status=$(pull_sdist "$v")
+    if [[ ! "$pull_status" =~ ^2[0-9][0-9]$ ]]; then
+      attempt_log+="attempt $(( i + 1 )) (${v}): pull through R answered HTTP ${pull_status}"$'\n'
+      continue
+    fi
+    if ! wait_until "${PKG_NAME}-${v}.tar.gz listed in ${REMOTE_KEY}" 20 \
+        repo_lists_artifact "$REMOTE_KEY" "${PKG_NAME}-${v}.tar.gz"; then
+      attempt_log+="attempt $(( i + 1 )) (${v}): no cache row appeared in ${REMOTE_KEY} within 20s"$'\n'
+      continue
+    fi
+    window=15
+  else
+    window=20
   fi
-  if [ "$proxy_count" -ge "$WANT_COUNT" ] && [ "$proxy_bytes" -ge "$WANT_BYTES" ]; then
+  if poll_growth "$BASE_PROXY_COUNT" "$BASE_PROXY_BYTES" "$BASE_REPO_BYTES" "$size" "$window"; then
+    grew=1
+    echo "  attempt $(( i + 1 )) (${v}): proxy_artifact_count ${BASE_PROXY_COUNT} -> ${proxy_count}, proxy_storage_bytes ${BASE_PROXY_BYTES} -> ${proxy_bytes}, ${REMOTE_KEY} storage_used_bytes ${BASE_REPO_BYTES} -> ${repo_bytes} (+${size} wanted)"
     break
   fi
-  sleep 2  # sleep-ok: poll interval
+  attempt_log+="attempt $(( i + 1 )) (${v}): proxy_artifact_count ${BASE_PROXY_COUNT} -> ${proxy_count} (want >= $(( BASE_PROXY_COUNT + 1 ))), proxy_storage_bytes ${BASE_PROXY_BYTES} -> ${proxy_bytes} (want >= $(( BASE_PROXY_BYTES + size ))), ${REMOTE_KEY} storage_used_bytes ${BASE_REPO_BYTES} -> ${repo_bytes} (want >= $(( BASE_REPO_BYTES + size )))"$'\n'
 done
-if [ "$proxy_count" -ge "$WANT_COUNT" ] && [ "$proxy_bytes" -ge "$WANT_BYTES" ]; then
+if [ "$grew" -eq 1 ] && [ -n "$attempt_log" ]; then
+  printf '  earlier attempts did not see clean growth (sibling suites share these totals):\n%s' \
+    "$(printf '%s' "$attempt_log" | sed 's/^/    /')"
+  echo
+fi
+if [ "$grew" -eq 1 ]; then
   pass
 else
-  fail "stats did not grow by the cached object (proxy_artifact_count ${BASE_PROXY_COUNT} -> ${proxy_count}, want >= ${WANT_COUNT}; proxy_storage_bytes ${BASE_PROXY_BYTES} -> ${proxy_bytes}, want >= ${WANT_BYTES})" \
-    "cached sdist: ${SDIST_BASENAME} (${SDIST_SIZE} bytes) pulled through ${REMOTE_KEY}
+  fail "stats did not grow by this suite's cached object in any of ${PCS_ATTEMPTS} attempts" \
+    "${attempt_log}
+each attempt pulled a fresh sdist through ${REMOTE_KEY} against a fresh baseline.
 pre-#3088 backends omit proxy_cache_artifacts rows from the system stats aggregate,
-so both counters stay flat across a pull-through that did land a cache row."
+so both counters stay flat across a pull-through that did land a cache row. A
+single sibling re-cache or eviction can mask one attempt, but not all of them."
 fi
 
 # ---------------------------------------------------------------------------
