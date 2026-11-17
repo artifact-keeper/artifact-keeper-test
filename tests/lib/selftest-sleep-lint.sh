@@ -55,14 +55,15 @@ lint_tree() {
     find "${root}/tests/${d}" -type f -name '*.sh' -print0
   done | sort -z | xargs -0 -r awk -v root="${root}/" '
     # A literal `sleep N` with N >= 1 used as a command: at the start of the
-    # line, or after ; & | then do else. Comments are stripped first.
+    # line, or after ; & | ) then do else (a case arm counts). Comments are
+    # stripped first.
     {
       line = $0
       code = line
       sub(/#.*/, "", code)
       rest = code
       hit = 0
-      while (match(rest, /(^|[;&|]|[[:space:]]then|[[:space:]]do|[[:space:]]else)[[:space:]]*sleep[[:space:]]+[0-9]+(\.[0-9]+)?([[:space:];&|)]|$)/)) {
+      while (match(rest, /(^|[;&|)]|[[:space:]]then|[[:space:]]do|[[:space:]]else)[[:space:]]*sleep[[:space:]]+[0-9]+(\.[0-9]+)?([[:space:];&|)]|$)/)) {
         seg = substr(rest, RSTART, RLENGTH)
         sub(/.*sleep[[:space:]]+/, "", seg)
         if (seg + 0 >= 1) { hit = 1; break }
@@ -128,6 +129,11 @@ SH
 mkfx fractional-long <<'SH'
 sleep 1.5
 SH
+mkfx case-arm <<'SH'
+case "$s" in
+  000|503) sleep 2 ;;
+esac
+SH
 
 expect "compliant fixture is clean"                0 "${WORK}/good"
 expect "bare sleep 1"                              1 "${WORK}/bare"
@@ -137,6 +143,7 @@ expect "sleep after then on one line"              1 "${WORK}/inline-then"
 expect "sleep-ok marker without a reason"          1 "${WORK}/reasonless"
 expect "an ordinary comment is not a reason"       1 "${WORK}/other-comment"
 expect "sleep 1.5 is a whole-second-scale guess"   1 "${WORK}/fractional-long"
+expect "sleep in a case arm"                       1 "${WORK}/case-arm"
 
 if [ "$fail_count" -ne 0 ]; then
   echo "sleep lint self-test failed (${fail_count}); not trusting it on ${ROOT}"
