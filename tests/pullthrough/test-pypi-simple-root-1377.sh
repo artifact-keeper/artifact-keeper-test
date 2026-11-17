@@ -156,20 +156,25 @@ fi
 
 # The prime answering 200 does not mean flake8 is cached yet: the proxy-cache
 # entry is published by a writer task that outlives the client response, and
-# simple_root lists only projects whose cache keys exist
-# (list_cached_pypi_packages reads the storage keys under simple/).
+# simple_root lists only projects whose cache keys exist. simple_root walks
+# those storage keys (list_cached_pypi_packages) on EVERY request and caches
+# only the upstream root body, so polling /simple/ is safe: a probe made inside
+# the window does not pin an empty listing, and the next probe sees the key
+# once it is committed. (The Remote's artifact listing is no signal here: it
+# filters cached index responses out.)
 #
-# There is no observable completion signal to poll for an index page:
-# - wait_for_proxy_cache_warm needs the mock upstream's per-path counter, and
-#   this suite fronts real pypi.org;
-# - index pages write no proxy_cache_artifacts catalog row (only files do), so
-#   the Remote's artifact listing stays empty (gate run 43966359607 polled it
-#   for 60 s and saw total=0);
-# - polling /simple/ itself would cache the root under "simple/" on the first
-#   probe and pin an empty listing for the cache TTL.
-# So this one pause stays, marked (artifact-keeper-test#364). A mock-upstream
-# variant of this suite would make the wait observable; that is a follow-up.
-sleep 2  # sleep-ok: index-page cache write has no observable completion signal (see above)
+# Poll the root until it lists at least one project, bounded, instead of the
+# old fixed `sleep 2` (artifact-keeper-test#364). The poll does not judge: the
+# assertions below fetch again and decide, so a root that never lists anything
+# still fails them.
+_root_lists_a_project() {
+  curl -s --max-time 30 -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${REMOTE_KEY}/simple/" 2>/dev/null | grep -qE '<a [^>]*>'
+}
+if [ "$PRIME_STATUS" = "200" ]; then
+  wait_until "/simple/ root of ${REMOTE_KEY} lists a project" 45 _root_lists_a_project \
+    || echo "  /simple/ still lists no project after 45s; the assertions below judge it"
+fi
 
 # -------------------------------------------------------------------------
 # Assertion (a) part 1: /simple/ returns 200 with non-empty HTML.

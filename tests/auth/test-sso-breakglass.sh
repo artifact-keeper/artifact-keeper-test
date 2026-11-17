@@ -45,9 +45,9 @@ sso_posture() {
   esac
 }
 
-begin_test "Check SSO configuration status"
+# Informational only, not a test case: a guaranteed pass here would keep the
+# zero-pass floor from ever tripping for this suite.
 echo "  SSO posture at start: $(sso_posture) (informational; a sibling suite may change it)"
-pass
 
 # -------------------------------------------------------------------------
 # Verify local login works (baseline)
@@ -106,12 +106,14 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Break-glass: the admin's local login holds in either SSO posture. Asserted
+# The admin's local login is accepted, whatever the SSO posture. Asserted
 # unconditionally; the posture on each side of the login is only reported, so
-# a sibling flipping it mid-run cannot change what this check means.
+# a sibling flipping it mid-run cannot change what this check means. The
+# SSO-on branch is asserted deterministically inside the provider window of
+# tests/security/test-saml-signature.sh.
 # -------------------------------------------------------------------------
 
-begin_test "Break-glass: local admin login holds in either SSO posture"
+begin_test "Local admin login accepted (SSO posture reported)"
 posture_before=$(sso_posture)
 bg_status=$(curl -s -o "${WORK_DIR}/breakglass.json" -w '%{http_code}' $CURL_TIMEOUT \
   -X POST "${BASE_URL}/api/v1/auth/login" \

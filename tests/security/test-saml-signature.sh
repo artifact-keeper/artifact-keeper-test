@@ -121,7 +121,12 @@ delete_saml_provider() {
     "${BASE_URL}/api/v1/admin/sso/saml/${PROVIDER}" \
     -H "$(auth_header)" 2>/dev/null) || PROVIDER_DELETE_STATUS="000"
   DELETED_PROVIDER="$PROVIDER"
-  PROVIDER=""
+  # Forget the provider only once it is really gone; on a failed DELETE keep
+  # it so the exit handler retries (an enabled provider left behind is the
+  # #365 hazard itself).
+  case "$PROVIDER_DELETE_STATUS" in
+    2??|404) PROVIDER="" ;;
+  esac
 }
 
 # provider_request_id <pid> -> the AuthnRequest ID to echo as InResponseTo
@@ -363,6 +368,25 @@ fi
 
 if [ -n "$PROVIDER" ] && [ "$PROVIDER" != "null" ]; then
   ACS_URL="${BASE_URL}/api/v1/auth/sso/saml/${PROVIDER}/acs"
+
+  # ---- BREAK-GLASS under an enabled provider (artifact-keeper-test#365).
+  # This window is the only place in the gate where an SSO provider is known
+  # to be enabled, so the SSO-on branch of the local-login gate is asserted
+  # here, deterministically, instead of by test-sso-breakglass.sh sampling a
+  # posture a sibling may or may not have set.
+  begin_test "Break-glass: local admin login holds while a SAML provider is enabled"
+  bg_code=$(curl -s -o "${WORK_DIR}/saml-breakglass.json" -w '%{http_code}' $CURL_TIMEOUT \
+    -X POST "${BASE_URL}/api/v1/auth/login" -H "Content-Type: application/json" \
+    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}" 2>/dev/null) || bg_code="000"
+  bg_token=$(jq -r '.token // .access_token // empty' "${WORK_DIR}/saml-breakglass.json" 2>/dev/null) || bg_token=""
+  if [ "$bg_code" = "200" ] && [ -n "$bg_token" ]; then
+    pass
+  elif [ "$bg_code" = "000" ]; then
+    infra_fail "POST /api/v1/auth/login got no HTTP answer"
+  else
+    fail "local admin login refused while a SAML provider is enabled (HTTP ${bg_code}); the verified-admin break-glass must hold" \
+      "$(head -c 300 "${WORK_DIR}/saml-breakglass.json" 2>/dev/null)"
+  fi
 
   # ---- SIGNED POSITIVE CONTROL (proves the verifier is not reject-everything)
   begin_test "Validly-signed assertion authenticates (positive control)"
