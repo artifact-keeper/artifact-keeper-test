@@ -551,11 +551,18 @@ npm_publish "$PRE_PKG" "1.0.0-alpha.1" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0-beta.2" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0-rc.1" "prerelease test" > /dev/null 2>&1
 npm_publish "$PRE_PKG" "1.0.0" "prerelease test" > /dev/null 2>&1
-# Needle is the stable version's tarball file name, which the listing's name
-# or path contains whatever directory layout the row uses: a bare "1.0.0"
-# version filter would also match the 1.0.0-alpha.1 tarball, and the full
-# <pkg>/-/<pkg>-<ver>.tgz path did not match the stored row on the gate.
-await_artifact_listed "$REPO_KEY" "${PRE_PKG}-1.0.0.tgz"
+# Wait for the four publishes to be visible in the packument the assertion
+# below reads, bounded; the assertion still judges it strictly. The artifacts
+# listing is not used here: on the gate (runs 43966445703, 43985375807) the
+# stable 1.0.0 tarball row of this package never appeared in it, under either
+# its <pkg>/1.0.0/ or its file-name needle, while the packument listed 1.0.0.
+# That listing discrepancy is tracked on artifact-keeper-test#367.
+_prerelease_versions_visible() {
+  curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" "${NPM_REGISTRY}/${PRE_PKG}" 2>/dev/null \
+    | jq -e '.versions | has("1.0.0-alpha.1") and has("1.0.0-beta.2") and has("1.0.0-rc.1") and has("1.0.0")' >/dev/null
+}
+wait_until "${PRE_PKG}: all four versions in the packument" 30 _prerelease_versions_visible \
+  || echo "  not all four versions visible after 30s; the check below judges it"
 
 if resp=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
