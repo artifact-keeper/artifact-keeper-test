@@ -2551,8 +2551,11 @@ jobs:
   # measures. Skipping resilience because stress hit its error-rate
   # threshold loses signal on a different failure class.
   #
-  # PARTIALLY SOFT — NAMED WAIVER, restart + storage legs only
-  # (artifact-keeper-test#338).
+  # PARTIALLY SOFT: NAMED WAIVER, storage leg only
+  # (artifact-keeper-test#338). restart left the waiver in #842. The waiver
+  # covers the storage SUITES (the test step's continue-on-error) and nothing
+  # else: the fault-injector detach steps around them are not soft, and a
+  # detach INFRA fails the leg and the gate.
   #
   # History: bafcb7a ("ci: make resilience tests non-blocking on ARC
   # runners", 2026-03-23) put `continue-on-error: true` on this job's only
@@ -2579,12 +2582,20 @@ jobs:
   # So crash/data/network are now GENUINELY BLOCKING — see the
   # matrix-conditional continue-on-error on the test step below.
   #
-  # KNOWN GAP, stated plainly: restart + storage stay soft, and the reasons
-  # are infra debt plus a real harness bug, not product regressions.
-  #   1. The ARC runner ServiceAccount cannot patch deployments/scale in the
-  #      ephemeral namespace, so test-full-reboot.sh cannot scale the backend
-  #      ("Error from server (Forbidden): ... cannot patch resource
-  #      deployments/scale").
+  # restart is BLOCKING too since artifact-keeper-test#842: with the selector
+  # fix (#354) and the runner's deployments/scale grant, all 5 restart
+  # scripts passed with 0 failures and 0 skips in two narrow resilience runs
+  # (43966241690, 43976602208, backend sha-15e1a48). storage stays waived until
+  # its fault suites, real since #842 (EROFS remount, ENOSPC tmpfs), have a
+  # clean record of their own.
+  #
+  # KNOWN GAP, stated plainly: storage stays soft. What kept restart and
+  #   storage soft was infra debt plus a real harness bug, not product
+  #   regressions:
+  #   1. FIXED: the ARC runner ServiceAccount could not patch deployments/scale
+  #      in the ephemeral namespace, so test-full-reboot.sh could not scale the
+  #      backend. ClusterRole arc-e2e-runner now grants deployments/scale, and
+  #      test-full-reboot.sh passed in every run cited above.
   #   2. FIXED (artifact-keeper-test#354): the harness selected backend pods
   #      with `-l app=artifact-keeper-backend`, a label the chart never set,
   #      so kills were vacuous and readiness waits skipped. Selection now
@@ -2595,12 +2606,13 @@ jobs:
   #      selector matched nothing; the test is now test-opensearch-restart.sh.
   # Selector fix (2) will likely surface MORE failures, including in the
   # now-blocking legs, because it also makes some currently-vacuous PASSes
-  # real. That is intended. Nothing here is fixed by this waiver — restart
-  # and storage are simply no longer pretending to be a gate.
+  # real. That is intended. Nothing here is fixed by this waiver; storage is
+  # simply no longer pretending to be a gate.
   #   owner:   release-engineering (@brandon.geraci)
-  #   expires: 2026-10-01 — on/after this date either land the RBAC grant +
-  #            selector fix and drop continue-on-error from the step
-  #            entirely, or re-justify this waiver in a PR.
+  #   expires: 2026-12-01. Exit criterion: two more clean storage runs (every
+  #            storage script green, no INFRA), then drop continue-on-error
+  #            and the storage case from the step. Otherwise re-justify this
+  #            waiver in a PR by that date.
   # -------------------------------------------------------------------
   resilience-tests:
     needs: [deploy, stress-tests]
@@ -2641,6 +2653,16 @@ jobs:
         with:
           repository: artifact-keeper/artifact-keeper-test
 
+      # The fault-injector backstop below must be main's, whatever line the
+      # tree is moved to: copy it and the library it sources before the
+      # switch (as admin-tests does for the component wait, #843).
+      - name: Install the fault-injector detach helper from this checkout
+        run: |
+          d="${RUNNER_TEMP}/fault-detach"
+          mkdir -p "$d"
+          install -m 0755 scripts/resilience-fault-injector-detach.sh "$d/resilience-fault-injector-detach.sh"
+          cp tests/lib/k8s.sh "$d/"
+
       - name: Run the suite from the tests ref that matches the candidate's line
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2650,14 +2672,26 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
+      # The network and storage suites patch a fault injector onto the backend
+      # (tests/lib/k8s.sh, artifact-keeper-test#842). Every other leg first
+      # makes sure it runs on an unpatched, fault-free pod, whatever order the
+      # legs ran in and whatever an earlier leg left behind. Not soft: a
+      # backend that cannot be cleaned would grade this leg on a faulted pod.
+      - name: Start from a backend without the fault injector
+        if: matrix.category != 'network' && matrix.category != 'storage'
+        env:
+          K8S_LIB_DIR: ${{ runner.temp }}/fault-detach
+        run: '"${K8S_LIB_DIR}/resilience-fault-injector-detach.sh"'
+
       - name: Run ${{ matrix.category }} resilience tests
-        # Soft for the two waived legs ONLY (artifact-keeper-test#338).
-        # crash, data and network evaluate to false here, so a failure in
+        # Soft for the waived storage leg ONLY (artifact-keeper-test#338;
+        # restart left the waiver in #842).
+        # crash, restart, data and network evaluate to false here, so a failure in
         # those categories fails the step, fails the matrix leg, sets
         # needs.resilience-tests.result to 'failure', and blocks the gate
         # via the clause in collect-results. Do not widen this back to a
         # bare `true` — that is the bug this replaces.
-        continue-on-error: ${{ matrix.category == 'restart' || matrix.category == 'storage' }}
+        continue-on-error: ${{ matrix.category == 'storage' }}
         run: |
           mkdir -p "$JUNIT_OUTPUT_DIR"
           FAILED=0
@@ -2671,7 +2705,7 @@ jobs:
           done
           if [ "$FAILED" -gt 0 ]; then
             case "${{ matrix.category }}" in
-              restart|storage)
+              storage)
                 echo "::warning::${FAILED} resilience test(s) failed in ${{ matrix.category }} (non-blocking: named waiver, artifact-keeper-test#338)"
                 ;;
               *)
@@ -2680,6 +2714,15 @@ jobs:
             esac
             exit 1
           fi
+
+      # And the legs that attach the injector take it off again, so later
+      # legs and later jobs get an unpatched pod. Runs even when
+      # the suites failed; not soft, for the same reason as above.
+      - name: Remove the fault injector
+        if: ${{ !cancelled() && (matrix.category == 'network' || matrix.category == 'storage') }}
+        env:
+          K8S_LIB_DIR: ${{ runner.temp }}/fault-detach
+        run: '"${K8S_LIB_DIR}/resilience-fault-injector-detach.sh"'
 
       - name: Upload test results
         if: always()

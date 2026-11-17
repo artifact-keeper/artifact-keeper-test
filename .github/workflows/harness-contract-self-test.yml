@@ -94,6 +94,12 @@ jobs:
       - name: Run clean-install-smoke exit-code self-test
         run: bash scripts/tests/test-clean-install-smoke-exit-codes.sh
 
+      # The resilience fault injector (tests/lib/k8s.sh, artifact-keeper-test#842):
+      # a fault that cannot be set up is INFRA, the injector images stay
+      # pinned by digest, and no fault suite can skip.
+      - name: Run k8s fault-injector self-test
+        run: bash tests/lib/selftest-k8s-fault-injector.sh
+
       # Work dirs default under DTF_WORK_PARENT / RUNNER_TEMP so a dind
       # daemon can see them as bind-mount sources (artifact-keeper-test#732).
       - name: Run work-dir parent self-test
