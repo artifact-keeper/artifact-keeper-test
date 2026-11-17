@@ -154,32 +154,22 @@ else
     "$(head -c 300 "$PRIME_TMP" 2>/dev/null)"
 fi
 
-# The prime answering 200 does NOT mean flake8 is cached yet: the proxy-cache
+# The prime answering 200 does not mean flake8 is cached yet: the proxy-cache
 # entry is published by a writer task that outlives the client response, and
 # simple_root lists only projects whose cache keys exist
-# (list_cached_pypi_packages). A root fetched inside that window has no entry
-# to list, which is the race the old `sleep 2` guessed at.
+# (list_cached_pypi_packages reads the storage keys under simple/).
 #
-# wait_for_proxy_cache_warm cannot be used here: it needs the mock upstream's
-# per-path counter, and this suite fronts real pypi.org. Wait instead on the
-# writer's own completion signal: its proxy_cache_artifacts catalog row, written
-# with the __cache_meta__ sidecar after the content key is in place, and read
-# by the Remote's artifact listing. That surface is independent of /simple/,
-# so the root-index assertions below stay meaningful (artifact-keeper-test#364).
-_flake8_cached() {
-  curl -sf --max-time 10 -H "$(auth_header)" \
-    "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/artifacts?per_page=100" 2>/dev/null \
-    | jq -e '[(if type == "array" then . else (.items // []) end)[]? | (.path // "") | ascii_downcase | select(test("^/?simple/flake8(/|$)"))] | length > 0' >/dev/null
-}
-if [ "$PRIME_STATUS" = "200" ]; then
-  begin_test "Primed project's proxy-cache entry is committed"
-  if wait_until "flake8 proxy-cache entry committed in ${REMOTE_KEY}" 60 _flake8_cached; then
-    pass
-  else
-    fail "the 200 prime of simple/flake8/ never produced a committed proxy-cache entry (no catalog row under simple/flake8/ in ${REMOTE_KEY} within 60s)" \
-      "$(curl -s --max-time 10 -H "$(auth_header)" "${BASE_URL}/api/v1/repositories/${REMOTE_KEY}/artifacts?per_page=100" 2>/dev/null | head -c 600)"
-  fi
-fi
+# There is no observable completion signal to poll for an index page:
+# - wait_for_proxy_cache_warm needs the mock upstream's per-path counter, and
+#   this suite fronts real pypi.org;
+# - index pages write no proxy_cache_artifacts catalog row (only files do), so
+#   the Remote's artifact listing stays empty (gate run 43966359607 polled it
+#   for 60 s and saw total=0);
+# - polling /simple/ itself would cache the root under "simple/" on the first
+#   probe and pin an empty listing for the cache TTL.
+# So this one pause stays, marked (artifact-keeper-test#364). A mock-upstream
+# variant of this suite would make the wait observable; that is a follow-up.
+sleep 2  # sleep-ok: index-page cache write has no observable completion signal (see above)
 
 # -------------------------------------------------------------------------
 # Assertion (a) part 1: /simple/ returns 200 with non-empty HTML.
