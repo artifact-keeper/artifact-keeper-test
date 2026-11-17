@@ -297,6 +297,39 @@ if [ -n "$SETUP_ERR" ]; then infra_fail "fixture setup failed:${SETUP_ERR}"; end
 pass
 
 # =============================================================================
+# #1570 helpers, and the s3 fresh-ghost case. It runs FIRST, straight after
+# setup: the ghost was dropped seconds ago, so a real (non-dry) reindex must
+# hold it back. Running it after the scrub scenarios made the case depend on
+# those finishing inside the 5-minute guard; on a slow runner they did not
+# (ghost age 332 s, the guard correctly registered it, and the three #1570
+# cases below then failed against an already-registered ghost).
+reindex(){ api POST "/api/v1/admin/repositories/$R_RIDX/reindex-storage" "$1"; }
+ghost_rows(){ psql_q "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE r.key='$R_RIDX' AND a.path='$1';" | tr -d '[:space:]'; }
+RIDX_ROUTE=""
+
+if [ "$SI_STORAGE" = "s3" ]; then
+  begin_test "#1570: an unregistered object younger than 5 minutes is held back (s3: the fresh ghost)"
+  reset_case
+  GHOST_AGE=$(( $(date +%s) - GHOST_DROPPED_AT ))
+  # Not a verdict on the candidate: a ghost this old can no longer prove the
+  # guard (and a real reindex would register it, breaking the cases below).
+  if [ "$GHOST_AGE" -ge 240 ]; then
+    infra_fail "fixture timing: the s3 ghost was ${GHOST_AGE}s old before the first reindex (needs well under the 300 s guard)"; end_suite
+  fi
+  RES="$(reindex '{"dry_run":false}')"
+  RIDX_ROUTE="$(code)"
+  note "reindex (ghost age ${GHOST_AGE}s): HTTP ${RIDX_ROUTE} $(echo "$RES" | head -c 400)"
+  if [ "$RIDX_ROUTE" != "200" ]; then
+    fail_g "reindex-storage -> HTTP ${RIDX_ROUTE} (route missing: pre-#1570 image?)"
+  else
+    [ "$(echo "$RES" | jqr '.registered')" = "0" ] || fail_g "a <5-minute-old object was registered"
+    [ "$(echo "$RES" | jqr '.skipped_recent')" -ge 1 ] 2>/dev/null || fail_g "skipped_recent=$(echo "$RES" | jqr '.skipped_recent') (want >=1)"
+    [ "$(ghost_rows "$GHOST_PATH")" = "0" ] || fail_g "the fresh ghost got a row"
+  fi
+  finish_case "recent-object guard missing"
+fi
+
+# =============================================================================
 begin_test "regression: intact generic artifact downloads byte-identical, digest header matches, sub-range served"
 reset_case
 U_INTACT="$BASE/api/v1/repositories/$R_GEN/download/si/intact.bin"
@@ -548,29 +581,13 @@ note "audit_log STORAGE_SCRUB_RUN rows: total=$(audit_count STORAGE_SCRUB_RUN) s
 finish_case "scrub runs not audited"
 
 # =============================================================================
-# #1570. On s3 the ghost was written during setup and must first age past the
-# 5-minute in-flight guard, which is itself an assertion (a fresh run must
-# hold it back).
-reindex(){ api POST "/api/v1/admin/repositories/$R_RIDX/reindex-storage" "$1"; }
-ghost_rows(){ psql_q "SELECT count(*) FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE r.key='$R_RIDX' AND a.path='$1';" | tr -d '[:space:]'; }
-
+# #1570. On s3 the ghost cannot be backdated, so it was written during setup,
+# checked by the fresh-ghost case right after setup, and has been settling
+# while the scenarios above ran. Wait out whatever is left of the guard.
 if [ "$SI_STORAGE" = "s3" ]; then
-  begin_test "#1570: an unregistered object younger than 5 minutes is held back (s3: the fresh ghost)"
-  reset_case
-  RES="$(reindex '{"dry_run":false}')"
-  note "reindex (ghost age $(( $(date +%s) - GHOST_DROPPED_AT ))s): HTTP $(code) $(echo "$RES" | head -c 400)"
-  if [ "$(code)" != "200" ]; then
-    fail_g "reindex-storage -> HTTP $(code) (route missing: pre-#1570 image?)"
-  else
-    [ "$(echo "$RES" | jqr '.registered')" = "0" ] || fail_g "a <5-minute-old object was registered"
-    [ "$(echo "$RES" | jqr '.skipped_recent')" -ge 1 ] 2>/dev/null || fail_g "skipped_recent=$(echo "$RES" | jqr '.skipped_recent') (want >=1)"
-    [ "$(ghost_rows "$GHOST_PATH")" = "0" ] || fail_g "the fresh ghost got a row"
-  fi
-  RIDX_ROUTE="$(code)"
-  finish_case "recent-object guard missing"
   WAIT=$(( GHOST_DROPPED_AT + SETTLE_SECS - $(date +%s) ))
   # Only worth waiting when the route exists (a pre-#1570 image answers 404
-  # here and every reindex assertion below fails regardless).
+  # and every reindex assertion below fails regardless).
   if [ "$RIDX_ROUTE" = "200" ] && [ "$WAIT" -gt 0 ]; then echo "-- waiting ${WAIT}s for the ghost to age past the 5-minute guard"; sleep "$WAIT"; fi
 fi
 
