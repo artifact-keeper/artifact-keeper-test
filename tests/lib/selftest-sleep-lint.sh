@@ -41,7 +41,7 @@ ROOT="${1:-$(cd "${SELFTEST_DIR}/../.." && pwd)}"
 # job on the release gate's verdict predicate (or security's, which gates
 # the strict form). Advisory-only trees (stress, resilience, mesh,
 # scenarios) are out of scope.
-BLOCKING_DIRS="admin auth compatibility formats lifecycle platform promotion pullthrough rbac repos search security webhooks"
+BLOCKING_DIRS="admin auth compatibility formats lifecycle platform promotion pullthrough rbac release-gate repos search security webhooks"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -55,23 +55,25 @@ lint_tree() {
     find "${root}/tests/${d}" -type f -name '*.sh' -print0
   done | sort -z | xargs -0 -r awk -v root="${root}/" '
     # A literal `sleep N` with N >= 1 used as a command: at the start of the
-    # line, or after ; & | ) then do else (a case arm counts). Comments are
-    # stripped first.
+    # line, after ; & | ( ) { ! or a backtick (case arms, groups, $(...)), or
+    # after then/do/else/time. N may be quoted and may carry a GNU unit suffix
+    # (s/m/h/d); any suffix counts as a whole-second-scale wait. Comments are
+    # stripped first, but only where bash starts one: a # at a word boundary,
+    # so ${#arr[@]} and $# stay code.
     {
       line = $0
       code = line
-      sub(/#.*/, "", code)
+      sub(/(^|[[:space:]])#.*/, "", code)
       rest = code
       hit = 0
-      while (match(rest, /(^|[;&|)]|[[:space:]]then|[[:space:]]do|[[:space:]]else)[[:space:]]*sleep[[:space:]]+[0-9]+(\.[0-9]+)?([[:space:];&|)]|$)/)) {
+      while (match(rest, /(^|[;&|(){!`]|(^|[[:space:];])(then|do|else|time))[[:space:]]*sleep[[:space:]]+["\047]?[0-9]+(\.[0-9]+)?[smhd]?["\047]?([[:space:];&|)`]|$)/)) {
         seg = substr(rest, RSTART, RLENGTH)
-        sub(/.*sleep[[:space:]]+/, "", seg)
-        if (seg + 0 >= 1) { hit = 1; break }
+        sub(/.*sleep[[:space:]]+["\047]?/, "", seg)
+        if (seg ~ /^[0-9.]+[smhd]/ || seg + 0 >= 1) { hit = 1; break }
         rest = substr(rest, RSTART + RLENGTH)
       }
       if (hit && line !~ /#[[:space:]]*sleep-ok:[[:space:]]*[^[:space:]]/) {
-        f = FILENAME
-        sub("^" root, "", f)
+        f = substr(FILENAME, length(root) + 1)
         printf "%s:%d: %s\n", f, FNR, line
       }
     }'
@@ -134,6 +136,25 @@ case "$s" in
   000|503) sleep 2 ;;
 esac
 SH
+mkfx do-col0 <<'SH'
+while true
+do sleep 2; break; done
+SH
+mkfx brace-group <<'SH'
+{ sleep 2; }
+SH
+mkfx unit-suffix <<'SH'
+sleep 2s
+SH
+mkfx quoted <<'SH'
+sleep "3"
+SH
+mkfx hash-in-code <<'SH'
+[ ${#arr[@]} -gt 0 ] && sleep 2
+SH
+mkfx subshell <<'SH'
+x=$(sleep 2; echo y)
+SH
 
 expect "compliant fixture is clean"                0 "${WORK}/good"
 expect "bare sleep 1"                              1 "${WORK}/bare"
@@ -144,6 +165,12 @@ expect "sleep-ok marker without a reason"          1 "${WORK}/reasonless"
 expect "an ordinary comment is not a reason"       1 "${WORK}/other-comment"
 expect "sleep 1.5 is a whole-second-scale guess"   1 "${WORK}/fractional-long"
 expect "sleep in a case arm"                       1 "${WORK}/case-arm"
+expect "do sleep at column 0"                      1 "${WORK}/do-col0"
+expect "sleep in a brace group"                    1 "${WORK}/brace-group"
+expect "sleep with a unit suffix"                  1 "${WORK}/unit-suffix"
+expect "quoted sleep duration"                     1 "${WORK}/quoted"
+expect "\${#arr[@]} is code, not a comment"        1 "${WORK}/hash-in-code"
+expect "sleep inside \$(...)"                      1 "${WORK}/subshell"
 
 if [ "$fail_count" -ne 0 ]; then
   echo "sleep lint self-test failed (${fail_count}); not trusting it on ${ROOT}"

@@ -200,7 +200,7 @@ wait_for_workload_exists() {
     if kubectl get "$kind" "$name" -n "$NAMESPACE" >/dev/null 2>&1; then
       return 0
     fi
-    sleep 5
+    sleep 5  # sleep-ok: poll interval of a bounded loop
     elapsed=$((elapsed + 5))
   done
   return 1
@@ -271,7 +271,7 @@ if [ -n "$BACKEND_POD" ]; then
         break
       fi
     fi
-    sleep 5
+    sleep 5  # sleep-ok: poll interval of a bounded loop
     elapsed=$((elapsed + 5))
   done
   if ! $ready_ok; then
