@@ -2083,10 +2083,11 @@ jobs:
       RELEASE_GATE: '1'
       # Per-script timeout for run-suite.sh, which kills each script at
       # TEST_TIMEOUT (exit 124). The webhook retry-recover test polls for up to
-      # WEBHOOK_RETRY_TIMEOUT = 360s (#309), so the wrapper MUST exceed that or
-      # a slow retry is killed mid-poll (that exit-124 is how attempt 11 failed).
-      # 420s = the 360s retry window + ~60s headroom for the script's own
-      # setup/teardown. See artifact-keeper-test#312.
+      # INITIAL_POST_TIMEOUT + WEBHOOK_RETRY_TIMEOUT = 60s + 330s (#309, #317),
+      # so the wrapper MUST exceed that or a slow retry is killed mid-poll (that
+      # exit-124 is how attempt 11 failed). 420s = that 390s + 30s headroom for
+      # the script's own setup/teardown, exactly what its require_wait_budget
+      # check allows: raising either poll means raising this too. See #312.
       TEST_TIMEOUT: '420'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
