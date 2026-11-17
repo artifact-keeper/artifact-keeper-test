@@ -606,7 +606,8 @@ if [ "$LIFE_DELETED" = true ]; then
 fi
 if [ "$LIFE_DELETED" != true ]; then
   fail "needs the deleted version${LIFE_ERROR:+ (${LIFE_ERROR})}"
-elif assert_eq "$PUT_STATUS" "409" "re-publish with different bytes returned HTTP ${PUT_STATUS}, expected 409 (a version is immutable even after delete; ${LIFE_ATTEMPT} attempt(s))"; then
+elif assert_eq "$PUT_STATUS" "409" "re-publish with different bytes returned HTTP ${PUT_STATUS}, expected 409 (a version is immutable even after delete; ${LIFE_ATTEMPT} attempt(s))" && \
+     assert_contains "$PUT_BODY" "was deleted" "the 409 is not the deleted-version refusal (a live row answered instead?): ${PUT_BODY:0:300}"; then
   pass
 fi
 
