@@ -98,10 +98,10 @@ st=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
 if [ "$st" != "200" ]; then
   fail "updating the rule's conditions returned ${st}"
 fi
-# The listing cache is 30s; wait for invalidation to take effect before
-# asserting the denial. The create/update path invalidates synchronously,
-# so a short settle is enough.
-sleep 2
+# The listing cache is 30s, but the create/update path invalidates it before
+# the PUT answers, so the narrowed rule must apply on the very next request.
+# No settle (artifact-keeper-test#364): a fixed sleep only hid a delay the
+# contract does not allow.
 st=$(anon_download_status)
 if [ "$st" = "401" ] || [ "$st" = "404" ]; then
   pass "outside the narrowed CIDRs the download is denied again (status ${st})"

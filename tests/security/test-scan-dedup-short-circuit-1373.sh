@@ -310,7 +310,7 @@ fi
 # Give the backend a moment to settle any inflight bookkeeping. If the bug
 # is reproducing, a duplicate placeholder will appear within ~1s of the
 # second trigger because the placeholder insert is synchronous.
-sleep 3
+sleep 3  # sleep-ok: negative window: a duplicate placeholder from trigger 2 would be inserted within it
 
 # Snapshot scan state after trigger #2 settles, then run the two assertions.
 list_status=$(curl -s -o "${WORK_DIR}/scans2.json" -w '%{http_code}' $CURL_TIMEOUT \

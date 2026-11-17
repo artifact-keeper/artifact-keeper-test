@@ -111,7 +111,7 @@ trigger_and_wait() {
       final="$any_terminal"
       break
     fi
-    sleep 5
+    sleep 5  # sleep-ok: poll interval
     elapsed=$(( elapsed + 5 ))
   done
   echo "$final"

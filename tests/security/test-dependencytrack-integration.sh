@@ -129,7 +129,7 @@ while [ "$elapsed" -lt 60 ]; do
   if [ "$pull_status" = "404" ]; then
     break
   fi
-  sleep 5
+  sleep 5  # sleep-ok: poll interval
   elapsed=$(( elapsed + 5 ))
 done
 if [ "$pull_done" = "1" ]; then

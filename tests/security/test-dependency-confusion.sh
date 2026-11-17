@@ -79,7 +79,17 @@ fi
 # Fetch internal-pkg through virtual repo, assert local copy is returned
 # ---------------------------------------------------------------------------
 
-sleep 2
+# The local upload and the member PUT have both answered 2xx. Wait, bounded,
+# for the local artifacts row to be readable in its own repo (what the virtual
+# resolves the priority-1 member against) instead of a fixed sleep
+# (artifact-keeper-test#364). Observed through the member, not the virtual, so
+# the virtual-resolution assertion below stays meaningful.
+_local_row_readable() {
+  curl -sf -o /dev/null --max-time 10 -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${LOCAL_KEY}/artifacts/internal-pkg/1.0.0/internal-pkg.tar.gz"
+}
+wait_until "local internal-pkg row readable in ${LOCAL_KEY}" 30 _local_row_readable \
+  || echo "  local upload answered 2xx but its artifacts row is not readable; the virtual fetch below is judged anyway"
 
 begin_test "Fetch internal-pkg through virtual repo returns local version"
 dl_resp=""
@@ -127,7 +137,7 @@ for _list_attempt in 1 2 3 4 5 6; do
       break
     fi
   fi
-  sleep 2
+  sleep 2  # sleep-ok: poll interval
 done
 
 if $_list_found; then

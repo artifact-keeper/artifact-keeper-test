@@ -118,7 +118,7 @@ for _ in $(seq 1 15); do
     -d "{\"path\":\"${PKG_PATH}\"}" \
     "${BASE_URL}/api/v1/quarantine/proxy-cache/${R1_KEY}/release" 2>/dev/null) || status="000"
   [ "$status" = "404" ] || break
-  sleep 1
+  sleep 1  # sleep-ok: poll interval
 done
 # The release's own answer states what it did: the entry it names (repo + path)
 # and released:true. A 200 that names another entry, or says released:false,
@@ -178,7 +178,7 @@ else
 fi
 
 begin_test "After the 1-minute window the held entry serves from cache"
-sleep 70
+sleep 70  # sleep-ok: hold window: R2 holds for 1 minute; the entry may only serve after it has elapsed
 out=$(fetch_through "$R2_KEY") || true
 status="${out##*$'\t'}"
 body=$(printf '%s' "${out%$'\t'*}")

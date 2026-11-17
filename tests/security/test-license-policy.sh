@@ -215,9 +215,9 @@ begin_test "License-compliance check flags ${BANNED_LICENSE} violation"
 if [ -z "$POLICY_ID" ] || [ -z "$ARTIFACT_ID" ]; then
   skip "no policy or artifact id"
 else
-  # Allow the scanner-driven flow time to populate SBOM components for
-  # this artifact before evaluating the policy.
-  sleep 5
+  # No fixed settle before the check: this suite triggers no scan and no SBOM
+  # job, so there is no background step a sleep could be waiting for. The
+  # compliance check is judged on its own answer (artifact-keeper-test#364).
   check_resp=""
   check_status="000"
   for ep in \

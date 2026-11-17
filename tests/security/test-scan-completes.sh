@@ -269,7 +269,7 @@ fi
 # ---------------------------------------------------------------------------
 
 TEST_START_EPOCH=$(date -u +%s)
-sleep 3
+sleep 3  # sleep-ok: timestamp separation: the scan must be created after TEST_START_EPOCH + 2 (see above)
 
 # ---------------------------------------------------------------------------
 # Resolve the artifact_id. The metadata endpoint is GET /:key/artifacts/*path
