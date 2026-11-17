@@ -15,11 +15,20 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 begin_suite "pypi-proxy-cache-keys"
 auth_admin
 setup_workdir
+require_wait_budget 20 "upstream index poll"
 
 UPSTREAM_KEY="pypi-upstream-cache-${RUN_ID}"
 PROXY_KEY="pypi-proxy-cache-${RUN_ID}"
 PKG_NAME="cachetest-pkg"
 PKG_VERSION="0.1.0"
+PYPI_UPLOADED=0
+
+# upstream_index_lists_pkg: wait_until predicate, the upstream simple index
+# (the proxy's upstream URL) lists the uploaded package.
+upstream_index_lists_pkg() {
+  curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${UPSTREAM_KEY}/simple/${PKG_NAME}/" 2>/dev/null | grep -qF "$PKG_NAME"
+}
 
 # -------------------------------------------------------------------------
 # Create upstream local PyPI repo
@@ -62,9 +71,11 @@ if curl -sf $CURL_TIMEOUT -X POST \
     -F "filetype=sdist" \
     -F "content=@${WORK_DIR}/${PKG_NAME}-${PKG_VERSION}.tar.gz" \
     "${BASE_URL}/pypi/${UPSTREAM_KEY}/" > /dev/null 2>&1; then
+  PYPI_UPLOADED=1
   pass
 elif api_upload "/api/v1/repositories/${UPSTREAM_KEY}/artifacts/${PKG_NAME}/${PKG_VERSION}/${PKG_NAME}-${PKG_VERSION}.tar.gz" \
     "${WORK_DIR}/${PKG_NAME}-${PKG_VERSION}.tar.gz" "application/gzip" > /dev/null 2>&1; then
+  PYPI_UPLOADED=1
   pass
 else
   fail "could not upload test package to upstream"
@@ -82,16 +93,17 @@ else
   fail "could not create remote proxy repo"
 fi
 
-# Let the proxy settle before first fetch
-sleep 2
-
 # -------------------------------------------------------------------------
 # Fetch package metadata through the proxy (first request, populates cache)
 # -------------------------------------------------------------------------
 
 begin_test "Fetch package metadata through proxy"
 FIRST_RESP=""
-if FIRST_RESP=$(curl -sf $CURL_TIMEOUT \
+# Precondition: the upstream simple index lists the uploaded package.
+if [ "$PYPI_UPLOADED" = "1" ] \
+    && ! wait_until "upstream ${UPSTREAM_KEY} simple index lists ${PKG_NAME}" 20 upstream_index_lists_pkg; then
+  fail "the upstream ${UPSTREAM_KEY} simple index did not list ${PKG_NAME} within 20s of the upload"
+elif FIRST_RESP=$(curl -sf $CURL_TIMEOUT \
     -H "$(format_auth_header)" \
     "${BASE_URL}/pypi/${PROXY_KEY}/simple/${PKG_NAME}/" 2>/dev/null); then
   if assert_contains "$FIRST_RESP" "${PKG_NAME}"; then
@@ -129,9 +141,17 @@ fi
 begin_test "Verify proxy cache keys have no double slashes"
 
 # Hit the proxy endpoint a second time to exercise the cache read path.
-# A short pause lets the backend finish writing cache metadata from the
-# first request.
-sleep 1
+# Wait until the project's cache entry is committed first: the proxy's
+# /simple/ root lists exactly the projects whose simple/<name>/ cache keys
+# exist (simple_root walks them on every request; the Remote's artifact
+# listing filters cached index responses out, so it is no signal). A timeout
+# is not judged here; the checks below hold on a hit or a miss.
+_pkg_index_cached() {
+  curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${PROXY_KEY}/simple/" 2>/dev/null | grep -qF "${PKG_NAME}"
+}
+wait_until "${PKG_NAME} index cached in ${PROXY_KEY}" 20 _pkg_index_cached \
+  || echo "  ${PKG_NAME} not yet listed by ${PROXY_KEY}'s /simple/ root after 20s; the re-fetch below may be a miss"
 
 SECOND_RESP=""
 if SECOND_RESP=$(curl -sf $CURL_TIMEOUT \
@@ -188,7 +208,10 @@ else
 fi
 
 # Fetch root a second time to confirm the cache key roundtrips correctly.
-sleep 1
+# The root's own upstream-body cache entry has no observable completion
+# signal (the root listing is rebuilt from cache keys on every request either
+# way), and the check below holds on a hit or a miss.
+sleep 1  # sleep-ok: root upstream-body cache write has no observable signal; the roundtrip check holds on a hit or a miss
 
 begin_test "Verify root simple index cache roundtrip"
 ROOT_RESP2=""

@@ -23,6 +23,7 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "artifact-stats"
 auth_admin
 setup_workdir
+require_wait_budget 30 "download-counter poll"
 
 REPO_KEY="test-stats-${RUN_ID}"
 ART_PATH="stats-target.bin"
@@ -72,7 +73,7 @@ pass
 
 begin_test "Download artifact ${N_DOWNLOADS} times"
 DL_FAILS=0
-for i in $(seq 1 "$N_DOWNLOADS"); do
+for _ in $(seq 1 "$N_DOWNLOADS"); do
   st=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "$(auth_header)" \
     "${BASE_URL}/api/v1/repositories/${REPO_KEY}/download/${ART_PATH}" 2>/dev/null) || st="000"
@@ -92,15 +93,30 @@ else
   fail "${DL_FAILS} of ${N_DOWNLOADS} downloads returned non-2xx"
 fi
 
-# Give the stats writer a moment in case it is async (download counter
-# updates are typically write-behind to avoid blocking the response).
-sleep 2
+# The download counter is write-behind: each served body enqueues a
+# download_statistics event that background flush workers batch-INSERT
+# (backend services/download_event_dispatch.rs), so the downloads' 200s do not
+# mean the count is readable yet. Poll /stats until it either answers
+# something other than 200 (judged by the case below) or reports the
+# downloads, instead of a fixed sleep.
+STATS_BODY="${WORK_DIR}/stats.json"
+STATS_STATUS=""
+read_stats() {
+  STATS_STATUS=$(curl -s -o "$STATS_BODY" -w '%{http_code}' $CURL_TIMEOUT \
+    -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/artifacts/${ART_ID}/stats" 2>/dev/null) || STATS_STATUS="000"
+}
+stats_settled() {
+  read_stats
+  [ "$STATS_STATUS" != "200" ] && return 0
+  [ "$(jq -r '.download_count // 0' < "$STATS_BODY" 2>/dev/null)" -ge "$N_DOWNLOADS" ] 2>/dev/null
+}
+# On timeout wait_until logs it and the two checks below judge the last read
+# (common.sh runs under set -e, so the timeout must not abort the script).
+wait_until "download_count >= ${N_DOWNLOADS} on ${ART_ID}" 30 stats_settled \
+  || echo "  continuing to the check below after the wait timed out" >&2
 
 begin_test "GET /artifacts/{id}/stats returns documented shape"
-STATS_BODY="${WORK_DIR}/stats.json"
-STATS_STATUS=$(curl -s -o "$STATS_BODY" -w '%{http_code}' $CURL_TIMEOUT \
-  -H "$(auth_header)" \
-  "${BASE_URL}/api/v1/artifacts/${ART_ID}/stats" 2>/dev/null) || STATS_STATUS="000"
 case "$STATS_STATUS" in
   200)
     # Required fields per ArtifactStatsResponse.
@@ -125,22 +141,12 @@ begin_test "download_count >= ${N_DOWNLOADS} after ${N_DOWNLOADS} fetches"
 if [ "$STATS_STATUS" != "200" ]; then
   skip "previous test did not produce a 200 stats response"
 else
+  # Read from the last /stats poll above, which ran for up to 30 s.
   dc=$(jq -r '.download_count // 0' < "$STATS_BODY")
   if [ "$dc" -ge "$N_DOWNLOADS" ] 2>/dev/null; then
     pass
   else
-    # Retry once with a longer wait in case the counter is write-behind
-    # with a longer batch window than 2s.
-    sleep 5
-    STATS_STATUS=$(curl -s -o "$STATS_BODY" -w '%{http_code}' $CURL_TIMEOUT \
-      -H "$(auth_header)" \
-      "${BASE_URL}/api/v1/artifacts/${ART_ID}/stats" 2>/dev/null) || STATS_STATUS="000"
-    dc=$(jq -r '.download_count // 0' < "$STATS_BODY")
-    if [ "$dc" -ge "$N_DOWNLOADS" ] 2>/dev/null; then
-      pass
-    else
-      fail "expected download_count >= ${N_DOWNLOADS}, got ${dc}"
-    fi
+    fail "expected download_count >= ${N_DOWNLOADS} within 30s of the downloads, got ${dc}"
   fi
 fi
 
