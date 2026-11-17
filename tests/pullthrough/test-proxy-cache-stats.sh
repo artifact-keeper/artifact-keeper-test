@@ -26,7 +26,9 @@
 #   3. The stats totals INCREASE across this suite's own pull-through:
 #      proxy_artifact_count by at least 1 and proxy_storage_bytes by at
 #      least the sdist's size, measured against a baseline snapshotted
-#      immediately before the pull.
+#      immediately before the pull. In the same window R's own
+#      storage_used_bytes must grow by at least the sdist's size, which only
+#      this suite can move.
 #
 # Why assertion 3 is a delta and not ">= 1"
 # -----------------------------------------
@@ -47,13 +49,18 @@
 # trigger keeps equal to SUM(size_bytes) of the same rows. A re-cache upserts
 # an existing row's size_bytes, so it moves the byte total either way without
 # moving the count. An eviction, or a sibling deleting its remote, lowers both.
+# The usage-ledger reconciler (about 200 s after startup, then every 30 min)
+# can also true proxy_bytes up or down mid-run.
 # In the 1.11.14 Release Candidate the count went 7 -> 8 and the bytes fell
 # 7154 below the baseline: this suite's row landed while a sibling shrank the
 # cache. So the delta is measured up to PCS_ATTEMPTS times, each time with a
 # fresh baseline and a version this suite has never pulled. One clean window
-# proves #3088. Churn cannot produce a false pass: on a backend that leaves
-# proxy_cache_artifacts out of the aggregate, no cache write moves either
-# counter, so every attempt fails.
+# proves #3088. Churn cannot produce a false pass for the #3087 regression: on
+# a backend that leaves proxy_cache_artifacts out of the aggregate, no cache
+# write moves either counter, so every attempt fails. Sibling growth could
+# still lift the byte total past the floor on a backend whose count is right
+# but whose byte accounting ignores cache writes, so the winning window must
+# also show R's own storage_used_bytes growing by the sdist's size.
 #
 # Requires: curl, jq, tar
 
@@ -70,8 +77,10 @@ pass
 UPSTREAM_KEY="pcs-upstream-${RUN_ID}"
 REMOTE_KEY="pcs-remote-${RUN_ID}"
 PKG_NAME="pcspkg${RUN_ID//-/}"
-# One version per assertion-3 attempt, all published before the first pull so
-# U's index already lists every one when R first caches it.
+# One version per assertion-3 attempt, all published before the first pull.
+# The warm-up GET caches R's simple index as a catalog row; with U unchanged
+# after that, a later refresh re-caches it at the same size, so a retry's
+# window holds only its own sdist's bytes from this suite.
 PKG_VERSIONS=(1.0.0 1.0.1 1.0.2)
 PCS_ATTEMPTS=${#PKG_VERSIONS[@]}
 PKG_VERSION="${PKG_VERSIONS[0]}"
@@ -79,6 +88,7 @@ SDIST_BASENAME="${PKG_NAME}-${PKG_VERSION}.tar.gz"
 STATS_PATH="/api/v1/admin/stats"
 BASE_PROXY_COUNT=0
 BASE_PROXY_BYTES=0
+BASE_REPO_BYTES=0
 declare -A SDIST_SIZES=()
 # Bounded waits: one 20 s row wait and one 20 s stats poll on attempt 1, then a
 # 20 s row wait and a 15 s stats poll on each retry.
@@ -97,6 +107,16 @@ read_proxy_stats() {
   [[ "$c" =~ ^[0-9]+$ ]] || c=0
   [[ "$b" =~ ^[0-9]+$ ]] || b=0
   echo "$c $b"
+}
+
+# read_repo_usage KEY - echo the repository's storage_used_bytes. Returns 1
+# (echoing nothing) if the GET failed or the field is not a number.
+read_repo_usage() {
+  local resp u
+  resp=$(api_get "/api/v1/repositories/$1" 2>/dev/null) || return 1
+  u=$(echo "$resp" | jq -r '.storage_used_bytes // empty' 2>/dev/null) || return 1
+  [[ "$u" =~ ^[0-9]+$ ]] || return 1
+  echo "$u"
 }
 
 # ---------------------------------------------------------------------------
@@ -181,6 +201,7 @@ case "$setup_err" in
   infra:*) infra_fail "${setup_err#infra:}" ;;
   *) fail "$setup_err" ;;
 esac
+
 begin_test "Create remote R pointing at U"
 if create_remote_repo "$REMOTE_KEY" "pypi" "${BASE_URL}/pypi/${UPSTREAM_KEY}"; then
   pass
@@ -194,16 +215,16 @@ fi
 # ---------------------------------------------------------------------------
 
 begin_test "Snapshot instance-wide proxy-cache totals before this suite pulls"
-if snapshot=$(read_proxy_stats); then
+if snapshot=$(read_proxy_stats) && BASE_REPO_BYTES=$(read_repo_usage "$REMOTE_KEY"); then
   BASE_PROXY_COUNT="${snapshot%% *}"
   BASE_PROXY_BYTES="${snapshot##* }"
-  echo "  baseline: proxy_artifact_count=${BASE_PROXY_COUNT}, proxy_storage_bytes=${BASE_PROXY_BYTES}"
+  echo "  baseline: proxy_artifact_count=${BASE_PROXY_COUNT}, proxy_storage_bytes=${BASE_PROXY_BYTES}, ${REMOTE_KEY} storage_used_bytes=${BASE_REPO_BYTES}"
   pass
 else
   # Without a baseline there is no delta to assert, and falling back to zero
   # would silently restore the vacuous ">= 1" check. That is a harness
   # problem, not a product verdict.
-  infra_fail "could not read ${STATS_PATH} for the pre-pull baseline; the delta assertion needs it"
+  infra_fail "could not read ${STATS_PATH} or ${REMOTE_KEY}'s storage_used_bytes for the pre-pull baseline; the delta assertion needs both"
 fi
 
 # ---------------------------------------------------------------------------
@@ -247,19 +268,26 @@ fi
 # stats aggregate are eventually consistent.
 # ---------------------------------------------------------------------------
 
-# poll_growth BASE_COUNT BASE_BYTES SIZE TIMEOUT - poll the stats until both
-# totals reach BASE+1 / BASE+SIZE. Leaves the last reading in proxy_count /
-# proxy_bytes ("?" if no read succeeded). Returns 0 once both have grown.
+# poll_growth BASE_COUNT BASE_BYTES BASE_REPO_BYTES SIZE TIMEOUT - poll until
+# the stats totals reach BASE+1 / BASE+SIZE and R's storage_used_bytes reaches
+# BASE_REPO_BYTES+SIZE in the same reading. Leaves the last readings in
+# proxy_count / proxy_bytes / repo_bytes ("?" if no read succeeded). Returns 0
+# once all three have grown.
 poll_growth() {
-  local want_c=$(( $1 + 1 )) want_b=$(( $2 + $3 )) deadline snap
+  local want_c=$(( $1 + 1 )) want_b=$(( $2 + $4 )) want_r=$(( $3 + $4 )) deadline snap r
   proxy_count="?"
   proxy_bytes="?"
-  deadline=$(( $(date +%s) + $4 ))
+  repo_bytes="?"
+  deadline=$(( $(date +%s) + $5 ))
   while :; do
+    if r=$(read_repo_usage "$REMOTE_KEY"); then
+      repo_bytes="$r"
+    fi
     if snap=$(read_proxy_stats); then
       proxy_count="${snap%% *}"
       proxy_bytes="${snap##* }"
-      if [ "$proxy_count" -ge "$want_c" ] && [ "$proxy_bytes" -ge "$want_b" ]; then
+      if [ "$proxy_count" -ge "$want_c" ] && [ "$proxy_bytes" -ge "$want_b" ] \
+          && [ "$repo_bytes" != "?" ] && [ "$repo_bytes" -ge "$want_r" ]; then
         return 0
       fi
     fi
@@ -277,8 +305,8 @@ for (( i = 0; i < PCS_ATTEMPTS; i++ )); do
   if [ "$i" -gt 0 ]; then
     # Fresh baseline and a never-pulled version, so this attempt's window
     # covers only its own cache write plus whatever siblings do meanwhile.
-    if ! snapshot=$(read_proxy_stats); then
-      attempt_log+="attempt $(( i + 1 )) (${v}): could not read ${STATS_PATH} for a baseline"$'\n'
+    if ! snapshot=$(read_proxy_stats) || ! BASE_REPO_BYTES=$(read_repo_usage "$REMOTE_KEY"); then
+      attempt_log+="attempt $(( i + 1 )) (${v}): could not read ${STATS_PATH} or ${REMOTE_KEY} for a baseline"$'\n'
       continue
     fi
     BASE_PROXY_COUNT="${snapshot%% *}"
@@ -297,12 +325,12 @@ for (( i = 0; i < PCS_ATTEMPTS; i++ )); do
   else
     window=20
   fi
-  if poll_growth "$BASE_PROXY_COUNT" "$BASE_PROXY_BYTES" "$size" "$window"; then
+  if poll_growth "$BASE_PROXY_COUNT" "$BASE_PROXY_BYTES" "$BASE_REPO_BYTES" "$size" "$window"; then
     grew=1
-    echo "  attempt $(( i + 1 )) (${v}): proxy_artifact_count ${BASE_PROXY_COUNT} -> ${proxy_count}, proxy_storage_bytes ${BASE_PROXY_BYTES} -> ${proxy_bytes} (+${size} wanted)"
+    echo "  attempt $(( i + 1 )) (${v}): proxy_artifact_count ${BASE_PROXY_COUNT} -> ${proxy_count}, proxy_storage_bytes ${BASE_PROXY_BYTES} -> ${proxy_bytes}, ${REMOTE_KEY} storage_used_bytes ${BASE_REPO_BYTES} -> ${repo_bytes} (+${size} wanted)"
     break
   fi
-  attempt_log+="attempt $(( i + 1 )) (${v}): proxy_artifact_count ${BASE_PROXY_COUNT} -> ${proxy_count} (want >= $(( BASE_PROXY_COUNT + 1 ))), proxy_storage_bytes ${BASE_PROXY_BYTES} -> ${proxy_bytes} (want >= $(( BASE_PROXY_BYTES + size )))"$'\n'
+  attempt_log+="attempt $(( i + 1 )) (${v}): proxy_artifact_count ${BASE_PROXY_COUNT} -> ${proxy_count} (want >= $(( BASE_PROXY_COUNT + 1 ))), proxy_storage_bytes ${BASE_PROXY_BYTES} -> ${proxy_bytes} (want >= $(( BASE_PROXY_BYTES + size ))), ${REMOTE_KEY} storage_used_bytes ${BASE_REPO_BYTES} -> ${repo_bytes} (want >= $(( BASE_REPO_BYTES + size )))"$'\n'
 done
 if [ "$grew" -eq 1 ] && [ -n "$attempt_log" ]; then
   printf '  earlier attempts did not see clean growth (sibling suites share these totals):\n%s' \
