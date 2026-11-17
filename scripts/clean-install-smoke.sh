@@ -421,6 +421,12 @@ if [ -n "${SMOKE_BACKEND_REPO_OVERRIDE:-}" ]; then
   HELM_OVERRIDES+=(--set "backend.image.repository=${SMOKE_BACKEND_REPO_OVERRIDE}")
 fi
 
+# Every PVC on the test StorageClass (AK_TEST_STORAGE_CLASS, default
+# local-path-home; tests/lib/storage-class.sh, artifact-keeper#6081).
+# shellcheck source=../tests/lib/storage-class.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/storage-class.sh"
+ak_test_storage_class_append HELM_OVERRIDES || exit 1
+
 echo ""
 echo "Helm template dry-run (catches misnamed --set keys)"
 # `--debug` is intentionally omitted — it would print rendered manifests

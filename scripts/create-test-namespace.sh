@@ -20,6 +20,9 @@
 #                            Note: setting it also makes the backend ignore
 #                            WEBHOOK_ALLOW_PRIVATE_IPS, so include the webhook
 #                            receiver's address (runner pod CIDR, or a host /32).
+#   AK_TEST_STORAGE_CLASS  - Optional. StorageClass for every PVC the chart
+#                            creates. Unset: local-path-home (rocky). Empty:
+#                            the cluster's default class (kind, microk8s).
 
 set -euo pipefail
 
@@ -148,6 +151,12 @@ HELM_CMD=(helm upgrade --install "$RELEASE_NAME" "$CHART_DIR"
 if [ -n "$EXTRA_VALUES" ]; then
   HELM_CMD+=(--values "${REPO_ROOT}/${EXTRA_VALUES}")
 fi
+
+# Every PVC on the test StorageClass (AK_TEST_STORAGE_CLASS, default
+# local-path-home; tests/lib/storage-class.sh, artifact-keeper#6081).
+# shellcheck source=../tests/lib/storage-class.sh
+source "${REPO_ROOT}/tests/lib/storage-class.sh"
+ak_test_storage_class_append HELM_CMD || exit 1
 
 # Cluster-network override for the SSRF private-CIDR allowlist (see header).
 # Applied last so it wins over both values files. Helm --set splits on

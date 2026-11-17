@@ -245,6 +245,13 @@ HELM_BASE_OVERRIDES=(
   --set 'opensearch.resources.requests.memory=1Gi'
   --set 'opensearch.resources.limits.memory=1Gi'
 )
+# Both the previous-tag install and the upgrade use these, so the PVCs keep
+# one StorageClass across the upgrade (storageClassName is immutable).
+# Every PVC on the test StorageClass (AK_TEST_STORAGE_CLASS, default
+# local-path-home; tests/lib/storage-class.sh, artifact-keeper#6081).
+# shellcheck source=../lib/storage-class.sh
+source "$(cd "$(dirname "$0")/../.." && pwd)/tests/lib/storage-class.sh"
+ak_test_storage_class_append HELM_BASE_OVERRIDES || exit 1
 # NOTE: meilisearch.masterKey was removed: the meilisearch subsystem
 # was deleted from the chart in iac PR #67 (squash-merged before
 # the artifact-keeper-1.1.9 tag). The chart accepts the --set
