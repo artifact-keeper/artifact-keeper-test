@@ -67,6 +67,7 @@ on:
           - search
           - platform
           - auth
+          - admin
           - stress
           - resilience
           - security
@@ -2701,7 +2702,11 @@ jobs:
   # -------------------------------------------------------------------
   auth-tests:
     needs: deploy
-    if: (inputs.test_suite == 'all' || inputs.test_suite == 'auth') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' auth-tests ') || contains(format(' {0} ', inputs.only_jobs), ' platform-tests ') || contains(format(' {0} ', inputs.only_jobs), ' admin-tests '))
+    # platform-tests and admin-tests need this job (serialized behind its
+    # password changes) and do not tolerate it skipping, so it also runs
+    # whenever either of them is selected, by test_suite or by only_jobs
+    # (artifact-keeper-test#870; scripts/selftest-gate-needs-closure.sh).
+    if: (inputs.test_suite == 'all' || inputs.test_suite == 'auth' || inputs.test_suite == 'platform' || inputs.test_suite == 'admin') && (inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' auth-tests ') || contains(format(' {0} ', inputs.only_jobs), ' platform-tests ') || contains(format(' {0} ', inputs.only_jobs), ' admin-tests '))
     runs-on: ak-e2e-runners
     env:
       BASE_URL: ${{ needs.deploy.outputs.backend_url }}
