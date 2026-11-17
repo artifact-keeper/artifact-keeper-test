@@ -116,28 +116,27 @@ cleanup_and_finalize() {
 trap cleanup_and_finalize EXIT
 
 # -------------------------------------------------------------------------
-# Skipped pending test#317.
+# Forced-failure scoping (test#317).
 #
-# The forced-failure injection is not scoped to this test's own delivery. The
-# webhook created below is global (no repository_id), so the backend fans every
-# repository.created event out to it, and mock-webhook-receiver.py counts forced
-# failures with a single process-global counter. In the release gate about a
-# dozen suites create repositories against the same backend concurrently, so a
-# sibling's delivery routinely consumes the single forced 500. This test's own
-# delivery is then answered 200, no retry row is written, and the suite fails
-# after waiting out WEBHOOK_RETRY_TIMEOUT reporting that the retry scheduler did
-# not deliver, when the scheduler was fine.
+# The webhook created below is global (no repository_id), so the backend fans
+# every repository.created event out to it, including the ones a dozen sibling
+# suites fire concurrently in the release gate. With a single process-global
+# forced-failure counter, a sibling's delivery routinely consumed the one
+# forced 500, this test's own delivery was answered 200, no retry row was
+# written, and the suite timed out blaming the retry scheduler.
 #
-# Because the injection lands on an arbitrary delivery, a PASS never established
-# that retry scheduling works either. Skipping therefore removes no real
-# coverage; it stops a non-discriminating suite from gating releases.
-#
-# Un-skip when the injection is armed against the repository UUID (the delivery
-# body carries entity_id = REPO_ID, which does not exist until after the repo is
-# created, so it cannot be supplied at receiver launch). Remove the matching row
-# from _CAPABILITY_EXEMPTIONS in tests/lib/common.sh at the same time.
+# The receiver now runs with WEBHOOK_FAIL_PER_ENTITY=1: it counts forced
+# failures per delivery-body entity_id, so THIS repository's first
+# WEBHOOK_FAIL_FIRST_N deliveries fail whatever arrives around them. No
+# arming is needed, which matters because the entity is the repository UUID
+# and does not exist until after the receiver is up. The measurement side
+# was already scoped (select_repo_posts filters on entity_id == REPO_ID), and
+# the step after the initial POST now checks the receiver really answered our
+# own first delivery with a 500.
 # -------------------------------------------------------------------------
-skip_suite "forced-failure injection is not scoped to this delivery; see test#317"
+
+# Worst case: the 30 s initial-POST poll plus the WEBHOOK_RETRY_TIMEOUT poll.
+require_wait_budget "$(( WEBHOOK_RETRY_TIMEOUT + 30 ))" "initial-POST and retry polls"
 
 auth_admin
 
@@ -147,17 +146,17 @@ auth_admin
 
 begin_test "Start mock webhook receiver"
 if ! command -v python3 >/dev/null 2>&1; then
-  skip "python3 not available"
+  SUITE_BLOCKED=true
+  require_or_fail "python3 not available to run the mock webhook receiver"
 else
-  # NOTE: #316 passed WEBHOOK_FAIL_MATCH="$REPO_KEY" here. That was wrong and is
-  # removed: the delivery body carries entity_id = the repository UUID, not the
-  # repo key (see select_repo_records below, which matches on REPO_ID), so the
-  # match never fired, nothing was eligible for forced failure, and every
-  # delivery was answered 200. The receiver still supports WEBHOOK_FAIL_MATCH;
-  # it must be armed with REPO_ID, which only exists after the repo is created.
-  # See test#317.
+  # NOTE: #316 passed WEBHOOK_FAIL_MATCH="$REPO_KEY" here. That was wrong: the
+  # delivery body carries entity_id = the repository UUID, not the repo key, so
+  # the match never fired and every delivery was answered 200. Per-entity
+  # counting (WEBHOOK_FAIL_PER_ENTITY=1) scopes the forced failures to each
+  # delivery's own entity without needing the UUID up front. See test#317.
   WEBHOOK_RECEIVER_PORT="$WEBHOOK_RECEIVER_PORT" \
     WEBHOOK_FAIL_FIRST_N="$WEBHOOK_FAIL_FIRST_N" \
+    WEBHOOK_FAIL_PER_ENTITY=1 \
     WEBHOOK_RECEIVER_LOG="$WEBHOOK_RECEIVER_LOG" \
     python3 "$(dirname "$0")/../lib/mock-webhook-receiver.py" \
     >/tmp/mock-webhook-receiver-${RUN_ID}.stderr 2>&1 &
@@ -185,7 +184,7 @@ fi
 # -------------------------------------------------------------------------
 
 WEBHOOK_NAME="retry-recover-${RUN_ID}"
-SUITE_BLOCKED=false
+SUITE_BLOCKED="${SUITE_BLOCKED:-false}"
 
 begin_test "Create webhook targeting mock receiver"
 if [ "$ready" != "true" ]; then
@@ -204,7 +203,9 @@ else
     fi
   else
     SUITE_BLOCKED=true
-    skip "webhook create rejected (URL '${WEBHOOK_RECEIVER_URL}' likely blocked by SSRF allow-list)"
+    # Under RELEASE_GATE=1 the gate configures the receiver to be reachable;
+    # a rejected create leaves every retry assertion below unchecked.
+    require_or_fail "webhook create rejected (URL '${WEBHOOK_RECEIVER_URL}' likely blocked by SSRF allow-list)"
   fi
 fi
 
@@ -276,7 +277,7 @@ else
       # keeps it single-valued if the jq pipeline itself fails under pipefail.
       seen=$(select_repo_posts | awk 'END{print NR}') || seen=0
       [ "$seen" -gt 0 ] && break
-      sleep 1
+      sleep 1  # sleep-ok: poll interval of the bounded 30 s initial-POST poll
     done
     if [ "$seen" -ge 1 ]; then
       pass
@@ -285,7 +286,27 @@ else
     fi
   else
     SUITE_BLOCKED=true
-    skip "repo create (event trigger) failed"
+    require_or_fail "repo create (event trigger) failed"
+  fi
+fi
+
+# The retry assertions below are only meaningful if the forced failure landed
+# on OUR delivery (test#317). The receiver records the status it returned.
+begin_test "Receiver answered this repository's first delivery with the forced 500"
+if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
+  skip "no webhook id"
+elif [ -z "$REPO_ID" ]; then
+  # Without the id every later selection would fall back to any repo's POSTs.
+  SUITE_BLOCKED=true
+  fail "repo create returned no id; cannot scope the forced failure to this repository"
+else
+  first_status=$(select_repo_records | head -n 1 | jq -r '.status // empty' 2>/dev/null) || first_status=""
+  if [ -z "$first_status" ]; then
+    fail "no receiver record for repo ${REPO_KEY} (entity_id ${REPO_ID})"
+  elif [ "$first_status" = "500" ] || [ "$WEBHOOK_FAIL_FIRST_N" -eq 0 ]; then
+    pass
+  else
+    fail "first delivery for repo ${REPO_KEY} was answered ${first_status}, not the forced 500 (FAIL_FIRST_N=${WEBHOOK_FAIL_FIRST_N})"
   fi
 fi
 

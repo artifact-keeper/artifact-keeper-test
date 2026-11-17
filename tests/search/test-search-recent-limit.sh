@@ -64,8 +64,6 @@ else
   end_suite
 fi
 
-sleep 3   # let the recent-feed surface our uploads
-
 # _recent_count <limit>
 # Returns the number of entries in the recent response, or "" on error.
 _recent_count() {
@@ -91,6 +89,28 @@ _recent_status() {
     -H "$(auth_header)" \
     "${BASE_URL}/api/v1/search/recent?limit=${limit}" 2>/dev/null || echo "000"
 }
+
+# The clamp checks below are only meaningful when the feed holds more entries
+# than each limit asks for. Wait (bounded) until the feed surfaces all five of
+# OUR uploads instead of a fixed sleep (test#364). The feed is instance-global
+# and newest-first, so look in a 100-row window that sibling uploads cannot
+# push ours out of within the budget.
+_recent_has_ours() {
+  curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/search/recent?limit=100" 2>/dev/null \
+    | jq -e --arg t "$UNIQUE_TERM" '
+        (if type == "array" then .
+         elif (.items? | type) == "array" then .items
+         elif (.results? | type) == "array" then .results
+         else [] end)
+        | [.[] | (.name // .path // "") | select(test("^(.*/)?" + $t + "-[1-5]\\.txt$"))]
+        | unique | length >= 5' >/dev/null 2>&1
+}
+
+begin_test "Recent feed surfaces all five uploads"
+if assert_eventually "recent feed lists all five ${UNIQUE_TERM} sentinels" 60 _recent_has_ours; then
+  pass
+fi
 
 # -------------------------------------------------------------------------
 # 1. limit=3 must clamp at 3.
