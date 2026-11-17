@@ -9,9 +9,32 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "promotion-bulk"
 auth_admin
 setup_workdir
+# Two listing polls of at most 20 s each (uploads listed in staging, bulk
+# promotion landed in release); each normally ends on its first probe.
+require_wait_budget 40 "artifact listing polls"
 
 STAGING_KEY="test-bulk-staging-${RUN_ID}"
 RELEASE_KEY="test-bulk-release-${RUN_ID}"
+
+# listed_count KEY: how many artifacts the KEY listing returns (same shape
+# handling as the assertions below).
+listed_count() {
+  local resp
+  resp=$(api_get "/api/v1/repositories/${1}/artifacts" 2>/dev/null) || { echo 0; return; }
+  echo "$resp" | jq '
+    if type == "array" then length
+    elif .items then (.items | length)
+    elif .total != null then .total
+    else 0
+    end' 2>/dev/null || echo 0
+}
+
+# listed_at_least KEY N: wait_until predicate, the KEY listing holds >= N rows.
+listed_at_least() {
+  local n
+  n=$(listed_count "$1")
+  [ "${n:-0}" -ge "$2" ] 2>/dev/null
+}
 
 begin_test "Create repos"
 if create_repo "$STAGING_KEY" "generic" "staging" && \
@@ -40,15 +63,16 @@ else
   fail "only uploaded ${uploaded}/5 artifacts"
 fi
 
-sleep 2
-
 # -------------------------------------------------------------------------
 # Collect artifact IDs
 # -------------------------------------------------------------------------
 
 begin_test "Collect artifact IDs for bulk promote"
 ARTIFACT_IDS="[]"
-if resp=$(api_get "/api/v1/repositories/${STAGING_KEY}/artifacts" 2>/dev/null); then
+# Wait until every accepted upload is listed before collecting ids.
+if ! wait_until "${uploaded} uploads listed in ${STAGING_KEY}" 20 listed_at_least "$STAGING_KEY" "$uploaded"; then
+  fail "only $(listed_count "$STAGING_KEY") of ${uploaded} accepted uploads appeared in the ${STAGING_KEY} listing within 20s"
+elif resp=$(api_get "/api/v1/repositories/${STAGING_KEY}/artifacts" 2>/dev/null); then
   ARTIFACT_IDS=$(echo "$resp" | jq '
     if type == "array" then [.[].id // .[].artifact_id] | map(select(. != null))
     elif .items then [.items[].id // .items[].artifact_id] | map(select(. != null))
@@ -84,10 +108,15 @@ fi
 # Verify all artifacts in release repo
 # -------------------------------------------------------------------------
 
-sleep 2
-
 begin_test "Verify artifacts promoted to release"
-if resp=$(api_get "/api/v1/repositories/${RELEASE_KEY}/artifacts" 2>/dev/null); then
+# Wait for the bulk promotion to land, then assert on the listing as before.
+# The wait asks for the same >= 3 the assertion checks: bulk promote can answer
+# 200 with some items failed, and that partial result belongs to the count
+# assertion's message, not to a landing timeout.
+PROMOTED_N=$(echo "$ARTIFACT_IDS" | jq 'length' 2>/dev/null) || PROMOTED_N=0
+if ! wait_until "at least 3 promoted artifacts listed in ${RELEASE_KEY}" 20 listed_at_least "$RELEASE_KEY" 3; then
+  fail "only $(listed_count "$RELEASE_KEY") of ${PROMOTED_N} promoted artifacts appeared in the ${RELEASE_KEY} listing within 20s (expected >= 3)"
+elif resp=$(api_get "/api/v1/repositories/${RELEASE_KEY}/artifacts" 2>/dev/null); then
   count=$(echo "$resp" | jq '
     if type == "array" then length
     elif .items then (.items | length)

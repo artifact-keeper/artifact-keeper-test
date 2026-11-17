@@ -22,8 +22,11 @@
 #   3. POST .../{id}/preview on policy A. Assert response is non-empty
 #      object (PolicyExecutionResult), AND that the artifacts are still
 #      there (preview did not delete).
-#   4. POST .../execute-all. Assert response is an array with length>=2
-#      (one entry per enabled policy).
+#   4. POST .../execute-all. Assert response is an array that holds a
+#      result for each of this suite's two policies (matched by policy_id).
+#      execute-all applies every enabled policy on the instance, so the
+#      array's length is global state other suites move; only our own
+#      entries are asserted (artifact-keeper-test#365).
 #   5. After execute-all, each repo retains <= 2 versions (we tolerate
 #      slight over-retention from policy-engine batching; the strong
 #      signal is "fewer than we started with on BOTH repos").
@@ -34,6 +37,7 @@ source "$(dirname "$0")/../lib/common.sh"
 begin_suite "lifecycle-preview-execute-all"
 auth_admin
 setup_workdir
+require_wait_budget 30 "execute-all removal poll"
 
 REPO_A="test-lc-a-${RUN_ID}"
 REPO_B="test-lc-b-${RUN_ID}"
@@ -137,6 +141,32 @@ count_versions() {
   echo "$n"
 }
 
+# both_repos_pruned: wait_until predicate for the post-execute-all state the
+# last test asserts (<= 2 of v1..v4 still resolving on each repo).
+# settled_versions KEY: like count_versions, but echoes "unsettled" when any
+# probe answers neither 200 nor 404, so a backend error or a dropped request
+# can never read as "removed" and satisfy the wait.
+settled_versions() {
+  local key="$1" n=0 i st
+  for i in 1 2 3 4; do
+    st=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+      -H "$(auth_header)" \
+      "${BASE_URL}/api/v1/repositories/${key}/artifacts/pkg/v${i}/file.txt" 2>/dev/null) || st="000"
+    case "$st" in
+      200) n=$(( n + 1 )) ;;
+      404) ;;
+      *) echo "unsettled"; return 0 ;;
+    esac
+  done
+  echo "$n"
+}
+# Pruned = every probe answered 200 or 404 and at most 2 versions resolve
+# (the bound the assertion below checks).
+_pruned() { local n; n=$(settled_versions "$1"); [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -le 2 ]; }
+both_repos_pruned() {
+  _pruned "$REPO_A" && _pruned "$REPO_B"
+}
+
 # -------------------------------------------------------------------------
 # 6.5: Preview must be a true dry-run.
 # -------------------------------------------------------------------------
@@ -217,18 +247,26 @@ case "$EXEC_STATUS" in
     ;;
 esac
 
-begin_test "execute-all reports >= 2 results (one per enabled policy)"
+begin_test "execute-all reports a result for each of this suite's two policies"
 if [ "$EXEC_STATUS" != "200" ]; then
   skip "execute-all did not return 200"
 else
-  n=$(jq 'length' < "$EXEC_BODY" 2>/dev/null || echo 0)
-  if [ "$n" -ge 2 ] 2>/dev/null; then
+  # execute-all runs every enabled policy on the instance, so the array also
+  # carries other suites' policies and its length is not ours to assert.
+  # Both policies here are enabled (the create default) and owned by this
+  # run, so each must have exactly one PolicyExecutionResult, matched by id.
+  missing=""
+  for pid in "$POLICY_A" "$POLICY_B"; do
+    hits=$(jq --arg id "$pid" '[.[]? | select(.policy_id == $id)] | length' < "$EXEC_BODY" 2>/dev/null || echo 0)
+    if [ "${hits:-0}" != "1" ]; then
+      missing="${missing} ${pid}(x${hits:-0})"
+    fi
+  done
+  if [ -z "$missing" ]; then
     pass
   else
-    # Other suites may run in parallel and clean up policies before our
-    # execute-all fires. Treat n==1 as a soft failure (the count is
-    # informational; the real assertion is "array shape returned").
-    fail "expected >= 2 policy results, got ${n}"
+    ids=$(jq -c '[.[]? | .policy_id]' < "$EXEC_BODY" 2>/dev/null | head -c 400 || true)
+    fail "execute-all did not report exactly one result for each suite policy:${missing}; result policy_ids: ${ids}"
   fi
 fi
 
@@ -236,16 +274,19 @@ begin_test "After execute-all, both repos have <= 2 versions remaining"
 if [ "$EXEC_STATUS" != "200" ]; then
   skip "execute-all did not return 200"
 else
-  # Give the policy engine a moment in case execution is async.
-  sleep 5
-  REM_A=$(count_versions "$REPO_A")
-  REM_B=$(count_versions "$REPO_B")
+  # execute-all runs every enabled policy before it answers
+  # (LifecycleService::execute_all_enabled awaits each one), so the removals
+  # are committed by the 200. Poll the download path for them instead of a
+  # fixed sleep: it normally settles on the first probe, and a removal that
+  # never becomes visible fails below with the counts it settled at.
   # max_versions=1, so ideally REM == 1. Tolerate up to 2 to absorb
   # batching / clock-window edge cases.
-  if [ "$REM_A" -le 2 ] 2>/dev/null && [ "$REM_B" -le 2 ] 2>/dev/null; then
+  if wait_until "execute-all removals visible on ${REPO_A} and ${REPO_B}" 30 both_repos_pruned; then
     pass
   else
-    fail "expected <= 2 versions on each repo after execute-all; got A=${REM_A}, B=${REM_B}"
+    REM_A=$(count_versions "$REPO_A")
+    REM_B=$(count_versions "$REPO_B")
+    fail "expected <= 2 versions on each repo within 30s of execute-all; got A=${REM_A}, B=${REM_B}"
   fi
 fi
 
