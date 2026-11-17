@@ -193,7 +193,7 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
       esac
     fi
   fi
-  sleep 5
+  sleep 5  # sleep-ok: poll interval of a bounded loop
   elapsed=$(( elapsed + 5 ))
 done
 

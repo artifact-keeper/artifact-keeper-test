@@ -158,6 +158,12 @@ jobs:
       - name: Run wait-budget self-test
         run: bash tests/lib/selftest-wait-budget.sh
 
+      # No unexplained fixed sleep in a blocking suite: a whole-second
+      # `sleep N` is a bounded poll on the real precondition, or carries a
+      # `# sleep-ok: <reason>` (artifact-keeper-test#364).
+      - name: Run fixed-sleep lint
+        run: bash tests/lib/selftest-sleep-lint.sh
+
       # fetch_all_pages (tests/lib/common.sh): suites that look for their own
       # fixture in a paginated listing read every page, not page 1
       # (artifact-keeper-test#725).

@@ -308,7 +308,7 @@ probe_readyz() {
         return 0
       fi
     fi
-    sleep 5
+    sleep 5  # sleep-ok: poll interval of a bounded loop
     elapsed=$((elapsed + 5))
   done
   return 1
@@ -361,7 +361,7 @@ wait_for_port_forward() {
     if (echo >"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
       return 0
     fi
-    sleep 1
+    sleep 1  # sleep-ok: poll interval of a bounded loop
   done
   echo "ERROR: port-forward did not bind to 127.0.0.1:${port} within 30s" >&2
   return 1
@@ -402,7 +402,7 @@ for i in 1 2 3 4 5; do
     break
   fi
   echo "  auth attempt ${i}/5 failed, retrying..."
-  sleep 5
+  sleep 5  # sleep-ok: poll interval of a bounded loop
 done
 
 if [ -z "$TOKEN" ]; then
@@ -502,7 +502,7 @@ while [ "$(date +%s)" -lt "$WATCH_DEADLINE" ]; do
       fi
     fi
   fi
-  sleep 5
+  sleep 5  # sleep-ok: poll interval of a bounded loop
 done
 
 # Final rollout check (web + backend).

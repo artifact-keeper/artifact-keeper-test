@@ -181,7 +181,7 @@ for _ in 1 2 3 4 5; do
   if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" != "null" ]; then
     break
   fi
-  sleep 2
+  sleep 2  # sleep-ok: poll interval of a bounded loop
 done
 
 if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
@@ -248,7 +248,7 @@ while [ "$elapsed" -lt 60 ]; do
       break
     fi
   fi
-  sleep 3
+  sleep 3  # sleep-ok: poll interval of a bounded loop
   elapsed=$(( elapsed + 3 ))
 done
 
