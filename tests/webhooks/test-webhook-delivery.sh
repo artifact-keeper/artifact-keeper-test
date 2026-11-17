@@ -149,8 +149,8 @@ begin_test "Webhook delivery row inserted within 30s"
 if [ -z "$WEBHOOK_ID" ]; then
   fail "no webhook id from earlier step"
 else
-  for attempt in $(seq 1 15); do
-    sleep 2
+  for _ in $(seq 1 15); do
+    sleep 2  # sleep-ok: poll interval of the bounded 30 s delivery-row poll
     if resp=$(api_get "/api/v1/webhooks/${WEBHOOK_ID}/deliveries" 2>/dev/null); then
       DELIVERY_RESP="$resp"
       delivery_count=$(echo "$resp" | jq '
@@ -221,7 +221,7 @@ else
   for _ in $(seq 1 60); do
     seen=$(curl -sf --max-time 2 "http://127.0.0.1:${WEBHOOK_RECEIVER_PORT}/__count" 2>/dev/null || echo 0)
     [ "$seen" -gt 0 ] && break
-    sleep 1
+    sleep 1  # sleep-ok: poll interval of the bounded 60 s receiver poll
   done
   if [ "$seen" -ge 1 ] && [ -s "$WEBHOOK_RECEIVER_LOG" ]; then
     LATEST_HEADERS=$(tail -n 1 "$WEBHOOK_RECEIVER_LOG" | jq -r '.headers')

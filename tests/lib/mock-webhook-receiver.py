@@ -30,6 +30,19 @@ Behaviour:
     fine; the injection had landed on somebody else's delivery. Scoping the
     failure to the test's own repository key makes the injection deterministic
     under concurrency.
+  * $WEBHOOK_FAIL_PER_ENTITY=1 applies WEBHOOK_FAIL_FIRST_N to every distinct
+    delivery-body .entity_id separately: the first N deliveries for EACH
+    entity are answered 500, then that entity recovers. Bodies without an
+    entity_id are answered 200 and never consume a forced failure.
+
+    Why this exists (test#317): WEBHOOK_FAIL_MATCH must name the entity, but
+    the entity is a repository UUID that does not exist until the test creates
+    the repository, long after the receiver starts. Counting per entity needs
+    no arming: the test's own repository fails its first N deliveries no matter
+    how many sibling deliveries arrive before, after or between them, because a
+    sibling's delivery only ever consumes its own entity's budget. Sibling
+    entities are failed too, but only on this test's own webhook, so the only
+    side effect is extra retry rows for a webhook nobody else reads.
   * GET /__count returns the number of POSTs received so far (for poll loops).
   * GET /__health returns 200 once the server is up.
   * GET /__reset truncates the log and resets both counters.
@@ -49,6 +62,7 @@ PORT = int(os.environ.get("WEBHOOK_RECEIVER_PORT", "18765"))
 LOG_PATH = os.environ.get("WEBHOOK_RECEIVER_LOG", "/tmp/mock-webhook-receiver.log")
 FAIL_FIRST_N = int(os.environ.get("WEBHOOK_FAIL_FIRST_N", "0"))
 FAIL_MATCH = os.environ.get("WEBHOOK_FAIL_MATCH", "")
+FAIL_PER_ENTITY = os.environ.get("WEBHOOK_FAIL_PER_ENTITY", "") == "1"
 
 _lock = threading.Lock()
 _count = 0
@@ -56,6 +70,21 @@ _count = 0
 # unset; otherwise counts only bodies containing FAIL_MATCH, so a sibling
 # suite's delivery cannot consume this test's forced failure.
 _eligible_count = 0
+# Per-entity delivery counters for WEBHOOK_FAIL_PER_ENTITY=1.
+_entity_counts = {}
+
+
+def _entity_id(body):
+    """The delivery body's .entity_id, or None when absent/unparseable."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    if isinstance(parsed, dict):
+        value = parsed.get("entity_id")
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -72,6 +101,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with _lock:
                 _count = 0
                 _eligible_count = 0
+                _entity_counts.clear()
             try:
                 open(LOG_PATH, "w").close()
             except OSError:
@@ -90,11 +120,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             # Only deliveries matching FAIL_MATCH (when set) are candidates for
             # the forced failure, and only those advance the eligible counter.
-            eligible = (not FAIL_MATCH) or (FAIL_MATCH in body)
+            # In per-entity mode the counter is the delivery's own entity's.
+            entity = _entity_id(body) if FAIL_PER_ENTITY else None
             eligible_seq = None
-            if eligible:
-                _eligible_count += 1
-                eligible_seq = _eligible_count
+            if FAIL_PER_ENTITY:
+                eligible = entity is not None
+                if eligible:
+                    _entity_counts[entity] = _entity_counts.get(entity, 0) + 1
+                    eligible_seq = _entity_counts[entity]
+            else:
+                eligible = (not FAIL_MATCH) or (FAIL_MATCH in body)
+                if eligible:
+                    _eligible_count += 1
+                    eligible_seq = _eligible_count
 
             status = 500 if (eligible and eligible_seq <= FAIL_FIRST_N) else 200
 
@@ -109,6 +147,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "status": status,
                 "eligible": eligible,
                 "eligible_seq": eligible_seq,
+                "entity_id": entity,
                 "headers": {k: v for k, v in self.headers.items()},
                 "body": body,
             }
@@ -137,7 +176,8 @@ def main():
     server = http.server.ThreadingHTTPServer((BIND, PORT), Handler)
     print(f"mock-webhook-receiver: listening on {BIND}:{PORT}", file=sys.stderr)
     print(f"mock-webhook-receiver: log -> {LOG_PATH}", file=sys.stderr)
-    print(f"mock-webhook-receiver: failing first {FAIL_FIRST_N} requests", file=sys.stderr)
+    scope = "deliveries per entity_id" if FAIL_PER_ENTITY else "requests"
+    print(f"mock-webhook-receiver: failing first {FAIL_FIRST_N} {scope}", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

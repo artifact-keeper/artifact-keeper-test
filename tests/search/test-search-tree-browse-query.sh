@@ -102,7 +102,19 @@ else
   end_suite
 fi
 
-sleep 2
+# _artifact_listed REPO PATH
+# True once the repository's artifact listing carries a row whose path ends in
+# PATH, i.e. the upload has been persisted (test#364: replaces a fixed sleep).
+_artifact_listed() {
+  api_get "/api/v1/repositories/$1/artifacts?per_page=100" 2>/dev/null \
+    | jq -e --arg p "$2" '[.items[]? | select((.path // "") | endswith($p))] | length > 0' >/dev/null 2>&1
+}
+
+# The tree handler derives nodes from the persisted artifact rows.
+begin_test "Uploaded artifact is persisted"
+if assert_eventually "${SEGMENT}/${FILENAME} listed in ${REPO_KEY}" 60 _artifact_listed "$REPO_KEY" "${SEGMENT}/${FILENAME}"; then
+  pass
+fi
 
 # -------------------------------------------------------------------------
 # 1. Repository-scoped tree must surface the first path segment.

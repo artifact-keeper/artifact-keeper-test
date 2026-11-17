@@ -201,7 +201,7 @@ else
         fi
       fi
     fi
-    sleep 5
+    sleep 5  # sleep-ok: poll interval of the bounded DEADLETTER_TIMEOUT loop
     elapsed=$(( elapsed + 5 ))
   done
 
