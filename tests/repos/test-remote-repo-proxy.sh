@@ -12,7 +12,7 @@ begin_suite "remote-repo-proxy"
 auth_admin
 setup_workdir
 # Upstream-serves poll plus cache-row poll, at most 20 s each.
-require_wait_budget 40 "upstream and cache-row polls"
+require_wait_budget 20 "cache-row poll"
 
 UPSTREAM_KEY="test-remote-upstream-${RUN_ID}"
 REMOTE_KEY="test-remote-proxy-${RUN_ID}"
@@ -20,10 +20,6 @@ PROXY_FETCHED=0
 
 # upstream_serves_artifact: wait_until predicate, the upstream generic
 # endpoint (the remote's upstream URL) serves the seeded artifact.
-upstream_serves_artifact() {
-  curl -sf -o /dev/null $CURL_TIMEOUT -H "$(auth_header)" \
-    "${BASE_URL}/generic/${UPSTREAM_KEY}/libs/artifact.jar"
-}
 
 # -------------------------------------------------------------------------
 # Create upstream local repo and seed it with an artifact
@@ -62,13 +58,11 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Fetch artifact via remote proxy"
-# Precondition: the upstream serves the artifact seeded above. Then always
-# fetch THROUGH the proxy: the old first branch listed the remote's artifacts
-# instead, which answers 2xx for any existing repo, so the proxy fetch (and
-# the cache check after it) never ran.
-if ! wait_until "upstream ${UPSTREAM_KEY} serves libs/artifact.jar" 20 upstream_serves_artifact; then
-  fail "the artifact uploaded to ${UPSTREAM_KEY} was not served by its generic endpoint within 20s"
-elif curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
+# Always fetch THROUGH the proxy: the old first branch listed the remote's
+# artifacts instead, which answers 2xx for any existing repo, so the proxy
+# fetch (and the cache check after it) never ran. No wait before it: the
+# upload above answered with the stored row.
+if curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
     -o "${WORK_DIR}/proxied.txt" \
     "${BASE_URL}/generic/${REMOTE_KEY}/libs/artifact.jar" 2>/dev/null; then
   PROXY_FETCHED=1
