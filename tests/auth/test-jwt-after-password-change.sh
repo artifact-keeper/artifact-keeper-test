@@ -89,11 +89,10 @@ begin_test "OLD_JWT is rejected (401) after password change"
 if [ -z "${OLD_JWT:-}" ]; then
   skip "no OLD_JWT"
 else
-  # Small grace window in case the invalidation map is written async.
-  # The CREDENTIAL_INVALIDATIONS map is in-process and synchronous in
-  # 1.1.x, so this should be immediate; we sleep 1s to absorb any future
-  # async-cache work without making the test brittle.
-  sleep 1
+  # No grace window: the CREDENTIAL_INVALIDATIONS map is written before the
+  # password change answers, so the old JWT must be rejected on the very next
+  # request. A fixed sleep only hid a delay the contract does not allow
+  # (artifact-keeper-test#364).
   status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
     -H "Authorization: Bearer ${OLD_JWT}" \
     "${BASE_URL}/api/v1/auth/me" 2>/dev/null) || status=000

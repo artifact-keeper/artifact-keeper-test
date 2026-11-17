@@ -177,7 +177,7 @@ while [ "$elapsed" -lt "$SCAN_TIMEOUT" ]; do
        final_scan_id=$(echo "$resp" | jq -r '.items[0].id // empty' 2>/dev/null || echo "")
        break ;;
   esac
-  sleep 5
+  sleep 5  # sleep-ok: poll interval
   elapsed=$(( elapsed + 5 ))
 done
 if [ -n "$final_status" ]; then

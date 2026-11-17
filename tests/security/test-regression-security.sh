@@ -77,8 +77,9 @@ fi
 begin_test "Bug #592: Revoked token does NOT appear in listing"
 if [ -n "${USER_ID_592:-}" ] && [ "$USER_ID_592" != "null" ] && \
    [ -n "${TOKEN_ID_592:-}" ] && [ "$TOKEN_ID_592" != "null" ]; then
-  # Small delay to allow backend to process the deletion
-  sleep 1
+  # No settle: the DELETE above has already answered 2xx and the listing reads
+  # the same table, so the revoked token must be gone on the next read
+  # (artifact-keeper-test#364).
   listing=""
   if listing=$(api_get "/api/v1/users/${USER_ID_592}/tokens" 2>/dev/null); then
     # Check whether the revoked token ID appears anywhere in the listing
@@ -531,7 +532,7 @@ if $scan_triggered || [ "${probe_status:-}" = "200" ]; then
         break
       fi
     fi
-    sleep 5
+    sleep 5  # sleep-ok: poll interval
     elapsed=$((elapsed + 5))
   done
 

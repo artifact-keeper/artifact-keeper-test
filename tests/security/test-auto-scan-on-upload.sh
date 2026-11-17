@@ -90,7 +90,7 @@ esac
 # AFTER this epoch is the one auto-scan produced for our upload. The 2s
 # sleep absorbs `date +%s` 1-second truncation against the backend clock.
 TEST_START_EPOCH=$(date -u +%s)
-sleep 2
+sleep 2  # sleep-ok: timestamp separation: the scan-row cutoff must sit a whole second before the upload
 
 begin_test "Upload artifact"
 up_status=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
@@ -145,7 +145,7 @@ else
         break
       fi
     fi
-    sleep 5
+    sleep 5  # sleep-ok: poll interval
     elapsed=$(( elapsed + 5 ))
   done
   if [ "$observed" = "1" ]; then

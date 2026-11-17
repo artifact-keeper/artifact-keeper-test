@@ -187,7 +187,7 @@ else
             ;;
         esac
       fi
-      sleep 5
+      sleep 5  # sleep-ok: poll interval
       elapsed=$((elapsed + 5))
     done
     if [ -z "$SCAN_ID" ]; then

@@ -137,10 +137,20 @@ else
   fail "upload to source repo failed"
 fi
 
-# Settle then resolve the artifact_id. Multiple shapes are accepted because
-# the artifacts-list endpoint's array vs items-wrapped variant differs by
+# The upload answered 2xx. Wait, bounded, for its artifacts row to be readable
+# by path (the row the id is resolved from) instead of guessing with a fixed
+# sleep (artifact-keeper-test#364). A row that never appears is a product
+# failure, and the resolve step below fails on it.
+_artifact_row_readable() {
+  curl -sf -o /dev/null --max-time 10 -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${SOURCE_KEY}/artifacts/com/app/app.jar"
+}
+wait_until "artifacts row for com/app/app.jar readable in ${SOURCE_KEY}" 30 _artifact_row_readable \
+  || echo "  upload answered 2xx but its artifacts row is not readable; the resolve step below fails on it"
+
+# Resolve the artifact_id. Multiple shapes are accepted because the
+# artifacts-list endpoint's array vs items-wrapped variant differs by
 # version; mirroring the promotion-flow test's resolution logic.
-sleep 2
 
 begin_test "Resolve artifact_id from source repo"
 ARTIFACT_ID=""

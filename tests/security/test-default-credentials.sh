@@ -20,7 +20,7 @@ for _i in $(seq 1 15); do
     _ready=true
     break
   fi
-  sleep 2
+  sleep 2  # sleep-ok: poll interval
 done
 if ! $_ready; then
   echo "FATAL: backend not ready at ${BASE_URL} after 30s"

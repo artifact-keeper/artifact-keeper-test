@@ -188,7 +188,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     cached=1
     break
   fi
-  sleep 2
+  sleep 2  # sleep-ok: poll interval
 done
 if [ "$cached" -eq 1 ]; then
   pass
@@ -218,7 +218,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   if [ "$proxy_count" -ge "$WANT_COUNT" ] && [ "$proxy_bytes" -ge "$WANT_BYTES" ]; then
     break
   fi
-  sleep 2
+  sleep 2  # sleep-ok: poll interval
 done
 if [ "$proxy_count" -ge "$WANT_COUNT" ] && [ "$proxy_bytes" -ge "$WANT_BYTES" ]; then
   pass

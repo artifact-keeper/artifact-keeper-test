@@ -126,7 +126,7 @@ if [ -z "${REFRESH_TOKEN:-}" ] || [ "$REFRESH_TOKEN" = "null" ]; then
   skip "no refresh token"
 else
   # Sleep 1s so JWT iat differs and the rotated token is observably distinct.
-  sleep 1
+  sleep 1  # sleep-ok: timestamp separation: the rotated JWT needs a later iat to be observably distinct
   resp=$(curl -sf $CURL_TIMEOUT -X POST \
     -H "Content-Type: application/json" \
     -d "{\"refresh_token\":\"${REFRESH_TOKEN}\"}" \
