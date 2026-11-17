@@ -76,7 +76,26 @@ else
   end_suite
 fi
 
-sleep 4   # allow async indexing to surface all three sentinels
+# The ordering assertion needs all three sentinels in the result set. Wait
+# (bounded) until advanced search returns all three of them instead of a
+# fixed sleep (test#364); a sentinel that never surfaces is a product failure.
+_sort_corpus_searchable() {
+  api_get "/api/v1/search/advanced?query=${UNIQUE_TERM}&per_page=10" 2>/dev/null \
+    | jq -e '
+        (if type == "array" then .
+         elif (.items?   | type) == "array" then .items
+         elif (.results? | type) == "array" then .results
+         elif (.hits?    | type) == "array" then .hits
+         else [] end)
+        | [.[] | (.name // .path // .artifact_path // "") | split("/") | .[-1]
+           | select(. == "small.bin" or . == "med.bin" or . == "large.bin")]
+        | unique | length == 3' >/dev/null 2>&1
+}
+
+begin_test "All three sentinels are searchable"
+if assert_eventually "advanced search returns small/med/large for ${UNIQUE_TERM}" 60 _sort_corpus_searchable; then
+  pass
+fi
 
 # _first_name JSON
 # Extract the name (or final path segment) of the first hit in an advanced

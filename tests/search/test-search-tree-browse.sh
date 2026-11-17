@@ -17,6 +17,14 @@
 # the raw JSON which would false-positive on bytes that happen to occur
 # in unrelated fields (e.g. an opaque encoded "next_page_token").
 #
+# Every lookup is scoped to this suite's own RUN_ID-named repository
+# (test#365). An unfiltered, unpaginated instance-wide root listing is a
+# global-scope read: with ~18 sibling jobs creating repositories at the same
+# time, whether ours lands in it says nothing about the browse handler.
+# The current backend takes the repository as ?repository_key= (and answers
+# a bare /api/v1/tree with 400); path-style forms remain as fallbacks for
+# older revisions.
+#
 # Requires: curl, jq
 
 source "$(dirname "$0")/../lib/common.sh"
@@ -92,18 +100,33 @@ else
   end_suite
 fi
 
-sleep 2  # allow listing index to settle
+# _artifact_listed REPO PATH
+# True once the repository's artifact listing carries a row whose path ends in
+# PATH, i.e. the upload has been persisted (test#364: replaces a fixed sleep).
+_artifact_listed() {
+  api_get "/api/v1/repositories/$1/artifacts?per_page=100" 2>/dev/null \
+    | jq -e --arg p "$2" '[.items[]? | select((.path // "") | endswith($p))] | length > 0' >/dev/null 2>&1
+}
+
+# The tree handler derives nodes from the persisted artifact rows.
+begin_test "Uploaded artifact is persisted"
+if assert_eventually "${SEGMENT}/${FILENAME} listed in ${REPO_KEY}" 60 _artifact_listed "$REPO_KEY" "${SEGMENT}/${FILENAME}"; then
+  pass
+fi
 
 # -------------------------------------------------------------------------
 # Probe a few candidate tree endpoints. The browse handler is mounted at
 # /api/v1/tree in the current backend; older revisions used /api/v1/browse.
-# We try both and use whichever one responds 200.
+# We try both, scoped to our own repository, and use whichever one
+# responds 200.
 # -------------------------------------------------------------------------
 
 TREE_BASE=""
 for candidate in "/api/v1/tree" "/api/v1/browse"; do
   if curl -sf $CURL_TIMEOUT -H "$(auth_header)" -o /dev/null \
-     "${BASE_URL}${candidate}" 2>/dev/null; then
+     "${BASE_URL}${candidate}?repository_key=${REPO_KEY}" 2>/dev/null || \
+     curl -sf $CURL_TIMEOUT -H "$(auth_header)" -o /dev/null \
+     "${BASE_URL}${candidate}/${REPO_KEY}" 2>/dev/null; then
     TREE_BASE="$candidate"
     break
   fi
@@ -118,25 +141,35 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Root: must surface our repo key in a structured name/path field.
+# Repo-scoped tree (test#365): the backend has no instance-wide root view any
+# more (repository_key is required, 400 without it), and the old unfiltered
+# root assertion moved with every sibling repo. What a scoped request must
+# guarantee is that it answers nodes, and only nodes of the requested repo:
+# get_tree stamps the requested repository_key on every node it returns.
 # -------------------------------------------------------------------------
 
-begin_test "Root listing surfaces the test repo"
+begin_test "Repo-scoped tree answers only this repo's nodes"
 root_resp=""
-if r=$(api_get "$TREE_BASE" 2>/dev/null); then
-  root_resp="$r"
-elif r=$(api_get "${TREE_BASE}?path=/" 2>/dev/null); then
-  root_resp="$r"
-fi
-if [ -z "$root_resp" ]; then
-  skip "root listing returned error"
-else
-  names=$(_tree_names "$root_resp")
-  if _names_contain "$names" "$REPO_KEY"; then
-    pass
-  else
-    fail "root listing did not surface ${REPO_KEY} in any name/path field (got names: $(echo "$names" | tr '\n' ',' | head -c 300))"
+for path_form in "${TREE_BASE}?repository_key=${REPO_KEY}" "${TREE_BASE}/${REPO_KEY}"; do
+  if r=$(api_get "$path_form" 2>/dev/null); then
+    root_resp="$r"
+    break
   fi
+done
+if [ -z "$root_resp" ]; then
+  fail "repo-scoped tree request for ${REPO_KEY} returned an error"
+else
+  scoped=$(echo "$root_resp" | jq -r --arg k "$REPO_KEY" '
+    (if type == "array" then . else (.nodes // .entries // .children // .items // .results // []) end) as $n
+    | if ($n | length) == 0 then "empty"
+      elif ([$n[] | select((.repository_key // $k) != $k)] | length) > 0 then "foreign"
+      else "ok" end' 2>/dev/null || echo "unparsable")
+  case "$scoped" in
+    ok) pass ;;
+    empty) fail "repo-scoped tree for ${REPO_KEY} answered no nodes" "${root_resp:0:300}" ;;
+    foreign) fail "repo-scoped tree for ${REPO_KEY} answered nodes of another repository" "${root_resp:0:300}" ;;
+    *) fail "repo-scoped tree for ${REPO_KEY} answered an unparsable body" "${root_resp:0:300}" ;;
+  esac
 fi
 
 # -------------------------------------------------------------------------
@@ -145,7 +178,7 @@ fi
 
 begin_test "Repo-level listing surfaces the path segment"
 repo_resp=""
-for path_form in "${TREE_BASE}/${REPO_KEY}" "${TREE_BASE}?path=/${REPO_KEY}" "${TREE_BASE}/${REPO_KEY}/"; do
+for path_form in "${TREE_BASE}?repository_key=${REPO_KEY}" "${TREE_BASE}/${REPO_KEY}" "${TREE_BASE}?path=/${REPO_KEY}" "${TREE_BASE}/${REPO_KEY}/"; do
   if r=$(api_get "$path_form" 2>/dev/null); then
     repo_resp="$r"
     break
@@ -169,6 +202,7 @@ fi
 begin_test "Path-level listing surfaces the artifact filename"
 leaf_resp=""
 for path_form in \
+  "${TREE_BASE}?repository_key=${REPO_KEY}&path=${SEGMENT}" \
   "${TREE_BASE}/${REPO_KEY}/${SEGMENT}" \
   "${TREE_BASE}?path=/${REPO_KEY}/${SEGMENT}" \
   "${TREE_BASE}/${REPO_KEY}/${SEGMENT}/"; do

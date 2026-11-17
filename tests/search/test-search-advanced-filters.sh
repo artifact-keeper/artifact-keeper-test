@@ -73,16 +73,37 @@ api_upload "/api/v1/repositories/${REPO_KEY}/artifacts/${UNIQUE_TERM}/large.bin"
 api_upload "/api/v1/repositories/${DECOY_REPO_KEY}/artifacts/${UNIQUE_TERM}/decoy.bin" "$MED_FILE" >/dev/null 2>&1 || true
 pass
 
-sleep 4   # allow async indexing
+# Every assertion below is "X is excluded", which passes vacuously on an
+# empty result set. Wait (bounded) until all four sentinels are searchable
+# under our term before asserting, instead of a fixed sleep (test#364); a
+# sentinel that never surfaces is a product failure.
+_corpus_searchable() {
+  api_get "/api/v1/search/advanced?query=${UNIQUE_TERM}&per_page=50" 2>/dev/null \
+    | jq -e '
+        (if type=="array" then .
+         elif (.items?   | type) == "array" then .items
+         elif (.results? | type) == "array" then .results
+         elif (.hits?    | type) == "array" then .hits
+         else [] end)
+        | [.[] | (.name // .path // .artifact_path // "") | split("/") | .[-1]
+           | select(. == "small.bin" or . == "med.bin" or . == "large.bin" or . == "decoy.bin")]
+        | unique | length == 4' >/dev/null 2>&1
+}
+
+begin_test "All four sentinels are searchable"
+if assert_eventually "advanced search returns small/med/large/decoy for ${UNIQUE_TERM}" 60 _corpus_searchable; then
+  pass
+fi
 
 # -------------------------------------------------------------------------
 # 8.1 size filters.
 # -------------------------------------------------------------------------
 
 begin_test "min_size=4096 excludes 512 B sentinel"
-if resp=$(api_get "/api/v1/search/advanced?q=${UNIQUE_TERM}&min_size=4096" 2>/dev/null); then
+if resp=$(api_get "/api/v1/search/advanced?query=${UNIQUE_TERM}&min_size=4096" 2>/dev/null); then
   hit=$(echo "$resp" | jq -r '
     if type=="array" then .
+    elif .items   then .items
     elif .results then .results
     elif .hits    then .hits
     else [] end
@@ -98,9 +119,10 @@ else
 fi
 
 begin_test "max_size=4096 excludes 128 KB sentinel"
-if resp=$(api_get "/api/v1/search/advanced?q=${UNIQUE_TERM}&max_size=4096" 2>/dev/null); then
+if resp=$(api_get "/api/v1/search/advanced?query=${UNIQUE_TERM}&max_size=4096" 2>/dev/null); then
   hit=$(echo "$resp" | jq -r '
     if type=="array" then .
+    elif .items   then .items
     elif .results then .results
     elif .hits    then .hits
     else [] end
@@ -121,9 +143,10 @@ fi
 
 begin_test "created_after=year-2099 returns empty result set"
 future="2099-01-01T00:00:00Z"
-if resp=$(api_get "/api/v1/search/advanced?q=${UNIQUE_TERM}&created_after=${future}" 2>/dev/null); then
+if resp=$(api_get "/api/v1/search/advanced?query=${UNIQUE_TERM}&created_after=${future}" 2>/dev/null); then
   count=$(echo "$resp" | jq -r '
     if type=="array" then length
+    elif .items   then (.items|length)
     elif .results then (.results|length)
     elif .hits    then (.hits|length)
     elif .total   then .total
@@ -142,9 +165,10 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "repository_key=primary excludes decoy repo hits"
-if resp=$(api_get "/api/v1/search/advanced?q=${UNIQUE_TERM}&repository_key=${REPO_KEY}" 2>/dev/null); then
+if resp=$(api_get "/api/v1/search/advanced?query=${UNIQUE_TERM}&repository_key=${REPO_KEY}" 2>/dev/null); then
   decoy=$(echo "$resp" | jq -r --arg dk "$DECOY_REPO_KEY" '
     if type=="array" then .
+    elif .items   then .items
     elif .results then .results
     elif .hits    then .hits
     else [] end

@@ -205,35 +205,50 @@ fi
 DELIVERIES_A=""
 DELIVERIES_B=""
 
+# _own_event_rows <deliveries-json> <event>: number of rows for <event>, in
+# either wire spelling, across the {items}/{deliveries}/bare-array shapes.
+_own_event_rows() {
+  local dotted="${2/_/.}"
+  echo "$1" | jq --arg e "$2" --arg d "$dotted" '
+    (if type == "array" then . elif .items then .items elif .deliveries then .deliveries else [] end)
+    | map(select(.event == $e or .event == $d or .event_name == $e or .event_name == $d))
+    | length' 2>/dev/null || echo 0
+}
+
+# The cross-routing assertions below are "no foreign rows", which pass
+# vacuously before the producer has enqueued anything. Their precondition is
+# that each event has been routed at all: A holds an artifact_uploaded row and
+# B a repository_created row. A leaked row would be enqueued by the same
+# producer pass as the legitimate one, so once both are present a leak would be
+# visible too. Poll for that (bounded) instead of fixed sleeps (test#364).
+_both_events_routed() {
+  local a b
+  a=$(api_get "/api/v1/webhooks/${WEBHOOK_A_ID}/deliveries" 2>/dev/null) || return 1
+  b=$(api_get "/api/v1/webhooks/${WEBHOOK_B_ID}/deliveries" 2>/dev/null) || return 1
+  DELIVERIES_A="$a"
+  DELIVERIES_B="$b"
+  [ "$(_own_event_rows "$a" artifact_uploaded)" -gt 0 ] 2>/dev/null && \
+    [ "$(_own_event_rows "$b" repository_created)" -gt 0 ] 2>/dev/null
+}
+
+begin_test "Both webhooks record their own subscribed event"
+if assert_eventually "A has an artifact_uploaded row and B a repository_created row" 45 _both_events_routed; then
+  pass
+fi
+
 begin_test "Webhook A /deliveries reachable"
-for _ in $(seq 1 15); do
-  if DELIVERIES_A=$(api_get "/api/v1/webhooks/${WEBHOOK_A_ID}/deliveries" 2>/dev/null); then
-    if [ -n "$DELIVERIES_A" ] && [ "$DELIVERIES_A" != "null" ]; then
-      break
-    fi
-  fi
-  sleep 2
-done
 if [ -n "$DELIVERIES_A" ] && [ "$DELIVERIES_A" != "null" ]; then
   pass
 else
-  fail "/api/v1/webhooks/${WEBHOOK_A_ID}/deliveries returned empty after 30s; routing cannot be asserted"
+  fail "/api/v1/webhooks/${WEBHOOK_A_ID}/deliveries returned empty within 45s; routing cannot be asserted"
   end_suite
 fi
 
 begin_test "Webhook B /deliveries reachable"
-for _ in $(seq 1 15); do
-  if DELIVERIES_B=$(api_get "/api/v1/webhooks/${WEBHOOK_B_ID}/deliveries" 2>/dev/null); then
-    if [ -n "$DELIVERIES_B" ] && [ "$DELIVERIES_B" != "null" ]; then
-      break
-    fi
-  fi
-  sleep 2
-done
 if [ -n "$DELIVERIES_B" ] && [ "$DELIVERIES_B" != "null" ]; then
   pass
 else
-  fail "/api/v1/webhooks/${WEBHOOK_B_ID}/deliveries returned empty after 30s; routing cannot be asserted"
+  fail "/api/v1/webhooks/${WEBHOOK_B_ID}/deliveries returned empty within 45s; routing cannot be asserted"
   end_suite
 fi
 

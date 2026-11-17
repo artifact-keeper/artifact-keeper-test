@@ -206,7 +206,7 @@ else
         break
       fi
     fi
-    sleep 2
+    sleep 2  # sleep-ok: poll interval of the bounded 30 s delivery-row poll
   done
   if [ "$SUCCESS_ROW_COUNT" -gt 0 ]; then
     pass

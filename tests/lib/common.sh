@@ -1880,13 +1880,6 @@ _CAPABILITY_EXEMPTIONS=(
   "mcp_registry_later_phase|MCP Registry later-phase capability not shipped by this backend (probe:|211"
   # mesh: run-now sync trigger endpoint not shipped (sync worker, TODO #78.4)
   "mesh_run_now|sync run-now endpoint not shipped (HTTP 404)|211"
-  # webhooks: the forced-failure injection is not scoped to this test's own
-  # delivery, so the suite cannot discriminate. The webhook it creates is
-  # global (no repository_id) and the receiver counts forced failures with one
-  # process-global counter, so a sibling suite's delivery routinely consumes
-  # the single forced 500. See test#317; remove this row when the injection is
-  # armed against the repository UUID.
-  "webhook_retry_injection|forced-failure injection is not scoped to this delivery|317"
   # auth: the rate limiter is deliberately NOT provisioned in the gate deploy.
   # helm/values-test.yaml and helm/values-test-full.yaml both set
   # RATE_LIMIT_ENABLED: "false" because release-gate runs 20+ suites against a

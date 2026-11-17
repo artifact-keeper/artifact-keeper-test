@@ -50,14 +50,35 @@ else
   end_suite
 fi
 
-sleep 3
+# Every probe is scoped to UNIQUE_TERM, which only this suite's sentinel
+# carries, so a sibling job uploading or indexing concurrently cannot move the
+# hit count or the total (test#365). /search/advanced reads the term from
+# `query`, other variants from `q`: send both so the scope always applies.
+QUERY_PARAMS="q=${UNIQUE_TERM}&query=${UNIQUE_TERM}"
+
+# _hit_count JSON: number of hits on the page, across the wrapper shapes.
+_hit_count() {
+  echo "$1" | jq -r '
+    if type=="array" then length
+    elif (.items?   | type) == "array" then (.items|length)
+    elif (.results? | type) == "array" then (.results|length)
+    elif (.hits?    | type) == "array" then (.hits|length)
+    else 0 end' 2>/dev/null || echo 0
+}
+
+# _total_of JSON: the reported total, or "" when the response carries none.
+_total_of() {
+  echo "$1" | jq -r '
+    .pagination.total // .total // .total_hits // .total_results // empty' 2>/dev/null || echo ""
+}
 
 # Pick whichever search endpoint the backend exposes; reuse the same one
-# for every pagination probe so the assertions are apples-to-apples.
+# for every pagination probe so the assertions are apples-to-apples. The
+# documented paginated endpoint (/search/advanced) is tried first.
 SEARCH_BASE=""
-for candidate in "/api/v1/search" "/api/v1/search/advanced"; do
+for candidate in "/api/v1/search/advanced" "/api/v1/search"; do
   if curl -sf $CURL_TIMEOUT -o /dev/null -H "$(auth_header)" \
-     "${BASE_URL}${candidate}?q=${UNIQUE_TERM}" 2>/dev/null; then
+     "${BASE_URL}${candidate}?${QUERY_PARAMS}" 2>/dev/null; then
     SEARCH_BASE="$candidate"
     break
   fi
@@ -71,6 +92,22 @@ else
   end_suite
 fi
 
+# The page=1 and page-beyond-total checks need the sentinel to be searchable.
+# Poll (bounded) for it instead of a fixed sleep (test#364); a sentinel that
+# never surfaces is a product failure.
+_sentinel_searchable() {
+  local resp n
+  resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
+    "${BASE_URL}${SEARCH_BASE}?${QUERY_PARAMS}&page=1&per_page=10" 2>/dev/null) || return 1
+  n=$(_hit_count "$resp")
+  [ "${n:-0}" -ge 1 ] 2>/dev/null
+}
+
+begin_test "Sentinel becomes searchable"
+if assert_eventually "${SEARCH_BASE} returns the ${UNIQUE_TERM} sentinel" 60 _sentinel_searchable; then
+  pass
+fi
+
 # -------------------------------------------------------------------------
 # 1. page=0 must not 5xx.
 # -------------------------------------------------------------------------
@@ -78,7 +115,7 @@ fi
 begin_test "page=0 returns a non-5xx response"
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "$(auth_header)" \
-  "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=0&per_page=10" 2>/dev/null || echo 000)
+  "${BASE_URL}${SEARCH_BASE}?${QUERY_PARAMS}&page=0&per_page=10" 2>/dev/null || echo 000)
 case "$status" in
   5*) fail "page=0 panicked at ${SEARCH_BASE}: HTTP ${status}" ;;
   *)  pass ;;
@@ -91,7 +128,7 @@ esac
 begin_test "page=-1 returns 4xx, not 5xx"
 status=$(curl -s -o /dev/null -w "%{http_code}" $CURL_TIMEOUT \
   -H "$(auth_header)" \
-  "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=-1&per_page=10" 2>/dev/null || echo 000)
+  "${BASE_URL}${SEARCH_BASE}?${QUERY_PARAMS}&page=-1&per_page=10" 2>/dev/null || echo 000)
 case "$status" in
   4*) pass ;;
   5*) fail "page=-1 returned ${status}; expected 4xx" ;;
@@ -109,16 +146,12 @@ esac
 
 begin_test "per_page=0 is internally consistent"
 resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
-  "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=1&per_page=0" 2>/dev/null || echo '')
+  "${BASE_URL}${SEARCH_BASE}?${QUERY_PARAMS}&page=1&per_page=0" 2>/dev/null || echo '')
 if [ -z "$resp" ]; then
   skip "per_page=0 rejected (acceptable)"
 else
-  hits=$(echo "$resp" | jq -r '
-    if type=="array" then length
-    elif .results then (.results|length)
-    elif .hits    then (.hits|length)
-    else 0 end' 2>/dev/null || echo 0)
-  total=$(echo "$resp" | jq -r '.total // .total_hits // empty' 2>/dev/null || echo "")
+  hits=$(_hit_count "$resp")
+  total=$(_total_of "$resp")
   if [ "$hits" = "0" ]; then
     # Even an explicit total > 0 with hits == 0 is fine; the page itself
     # is consistent. We only fail if the response claims it returned
@@ -139,32 +172,17 @@ fi
 
 begin_test "page=1,per_page=10 returns at least one hit"
 resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
-  "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=1&per_page=10" 2>/dev/null || echo '')
+  "${BASE_URL}${SEARCH_BASE}?${QUERY_PARAMS}&page=1&per_page=10" 2>/dev/null || echo '')
 if [ -z "$resp" ]; then
   skip "page=1 request returned error"
 else
-  hits=$(echo "$resp" | jq -r '
-    if type=="array" then length
-    elif .results then (.results|length)
-    elif .hits    then (.hits|length)
-    else 0 end' 2>/dev/null || echo 0)
-  if [ "$hits" -ge 1 ]; then
+  hits=$(_hit_count "$resp")
+  # The sentinel was observed searchable above, so zero hits here is a
+  # regression, not indexing lag.
+  if [ "${hits:-0}" -ge 1 ] 2>/dev/null; then
     pass
   else
-    # Indexer may need a few more seconds on slow runners.
-    sleep 5
-    resp=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
-      "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=1&per_page=10" 2>/dev/null || echo '')
-    hits=$(echo "$resp" | jq -r '
-      if type=="array" then length
-      elif .results then (.results|length)
-      elif .hits    then (.hits|length)
-      else 0 end' 2>/dev/null || echo 0)
-    if [ "$hits" -ge 1 ]; then
-      pass
-    else
-      skip "indexing did not surface the sentinel within budget (best-effort)"
-    fi
+    fail "page=1,per_page=10 returned ${hits} hits for ${UNIQUE_TERM} after the sentinel was searchable"
   fi
 fi
 
@@ -178,16 +196,12 @@ fi
 begin_test "page beyond total returns empty hits with consistent total"
 # First find the current total for our unique term.
 resp_first=$(curl -sf $CURL_TIMEOUT -H "$(auth_header)" \
-  "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=1&per_page=1" 2>/dev/null || echo '')
+  "${BASE_URL}${SEARCH_BASE}?${QUERY_PARAMS}&page=1&per_page=1" 2>/dev/null || echo '')
 if [ -z "$resp_first" ]; then
   skip "page=1 query returned no response, cannot derive total"
 else
-  total_first=$(echo "$resp_first" | jq -r '
-    .total // .total_hits // .total_results //
-    (if type=="array" then length
-     elif .results then (.results|length)
-     elif .hits    then (.hits|length)
-     else 0 end)' 2>/dev/null || echo 0)
+  total_first=$(_total_of "$resp_first")
+  [ -n "$total_first" ] || total_first=$(_hit_count "$resp_first")
   # Coerce empty / null to 0 so the arithmetic below stays well-formed.
   case "$total_first" in
     ''|null) total_first=0 ;;
@@ -204,7 +218,7 @@ else
     probe_page=$(( total_first / per_page_probe + 2 ))
   fi
   resp_far=$(curl -s -w $'\n%{http_code}' $CURL_TIMEOUT -H "$(auth_header)" \
-    "${BASE_URL}${SEARCH_BASE}?q=${UNIQUE_TERM}&page=${probe_page}&per_page=${per_page_probe}" 2>/dev/null || printf '\n000')
+    "${BASE_URL}${SEARCH_BASE}?${QUERY_PARAMS}&page=${probe_page}&per_page=${per_page_probe}" 2>/dev/null || printf '\n000')
   # Split body (everything before the last newline) from status (final line).
   # `head -n -1` is GNU-only; awk handles both BSD and GNU portably.
   body_far=$(printf '%s' "$resp_far" | awk 'NR>1{print prev}{prev=$0}')
@@ -214,13 +228,8 @@ else
       fail "page-beyond-total (page=${probe_page}) returned HTTP ${status_far}"
       ;;
     2*)
-      hits_far=$(echo "$body_far" | jq -r '
-        if type=="array" then length
-        elif .results then (.results|length)
-        elif .hits    then (.hits|length)
-        else 0 end' 2>/dev/null || echo 0)
-      total_far=$(echo "$body_far" | jq -r '
-        .total // .total_hits // .total_results // empty' 2>/dev/null || echo "")
+      hits_far=$(_hit_count "$body_far")
+      total_far=$(_total_of "$body_far")
       # The page must be empty (no rows past the last page).
       if [ "$hits_far" != "0" ]; then
         fail "page=${probe_page} returned ${hits_far} hits, expected 0 (beyond total=${total_first})"

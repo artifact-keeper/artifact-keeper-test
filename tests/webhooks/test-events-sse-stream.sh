@@ -84,15 +84,20 @@ curl -sN $CURL_TIMEOUT --max-time 10 \
   "${BASE_URL}/api/v1/events/stream" &
 SSE_PID=$!
 
-# Give the connection a moment to land before we start emitting events.
-sleep 1
-if kill -0 "$SSE_PID" 2>/dev/null; then
+# The event must not fire before the stream is subscribed. The handler
+# subscribes to the bus before it answers, so the response status line landing
+# in SSE_HDR is the precondition; poll for it (bounded, inside curl's 10 s
+# --max-time) instead of a fixed sleep (test#364).
+_sse_stream_open() {
+  kill -0 "$SSE_PID" 2>/dev/null && grep -qE '^HTTP/[0-9.]+ ' "$SSE_HDR" 2>/dev/null
+}
+if WAIT_UNTIL_INTERVAL=0.2 wait_until "SSE response headers from /api/v1/events/stream" 5 _sse_stream_open; then
   pass
 else
-  # The producer feature was gated above; reaching here with a dead
-  # listener means the endpoint itself is not reachable on a backend
+  # The producer feature was gated above; reaching here with a dead or
+  # silent listener means the endpoint itself is not reachable on a backend
   # that claims to support the feature. Fail hard.
-  fail "SSE listener died within 1s on a backend that claims webhook_event_producer support"
+  fail "SSE listener died or sent no response headers within 5s on a backend that claims webhook_event_producer support"
   end_suite
 fi
 
