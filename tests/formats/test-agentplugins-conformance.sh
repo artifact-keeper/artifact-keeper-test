@@ -513,18 +513,45 @@ fi
 # 6. Lifecycle: immutability after delete, native rows only, reserved key
 # ---------------------------------------------------------------------------
 
-LIFE="hello"
 LIFE_VERSION="1.0.0"
-LIFE_PATH="${LIFE}/${LIFE_VERSION}/${LIFE}-${LIFE_VERSION}.zip"
-LIFE_ZIP=$(build_zip "life" "$LIFE" "$LIFE_VERSION")
-# Same manifest, one extra file: a different archive for the same version.
-LIFE_OTHER="${WORK_DIR}/life-other.zip"
-cp "$LIFE_ZIP" "$LIFE_OTHER"
-mkdir -p "${WORK_DIR}/src-life-extra"
-echo "different bytes" > "${WORK_DIR}/src-life-extra/EXTRA.md"
-(cd "${WORK_DIR}/src-life-extra" && zip -qX "$LIFE_OTHER" EXTRA.md)
 
-# life_versions: the comma-separated versions hello/index.json lists, or
+# prepare_life NAME: point LIFE at plugin NAME and build its two archives for
+# ${LIFE_VERSION}: LIFE_ZIP and LIFE_OTHER (same manifest, one extra file, so
+# different bytes for the same version).
+prepare_life() {
+  LIFE="$1"
+  LIFE_PATH="${LIFE}/${LIFE_VERSION}/${LIFE}-${LIFE_VERSION}.zip"
+  LIFE_ZIP=$(build_zip "life-${LIFE}" "$LIFE" "$LIFE_VERSION")
+  LIFE_OTHER="${WORK_DIR}/life-${LIFE}-other.zip"
+  cp "$LIFE_ZIP" "$LIFE_OTHER"
+  rm -rf "${WORK_DIR}/src-life-extra"
+  mkdir -p "${WORK_DIR}/src-life-extra"
+  echo "different bytes" > "${WORK_DIR}/src-life-extra/EXTRA.md"
+  (cd "${WORK_DIR}/src-life-extra" && zip -qX "$LIFE_OTHER" EXTRA.md)
+}
+
+# publish_and_delete_life: publish LIFE_ZIP, then soft-delete it through the
+# REST artifacts API. Sets LIFE_DELETED and, on failure, LIFE_ERROR.
+publish_and_delete_life() {
+  local del_status
+  LIFE_DELETED=false
+  LIFE_ERROR=""
+  ap_put "$REPO_KEY" "$LIFE_ZIP" "$LIFE_PATH"
+  if [ "$PUT_STATUS" != "201" ]; then
+    LIFE_ERROR="publish of ${LIFE_PATH} returned HTTP ${PUT_STATUS}, expected 201: ${PUT_BODY:0:300}"
+    return 1
+  fi
+  del_status=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${LIFE_PATH}" 2>/dev/null) || del_status="000"
+  if [ "$del_status" -ge 200 ] 2>/dev/null && [ "$del_status" -lt 300 ] 2>/dev/null; then
+    LIFE_DELETED=true
+    return 0
+  fi
+  LIFE_ERROR="REST delete of ${LIFE_PATH} returned HTTP ${del_status}"
+  return 1
+}
+
+# life_versions: the comma-separated versions ${LIFE}/index.json lists, or
 # "<HTTP status>" when the document is not served.
 life_versions() {
   local out="${WORK_DIR}/life-index.json" status
@@ -537,20 +564,12 @@ life_versions() {
   fi
 }
 
+prepare_life "hello"
 begin_test "Publish ${LIFE} ${LIFE_VERSION} and delete it through the REST artifacts API"
-ap_put "$REPO_KEY" "$LIFE_ZIP" "$LIFE_PATH"
-LIFE_DELETED=false
-if [ "$PUT_STATUS" != "201" ]; then
-  fail "publish returned HTTP ${PUT_STATUS}, expected 201" "${PUT_BODY:0:300}"
+if publish_and_delete_life; then
+  pass
 else
-  DEL_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${CURL_TIMEOUT_ARGS[@]}" -X DELETE -H "$(auth_header)" \
-    "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/${LIFE_PATH}" 2>/dev/null) || DEL_STATUS="000"
-  if [ "$DEL_STATUS" -ge 200 ] 2>/dev/null && [ "$DEL_STATUS" -lt 300 ] 2>/dev/null; then
-    LIFE_DELETED=true
-    pass
-  else
-    fail "REST delete returned HTTP ${DEL_STATUS}"
-  fi
+  fail "$LIFE_ERROR"
 fi
 
 begin_test "Empty-body PUT to a deleted version is refused with 400"
@@ -563,21 +582,46 @@ elif assert_eq "$EMPTY_STATUS" "400" "empty-body PUT returned HTTP ${EMPTY_STATU
   pass
 fi
 
+# The different-bytes refusal is decided against the soft-deleted row (the
+# tombstone). The gate deploys GC_SCHEDULE "*/10 * * * * *" with the default
+# GC trash retention of 0 days (helm/values-test-full.yaml), so the storage-GC
+# tick that fires every 10 s hard-deletes any fresh tombstone; a tick landing
+# between the delete and this PUT leaves nothing to compare against, and the
+# PUT is then an ordinary first publish (201). That is the backend working as
+# configured, not a broken immutability check, so a 201 is retried on a fresh
+# plugin name (a new tombstone, a new window). A backend that never refuses
+# answers 201 on every attempt and still fails.
+LIFE_ATTEMPTS=3
 begin_test "Re-publishing a deleted version with different bytes is refused with 409"
-ap_put "$REPO_KEY" "$LIFE_OTHER" "$LIFE_PATH"
+LIFE_ATTEMPT=1
+if [ "$LIFE_DELETED" = true ]; then
+  ap_put "$REPO_KEY" "$LIFE_OTHER" "$LIFE_PATH"
+  while [ "$PUT_STATUS" = "201" ] && [ "$LIFE_ATTEMPT" -lt "$LIFE_ATTEMPTS" ]; do
+    echo "    attempt ${LIFE_ATTEMPT}: different bytes for deleted ${LIFE} ${LIFE_VERSION} answered 201 (the tombstone was reaped first, likely by the 10 s storage-GC tick); retrying on a fresh plugin name"
+    LIFE_ATTEMPT=$((LIFE_ATTEMPT + 1))
+    prepare_life "hello-r${LIFE_ATTEMPT}"
+    publish_and_delete_life || break
+    ap_put "$REPO_KEY" "$LIFE_OTHER" "$LIFE_PATH"
+  done
+fi
 if [ "$LIFE_DELETED" != true ]; then
-  fail "needs the deleted version"
-elif assert_eq "$PUT_STATUS" "409" "re-publish with different bytes returned HTTP ${PUT_STATUS}, expected 409 (a version is immutable even after delete)"; then
+  fail "needs the deleted version${LIFE_ERROR:+ (${LIFE_ERROR})}"
+elif assert_eq "$PUT_STATUS" "409" "re-publish with different bytes returned HTTP ${PUT_STATUS}, expected 409 (a version is immutable even after delete; ${LIFE_ATTEMPT} attempt(s))" && \
+     assert_contains "$PUT_BODY" "was deleted" "the 409 is not the deleted-version refusal (a live row answered instead?): ${PUT_BODY:0:300}"; then
   pass
 fi
 
 begin_test "Re-publishing a deleted version with identical bytes restores it (201) and re-indexes it"
-ap_put "$REPO_KEY" "$LIFE_ZIP" "$LIFE_PATH"
+# A tick reaping the tombstone here is harmless: the identical bytes then land
+# as a first publish, which is the same 201 and the same index entry.
 if [ "$LIFE_DELETED" != true ]; then
   fail "needs the deleted version"
-elif assert_eq "$PUT_STATUS" "201" "re-publish with identical bytes returned HTTP ${PUT_STATUS}, expected 201: ${PUT_BODY:0:300}" && \
+else
+  ap_put "$REPO_KEY" "$LIFE_ZIP" "$LIFE_PATH"
+  if assert_eq "$PUT_STATUS" "201" "re-publish with identical bytes returned HTTP ${PUT_STATUS}, expected 201: ${PUT_BODY:0:300}" && \
      assert_eq "$(life_versions)" "$LIFE_VERSION" "${LIFE}/index.json lists [$(life_versions)] after the restore, expected [${LIFE_VERSION}]"; then
-  pass
+    pass
+  fi
 fi
 
 BUILD_ZIP=$(build_zip "neg-build" "$LIFE" "")
