@@ -101,6 +101,11 @@ HELM_CMD=(helm upgrade --install "$RELEASE_NAME" "$CHART_DIR"
 if [[ -n "${AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS:-}" ]]; then
   HELM_CMD+=(--set-string "backend.env.AK_SSRF_ALLOW_PRIVATE_CIDRS=${AK_TEST_SSRF_ALLOW_PRIVATE_CIDRS//,/\\,}")
 fi
+# Every PVC on the test StorageClass (AK_TEST_STORAGE_CLASS, default
+# local-path-home; tests/lib/storage-class.sh, artifact-keeper#6081).
+# shellcheck source=../../tests/lib/storage-class.sh
+source "${REPO_ROOT}/tests/lib/storage-class.sh"
+ak_test_storage_class_append HELM_CMD || exit 1
 "${HELM_CMD[@]}"
 
 "${REPO_ROOT}/tests/lib/wait-for-ready.sh" "http://artifact-keeper-backend.${NAMESPACE}.svc.cluster.local:8080" 180

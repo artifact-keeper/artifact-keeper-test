@@ -152,11 +152,18 @@ fi
 
 echo ""
 echo "Installing release ${RELEASE_NAME} with full deps"
+STORAGE_CLASS_ARGS=()
+# Every PVC on the test StorageClass (AK_TEST_STORAGE_CLASS, default
+# local-path-home; tests/lib/storage-class.sh, artifact-keeper#6081).
+# shellcheck source=../lib/storage-class.sh
+source "${REPO_ROOT}/tests/lib/storage-class.sh"
+ak_test_storage_class_append STORAGE_CLASS_ARGS || exit 1
 helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" \
   --values "$VALUES_OVERLAY" \
   --set backend.image.tag="$BACKEND_TAG" \
   --set web.image.tag="$WEB_TAG" \
+  "${STORAGE_CLASS_ARGS[@]}" \
   --wait=false || {
     echo "ERROR: helm install failed" >&2
     exit 1

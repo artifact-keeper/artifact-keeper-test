@@ -421,6 +421,14 @@ if [ -n "${SMOKE_BACKEND_REPO_OVERRIDE:-}" ]; then
   HELM_OVERRIDES+=(--set "backend.image.repository=${SMOKE_BACKEND_REPO_OVERRIDE}")
 fi
 
+# Every PVC on the test StorageClass (AK_TEST_STORAGE_CLASS, default
+# local-path-home; tests/lib/storage-class.sh, artifact-keeper#6081).
+# shellcheck source=../tests/lib/storage-class.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/storage-class.sh"
+# A missing class is gate infra, not a product verdict: exit INFRA so an
+# --expect-failure fixture cannot count it as the failure it wanted.
+ak_test_storage_class_append HELM_OVERRIDES || exit "$SMOKE_EXIT_INFRA"
+
 echo ""
 echo "Helm template dry-run (catches misnamed --set keys)"
 # `--debug` is intentionally omitted — it would print rendered manifests

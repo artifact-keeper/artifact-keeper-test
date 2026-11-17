@@ -159,6 +159,30 @@ Kubernetes `ResourceQuota`, so a pod may use up to its own configured limit.
 | `TEST_NAMESPACE_CPU` | 4000m | ResourceQuota CPU per namespace |
 | `TEST_NAMESPACE_MEMORY` | 8Gi | ResourceQuota memory per namespace |
 
+### Storage
+
+Every helm install of the chart into a test namespace (`create-test-namespace.sh`,
+`clean-install-smoke.sh`, the with-deps and chart-upgrade smokes, the nightly S3
+deploy) puts all of its PVCs on the StorageClass in `AK_TEST_STORAGE_CLASS`
+(`tests/lib/storage-class.sh`). The chart has no working global storage class,
+so the helper sets each component's storage class key (the list is in
+`tests/lib/storage-class.sh`).
+
+- Unset: `local-path-home`. On rocky that is the local-path provisioner with
+  its volumes under `/home/local-path-provisioner` (1.8T). The default class
+  `local-path` writes to `/opt/local-path-provisioner` on the 70G root
+  filesystem that production also uses, so test volumes stay off it. The class
+  is defined in artifact-keeper-arc-runners (`cluster/storageclass-local-path-home.yaml`).
+- Set to a name: that class.
+- Set to empty (`AK_TEST_STORAGE_CLASS=`): nothing is set, so the cluster's
+  default class is used. Use this on kind, microk8s or any cluster without
+  `local-path-home`.
+
+If kubectl can read StorageClasses and the class does not exist, the deploy
+stops before `helm install` with an error. Where the runner's role cannot read
+StorageClasses, the helper only warns and a missing class shows up as Pending
+PVCs.
+
 ## Running Tests Locally
 
 Tests can run against any Artifact Keeper instance. Set these environment variables and run any script directly:
