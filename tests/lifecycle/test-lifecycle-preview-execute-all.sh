@@ -143,8 +143,28 @@ count_versions() {
 
 # both_repos_pruned: wait_until predicate for the post-execute-all state the
 # last test asserts (<= 2 of v1..v4 still resolving on each repo).
+# settled_versions KEY: like count_versions, but echoes "unsettled" when any
+# probe answers neither 200 nor 404, so a backend error or a dropped request
+# can never read as "removed" and satisfy the wait.
+settled_versions() {
+  local key="$1" n=0 i st
+  for i in 1 2 3 4; do
+    st=$(curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT \
+      -H "$(auth_header)" \
+      "${BASE_URL}/api/v1/repositories/${key}/artifacts/pkg/v${i}/file.txt" 2>/dev/null) || st="000"
+    case "$st" in
+      200) n=$(( n + 1 )) ;;
+      404) ;;
+      *) echo "unsettled"; return 0 ;;
+    esac
+  done
+  echo "$n"
+}
+# Pruned = every probe answered 200 or 404 and at most 2 versions resolve
+# (the bound the assertion below checks).
+_pruned() { local n; n=$(settled_versions "$1"); [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -le 2 ]; }
 both_repos_pruned() {
-  [ "$(count_versions "$REPO_A")" -le 2 ] && [ "$(count_versions "$REPO_B")" -le 2 ]
+  _pruned "$REPO_A" && _pruned "$REPO_B"
 }
 
 # -------------------------------------------------------------------------

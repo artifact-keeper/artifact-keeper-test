@@ -141,12 +141,17 @@ fi
 begin_test "Verify proxy cache keys have no double slashes"
 
 # Hit the proxy endpoint a second time to exercise the cache read path.
-# A short pause lets the backend finish writing cache metadata from the
-# first request. The upstream here is another repo on the same backend, not
-# a mock with a per-path counter, so cache warmth is not observable
-# (wait_for_proxy_cache_warm needs that counter); the checks below hold on a
-# hit or a miss, so this is a best-effort pause, not a precondition.
-sleep 1  # sleep-ok: best-effort pause so the re-fetch likely reads the cache; warmth is unobservable without a mock upstream and the check holds either way
+# Wait until the project's cache entry is committed first: the proxy's
+# /simple/ root lists exactly the projects whose simple/<name>/ cache keys
+# exist (simple_root walks them on every request; the Remote's artifact
+# listing filters cached index responses out, so it is no signal). A timeout
+# is not judged here; the checks below hold on a hit or a miss.
+_pkg_index_cached() {
+  curl -sf $CURL_TIMEOUT -H "$(format_auth_header)" \
+    "${BASE_URL}/pypi/${PROXY_KEY}/simple/" 2>/dev/null | grep -qF "${PKG_NAME}"
+}
+wait_until "${PKG_NAME} index cached in ${PROXY_KEY}" 20 _pkg_index_cached \
+  || echo "  ${PKG_NAME} not yet listed by ${PROXY_KEY}'s /simple/ root after 20s; the re-fetch below may be a miss"
 
 SECOND_RESP=""
 if SECOND_RESP=$(curl -sf $CURL_TIMEOUT \
@@ -203,8 +208,10 @@ else
 fi
 
 # Fetch root a second time to confirm the cache key roundtrips correctly.
-# Same best-effort pause as above.
-sleep 1  # sleep-ok: best-effort pause so the re-fetch likely reads the cache; warmth is unobservable without a mock upstream and the check holds either way
+# The root's own upstream-body cache entry has no observable completion
+# signal (the root listing is rebuilt from cache keys on every request either
+# way), and the check below holds on a hit or a miss.
+sleep 1  # sleep-ok: root upstream-body cache write has no observable signal; the roundtrip check holds on a hit or a miss
 
 begin_test "Verify root simple index cache roundtrip"
 ROOT_RESP2=""

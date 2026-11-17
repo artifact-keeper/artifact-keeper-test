@@ -109,11 +109,13 @@ fi
 # -------------------------------------------------------------------------
 
 begin_test "Verify artifacts promoted to release"
-# Wait for the bulk promotion to land (one copied row per promoted id listed
-# in the target), then assert on the listing as before.
+# Wait for the bulk promotion to land, then assert on the listing as before.
+# The wait asks for the same >= 3 the assertion checks: bulk promote can answer
+# 200 with some items failed, and that partial result belongs to the count
+# assertion's message, not to a landing timeout.
 PROMOTED_N=$(echo "$ARTIFACT_IDS" | jq 'length' 2>/dev/null) || PROMOTED_N=0
-if ! wait_until "${PROMOTED_N} promoted artifacts listed in ${RELEASE_KEY}" 20 listed_at_least "$RELEASE_KEY" "${PROMOTED_N:-0}"; then
-  fail "only $(listed_count "$RELEASE_KEY") of ${PROMOTED_N} promoted artifacts appeared in the ${RELEASE_KEY} listing within 20s"
+if ! wait_until "at least 3 promoted artifacts listed in ${RELEASE_KEY}" 20 listed_at_least "$RELEASE_KEY" 3; then
+  fail "only $(listed_count "$RELEASE_KEY") of ${PROMOTED_N} promoted artifacts appeared in the ${RELEASE_KEY} listing within 20s (expected >= 3)"
 elif resp=$(api_get "/api/v1/repositories/${RELEASE_KEY}/artifacts" 2>/dev/null); then
   count=$(echo "$resp" | jq '
     if type == "array" then length

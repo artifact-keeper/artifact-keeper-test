@@ -141,11 +141,16 @@ else
     for i in 1 2 3 4 5; do
       status=$(curl -s -o /dev/null -w "%{http_code}" -H "$(auth_header)" $CURL_TIMEOUT \
         "${BASE_URL}/api/v1/repositories/${REPO_KEY}/artifacts/pkg/v${i}/file.txt" 2>&1) || true
-      if [ "$status" = "200" ]; then n=$((n + 1)); fi
+      case "$status" in
+        200) n=$((n + 1)) ;;
+        404) ;;
+        # A backend error or dropped probe must not read as "removed".
+        *) echo "unsettled"; return 0 ;;
+      esac
     done
     echo "$n"
   }
-  at_most_two_remaining() { [ "$(remaining_versions)" -le 2 ]; }
+  at_most_two_remaining() { local n; n=$(remaining_versions); [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -le 2 ]; }
   if wait_until "old versions removed from ${REPO_KEY}" 30 at_most_two_remaining; then
     pass
   else
