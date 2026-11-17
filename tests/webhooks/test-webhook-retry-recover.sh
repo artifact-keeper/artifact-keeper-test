@@ -9,7 +9,7 @@
 #   = 12 attempts; total walltime ~65h.
 #
 # Smoke profile: this test caps observation at the first 3 attempts so the
-# release-gate stays under WEBHOOK_RETRY_TIMEOUT (default 360s). The first
+# release-gate stays under WEBHOOK_RETRY_TIMEOUT (default 330s). The first
 # three intervals (30s, 60s, 120s base) plus +/-20% jitter give acceptable
 # windows of:
 #   attempt 1 ->  24-36s   backoff
@@ -17,7 +17,7 @@
 #   attempt 3 ->  96-144s  backoff
 # The full 12-attempt schedule is exercised in the dead-letter test.
 #
-# IMPORTANT — what we actually measure, and the scheduler-tick quantization
+# IMPORTANT: what we actually measure, and the scheduler-tick quantization
 # that the (now fixed) windows MUST account for:
 #
 # The backend does NOT fire a retry at the exact instant next_retry_at
@@ -37,7 +37,7 @@
 #
 # Note also: this test must KEEP the receiver FAILING through attempt 3.
 # If the mock recovers (returns 200) after the first failure the delivery
-# row is marked success/next_retry_at=NULL and NO further POSTs occur — you
+# row is marked success/next_retry_at=NULL and NO further POSTs occur, so you
 # can never observe a 2nd or 3rd retry interval. WEBHOOK_FAIL_FIRST_N is
 # therefore defaulted to EXPECT_ATTEMPTS so the receiver rejects attempts
 # 1..3 (producing the 3 spaced retry POSTs we measure) and accepts the 4th,
@@ -83,11 +83,11 @@ begin_suite "webhook-retry-recover"
 WEBHOOK_RECEIVER_PORT="${WEBHOOK_RECEIVER_PORT:-$(( 18700 + $$ % 200 ))}"
 WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://$(webhook_receiver_host):${WEBHOOK_RECEIVER_PORT}/hook}"
 # Number of spaced retry intervals we observe. Default 1: reject attempt 1,
-# recover on attempt 2 — this proves the retry-AND-recover behavior with real
-# backoff spacing while fitting comfortably inside the 300s run-suite per-test
-# timeout. Observing all 3 intervals needs ~330s (30+60+120 backoff + 30s ticks
-# + jitter), which overruns the 300s wrapper, so we validate the first interval
-# (the backoff base) rather than time out. Set EXPECT_ATTEMPTS=3 + a larger
+# recover on attempt 2. This proves the retry-AND-recover behavior with real
+# backoff spacing inside the webhook job's TEST_TIMEOUT (420s). Observing all 3
+# intervals needs ~330s of retry polling (30+60+120 backoff + 30s ticks +
+# jitter) on top of setup and the initial-POST poll, which overruns it, so we
+# validate the first interval (the backoff base) rather than time out. Set EXPECT_ATTEMPTS=3 + a larger
 # WEBHOOK_RETRY_TIMEOUT/TEST_TIMEOUT to exercise the full ladder when desired.
 EXPECT_ATTEMPTS="${EXPECT_ATTEMPTS:-1}"
 # Reject the first N POSTs, then recover on the (N+1)th. MUST be >= EXPECT_ATTEMPTS.
@@ -216,7 +216,7 @@ else
   REPO_CREATE_PAYLOAD=$(jq -nc --arg k "$REPO_KEY" \
     '{key:$k, name:$k, format:"generic", repo_type:"local", is_public:true}')
   if repo_resp=$(api_post "/api/v1/repositories" "$REPO_CREATE_PAYLOAD" 2>/dev/null); then
-    REPO_ID=$(echo "$repo_resp" | jq -r '.id // empty' 2>/dev/null)
+    REPO_ID=$(echo "$repo_resp" | jq -r '.id // empty' 2>/dev/null) || REPO_ID=""
     if [ -n "$REPO_ID" ] && [ "$REPO_ID" != "null" ]; then
       pass
     else
@@ -243,10 +243,10 @@ else
     --arg name "$WEBHOOK_NAME" \
     --arg url "$WEBHOOK_RECEIVER_URL" \
     --arg rid "$REPO_ID" \
-    '{name: $name, url: $url, events: ["artifact_uploaded"], repository_id: $rid, enabled: true}')
+    '{name: $name, url: $url, events: ["artifact_uploaded"], repository_id: $rid}')
   if resp=$(api_post "/api/v1/webhooks" "$PAYLOAD" 2>/dev/null); then
-    WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty')
-    scoped_to=$(echo "$resp" | jq -r '.repository_id // empty')
+    WEBHOOK_ID=$(echo "$resp" | jq -r '.id // empty' 2>/dev/null) || WEBHOOK_ID=""
+    scoped_to=$(echo "$resp" | jq -r '.repository_id // empty' 2>/dev/null) || scoped_to=""
     if [ -z "$WEBHOOK_ID" ] || [ "$WEBHOOK_ID" = "null" ]; then
       fail "webhook create returned no id"
     elif [ "$scoped_to" != "$REPO_ID" ]; then
@@ -340,6 +340,8 @@ else
         fail "initial POST for ${REPO_KEY}/${ARTIFACT_PATH} carried no entity_id; cannot scope the retry to this artifact"
       fi
     else
+      # Nothing to retry: skip the retry poll instead of waiting it out.
+      SUITE_BLOCKED=true
       fail "receiver saw 0 artifact_uploaded POSTs for ${REPO_KEY}/${ARTIFACT_PATH} within ${INITIAL_POST_TIMEOUT}s"
     fi
   else
@@ -462,42 +464,42 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# X-ArtifactKeeper-Retry-Attempt is emitted ONLY on retry deliveries
-# (per the v2 wire contract). The first delivery has no retry header;
-# subsequent deliveries carry attempt counters >= 1. The retry must also be a
-# re-send of the SAME delivery row (same X-ArtifactKeeper-Delivery id), not a
-# second event.
+# X-ArtifactKeeper-Retry-Attempt numbers the attempt being sent. Producer rows
+# are only ever sent by the retry path (webhooks.rs deliver_one_claimed_webhook
+# sets retry_attempt = attempts + 1), so the initial POST carries 1 and the
+# first retry 2. Assert the second POST's counter is exactly one more than the
+# first's: a bare ">= 1" would also pass on a first attempt. The retry must
+# also be a re-send of the SAME delivery row (same X-ArtifactKeeper-Delivery
+# id), not a second event.
 # -------------------------------------------------------------------------
 
 begin_test "X-ArtifactKeeper-Retry-Attempt header present on retry deliveries"
 if [ "$SUITE_BLOCKED" = "true" ] || [ ! -s "$WEBHOOK_RECEIVER_LOG" ]; then
   skip "no receiver log"
 else
-  # Use the SECOND POST for OUR artifact (entity_id filtered): the first POST is
-  # the initial delivery (no retry header), the second is retry attempt 1.
+  # Compare the FIRST and SECOND POSTs for OUR artifact (entity_id filtered):
+  # the initial delivery and its first retry.
   # Single-line-robust count (see the seen= site above, #309).
   repo_post_count=$(select_repo_records | awk 'END{print NR}') || repo_post_count=0
   if [ "$repo_post_count" -lt 2 ]; then
     fail "only ${repo_post_count} delivery POST(s) for repo ${REPO_KEY}; cannot check retry header (expected the first retry to have fired)"
   else
-    second_headers=$(select_repo_records | sed -n '2p' | jq -r '.headers')
-    retry_attempt=$(echo "$second_headers" | jq -r '
-      (.["X-ArtifactKeeper-Retry-Attempt"] //
-       .["x-artifactkeeper-retry-attempt"] //
-       .["X-ARTIFACTKEEPER-RETRY-ATTEMPT"] // empty)
-    ')
-    # Case-insensitive header lookup: the receiver logs names as sent.
-    delivery_ids=$(select_repo_records | head -n 2 | jq -r '
+    # Case-insensitive header lookups: the receiver logs names as sent
+    # (reqwest sends them lowercase). One "<attempt> <delivery>" line per POST.
+    attempt_lines=$(select_repo_records | sed -n '1,2p' | jq -r '
       .headers | to_entries
-      | map(select((.key | ascii_downcase) == "x-artifactkeeper-delivery"))
-      | (.[0].value // "")')
-    first_delivery=$(echo "$delivery_ids" | sed -n '1p')
-    second_delivery=$(echo "$delivery_ids" | sed -n '2p')
-    if ! { [ -n "$retry_attempt" ] && [ "$retry_attempt" != "null" ] && \
-           [[ "$retry_attempt" =~ ^[0-9]+$ ]] && [ "$retry_attempt" -ge 1 ]; }; then
-      fail "expected retry-attempt header >= 1 on second delivery, got '${retry_attempt}'"
-    elif [ -z "$first_delivery" ] || [ "$first_delivery" != "$second_delivery" ]; then
-      fail "second POST is not a retry of the first delivery: X-ArtifactKeeper-Delivery '${first_delivery}' then '${second_delivery}'"
+      | (map(select((.key | ascii_downcase) == "x-artifactkeeper-retry-attempt")) | .[0].value // "-")
+        + " "
+        + (map(select((.key | ascii_downcase) == "x-artifactkeeper-delivery")) | .[0].value // "-")' \
+      2>/dev/null) || attempt_lines=""
+    read -r first_attempt first_delivery <<< "$(echo "$attempt_lines" | sed -n '1p')" || true
+    read -r retry_attempt second_delivery <<< "$(echo "$attempt_lines" | sed -n '2p')" || true
+    if ! [[ "${first_attempt:-}" =~ ^[0-9]+$ && "${retry_attempt:-}" =~ ^[0-9]+$ ]]; then
+      fail "expected numeric X-ArtifactKeeper-Retry-Attempt on both POSTs, got '${first_attempt:-}' then '${retry_attempt:-}'"
+    elif [ "$retry_attempt" -lt 2 ] || [ "$retry_attempt" -ne $(( first_attempt + 1 )) ]; then
+      fail "retry POST's X-ArtifactKeeper-Retry-Attempt is ${retry_attempt}, expected $(( first_attempt + 1 )) (initial POST carried ${first_attempt})"
+    elif [ "${first_delivery:--}" = "-" ] || [ "$first_delivery" != "${second_delivery:-}" ]; then
+      fail "second POST is not a retry of the first delivery: X-ArtifactKeeper-Delivery '${first_delivery:-}' then '${second_delivery:-}'"
     else
       pass
     fi
