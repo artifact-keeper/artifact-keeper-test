@@ -18,9 +18,6 @@ UPSTREAM_KEY="test-remote-upstream-${RUN_ID}"
 REMOTE_KEY="test-remote-proxy-${RUN_ID}"
 PROXY_FETCHED=0
 
-# upstream_serves_artifact: wait_until predicate, the upstream generic
-# endpoint (the remote's upstream URL) serves the seeded artifact.
-
 # -------------------------------------------------------------------------
 # Create upstream local repo and seed it with an artifact
 # -------------------------------------------------------------------------
