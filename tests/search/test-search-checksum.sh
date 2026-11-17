@@ -50,7 +50,13 @@ fi
 
 begin_test "Search by SHA256 checksum"
 if [ -n "$CHECKSUM" ]; then
-  if resp=$(api_get "/api/v1/search/checksum?sha256=${CHECKSUM}" 2>/dev/null); then
+  # ChecksumQuery is { checksum, algorithm }; the old ?sha256= form matched no
+  # parameter, so the request failed and the check always skipped.
+  if resp=$(api_get "/api/v1/search/checksum?checksum=${CHECKSUM}&algorithm=sha256" 2>/dev/null); then
+    if assert_contains "$resp" "checksumfile"; then
+      pass
+    fi
+  elif resp=$(api_get "/api/v1/search/checksum?sha256=${CHECKSUM}" 2>/dev/null); then
     if assert_contains "$resp" "checksumfile"; then
       pass
     fi

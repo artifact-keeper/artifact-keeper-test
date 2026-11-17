@@ -146,7 +146,8 @@ auth_admin
 
 begin_test "Start mock webhook receiver"
 if ! command -v python3 >/dev/null 2>&1; then
-  skip "python3 not available"
+  SUITE_BLOCKED=true
+  require_or_fail "python3 not available to run the mock webhook receiver"
 else
   # NOTE: #316 passed WEBHOOK_FAIL_MATCH="$REPO_KEY" here. That was wrong: the
   # delivery body carries entity_id = the repository UUID, not the repo key, so
@@ -183,7 +184,7 @@ fi
 # -------------------------------------------------------------------------
 
 WEBHOOK_NAME="retry-recover-${RUN_ID}"
-SUITE_BLOCKED=false
+SUITE_BLOCKED="${SUITE_BLOCKED:-false}"
 
 begin_test "Create webhook targeting mock receiver"
 if [ "$ready" != "true" ]; then
@@ -202,7 +203,9 @@ else
     fi
   else
     SUITE_BLOCKED=true
-    skip "webhook create rejected (URL '${WEBHOOK_RECEIVER_URL}' likely blocked by SSRF allow-list)"
+    # Under RELEASE_GATE=1 the gate configures the receiver to be reachable;
+    # a rejected create leaves every retry assertion below unchecked.
+    require_or_fail "webhook create rejected (URL '${WEBHOOK_RECEIVER_URL}' likely blocked by SSRF allow-list)"
   fi
 fi
 
@@ -283,7 +286,7 @@ else
     fi
   else
     SUITE_BLOCKED=true
-    skip "repo create (event trigger) failed"
+    require_or_fail "repo create (event trigger) failed"
   fi
 fi
 
@@ -293,6 +296,8 @@ begin_test "Receiver answered this repository's first delivery with the forced 5
 if [ "$SUITE_BLOCKED" = "true" ] || [ -z "$WEBHOOK_ID" ]; then
   skip "no webhook id"
 elif [ -z "$REPO_ID" ]; then
+  # Without the id every later selection would fall back to any repo's POSTs.
+  SUITE_BLOCKED=true
   fail "repo create returned no id; cannot scope the forced failure to this repository"
 else
   first_status=$(select_repo_records | head -n 1 | jq -r '.status // empty' 2>/dev/null) || first_status=""

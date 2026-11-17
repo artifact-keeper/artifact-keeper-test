@@ -57,8 +57,7 @@ _tree_names() {
     | map(
         (.name // empty),
         (.path // empty),
-        (.key // empty),
-        (.repository_key // empty)
+        (.key // empty)
       )
     | flatten
     | map(select(. != null and . != ""))
@@ -142,11 +141,14 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Root: must surface our repo key in a structured name/path/repository_key
-# field. Scoped to our repository (test#365), never the instance-wide list.
+# Repo-scoped tree (test#365): the backend has no instance-wide root view any
+# more (repository_key is required, 400 without it), and the old unfiltered
+# root assertion moved with every sibling repo. What a scoped request must
+# guarantee is that it answers nodes, and only nodes of the requested repo:
+# get_tree stamps the requested repository_key on every node it returns.
 # -------------------------------------------------------------------------
 
-begin_test "Root listing surfaces the test repo"
+begin_test "Repo-scoped tree answers only this repo's nodes"
 root_resp=""
 for path_form in "${TREE_BASE}?repository_key=${REPO_KEY}" "${TREE_BASE}/${REPO_KEY}"; do
   if r=$(api_get "$path_form" 2>/dev/null); then
@@ -155,14 +157,19 @@ for path_form in "${TREE_BASE}?repository_key=${REPO_KEY}" "${TREE_BASE}/${REPO_
   fi
 done
 if [ -z "$root_resp" ]; then
-  skip "root listing returned error"
+  fail "repo-scoped tree request for ${REPO_KEY} returned an error"
 else
-  names=$(_tree_names "$root_resp")
-  if _names_contain "$names" "$REPO_KEY"; then
-    pass
-  else
-    fail "root listing did not surface ${REPO_KEY} in any name/path field (got names: $(echo "$names" | tr '\n' ',' | head -c 300))"
-  fi
+  scoped=$(echo "$root_resp" | jq -r --arg k "$REPO_KEY" '
+    (if type == "array" then . else (.nodes // .entries // .children // .items // .results // []) end) as $n
+    | if ($n | length) == 0 then "empty"
+      elif ([$n[] | select((.repository_key // $k) != $k)] | length) > 0 then "foreign"
+      else "ok" end' 2>/dev/null || echo "unparsable")
+  case "$scoped" in
+    ok) pass ;;
+    empty) fail "repo-scoped tree for ${REPO_KEY} answered no nodes" "${root_resp:0:300}" ;;
+    foreign) fail "repo-scoped tree for ${REPO_KEY} answered nodes of another repository" "${root_resp:0:300}" ;;
+    *) fail "repo-scoped tree for ${REPO_KEY} answered an unparsable body" "${root_resp:0:300}" ;;
+  esac
 fi
 
 # -------------------------------------------------------------------------

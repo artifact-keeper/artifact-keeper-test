@@ -58,7 +58,15 @@ fi
 
 begin_test "Search suggestions endpoint"
 prefix="${UNIQUE_TERM:0:6}"
-if resp=$(api_get "/api/v1/search/suggest?q=${prefix}" 2>/dev/null); then
+# SuggestQuery requires `prefix`; ?q= alone was rejected, so this always
+# skipped.
+if resp=$(api_get "/api/v1/search/suggest?prefix=${prefix}" 2>/dev/null); then
+  if echo "$resp" | jq -e '.suggestions | type == "array"' >/dev/null 2>&1; then
+    pass
+  else
+    fail "suggest answered without a suggestions array" "${resp:0:300}"
+  fi
+elif resp=$(api_get "/api/v1/search/suggest?q=${prefix}" 2>/dev/null); then
   pass
 elif resp=$(api_get "/api/v1/search/suggestions?q=${prefix}" 2>/dev/null); then
   pass
