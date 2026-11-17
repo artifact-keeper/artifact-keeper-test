@@ -55,6 +55,16 @@ up_n(){ curl -s --max-time 5 "${MOCK}/__requests?path=$1" | jqr '(.get // 0) + (
 up_get(){ curl -s --max-time 5 "${MOCK}/__requests?path=$1" | jqr '.get // empty'; }
 up_head(){ curl -s --max-time 5 "${MOCK}/__requests?path=$1" | jqr '.head // empty'; }
 
+# cached_rows <repo> <path-suffix> <size>: authoritative proxy-cache catalog
+# rows (written by the cache commit, after the sidecar) of that size
+cached_rows(){
+  [ -n "${DB_CONTAINER:-}" ] || { echo 1; return 0; }
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
+    "SELECT count(*) FROM proxy_cache_artifacts c JOIN repositories r ON r.id=c.repository_id \
+     WHERE r.key='$1' AND c.path LIKE '%$2' AND c.size_bytes=$3 AND c.checksum_sha256 IS NOT NULL;" \
+    2>/dev/null | tr -d '[:space:]' || true
+}
+
 auth(){ printf 'Authorization: Bearer %s' "$TOK"; }
 # fetch <url> <out> -> http code ("000" on a dropped connection)
 fetch(){
@@ -207,8 +217,21 @@ begin_test "CONTROL: an expired entry whose upstream bytes changed is refetched 
 reset_case
 code="$(fetch "$REF_URL" "$W/ref.o")"
 [ "$code" = "200" ] && [ "$(sha_of "$W/ref.o")" = "$(sha_of "$W/refill.v1")" ] || fail_g "prime GET answered ${code} or the wrong body"
+# The entry's TTL clock starts at the cache COMMIT (the sidecar's cached_at is
+# stamped after the 40 MB body is promoted), which on a slow runner lands
+# seconds after the client has its last byte. Start the 7 s wait only once
+# the authoritative catalog row (written right after the sidecar) is there;
+# a bare `sleep 7` left 2 s of margin and once served the still-fresh v1
+# with no upstream request at all (nightly 43977258569, 1.11.x).
+commit_wait=0
+[ -n "${DB_CONTAINER:-}" ] || note "DB_CONTAINER unset: cannot see the prime's commit; timing from the prime GET"
+while [ "$commit_wait" -lt 60 ]; do
+  [ "$(cached_rows "$R_REF" "blob-${SUF}.bin" "$REFILL_BYTES")" = "1" ] && break
+  sleep 1; commit_wait=$((commit_wait+1))
+done
+[ "$commit_wait" -lt 60 ] || note "prime commit not seen in proxy_cache_artifacts after 60 s; timing from now"
 [ "$(mock_put "$REF" "$W/refill.v2")" = "$REFILL_BYTES" ] || fail_g "could not replace the upstream bytes"
-sleep 7   # past the 5 s TTL
+sleep 7   # past the 5 s TTL, counted from the prime's commit
 g0="$(up_get "$REF")"; h0="$(up_head "$REF")"
 # The refilling GET, then AT ONCE (no probe in between: the window is the
 # refill's tail, a few hundred ms after the client has its last byte) a burst
