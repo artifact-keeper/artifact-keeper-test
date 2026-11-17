@@ -1,0 +1,62 @@
+# s3-formats-skip-baseline.txt - the per-check skips the nightly S3 format
+# matrix accepts (artifact-keeper#6121). Format: <batch> TAB <suite> TAB <check>
+# TAB <why>. A skip in format-tests-s3 that is not listed here fails its batch:
+# a new skip on S3 is exactly the silent pass the lane exists to catch.
+#
+# Every entry below also skips in the gate's own format-tests on the
+# filesystem backend (compared against Release Candidate run 43891235522 and
+# S3 run 43975702126 on sha-2ae12c7): a WASM plugin the test deploy does not
+# load, a client the runner image lacks, an opt-in leg, or a format with no
+# delete/download route. None is about storage. When a gate change adds or
+# removes one, update this file in the same PR (or after the nightly's
+# tracking issue names it), with the reason.
+containers	oci-remote	Delete image (bug #600)	OCI manifest delete not implemented yet
+containers	oci-remote	Re-push same tag after delete (bug #600)	OCI manifest delete not implemented yet
+containers	oci-remote	Verify image exists after re-push (bug #600)	OCI manifest delete not implemented yet
+containers	oci-remote	Verify image returns 404 after delete (bug #600)	OCI manifest delete not implemented yet
+generic-protocol	agentplugins	ak agent plugins install --path writes .ak/plugin-info.json	ak CLI not on PATH (set AK_BIN to run the ak agent plugins steps)
+generic-protocol	agentplugins	ak agent plugins publish --dry-run	ak CLI not on PATH (set AK_BIN to run the ak agent plugins steps)
+generic-protocol	ansible	#3873: ansible-galaxy collection install through the generic URL	ansible-galaxy CLI not installed
+generic-protocol	ansible	Delete collection and verify removal	delete not supported for this format (status: 404)
+generic-protocol	ansible	Download and verify collection	download endpoint not available for this format (status: 404)
+generic-protocol	bazel	Check bazel WASM plugin availability	bazel WASM plugin not loaded (HTTP 404)
+generic-protocol	bazel	List artifacts via management API	bazel WASM plugin not loaded
+generic-protocol	bazel	Query registry index	bazel WASM plugin not loaded
+generic-protocol	bazel	Retrieve MODULE.bazel	bazel WASM plugin not loaded
+generic-protocol	bazel	Upload MODULE.bazel descriptor	bazel WASM plugin not loaded
+generic-protocol	bazel	Upload source archive	bazel WASM plugin not loaded
+generic-protocol	p2	Check p2 WASM plugin availability	p2 WASM plugin not loaded (HTTP 404)
+generic-protocol	p2	List artifacts via management API	p2 WASM plugin not loaded
+generic-protocol	p2	Query P2 content metadata	p2 WASM plugin not loaded
+generic-protocol	p2	Upload P2 bundle	p2 WASM plugin not loaded
+generic-protocol	vagrant	Check vagrant WASM plugin availability	vagrant WASM plugin not loaded (HTTP 404)
+generic-protocol	vagrant	Download box file	vagrant WASM plugin not loaded
+generic-protocol	vagrant	List artifacts via management API	vagrant WASM plugin not loaded
+generic-protocol	vagrant	Query box listing	vagrant WASM plugin not loaded
+generic-protocol	vagrant	Upload box file	vagrant WASM plugin not loaded
+generic-protocol	wasm	Check wasm WASM plugin availability	wasm WASM plugin not loaded (HTTP 404)
+generic-protocol	wasm	Download WASM binary	wasm WASM plugin not loaded
+generic-protocol	wasm	List artifacts via management API	wasm WASM plugin not loaded
+generic-protocol	wasm	Query WASM module listing	wasm WASM plugin not loaded
+generic-protocol	wasm	Upload WASM binary	wasm WASM plugin not loaded
+mcp	mcp-remote	Public upstream: registry.modelcontextprotocol.io is deny by default	AK_TEST_MCP_PUBLIC_UPSTREAM not set; the public-registry leg is opt-in
+mcp	mcp-run-server	MCP Inspector 2.11.0 lists the installed server's tools (stdio)	inspector lane disabled (AK_TEST_MCP_INSPECTOR unset)
+mcp	mcp-run-server	MCP Inspector 2.11.0 lists the remote's tools (streamable HTTP)	inspector lane disabled (AK_TEST_MCP_INSPECTOR unset)
+misc-native	cocoapods	Delete podspec and verify removal	delete not supported for this format (status: 405)
+misc-native	composer	Delete package and verify removal	delete not supported for this format (status: 404)
+misc-native	composer	Download and verify package	download endpoint not available for this format (status: 404)
+misc-native	cran	Delete package and verify removal	delete not supported for this format (status: 405)
+misc-native	nuget	Delete package and verify removal	delete not supported for this format (status: 404)
+python	mlmodel	Check mlmodel WASM plugin availability	mlmodel WASM plugin not loaded (HTTP 404)
+python	mlmodel	Download model binary	mlmodel WASM plugin not loaded
+python	mlmodel	Download model metadata	mlmodel WASM plugin not loaded
+python	mlmodel	List artifacts via management API	mlmodel WASM plugin not loaded
+python	mlmodel	Upload model binary	mlmodel WASM plugin not loaded
+python	mlmodel	Upload model metadata	mlmodel WASM plugin not loaded
+python	pypi-jupyterlab-extension-manager	Real PyPIExtensionManager(base_url=hosted).list_packages() lists the extension	AK_TEST_JUPYTERLAB=0; the manager's requests are replayed above
+rust-go-swift	cargo-remote	Pull crate index entry through remote proxy	sparse index lookup returned error for /cargo/test-cargo-remote-<run>/index/cf/g-/cfg-if
+rust-go-swift	cargo-remote	Verify downloaded crate is a valid gzip archive	downloaded file does not have gzip magic bytes (may be uncompressed)
+rust-go-swift	go	go mod download via GOPROXY	go mod download failed (may require exact zip layout)
+system-packages	alpine	Verify public key endpoint	public key endpoint not configured
+system-packages	opkg	Download .ipk via ext/opkg endpoint	download not available (plugin may not be installed)
+system-packages	opkg	Upload .ipk via ext/opkg endpoint	opkg WASM plugin not installed (HTTP 404)

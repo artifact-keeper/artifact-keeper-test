@@ -108,6 +108,12 @@ spec:
               done
               mc mb --ignore-existing local/ak-e2e
               echo "bucket ak-e2e ready"
+          # Requests let the Job run in a namespace with a ResourceQuota
+          # (the nightly S3 format matrix puts one on its namespace).
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -192,3 +198,7 @@ spec:
               done
               echo "azurite never became ready" >&2
               exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi

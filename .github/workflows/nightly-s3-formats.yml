@@ -1,0 +1,440 @@
+name: Nightly S3 Formats
+
+# ---------------------------------------------------------------------
+# The release gate's format suites on S3 storage (artifact-keeper#6121).
+#
+# The gate (release-gate.yml) runs every format-tests batch against a backend
+# whose DEFAULT storage is the filesystem: MinIO is deployed, but only as the
+# named "s3" backend that a handful of DTF tiers and
+# tests/platform/test-storage-backend-s3.sh opt into per repository. A format
+# handler that breaks only on object storage is invisible there. This lane
+# deploys ONE namespace whose backend runs STORAGE_BACKEND=s3 (MinIO from
+# helm/storage-emulators.yaml), proves that new repositories really land in
+# the bucket, and runs the gate's format-tests batches against it.
+#
+# Outside the gate: artifact-keeper's nightly-release-gate.yml calls this after
+# the gate's lines finish; it is advisory there and blocks no release. Every
+# job is a tier for scripts/ci/nightly-gate-report.js (keyed by job name, so
+# `format-tests-s3 (node)` reports as `format-tests-s3/node`, separately from
+# the gate's `format-tests`). collect-results is the lane verdict.
+#
+# Tiers, all blocking for the lane verdict:
+#   deploy-s3                  namespace + MinIO + backend on s3, pre-proof
+#   format-tests-s3 (<batch>)  one per gate format-tests batch, read from
+#                              release-gate.yml at run time (no second list)
+#   s3-storage-census          post-proof: every repository is on s3, the
+#                              bucket holds the content
+#   teardown                   red only when the namespace leaked
+#
+# Batches and the toolchain install come from release-gate.yml through
+# scripts/ci/gate-format-batches.sh, so a batch or script added to the gate
+# runs here the next night with no edit to this file.
+#
+# RELEASE_GATE=1, as in the gate: skip_suite() (a suite that cannot exercise
+# its subject at all) is a failure, not a skip. That is the point of this lane:
+# a format suite that stands down on S3 would otherwise pass having certified
+# nothing about S3. A per-check skip() is allowed only when it is listed in
+# scripts/ci/s3-formats-skip-baseline.txt (with the reason it cannot be
+# observed here); any other skip fails its batch. Every skip is shown, with
+# its reason, in the batch's step summary.
+# ---------------------------------------------------------------------
+on:
+  workflow_call:
+    inputs:
+      backend_tag:
+        description: Backend image tag (sha-<7> from main's Docker Publish)
+        required: true
+        type: string
+      backend_digest:
+        description: Optional sha256 digest pinning the backend image
+        required: false
+        type: string
+        default: ''
+      iac_ref:
+        description: artifact-keeper-iac ref for the Helm chart
+        required: false
+        type: string
+        default: 'main'
+      web_tag:
+        description: Accepted for interface parity; this lane deploys no web
+        required: false
+        type: string
+        default: 'latest'
+    secrets:
+      GHCR_DOCKER_CONFIG:
+        required: false
+  workflow_dispatch:
+    inputs:
+      backend_tag:
+        description: Backend image tag (sha-<7> from main's Docker Publish)
+        required: true
+        type: string
+      backend_digest:
+        description: Optional sha256 digest pinning the backend image
+        required: false
+        type: string
+        default: ''
+      iac_ref:
+        description: artifact-keeper-iac ref for the Helm chart
+        required: false
+        type: string
+        default: 'main'
+      web_tag:
+        description: Accepted for interface parity; this lane deploys no web
+        required: false
+        type: string
+        default: 'latest'
+      batches:
+        description: 'Space-separated format-tests batches to run (dispatch only: a narrow validation run). Empty = every gate batch.'
+        required: false
+        type: string
+        default: ''
+
+# The nightly grants exactly these two; asking for more fails the call.
+permissions:
+  contents: read
+  packages: read
+
+env:
+  BACKEND_TAG: ${{ inputs.backend_tag }}
+  BACKEND_DIGEST: ${{ inputs.backend_digest }}
+  IAC_REF: ${{ inputs.iac_ref || 'main' }}
+  WEB_TAG: ${{ inputs.web_tag || 'latest' }}
+  BATCHES: ${{ inputs.batches }}
+
+jobs:
+  deploy-s3:
+    runs-on: ak-e2e-runners
+    timeout-minutes: 15
+    outputs:
+      run_id: ${{ steps.setup.outputs.run_id }}
+      namespace: ${{ steps.setup.outputs.namespace }}
+      backend_url: ${{ steps.setup.outputs.backend_url }}
+      started_at: ${{ steps.setup.outputs.started_at }}
+      batches: ${{ steps.batches.outputs.batches }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Validate inputs
+        run: scripts/validate-gate-inputs.sh
+
+      - name: Generate run ID
+        id: setup
+        run: |
+          RUN_ID="s3f-$(date +%s)-${GITHUB_RUN_NUMBER}"
+          NAMESPACE="test-${RUN_ID}"
+          {
+            echo "run_id=${RUN_ID}"
+            echo "namespace=${NAMESPACE}"
+            echo "backend_url=http://artifact-keeper-backend.${NAMESPACE}.svc.cluster.local:8080"
+            echo "started_at=$(date +%s)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Read the gate's format-tests batches
+        id: batches
+        run: |
+          json=$(scripts/ci/gate-format-batches.sh list "${BATCHES}")
+          echo "batches: ${json}"
+          echo "batches=${json}" >> "$GITHUB_OUTPUT"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # Same pin as the gate (Helm 4's --wait watches kinds the runner SA cannot).
+          version: v3.22.1
+
+      - name: Deploy the namespace with S3 as the default storage
+        env:
+          RUN_ID: ${{ steps.setup.outputs.run_id }}
+          GHCR_DOCKER_CONFIG: ${{ secrets.GHCR_DOCKER_CONFIG }}
+        run: |
+          scripts/ci/deploy-s3-formats-namespace.sh \
+            --run-id "${RUN_ID}" \
+            --backend-tag "${BACKEND_TAG}${BACKEND_DIGEST:+@${BACKEND_DIGEST}}" \
+            --iac-ref "${IAC_REF}"
+
+      - name: Assert the backend pod runs the pinned digest
+        if: inputs.backend_digest != ''
+        env:
+          NAMESPACE: ${{ steps.setup.outputs.namespace }}
+        run: |
+          IMGID=$(kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/component=backend -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
+          SPECIMG=$(kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/component=backend -o jsonpath='{.items[0].spec.containers[0].image}')
+          echo "imageID ${IMGID}; image ${SPECIMG}; pinned ${BACKEND_DIGEST}"
+          case "${IMGID}::${SPECIMG}" in
+            *"${BACKEND_DIGEST}"*) echo "OK: pinned digest present";;
+            *) echo "::error::backend pod does not run pinned ${BACKEND_DIGEST}"; exit 1;;
+          esac
+
+      - name: Prove new repositories land in MinIO
+        env:
+          BASE_URL: ${{ steps.setup.outputs.backend_url }}
+          RUN_ID: ${{ steps.setup.outputs.run_id }}
+          NAMESPACE: ${{ steps.setup.outputs.namespace }}
+          ADMIN_PASS: TestRunner!2026secure
+          JUNIT_OUTPUT_DIR: /tmp/test-results
+        run: scripts/ci/s3-default-storage-proof.sh pre
+
+      - name: Upload proof results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: s3-junit-deploy
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  format-tests-s3:
+    name: format-tests-s3 (${{ matrix.batch }})
+    needs: deploy-s3
+    runs-on: ak-e2e-runners
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: ${{ fromJSON(needs.deploy-s3.outputs.batches) }}
+    env:
+      BASE_URL: ${{ needs.deploy-s3.outputs.backend_url }}
+      RUN_ID: ${{ needs.deploy-s3.outputs.run_id }}
+      ADMIN_PASS: TestRunner!2026secure
+      JUNIT_OUTPUT_DIR: /tmp/test-results
+      # See the header: skip_suite() fails, as in the gate.
+      RELEASE_GATE: '1'
+      # test-nuget.sh's #3899 check reads the backend log with kubectl and
+      # skips without it (it skips in the gate's format-tests too). Given here
+      # so that check runs on S3 rather than adding a skip.
+      AK_NAMESPACE: ${{ needs.deploy-s3.outputs.namespace }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Resolve runner pod address for backend dial-back
+        run: |
+          # Same as the gate's format-tests: the remote suites run mock
+          # upstreams on this runner pod, which the backend dials by pod IP.
+          POD_IP="${POD_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
+          if ! echo "$POD_IP" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || echo "$POD_IP" | grep -Eq '^127\.'; then
+            echo "::error::runner pod IP '${POD_IP}' is not a routable IPv4 address"
+            exit 1
+          fi
+          echo "Runner pod IP: ${POD_IP}"
+          echo "MOCK_UPSTREAM_HOSTNAME=${POD_IP}" >> "$GITHUB_ENV"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+
+      - name: Install test dependencies (the gate's step)
+        run: scripts/ci/gate-format-batches.sh install-deps "${{ matrix.batch }}"
+
+      - name: Run ${{ matrix.batch }} format tests on S3
+        run: |
+          mkdir -p "$JUNIT_OUTPUT_DIR"
+          scripts=$(scripts/ci/gate-format-batches.sh scripts "${{ matrix.batch }}")
+          exit_code=0
+          for script in $scripts; do
+            echo "=== Running ${script} ==="
+            if ! bash "tests/formats/${script}"; then
+              echo "FAILED: ${script}"
+              exit_code=1
+            fi
+          done
+          exit $exit_code
+
+      - name: Every skip is a known one, listed with its reason
+        if: always()
+        run: |
+          # A skip not in scripts/ci/s3-formats-skip-baseline.txt fails the
+          # batch: a check that stands down only on S3 must not pass quietly.
+          python3 - "$JUNIT_OUTPUT_DIR" "${{ matrix.batch }}" scripts/ci/s3-formats-skip-baseline.txt <<'PY'
+          import glob, os, sys, xml.etree.ElementTree as ET
+          d, batch, baseline = sys.argv[1:4]
+          known = set()
+          for line in open(baseline, encoding="utf-8"):
+              if line.startswith("#") or not line.strip():
+                  continue
+              f = line.rstrip("\n").split("\t")
+              if len(f) >= 3:
+                  known.add((f[0], f[1], f[2]))
+          def flat(t):
+              return " ".join((t or "").split())
+          def esc(t):  # workflow-command data escaping
+              return t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          rows, total = [], 0
+          for f in sorted(glob.glob(os.path.join(d, "*.xml"))):
+              try:
+                  root = ET.parse(f).getroot()
+              except ET.ParseError as e:
+                  print(f"::warning title=Unreadable JUnit::{esc(f + ': ' + str(e))}")
+                  continue
+              for tc in root.iter("testcase"):
+                  total += 1
+                  sk = tc.find("skipped")
+                  if sk is not None:
+                      s, n = flat(tc.get("classname")), flat(tc.get("name"))
+                      rows.append((s, n, flat(sk.get("message")), (batch, s, n) in known))
+          new = [r for r in rows if not r[3]]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write(f"## format-tests-s3 ({batch}): {total} checks, {len(rows)} skipped, {len(new)} not in the baseline\n\n")
+              if rows:
+                  out.write("| Suite | Check | Reason | Baseline |\n|---|---|---|---|\n")
+                  for s, n, m, k in rows:
+                      out.write("| {} | {} | {} | {} |\n".format(*(x.replace("|", "/") for x in (s, n, m)), "yes" if k else "**NEW**"))
+          for s, n, m, k in rows:
+              level = "warning" if k else "error"
+              print(f"::{level} title=S3 skip ({batch})::{esc(s + ': ' + n + ': ' + m)}")
+          if new:
+              print(f"{len(new)} skip(s) not in {baseline}; fix the suite on S3, or add the check there with the reason it cannot be observed")
+              sys.exit(1)
+          PY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: s3-junit-formats-${{ matrix.batch }}
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  s3-storage-census:
+    needs: [deploy-s3, format-tests-s3]
+    # Not always(): a cancelled night (the nightly yields to a release
+    # candidate) goes straight to teardown instead of holding a runner here.
+    if: ${{ !cancelled() && needs.deploy-s3.result == 'success' }}
+    runs-on: ak-e2e-runners
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+
+      - name: Every repository is on s3 and the bucket holds the content
+        env:
+          BASE_URL: ${{ needs.deploy-s3.outputs.backend_url }}
+          RUN_ID: ${{ needs.deploy-s3.outputs.run_id }}
+          NAMESPACE: ${{ needs.deploy-s3.outputs.namespace }}
+          ADMIN_PASS: TestRunner!2026secure
+          JUNIT_OUTPUT_DIR: /tmp/test-results
+        run: scripts/ci/s3-default-storage-proof.sh post
+
+      - name: Upload census results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: s3-junit-census
+          path: /tmp/test-results/*.xml
+          if-no-files-found: ignore
+
+  # Its own job so a cancelled run (the nightly yields to a release candidate
+  # by cancelling itself) still removes the namespace. Red only when the
+  # namespace is still there afterwards: a leak on the shared node.
+  teardown:
+    needs: [deploy-s3, format-tests-s3, s3-storage-census]
+    if: always() && needs.deploy-s3.outputs.run_id != ''
+    runs-on: ak-e2e-runners
+    timeout-minutes: 12
+    outputs:
+      ended_at: ${{ steps.gone.outputs.ended_at }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: artifact-keeper/artifact-keeper-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.22.1
+
+      - name: Record namespace requests in use at teardown
+        continue-on-error: true
+        env:
+          NAMESPACE: ${{ needs.deploy-s3.outputs.namespace }}
+        run: kubectl -n "$NAMESPACE" get resourcequota nightly-s3-formats -o jsonpath='{.status.used}{"\n"}' || true
+
+      - name: Teardown test namespace
+        env:
+          RUN_ID: ${{ needs.deploy-s3.outputs.run_id }}
+        run: scripts/teardown-test-namespace.sh --run-id "${RUN_ID}"
+
+      - name: The namespace is gone
+        id: gone
+        env:
+          NAMESPACE: ${{ needs.deploy-s3.outputs.namespace }}
+        run: |
+          # Gone only when the API answers and the namespace is absent: an API
+          # error is never read as "deleted" (teardown-test-namespace.sh skips
+          # a namespace it cannot get, so this also re-issues the delete).
+          for _ in $(seq 1 60); do
+            if out=$(kubectl get namespace "$NAMESPACE" --ignore-not-found -o name 2>&1); then
+              if [ -z "$out" ]; then
+                echo "${NAMESPACE} deleted"
+                echo "ended_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              kubectl delete namespace "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
+            else
+              echo "kubectl get namespace failed: ${out}"
+            fi
+            sleep 10
+          done
+          phase=$(kubectl get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+          echo "::error title=Leaked namespace::${NAMESPACE} still exists (${phase:-unknown}, or the API never answered) 10 minutes after teardown"
+          exit 1
+
+      - name: Upload pod logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: s3-pod-logs
+          path: /tmp/test-logs/
+          if-no-files-found: ignore
+
+  collect-results:
+    needs: [deploy-s3, format-tests-s3, s3-storage-census, teardown]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lane verdict
+        env:
+          DEPLOY: ${{ needs.deploy-s3.result }}
+          FORMATS: ${{ needs.format-tests-s3.result }}
+          CENSUS: ${{ needs.s3-storage-census.result }}
+          TEARDOWN: ${{ needs.teardown.result }}
+          STARTED: ${{ needs.deploy-s3.outputs.started_at }}
+          ENDED: ${{ needs.teardown.outputs.ended_at }}
+        run: |
+          {
+            echo "## Nightly S3 formats: backend ${BACKEND_TAG}"
+            echo ""
+            # A narrowed run (the batches input) is a validation run, not the lane.
+            echo "Batches: ${BATCHES:-all format-tests batches of release-gate.yml}"
+            echo ""
+            echo "| Tier | Result |"
+            echo "|---|---|"
+            echo "| deploy-s3 | ${DEPLOY} |"
+            echo "| format-tests-s3 (every batch) | ${FORMATS} |"
+            echo "| s3-storage-census | ${CENSUS} |"
+            echo "| teardown | ${TEARDOWN} |"
+            if [ -n "$STARTED" ] && [ -n "$ENDED" ]; then
+              echo ""
+              echo "Lane wall clock (deploy start to namespace gone): $(( (ENDED - STARTED) / 60 )) min $(( (ENDED - STARTED) % 60 )) s"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # A skipped tier is not evidence: green needs every tier to have run.
+          for r in "$DEPLOY" "$FORMATS" "$CENSUS" "$TEARDOWN"; do
+            if [ "$r" != "success" ]; then
+              echo "::error title=Nightly S3 formats::a tier did not succeed (deploy=${DEPLOY} formats=${FORMATS} census=${CENSUS} teardown=${TEARDOWN})"
+              exit 1
+            fi
+          done
+          echo "All tiers green on S3 default storage."
