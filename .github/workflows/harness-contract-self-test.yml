@@ -66,7 +66,9 @@ on:
       - '.github/workflows/release-gate.yml'
       - 'scripts/ci/**'
       - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/run.sh'
       - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'deploy-test/harness/lib/stack_diag.sh'
       - 'scripts/clean-install-smoke.sh'
       - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - 'scripts/create-test-namespace.sh'
@@ -91,7 +93,9 @@ on:
       - '.github/workflows/release-gate.yml'
       - 'scripts/ci/**'
       - 'deploy-test/harness/run-tiers.sh'
+      - 'deploy-test/harness/run.sh'
       - 'deploy-test/harness/lib/exit_codes.sh'
+      - 'deploy-test/harness/lib/stack_diag.sh'
       - 'scripts/clean-install-smoke.sh'
       - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - 'scripts/create-test-namespace.sh'
@@ -204,6 +208,12 @@ jobs:
       # (artifact-keeper-test#378).
       - name: Run dtf-advisory outcome self-test
         run: bash scripts/ci/selftest-dtf-advisory-outcome.sh
+
+      # run.sh's stack-up failure path (artifact-keeper-test#890): unhealthy
+      # containers' state and logs are printed before teardown, and a fixture
+      # that crashed before the candidate started is retried once, then INFRA.
+      - name: Run DTF stack-up diagnostics and fixture-retry self-test
+        run: bash scripts/ci/selftest-dtf-stack-up.sh
 
       # The nightly S3 format matrix reads the gate's format-tests batches and
       # install step at run time (artifact-keeper#6121): the reader still

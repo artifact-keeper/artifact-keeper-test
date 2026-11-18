@@ -23,6 +23,10 @@
 #   5   run.sh    — artifact-keeper-test corpus not locatable.
 #   6   run.sh    — no free DTF slot.
 #   7   run.sh    — compose stack never became healthy (candidate or sidecar).
+#                   A fixture that exited non-zero before any candidate
+#                   container started is retried once instead; if it crashes
+#                   the same way again run.sh exits 11, not 7, since the
+#                   candidate never ran (artifact-keeper-test#890).
 #   10  run-tiers — the candidate image could not be pulled and is not local.
 #   12  run.sh    — NOT ON THIS LINE: the working tree is a release/X.Y.x
 #                   maintenance suite (deploy-test/.tests-ref, written by
