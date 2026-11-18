@@ -462,31 +462,46 @@ fi
 begin_test "Concurrent uploads: 5 packages in parallel"
 
 # Five sdist uploads to ONE repository at once. The backend caps concurrent
-# archive decodes per repository (MAX_CONCURRENT_INGEST_EXTRACTIONS_PER_TENANT,
-# default 4) and sheds the excess FAST with a 503 + Retry-After: 1 ("Too many
-# concurrent uploads for this repository; please retry shortly"). That is
-# documented load shedding, not a failed publish, so a 503 is retried the way
-# twine/pip would after honouring Retry-After. Any other non-2xx, or a 503
-# that never clears, fails the test. Every attempt's HTTP status and body is
-# recorded so a red run names its cause (artifact-keeper#6191).
+# archive decodes at 4 per repository and 8 globally
+# (MAX_CONCURRENT_INGEST_EXTRACTIONS_PER_TENANT / MAX_CONCURRENT_INGEST_EXTRACTIONS)
+# and fast-fails the excess with a 503 + Retry-After: 1 by design. Real twine
+# clients do NOT retry that: twine's urllib3 Retry covers GET only, so a 503
+# on the upload POST fails the publish. That is a known product gap,
+# artifact-keeper/artifact-keeper#6221. Until it is closed, this test retries
+# ONLY a 503 whose body carries one of the two ingest shed messages, and
+# reports every such retry (RETRIED-PASS). Any other 503 (DB pool, storage),
+# any other non-2xx, or a shed that never clears fails the test. Every
+# attempt's HTTP status, body and curl error is recorded so a red run names
+# its cause (artifact-keeper/artifact-keeper#6191).
 
 CONCURRENT_MAX_ATTEMPTS="${PYPI_CONCURRENT_MAX_ATTEMPTS:-4}"
+case "$CONCURRENT_MAX_ATTEMPTS" in
+  ''|*[!0-9]*|0)
+    echo "  PYPI_CONCURRENT_MAX_ATTEMPTS must be an integer >= 1 (got '${CONCURRENT_MAX_ATTEMPTS}'); using 4"
+    CONCURRENT_MAX_ATTEMPTS=4
+    ;;
+esac
+
+# The two ingest-permit shed bodies (backend/src/util/bounded_archive.rs).
+PYPI_SHED_MSG_TENANT="Too many concurrent uploads for this repository"
+PYPI_SHED_MSG_GLOBAL="Server is busy decompressing"
 
 # upload_sdist_logged <tarball> <name> <version> <log_file>
-# Echoes the final HTTP status. Appends one line per attempt to <log_file>.
+# Returns 0 on a 2xx. Appends one line per attempt to <log_file>.
 upload_sdist_logged() {
   local tarball="$1" name="$2" version="$3" log_file="$4"
-  local basename_file sha256 attempt status body_file hdr_file retry_after
+  local basename_file sha256 attempt status body_file hdr_file err_file retry_after
   basename_file=$(basename "$tarball")
   sha256=$(shasum -a 256 "$tarball" | cut -d' ' -f1)
   body_file="${log_file}.body"
   hdr_file="${log_file}.headers"
-  status="000"
+  err_file="${log_file}.curlerr"
   for attempt in $(seq 1 "$CONCURRENT_MAX_ATTEMPTS"); do
     : > "$body_file"
     : > "$hdr_file"
+    : > "$err_file"
     # shellcheck disable=SC2086 # CURL_TIMEOUT is two flags, split on purpose
-    status=$(curl -s $CURL_TIMEOUT -X POST "${PYPI_URL}/" \
+    status=$(curl -sS $CURL_TIMEOUT -X POST "${PYPI_URL}/" \
       -u "${ADMIN_USER}:${ADMIN_PASS}" \
       -D "$hdr_file" -o "$body_file" -w '%{http_code}' \
       -F ":action=file_upload" \
@@ -494,21 +509,27 @@ upload_sdist_logged() {
       -F "version=${version}" \
       -F "sha256_digest=${sha256}" \
       -F "filetype=sdist" \
-      -F "content=@${tarball};filename=${basename_file}" 2>/dev/null) || true
+      -F "content=@${tarball};filename=${basename_file}" 2>"$err_file") || true
     [ -n "$status" ] || status="000"
-    echo "attempt ${attempt}: HTTP ${status} body: $(head -c 300 "$body_file" | tr '\n' ' ')" >> "$log_file"
+    if [ "$status" = "000" ]; then
+      echo "attempt ${attempt}: HTTP 000 curl error: $(head -c 300 "$err_file" | tr '\n' ' ')" >> "$log_file"
+    else
+      echo "attempt ${attempt}: HTTP ${status} body: $(head -c 300 "$body_file" | tr '\n' ' ')" >> "$log_file"
+    fi
     case "$status" in
-      2??) echo "$status"; return 0 ;;
+      2??) return 0 ;;
       503)
+        if ! grep -qF -e "$PYPI_SHED_MSG_TENANT" -e "$PYPI_SHED_MSG_GLOBAL" "$body_file"; then
+          return 1
+        fi
         retry_after=$(tr -d '\r' < "$hdr_file" | awk 'tolower($1)=="retry-after:" {print $2; exit}')
         case "$retry_after" in ''|*[!0-9]*) retry_after=1 ;; esac
         [ "$retry_after" -gt 5 ] && retry_after=5
         [ "$attempt" -lt "$CONCURRENT_MAX_ATTEMPTS" ] && sleep "$retry_after"
         ;;
-      *) break ;;
+      *) return 1 ;;
     esac
   done
-  echo "$status"
   return 1
 }
 
@@ -521,8 +542,7 @@ for i in $(seq 1 5); do
     cpkg="concurrent-${i}-${RUN_ID//-/_}"
     cver="1.0.${i}"
     csdist=$(build_sdist "$cpkg" "$cver" "$WORK_DIR/concurrent_${i}")
-    if upload_sdist_logged "$csdist" "$cpkg" "$cver" \
-        "${CONCURRENT_RESULTS}/log_${i}" > "${CONCURRENT_RESULTS}/status_${i}"; then
+    if upload_sdist_logged "$csdist" "$cpkg" "$cver" "${CONCURRENT_RESULTS}/log_${i}"; then
       echo "ok" > "${CONCURRENT_RESULTS}/result_${i}"
     else
       echo "fail" > "${CONCURRENT_RESULTS}/result_${i}"
@@ -548,7 +568,7 @@ for i in $(seq 1 5); do
   if [ -f "$result_file" ] && [ "$(cat "$result_file")" = "ok" ]; then
     if [ "$attempts" -gt 1 ]; then
       concurrent_retried=$((concurrent_retried + 1))
-      echo "  upload ${i}: succeeded after ${attempts} attempts (503 load shedding):"
+      echo "  upload ${i}: succeeded after ${attempts} attempts (ingest 503 shed, retried):"
       sed 's/^/    /' "$log_file"
     fi
   else
@@ -564,8 +584,9 @@ for i in $(seq 1 5); do
     fi
   fi
 done
-[ "$concurrent_retried" -gt 0 ] && \
-  echo "  note: ${concurrent_retried}/5 uploads needed a retry after a 503"
+if [ "$concurrent_retried" -gt 0 ]; then
+  echo "  RETRIED-PASS: ${concurrent_retried} upload(s) were shed and retried (artifact-keeper/artifact-keeper#6221)"
+fi
 
 if [ "$all_concurrent_ok" = true ]; then
   pass
