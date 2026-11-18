@@ -59,6 +59,8 @@
 # RUN_ID / ADMIN_USER / ADMIN_PASS / JUNIT_OUTPUT_DIR / RELEASE_GATE.
 : "${BASE_URL:?native_client.sh: BASE_URL not set}"
 : "${DTF_SLOT:?native_client.sh: DTF_SLOT not set}"
+# shellcheck source=lib/internet_fetch.sh
+source "$(dirname "${BASH_SOURCE[0]}")/internet_fetch.sh"
 
 # ---------------------------------------------------------------------------
 # Header parsing + selection
@@ -209,6 +211,19 @@ nc_repo_delete() {
 # The driver
 # ---------------------------------------------------------------------------
 
+# Internal: record a failed hook. When its log shows the test client failing
+# to download its own tooling from the internet (lib/internet_fetch.sh), the
+# candidate was never asked: INFRA (infra_fail, exit DTF_EXIT_INFRA), not FAIL.
+_nc_hook_failed() {
+  local what="$1" log="$2" why
+  if why="$(dtf_internet_fetch_failure "$log")"; then
+    infra_fail "${what}: the test client could not download from the internet (${why})" \
+      "$(tail -n 40 "$log" 2>/dev/null)"
+  else
+    fail "$what" "$(tail -n 40 "$log" 2>/dev/null)"
+  fi
+}
+
 # Internal: run one core hook with begin_test + short-circuit chaining.
 # Uses/updates the FC_OK flag so a failed step skips the rest of the core flow.
 _nc_step() {
@@ -224,7 +239,7 @@ _nc_step() {
     pass
   else
     FC_OK=0
-    fail "${hook} failed" "$(tail -n 40 "$log" 2>/dev/null)"
+    _nc_hook_failed "${hook} failed" "$log"
   fi
 }
 
@@ -308,7 +323,7 @@ nc_run_plugin() {
     else
       # An edge failure does NOT poison later independent cases (they each
       # re-check their own preconditions), but IS a suite failure.
-      fail "edge case '${c}' failed" "$(tail -n 40 "$elog" 2>/dev/null)"
+      _nc_hook_failed "edge case '${c}' failed" "$elog"
     fi
   done
 
