@@ -20,15 +20,19 @@
 #   dtf_fixture_crash_only <project> <candidate-image> [<candidate-image> ...]
 #       Exit 0, printing "<name> exited <code>" for each crashed fixture, when
 #       the failure is PROVABLY not the candidate's: at least one fixture
-#       (a container that is not a candidate: its image is none of the
-#       candidate images and its compose service is not backend*) exited non-zero,
-#       and every candidate container is still in state `created`, i.e. compose
-#       never started it because a dependency failed. Anything else (a
-#       candidate that ran and went unhealthy or exited, no candidate container
-#       found, no fixture crash) exits 1 and the failure stays a stack-up FAIL.
-#       run.sh retries the stack once on exit 0 and, if the fixture crashes the
-#       same way again, reports the tier as INFRA (DTF_EXIT_INFRA), never as a
-#       regression: nothing ran against the candidate.
+#       exited non-zero, and every candidate container is still in state
+#       `created`, i.e. compose never started it because a dependency failed.
+#       A container is a candidate when its image ref equals a candidate
+#       image, when its image REPOSITORY (tag and digest stripped) equals a
+#       candidate's, or when its compose service name contains "backend"
+#       (backend, backend-b, peer-backend, ...). Everything else is a fixture.
+#       Anything else (a candidate that ran and went unhealthy or exited, no
+#       candidate container found, no fixture crash) exits 1 and the failure
+#       stays a stack-up FAIL. run.sh retries the stack once on exit 0 and,
+#       if the retry fails the same test again (some fixture, not necessarily
+#       the same one, exited non-zero while every candidate container was
+#       still `created`), reports the tier as INFRA (DTF_EXIT_INFRA), never as
+#       a regression: nothing ran against the candidate.
 # =============================================================================
 
 DTF_DIAG_LOG_TAIL="${DTF_DIAG_LOG_TAIL:-200}"
@@ -89,6 +93,16 @@ dtf_dump_stack() {
   echo "== end stack state =="
 }
 
+# Image repository without tag or digest, and without docker.io[/library]/,
+# so "docker.io/library/x:1@sha256:..." and "x:2" both give "x".
+dtf_image_repo() {
+  local r="${1%%@*}" last
+  last="${r##*/}"
+  case "$last" in *:*) r="${r%:*}" ;; esac
+  r="${r#docker.io/}"; r="${r#library/}"
+  printf '%s\n' "$r"
+}
+
 dtf_fixture_crash_only() {
   local project="$1"; shift
   local c state status health code image service cand n_cand=0 is_cand crashes=()
@@ -99,11 +113,16 @@ dtf_fixture_crash_only() {
     state="$(dtf_container_state "$c")" || return 1
     IFS='|' read -r status health code image service <<< "$state"
     is_cand=0
-    # Belt and braces: a backend* service counts as the candidate even if
-    # its recorded image ref is spelled differently from the one passed in.
-    case "$service" in backend|backend-*) is_cand=1 ;; esac
+    # Belt and braces: any service named *backend* (backend, backend-b,
+    # peer-backend) is the candidate, and so is any container whose image
+    # repository is a candidate's, even if the recorded ref is spelled
+    # differently (another tag, a digest, a docker.io/library/ prefix).
+    case "$service" in *backend*) is_cand=1 ;; esac
     for cand in "$@"; do
-      [ -n "$cand" ] && [ "$image" = "$cand" ] && is_cand=1
+      [ -n "$cand" ] || continue
+      if [ "$image" = "$cand" ] || [ "$(dtf_image_repo "$image")" = "$(dtf_image_repo "$cand")" ]; then
+        is_cand=1
+      fi
     done
     if [ "$is_cand" = "1" ]; then
       n_cand=$((n_cand + 1))

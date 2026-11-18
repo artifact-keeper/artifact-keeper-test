@@ -329,7 +329,7 @@ run_tier() {
         if crashed="$(dtf_fixture_crash_only "$PROJECT" "$BACKEND_IMAGE" "${UPGRADE_OLD_IMAGE:-}")"; then
           printf 'fixture crash at stack-up (%s), again on the one retry\n' "$crashed" > "$retry_note"
           dtf_down "$PROFILES"
-          echo "=== TIER ${tier}: INFRA/SETUP FAILURE (a fixture crashed twice before the candidate started) ==="
+          echo "=== TIER ${tier}: INFRA/SETUP FAILURE (a fixture crashed before the candidate started, on the first try and on the retry) ==="
           echo "===   the candidate never ran, so NOT a product verdict; the fixture logs are above ==="
           exit "$DTF_EXIT_INFRA"
         fi

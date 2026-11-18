@@ -14,8 +14,10 @@
 #      still `created` is retried once from a clean slot (down, then up). A
 #      retry that comes up runs the oracle; the tier's summary line says it
 #      was retried.
-#   3. The same crash on the retry exits 11 (INFRA), never 7 or 1.
-#   4. A candidate (by image ref or by its backend* compose service) that ran,
+#   3. A fixture crash on the retry too (any fixture, while the candidate is
+#      still `created`) exits 11 (INFRA), never 7 or 1.
+#   4. A candidate (by image ref, by image repository, or by a compose
+#      service whose name contains "backend", e.g. peer-backend) that ran,
 #      unhealthy or exited, is NOT retried and stays exit 7, as is a crash
 #      seen on the retry after the candidate ran, and anything under --keep.
 #
@@ -97,6 +99,15 @@ ak-dtf1-backend|created|none|0|${IMG}"
 NO_CANDIDATE="ak-dtf1-ldap|exited|none|1|osixia/openldap:1.5.0"
 # The candidate's image ref recorded differently: its compose service still
 # marks it as the candidate.
+# peer.second-instance's peer-backend runs the candidate image. Found by its
+# service name even when its image ref matches nothing passed in.
+PEER_RAN="ak-dtf1-ldap|exited|none|1|osixia/openldap:1.5.0
+ak-dtf1-backend|created|none|0|${IMG}
+ak-dtf1-peer-backend|exited|none|101|registry.invalid/other:x"
+# A candidate under a service name without "backend": found by image repo.
+REPO_RAN="ak-dtf1-ldap|exited|none|1|osixia/openldap:1.5.0
+ak-dtf1-backend|created|none|0|${IMG}
+ak-dtf1-instance-b|exited|none|101|docker.io/library/img:other@sha256:0000"
 RESPELLED_RAN="ak-dtf1-ldap|exited|none|1|osixia/openldap:1.5.0
 ak-dtf1-backend|running|unhealthy|0|docker.io/library/${IMG}"
 
@@ -154,6 +165,10 @@ scenario "fixture crash, then the candidate fails on the retry: 7, retry noted" 
   'FAIL  t \(stack-up: candidate/sidecar never healthy, rc=7\) \[fixture crash at stack-up \(ak-dtf1-ldap exited 1\), retried once\]'
 scenario "candidate found by compose service, not image ref: it ran, no retry (7)" 1 "up 1;down" "1" \
   "$RESPELLED_RAN" "" 'LOG-TAIL ak-dtf1-backend' 'rc=7\)$'
+scenario "peer-backend (candidate by service name) exited: not a fixture crash, no retry (7)" 1 "up 1;down" "1" \
+  "$PEER_RAN" "" 'LOG-TAIL ak-dtf1-peer-backend' '!retry' 'rc=7\)$'
+scenario "candidate by image repository (other tag, digest, docker.io/library/) exited: no retry (7)" 1 "up 1;down" "1" \
+  "$REPO_RAN" "" 'LOG-TAIL ak-dtf1-instance-b' '!retry' 'rc=7\)$'
 scenario "a one-shot that exited 0 is not a crash: no retry (7)" 1 "up 1;down" "1" \
   "$INIT_DONE" "" '!LOG-TAIL ak-dtf1-mkbucket' 'rc=7\)$'
 scenario "no candidate container in the project: no retry (7)" 1 "up 1;down" "1" \

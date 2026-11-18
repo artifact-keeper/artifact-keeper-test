@@ -44,7 +44,8 @@
 #                  discriminator (#890)
 #   INFRA(fixture) run.sh exit 11 after a fixture container exited non-zero
 #                  before any candidate container started, on the first
-#                  stack-up and again on its one retry. The candidate never
+#                  stack-up and again on its one retry (any fixture, not
+#                  necessarily the same one). The candidate never
 #                  ran. A crash that the retry clears is a PASS (or whatever
 #                  the oracle says) with "[fixture crash at stack-up ...,
 #                  retried once]" on its summary line.
