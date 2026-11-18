@@ -59,6 +59,8 @@
 # RUN_ID / ADMIN_USER / ADMIN_PASS / JUNIT_OUTPUT_DIR / RELEASE_GATE.
 : "${BASE_URL:?native_client.sh: BASE_URL not set}"
 : "${DTF_SLOT:?native_client.sh: DTF_SLOT not set}"
+# shellcheck source=lib/internet_fetch.sh
+source "$(dirname "${BASH_SOURCE[0]}")/internet_fetch.sh"
 
 # ---------------------------------------------------------------------------
 # Header parsing + selection
@@ -209,13 +211,38 @@ nc_repo_delete() {
 # The driver
 # ---------------------------------------------------------------------------
 
+# Internal: record a failed hook. When its log shows the test client failing
+# to download its own tooling from the internet (lib/internet_fetch.sh), the
+# candidate was never asked: INFRA (infra_fail, exit DTF_EXIT_INFRA), not FAIL.
+_nc_hook_failed() {
+  local what="$1" log="$2" why
+  if why="$(dtf_internet_fetch_failure "$log")"; then
+    FC_INFRA=1
+    infra_fail "${what}: the test client could not download from the internet (${why})" \
+      "$(tail -n 40 "$log" 2>/dev/null)"
+  else
+    fail "$what" "$(tail -n 40 "$log" 2>/dev/null)"
+  fi
+}
+
+# Internal: a step not run because an earlier one failed. After an INFRA step
+# (FC_INFRA=1) it is INFRA too: the step was never evaluated, and counting it
+# as a real failure would make end_suite call the whole suite a product FAIL.
+_nc_skip_after_failure() {
+  if [ "${FC_INFRA:-0}" = "1" ]; then
+    infra_fail "$1 (could not be evaluated)"
+  else
+    fail "$1"
+  fi
+}
+
 # Internal: run one core hook with begin_test + short-circuit chaining.
 # Uses/updates the FC_OK flag so a failed step skips the rest of the core flow.
 _nc_step() {
   local label="$1" hook="$2"
   begin_test "$label"
   if [ "${FC_OK:-1}" != "1" ]; then
-    fail "skipped: prior step failed"
+    _nc_skip_after_failure "skipped: prior step failed"
     return 0
   fi
   local log="${WORK_DIR}/${FC_FORMAT}-${hook}.log"
@@ -224,7 +251,7 @@ _nc_step() {
     pass
   else
     FC_OK=0
-    fail "${hook} failed" "$(tail -n 40 "$log" 2>/dev/null)"
+    _nc_hook_failed "${hook} failed" "$log"
   fi
 }
 
@@ -260,6 +287,7 @@ nc_run_plugin() {
   FC_CLIENT_CTR="ak-dtf${DTF_SLOT}-${FC_SERVICE}"
   FC_CASES=""
   FC_OK=1
+  FC_INFRA=0
   fc_cleanup() { :; }   # optional hook default
 
   # 5. load the plugin's verbs (into THIS subshell)
@@ -294,7 +322,7 @@ nc_run_plugin() {
   for c in ${FC_CASES:-}; do
     begin_test "edge:${c}"
     if [ "$FC_OK" != "1" ]; then
-      fail "skipped: prior core step failed"
+      _nc_skip_after_failure "skipped: prior core step failed"
       continue
     fi
     if ! type "fc_case_${c}" >/dev/null 2>&1; then
@@ -308,7 +336,7 @@ nc_run_plugin() {
     else
       # An edge failure does NOT poison later independent cases (they each
       # re-check their own preconditions), but IS a suite failure.
-      fail "edge case '${c}' failed" "$(tail -n 40 "$elog" 2>/dev/null)"
+      _nc_hook_failed "edge case '${c}' failed" "$elog"
     fi
   done
 

@@ -15,7 +15,9 @@
 #   * per-format red/green is a distinct JUnit suite in results/format-conformance/.
 #
 # The oracle exit code is the gate signal (run.sh contract step 7), aggregated
-# across plugins — NOT JUnit parsing. Sequential (not parallel): rocky is
+# across plugins — NOT JUnit parsing: 1 if any plugin FAILed, else
+# DTF_EXIT_INFRA if any plugin could not be evaluated (e.g. its client could
+# not download its tooling from the internet), else 0. Sequential (not parallel): rocky is
 # CPU-load-sensitive and the shared AK stays deterministic; FC_PARALLEL is an
 # explicit non-goal for v1.
 # =============================================================================
@@ -30,6 +32,7 @@ source "${DTF_DIR}/harness/lib/native_client.sh"
 PLUGIN_DIR="${DTF_DIR}/harness/tiers/format-conformance/plugins"
 
 overall=0
+infra=0
 ran=0
 for p in "${PLUGIN_DIR}"/*.sh; do
   [ -e "$p" ] || continue
@@ -41,7 +44,11 @@ for p in "${PLUGIN_DIR}"/*.sh; do
   ran=$((ran + 1))
   ( nc_run_plugin "$p" )        # subshell isolation
   rc=$?
-  [ "$rc" -eq 0 ] || overall=1
+  case "$rc" in
+    0) ;;
+    "${DTF_EXIT_INFRA:-11}") infra=1 ;;
+    *) overall=1 ;;
+  esac
   echo ">> fc: $(nc_header "$p" FC_FORMAT) suite exit=${rc}"
 done
 
@@ -52,4 +59,6 @@ if [ "$ran" -eq 0 ]; then
   [ "${RELEASE_GATE:-0}" = "1" ] && exit 1
 fi
 
+# A product FAIL wins over INFRA (artifact-keeper-test#378).
+[ "$overall" -eq 0 ] && [ "$infra" -eq 1 ] && exit "${DTF_EXIT_INFRA:-11}"
 exit "$overall"

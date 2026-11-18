@@ -72,6 +72,9 @@ on:
       - 'scripts/clean-install-smoke.sh'
       - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - 'scripts/create-test-namespace.sh'
+      - 'deploy-test/harness/lib/internet_fetch.sh'
+      - 'deploy-test/harness/lib/native_client.sh'
+      - 'deploy-test/harness/tiers/format-conformance/oracle.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   push:
     branches: [main]
@@ -99,6 +102,9 @@ on:
       - 'scripts/clean-install-smoke.sh'
       - 'scripts/tests/test-clean-install-smoke-exit-codes.sh'
       - 'scripts/create-test-namespace.sh'
+      - 'deploy-test/harness/lib/internet_fetch.sh'
+      - 'deploy-test/harness/lib/native_client.sh'
+      - 'deploy-test/harness/tiers/format-conformance/oracle.sh'
       - '.github/workflows/harness-contract-self-test.yml'
   workflow_dispatch:
 
@@ -236,3 +242,9 @@ jobs:
       # no install site may skip it.
       - name: Run test StorageClass self-test
         run: bash tests/lib/selftest-storage-class.sh
+
+      # A test client that cannot download its own tooling from the internet
+      # (Maven Central, PyPI, npmjs, GitHub, distro mirrors) is INFRA, not a
+      # product FAIL, in format-conformance (artifact-keeper#6193).
+      - name: Run DTF client-download INFRA self-test
+        run: bash scripts/ci/selftest-dtf-client-fetch-infra.sh
