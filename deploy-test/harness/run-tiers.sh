@@ -39,8 +39,16 @@
 #                  re-run (artifact-keeper-test#323)
 #   FAIL(stack-up) run.sh exit 7: the compose stack never became healthy —
 #                  either the candidate does not boot on a clean deploy (real)
-#                  or a sidecar/infra pull flaked; the backend log tail printed
-#                  by run.sh is the discriminator
+#                  or a sidecar/infra pull flaked; the per-container state
+#                  and log tails run.sh prints before teardown are the
+#                  discriminator (#890)
+#   INFRA(fixture) run.sh exit 11 after a fixture container exited non-zero
+#                  before any candidate container started, on the first
+#                  stack-up and again on its one retry (any fixture, not
+#                  necessarily the same one). The candidate never
+#                  ran. A crash that the retry clears is a PASS (or whatever
+#                  the oracle says) with "[fixture crash at stack-up ...,
+#                  retried once]" on its summary line.
 #   FAIL(harness)  run.sh exit 2-6: bad tier name / missing overlay / corpus /
 #                  slot — a wiring bug in this repo, never the candidate
 # so a red gate can be triaged from the summary line alone. See
@@ -79,7 +87,7 @@ TIERS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --backend-image) BACKEND_IMAGE_ARG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,64p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,71p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) echo "!! unknown argument: $1" >&2; exit 2 ;;
     *) TIERS+=("$1"); shift ;;
   esac
@@ -147,17 +155,27 @@ for tier in "${TIERS[@]}"; do
   echo "############################################################"
   echo "## DTF tier: ${tier}"
   echo "############################################################"
+  # run.sh writes this when a fixture crashed at stack-up and it retried the
+  # stack (#890); a stale one from an earlier local run must not leak in.
+  retry_marker="${HARNESS_DIR}/../results/${tier}/stack-up-retry.txt"
+  rm -f "$retry_marker"
   "${HARNESS_DIR}/run.sh" "$tier" --backend-image "$BACKEND_IMAGE_ARG"
   rc=$?
+  retry_note=""
+  if [ -f "$retry_marker" ]; then
+    retry_note=" [$(head -n 1 "$retry_marker")]"
+  fi
   if [ "$rc" -eq 0 ]; then
-    PASSED+=("$tier")
+    PASSED+=("${tier}${retry_note}")
   else
     case "$rc" in
       "$DTF_EXIT_INFRA")
         # #323: the oracle could not evaluate the tier. Tracked separately so
         # the summary never attributes a harness/setup failure to the
-        # candidate. Still counted as RED below (fail-closed).
-        INFRA+=("${tier} (INFRA/SETUP: harness could not evaluate the tier — NOT a product verdict, rc=${rc})")
+        # candidate. Still counted as RED below (fail-closed). run.sh also
+        # exits 11 when a fixture crashed twice before the candidate started
+        # (#890); retry_note says so.
+        INFRA+=("${tier} (INFRA/SETUP: harness could not evaluate the tier — NOT a product verdict, rc=${rc})${retry_note}")
         if [ -n "${DTF_INFRA_TIERS_FILE:-}" ]; then
           printf '%s\n' "$tier" >> "$DTF_INFRA_TIERS_FILE"
         fi ;;
@@ -169,9 +187,9 @@ for tier in "${TIERS[@]}"; do
         else
           FAILED+=("${tier} (harness: NOT ON THIS LINE without a release-line marker, rc=${rc})")
         fi ;;
-      7) FAILED+=("${tier} (stack-up: candidate/sidecar never healthy, rc=7)") ;;
+      7) FAILED+=("${tier} (stack-up: candidate/sidecar never healthy, rc=7)${retry_note}") ;;
       2|3|4|5|6) FAILED+=("${tier} (harness: bad tier/overlay/corpus/slot, rc=${rc})") ;;
-      *) FAILED+=("${tier} (tier: oracle asserted a regression, rc=${rc})") ;;
+      *) FAILED+=("${tier} (tier: oracle asserted a regression, rc=${rc})${retry_note}") ;;
     esac
   fi
 done

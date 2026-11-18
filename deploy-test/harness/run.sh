@@ -51,6 +51,8 @@ DTF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${DTF_DIR}/harness/lib/ports.sh"
 # shellcheck source=lib/exit_codes.sh
 source "${DTF_DIR}/harness/lib/exit_codes.sh"
+# shellcheck source=lib/stack_diag.sh
+source "${DTF_DIR}/harness/lib/stack_diag.sh"
 
 # --- Locate the artifact-keeper-test corpus (common.sh / run-suite.sh) --------
 # In the productized home (artifact-keeper-test/deploy-test) the corpus is the
@@ -305,9 +307,38 @@ run_tier() {
   echo "=== DTF tier: ${tier}  (slot ${DTF_SLOT}) ==="
   if ! dtf_up "$PROFILES"; then
     echo "!! stack failed to come up healthy for tier '${tier}'" >&2
-    docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" logs backend --tail=120 || true
-    [ "$KEEP" = "1" ] || dtf_down "$PROFILES"
-    exit 7
+    # Print every unhealthy container's state and log tail BEFORE teardown;
+    # `down -v` removes them (artifact-keeper-test#890).
+    dtf_dump_stack "$PROJECT"
+    # A fixture that crashed before any candidate container started says
+    # nothing about the candidate: retry the stack once from a clean slot
+    # (down -v, so no volume carries over). The note lands in the results dir,
+    # where run-tiers.sh adds it to the tier's summary line.
+    local crashed="" up_ok=0
+    local retry_note="${results}/stack-up-retry.txt"
+    if [ "$KEEP" != "1" ] && \
+       crashed="$(dtf_fixture_crash_only "$PROJECT" "$BACKEND_IMAGE" "${UPGRADE_OLD_IMAGE:-}")"; then
+      echo "::warning title=DTF fixture retry::${tier}: fixture crashed before the candidate started (${crashed}); retrying the stack once"
+      printf 'fixture crash at stack-up (%s), retried once\n' "$crashed" > "$retry_note"
+      dtf_down "$PROFILES"
+      if dtf_up "$PROFILES"; then
+        up_ok=1
+      else
+        echo "!! stack failed to come up healthy for tier '${tier}' on the retry" >&2
+        dtf_dump_stack "$PROJECT"
+        if crashed="$(dtf_fixture_crash_only "$PROJECT" "$BACKEND_IMAGE" "${UPGRADE_OLD_IMAGE:-}")"; then
+          printf 'fixture crash at stack-up (%s), again on the one retry\n' "$crashed" > "$retry_note"
+          dtf_down "$PROFILES"
+          echo "=== TIER ${tier}: INFRA/SETUP FAILURE (a fixture crashed before the candidate started, on the first try and on the retry) ==="
+          echo "===   the candidate never ran, so NOT a product verdict; the fixture logs are above ==="
+          exit "$DTF_EXIT_INFRA"
+        fi
+      fi
+    fi
+    if [ "$up_ok" != "1" ]; then
+      [ "$KEEP" = "1" ] || dtf_down "$PROFILES"
+      exit 7
+    fi
   fi
 
   echo "=== running oracle: tiers/${tier}/${ORACLE} ==="
