@@ -74,10 +74,12 @@ case "$C" in 2??) ;; *) SETUP_ERR="${SETUP_ERR} repo(${C}: $(body "$W/repo.json"
 printf '%s' "$TOK" | put /work/token || SETUP_ERR="${SETUP_ERR} token-file"
 printf 'version: v1\ntls:\n  use: false\n' | put /work/bufcfg/config.yaml || SETUP_ERR="${SETUP_ERR} buf-config"
 bx . 'buf --version' && BUF_VERSION="$(tr -d '\n' <"$W/bx.out")" || SETUP_ERR="${SETUP_ERR} buf(--version: $(body "$W/bx.out" 200))"
-# The proxy is up and maps its root onto the repository: an anonymous POST is
-# answered by the backend's /proto write gate with a 401, not a proxy error.
+# The proxy is up and maps its root onto the repository: an anonymous write
+# RPC is answered by the backend's /proto write gate with a 401, not a proxy
+# error. (A write, because since #6028 a public repository serves the BSR
+# reads to an anonymous caller.)
 docker exec "$BUFC" sh -c "wget -S -q -O - --header 'Content-Type: application/json' --post-data '{}' \
-  http://${REGISTRY}/buf.registry.module.v1.ModuleService/GetModules" >"$W/probe.out" 2>&1
+  http://${REGISTRY}/buf.registry.module.v1.ModuleService/CreateModules" >"$W/probe.out" 2>&1
 PROXY_PROBE="$(body "$W/probe.out" 300)"
 echo "-- buf ${BUF_VERSION:-?}; anonymous probe through the proxy: ${PROXY_PROBE}"
 grep -q '401' "$W/probe.out" || SETUP_ERR="${SETUP_ERR} proxy(anonymous probe was not the backend's 401: ${PROXY_PROBE})"
@@ -229,6 +231,23 @@ if [ "$RC3" -eq 0 ] && [ -n "$ORDERS" ] && [ -n "$PAYMENTS" ] \
    && grep -q "commit: ${ORDERS}" "$W/bx.out" && grep -q "commit: ${PAYMENTS}" "$W/bx.out" \
    && [ "$(grep -c 'digest: b5:' "$W/bx.out")" -eq 2 ] && grep -q 'BUILD-OK' "$W/bx.out"; then pass
 else fail "consumer dep update/build exited ${RC3}" "$(head -c 1500 "$W/bx.out")"; fi
+
+# =============================================================================
+# FIX #6028: the same consumer with NO token at all: buf sends its reads with
+# no Authorization header, as it does against buf.build, and the public
+# repository serves them. RED before #6028: every BSR read was a POST, refused
+# by the anonymous-write gate (buf: "you are not authenticated for ...").
+# =============================================================================
+docker exec -e HOME=/work -e BUF_CONFIG_DIR=/work/bufcfg -e BUF_CACHE_DIR=/work/cache-anon \
+  -w /work/consumer "$BUFC" sh -c 'unset BUF_TOKEN; rm -f buf.lock; buf dep update && cat buf.lock && buf build -o /dev/null && echo ANON-BUILD-OK' >"$W/bx.out" 2>&1
+RC4=$?
+echo "-- anonymous consumer dep update + build: exit ${RC4}"; out 1500; echo
+
+begin_test "FIX #6028: with no token, a consumer resolves acme/orders and acme/payments from the public repository and buf build succeeds"
+if [ "$RC4" -eq 0 ] && [ -n "$ORDERS" ] && [ -n "$PAYMENTS" ] \
+   && grep -q "commit: ${ORDERS}" "$W/bx.out" && grep -q "commit: ${PAYMENTS}" "$W/bx.out" \
+   && grep -q 'ANON-BUILD-OK' "$W/bx.out"; then pass
+else fail "anonymous consumer dep update/build exited ${RC4}" "$(head -c 1500 "$W/bx.out")"; fi
 
 # =============================================================================
 # FIX #5117: what buf pushed is still served to a JSON caller in the JSON
