@@ -127,14 +127,26 @@ docker exec "$NOKEEP_CTR" curl -s --max-time 10 -o /dev/null http://127.0.0.1:80
 pass
 
 # --- keepalives -------------------------------------------------------------
-docker run --rm --net "container:${DB_CONTAINER}" "$NETSHOOT_IMAGE" \
-  ss -Htno state established '( sport = :5432 )' > "${WORK}/ss.txt" 2>&1
-B_TIMERS="$(pg_sessions "$B_IP" "${WORK}/ss.txt" | tr '\n' ' ')"
-N_TIMERS="$(pg_sessions "$N_IP" "${WORK}/ss.txt" | tr '\n' ' ')"
+# A session that is opening or closing can show no keepalive timer for an
+# instant, so, as all_timers does for the FIX assertions below, the control
+# takes up to 5 snapshots and asserts on the first one in which every session
+# of both backends carries a keepalive timer. Asserting on a single snapshot
+# failed the 1.12.0 candidate twice on a `none` from a session in flight, once
+# on each backend (artifact-keeper runs 44170159638 and 44187344906).
+control_ok() {
+  [ -n "${B_TIMERS// /}" ] && [ -n "${N_TIMERS// /}" ] \
+    && ! grep -qw none <<<"${B_TIMERS} ${N_TIMERS}"
+}
+for _ in 1 2 3 4 5; do
+  ss_snapshot > "${WORK}/ss.txt"
+  B_TIMERS="$(pg_sessions "$B_IP" "${WORK}/ss.txt" | tr '\n' ' ')"
+  N_TIMERS="$(pg_sessions "$N_IP" "${WORK}/ss.txt" | tr '\n' ' ')"
+  control_ok && break
+  sleep 1
+done
 
 begin_test "control: both backends hold established Postgres sessions that carry a keepalive timer"
-if [ -n "${B_TIMERS// /}" ] && [ -n "${N_TIMERS// /}" ] \
-   && ! grep -qw none <<<"${B_TIMERS} ${N_TIMERS}"; then
+if control_ok; then
   pass
 else
   fail "backend(${B_IP}) timers: [${B_TIMERS}] nokeep(${N_IP}) timers: [${N_TIMERS}]" "$(cat "${WORK}/ss.txt")"
