@@ -11,7 +11,13 @@
 #      download and DNS failures (mvn, pip, npm, apt, apk, curl to GitHub) are
 #      INFRA; anything naming the candidate, and HTTP answers (404, checksum),
 #      are not.
-#   2. format-conformance/oracle.sh's aggregate: 11 only when some plugin was
+#      Judged per log: a log that names the candidate or a host beside it
+#      (backend-b, peer-backend, *.dtf.local, 127.0.0.1 but not Docker's
+#      127.0.0.11 resolver) next to an error, or a server error body quoting a
+#      public host, is a FAIL even if another line is a Central timeout.
+#   2. native_client.sh's _nc_step: a matching failed step is infra_fail, and
+#      so are the steps it short-circuits.
+#   3. format-conformance/oracle.sh's aggregate: 11 only when some plugin was
 #      INFRA and none FAILed; one FAIL makes it 1.
 #
 # Usage: scripts/ci/selftest-dtf-client-fetch-infra.sh
@@ -70,13 +76,35 @@ classify fail "an HTTP 404 from Central is an answer, not a network failure" \
 "[ERROR] Failed to execute goal: Could not find artifact org.example:missing:jar:1.0 in central (https://repo.maven.apache.org/maven2)"
 classify fail "sha mismatch" \
 "nc_assert_sha_eq FAIL: resolved jar != deployed jar"
+echo "dtf_internet_fetch_failure: judged per log, candidate hosts"
+classify fail "candidate 404 plus a Central timeout in one log" \
+"[ERROR] Failed to deploy artifacts: Could not transfer artifact dtf:m:pom:1.0 from/to dtf (http://backend:8080/maven/x): status code: 404
+[ERROR] Plugin org.apache.maven.plugins:maven-deploy-plugin:3.1.1 could not be resolved: Could not transfer artifact from/to central (https://repo.maven.apache.org/maven2): Connect timed out"
+classify fail "candidate error body quoting pypi.org (with the candidate URL)" \
+"ERROR: HTTP error 502 while getting http://backend:8080/pypi/dtf-pypi-x/simple/requests/
+{\"error\":\"upstream fetch failed: HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded\"}"
+classify fail "candidate error body quoting pypi.org (body only)" \
+"{\"error\":\"upstream fetch failed: HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded\"}"
+classify fail "tf.dtf.local (the candidate's terraform alias) unresolvable" \
+"Error: Failed to query available provider packages: could not connect to tf.dtf.local: dial tcp: lookup tf.dtf.local on 127.0.0.11:53: no such host"
+classify fail "ldap.dtf.local refused" \
+"ldap_sasl_bind(SIMPLE): Can't contact LDAP server: Connection refused (ldap.dtf.local:636)"
+classify fail "backend-b reset the connection" \
+"curl: (56) Recv failure: Connection reset by peer while fetching http://backend-b:8080/api/v1/x"
+classify fail "peer-backend timed out" \
+"npm error network request to http://peer-backend:8080/npm/x failed, reason: ETIMEDOUT"
+classify infra "Go: public host unresolvable via Docker's 127.0.0.11 resolver" \
+"go: github.com/x/y@v1.0.0: Get \"https://proxy.golang.org/github.com/x/y/@v/v1.0.0.mod\": dial tcp: lookup proxy.golang.org on 127.0.0.11:53: no such host"
+classify infra "a benign candidate URL line (no error) does not block INFRA" \
+"nc_post_file OK: POST http://127.0.0.1:8201/maven/dtf-x -> 201
+curl: (6) Could not resolve host: github.com"
 : > "$WORK/log"
 if dtf_internet_fetch_failure "$WORK/log" >/dev/null; then bad "empty log is not INFRA"; else ok "empty log is not INFRA"; fi
 
 # The real native_client.sh driver step: a failed hook whose log is a client
 # download failure is recorded with infra_fail, anything else with fail.
 # The stubs and WORK_DIR/FC_FORMAT are read by the sourced driver.
-# shellcheck disable=SC2031,SC2034,SC2329
+# shellcheck disable=SC2030,SC2031,SC2034,SC2329
 step_expect() {
   local want="$1" label="$2" text="$3" got
   got="$(
@@ -94,6 +122,29 @@ step_expect() {
 echo "native_client.sh: a failed step"
 step_expect infra_fail "client download failure -> infra_fail" "curl: (6) Could not resolve host: github.com"
 step_expect fail       "anything else -> fail"                 "status code: 500 from http://backend:8080/x"
+
+# After an INFRA step the short-circuited steps are INFRA too, so end_suite's
+# "every failure was INFRA" rule still sees an all-INFRA suite; after a real
+# FAIL they stay FAIL.
+# shellcheck disable=SC2030,SC2031,SC2034,SC2329
+chain_expect() {
+  local want="$1" label="$2" text="$3" got
+  got="$(
+    begin_test() { :; }; pass() { echo pass; }
+    fail() { echo fail; }; infra_fail() { echo infra_fail; }
+    export DTF_SLOT=1
+    # shellcheck source=deploy-test/harness/lib/native_client.sh
+    source "$ROOT/deploy-test/harness/lib/native_client.sh"
+    WORK_DIR="$WORK" FC_FORMAT=t FC_OK=1 FC_INFRA=0
+    bad_hook() { printf '%s\n' "$text"; return 1; }
+    good_hook() { return 0; }
+    _nc_step "publish" bad_hook; _nc_step "consume" good_hook
+  )"
+  got="$(printf '%s' "$got" | paste -sd' ' -)"
+  if [ "$got" = "$want" ]; then ok "$label"; else bad "$label: recorded '$got' (want '$want')"; fi
+}
+chain_expect "infra_fail infra_fail" "step after an INFRA step -> infra_fail" "curl: (6) Could not resolve host: github.com"
+chain_expect "fail fail"             "step after a FAIL step -> fail"        "status code: 500 from http://backend:8080/x"
 
 # --- 2. format-conformance oracle aggregate -----------------------------------
 # The real oracle over stub plugins: a stub native_client.sh whose

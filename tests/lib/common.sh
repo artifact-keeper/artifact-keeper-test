@@ -2110,12 +2110,17 @@ end_suite() {
 ${_JUNIT_CASES}</testsuite>
 EOF
 
-  # INFRA/SETUP outcome takes precedence over everything below (#323): if the
-  # harness could not evaluate the tier, the run carries no information about
-  # the candidate — neither a regression verdict nor an EXPECT_FAILURE proof.
-  # Still non-zero (fail-closed: a required tier that cannot run cannot
-  # certify), just correctly labeled.
-  if [ "${_INFRA_COUNT:-0}" -gt 0 ]; then
+  # INFRA/SETUP outcome (#323): if the harness could not evaluate ANY of the
+  # suite's failed tests, the run carries no information about the candidate
+  # — neither a regression verdict nor an EXPECT_FAILURE proof. Still non-zero
+  # (fail-closed: a required tier that cannot run cannot certify), just
+  # correctly labeled. Only when EVERY failure was INFRA, though: one real
+  # assertion failure next to an INFRA one is a product FAIL, and falls
+  # through to the normal exit below (a product verdict is never masked as
+  # INFRA, the same rule run-tiers.sh applies across tiers, #378).
+  if [ "${_INFRA_COUNT:-0}" -gt 0 ] && [ "${_FAIL_COUNT:-0}" -gt "${_INFRA_COUNT:-0}" ]; then
+    echo "  ${_INFRA_COUNT} setup/environment failure(s), but $(( _FAIL_COUNT - _INFRA_COUNT )) real failure(s) too: a product FAIL, not INFRA"
+  elif [ "${_INFRA_COUNT:-0}" -gt 0 ]; then
     echo "  INFRA/SETUP FAILURE (harness could not evaluate the tier — NOT a product verdict)"
     echo "  ${_INFRA_COUNT} setup/environment failure(s); exiting ${DTF_EXIT_INFRA}"
     exit "$DTF_EXIT_INFRA"

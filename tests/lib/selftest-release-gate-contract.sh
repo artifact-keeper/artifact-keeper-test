@@ -341,6 +341,23 @@ run_case "gate + all pass -> exit 0" 0 "${WORK}/suite-allpass.sh" \
   "1 passed, 0 failed, 0 skipped" "INFRA/SETUP FAILURE" \
   BASE_URL="$STUB_URL" RELEASE_GATE=1
 
+# INFRA never masks a product verdict: end_suite exits 11 only when every
+# failure was INFRA; one real assertion failure next to an INFRA one is a
+# FAIL (1), the same rule run-tiers.sh applies across tiers (#378).
+write_suite "${WORK}/suite-infra-only.sh" "infra-only" '
+begin_test "client tooling download"; infra_fail "client could not reach Maven Central"
+begin_test "fallout"; infra_fail "skipped: prior step failed (could not be evaluated)"
+begin_test "independent"; pass'
+write_suite "${WORK}/suite-infra-plus-fail.sh" "infra-plus-fail" '
+begin_test "client tooling download"; infra_fail "client could not reach Maven Central"
+begin_test "real assertion"; fail "candidate answered 500"'
+run_case "gate + INFRA failures only -> infra exit 11" 11 "${WORK}/suite-infra-only.sh" \
+  "exiting 11" "real failure(s) too" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1
+run_case "gate + one real FAIL plus one INFRA -> FAIL exit 1, not 11" 1 "${WORK}/suite-infra-plus-fail.sh" \
+  "1 real failure(s) too: a product FAIL, not INFRA" "exiting 11" \
+  BASE_URL="$STUB_URL" RELEASE_GATE=1
+
 # And the healthy end-to-end path: version resolves, feature floor is met, the
 # gated test runs and passes.
 run_case "gate + healthy backend at feature floor -> exit 0" 0 "${WORK}/suite-feature.sh" \
