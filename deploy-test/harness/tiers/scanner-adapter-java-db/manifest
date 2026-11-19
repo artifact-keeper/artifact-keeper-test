@@ -29,10 +29,14 @@
 #     first attempt in PR 6055, breaks this).
 #   (CONTROL) same adapter: an image with a JAR fails closed (never completed
 #     with 0 findings), naming the Java DB.
-#   (FIX #5913) adapter recreated with the Java DB reachable and its cache
-#     still empty; three JAR images scanned at once: all three complete with
-#     findings, and the adapter logged one Java DB download. Pre-fix: the
-#     concurrent trivy downloads race and scans fail.
+#   (FIX #5913) adapter recreated with the Java DB reachable, its cache
+#     still empty, and /tmp a 3 GiB tmpfs (fixtures/tmp-limit.yml, the
+#     size-limited tmp volume of a chart install); three JAR images scanned at
+#     once: all three complete with findings, and the adapter logged one Java
+#     DB download. Pre-fix: each trivy process downloads it, staging ~1.9 GiB
+#     in /tmp, so the concurrent downloads run out of space (and, without the
+#     limit, race on <cache>/java-db; that race is timing-dependent, which is
+#     why the case pins the space bound instead).
 #   (CONTROL) a JAR image scanned after that completes (the Java DB is reused).
 #
 # RATE_LIMIT_ENABLED=false: registry pushes and scan polls back to back.

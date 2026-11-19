@@ -170,13 +170,16 @@ echo "$row" | grep -qi "java db" || fail_g "the error does not name the Java DB"
 finish_case "a JAR image without a reachable Java DB did not fail closed"
 
 # =============================================================================
-begin_test "FIX #5913: ${CONCURRENT} concurrent first scans of images with a JAR all complete, with one Java DB download"
+begin_test "FIX #5913: ${CONCURRENT} concurrent first scans of images with a JAR, adapter /tmp limited to 3 GiB, all complete with one Java DB download"
 reset_case
-r="$(recreate_adapter)"; [ "$r" = up ] || fail_g "recreate adapter: $r"
+r="$(recreate_adapter "${FX}/tmp-limit.yml")"; [ "$r" = up ] || fail_g "recreate adapter: $r"
 drop_java_db
 wait_adapter_ready || fail_g "adapter not ready after the recreate"
 [ -z "$(adapter_env SCANNER_TRIVY_SKIP_DB_UPDATE)" ] || fail_g "adapter still carries SCANNER_TRIVY_SKIP_DB_UPDATE"
 [ -z "$(adapter_env TRIVY_JAVA_DB_REPOSITORY)" ] || fail_g "adapter still carries the unreachable TRIVY_JAVA_DB_REPOSITORY"
+tmpcap="$(docker exec "$ADAPTER" df -m /tmp 2>/dev/null | awk 'NR==2{print $2}')"
+note "adapter /tmp size: ${tmpcap:-?} MiB"
+[ -n "$tmpcap" ] && [ "$tmpcap" -le 3200 ] 2>/dev/null || fail_g "the adapter's /tmp is not the 3 GiB tmpfs from fixtures/tmp-limit.yml"
 for a in "${A_JARS[@]}"; do
   c="$(trigger "${a:-none}")"
   [ "$c" = 200 ] || fail_g "trigger ${a:-none} -> ${c}"
@@ -192,7 +195,7 @@ for a in "${A_JARS[@]}"; do
     [ "${f:-0}" -ge 1 ] 2>/dev/null || fail_g "JAR image ${a} completed with ${f:-no} findings, expected CVEs"
   fi
 done
-[ "$completed" = "$CONCURRENT" ] || fail_g "${completed} of ${CONCURRENT} concurrent first JAR scans completed (pre-fix: the trivy processes race on <cache>/java-db, 'chmod .../java-db/trivy-java.db: no such file or directory')"
+[ "$completed" = "$CONCURRENT" ] || fail_g "${completed} of ${CONCURRENT} concurrent first JAR scans completed (pre-fix: every trivy process downloads the Java DB itself, staging ~1.9 GiB each in /tmp and unpacking over the others in <cache>/java-db: 'no space left on device' or 'chmod .../java-db/trivy-java.db: no such file or directory')"
 java_db_present || fail_g "no Java DB in the adapter cache after the scans"
 downloads="$(docker logs "$ADAPTER" 2>&1 | grep -c 'downloading the trivy Java DB')"
 note "Java DB downloads logged by the adapter: ${downloads}"

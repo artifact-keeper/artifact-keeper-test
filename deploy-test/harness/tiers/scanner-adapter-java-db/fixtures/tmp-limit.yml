@@ -1,0 +1,8 @@
+# Overlay for the concurrent first-JAR-scan case: the adapter's /tmp is a
+# 3 GiB tmpfs, like a size-limited emptyDir (artifact-keeper-iac #439 sizes
+# the chart's tmp volume). One Java DB download stages ~1.9 GiB there (trivy
+# 0.76.0, measured), so one fits; two at once do not.
+services:
+  trivy:
+    tmpfs:
+      - /tmp:size=3g,mode=1777
