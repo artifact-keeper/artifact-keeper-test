@@ -12,8 +12,14 @@
 # dist.url through verbatim, so clients bypassed the Virtual entirely.
 #
 # Red on 1.11.7 (and 1.12.0 main before the fix); green with the fix.
+#
+# #6285: search.json on a Composer Virtual searched only the Virtual's own
+# (always empty) artifact rows, so a package published to a hosted member was
+# installable through the Virtual but never found by its search.json. A third
+# Virtual over a Local and the Remote must find the Local's package. Red on
+# main before the fix (artifact-keeper 1.12.4).
 PROFILES="storage.filesystem upstreams.mock-scan-formats client.composer"
 ORACLE="oracle.sh"
-COVERS="4951"
+COVERS="4951 6285"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
