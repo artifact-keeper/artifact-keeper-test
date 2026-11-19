@@ -121,22 +121,32 @@ assert_anonymous_401 "list users" GET "/api/v1/users"
 
 # ---------------------------------------------------------------------------
 # Format upload endpoints: publishing must require credentials
+#
+# These probe the real write routes. Format handlers are mounted at the top
+# level (`/pypi/<key>/`, `/npm/<key>/...`), and generic uploads go through
+# the management API (`/api/v1/repositories/<key>/artifacts/<path>`). An
+# earlier version probed `/api/v1/pypi/...`, `/api/v1/npm/...` and
+# `/api/v1/generic/...`, which were never routes: their 401 came from
+# repo_visibility_middleware reading `v1` as a repository key on the
+# catch-all, so the probes certified the middleware, not the upload
+# handlers. Since artifact-keeper/artifact-keeper PR 6301 (issues 6299 and
+# 5656 there) unknown `/api/v1` paths answer a JSON 404, which exposed that.
 # ---------------------------------------------------------------------------
 
 begin_test "Anonymous PyPI upload to a public repository is refused"
 printf 'not-a-real-sdist' > "${WORK_DIR}/anon-pkg.tar.gz"
-assert_anonymous_401 "pypi upload" POST "/api/v1/pypi/${PYPI_KEY}/" \
+assert_anonymous_401 "pypi upload" POST "/pypi/${PYPI_KEY}/" \
   -F "content=@${WORK_DIR}/anon-pkg.tar.gz;filename=anonpkg-0.1.0.tar.gz" \
   -F "name=anonpkg" -F "version=0.1.0"
 
 begin_test "Anonymous npm publish to a public repository is refused"
-assert_anonymous_401 "npm publish" PUT "/api/v1/npm/${NPM_KEY}/@anon%2fpkg" \
+assert_anonymous_401 "npm publish" PUT "/npm/${NPM_KEY}/@anon%2fpkg" \
   -H "Content-Type: application/json" \
   -d '{"name":"@anon/pkg","versions":{"0.1.0":{"name":"@anon/pkg","version":"0.1.0"}}}'
 
 begin_test "Anonymous generic upload to a public repository is refused"
 assert_anonymous_401 "generic upload" PUT \
-  "/api/v1/generic/${GENERIC_KEY}/anon-write/1.0.0/payload.bin" \
+  "/api/v1/repositories/${GENERIC_KEY}/artifacts/anon-write/1.0.0/payload.bin" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "anonymous-write-probe"
 
