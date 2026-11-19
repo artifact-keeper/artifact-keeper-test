@@ -361,12 +361,23 @@ V_ID="$(jb '.id // empty')"
 P_OPEN="${Q}/com/org/app.jar"
 P_HID="${X}/com/org/secret.jar"
 P_LOCAL="dist/local.bin"
-c="$(req POST "/api/v1/builds/${V_ID}/artifacts" "$DT" "$(jq -nc --arg a "$P_OPEN" --arg b "$P_HID" --arg l "$P_LOCAL" --arg z "$(printf '0%.0s' $(seq 64))" \
+# #6281: two recorded paths whose key a non-owner can read but where nothing
+# is stored: one under public P (the `dist/x.jar` + public `dist` case), one
+# under Q next to the real artifact.
+P_PUB="${P}/never-stored.jar"
+P_TYPED="${Q}/com/org/typed.jar"
+# The one recorded artifact that really exists: uploaded to Q at that path.
+c="$(upload "$Q" "com/org/app.jar" "rma-6281-${SUF}" "$AT")"
+setup_ok "admin uploads ${Q}/com/org/app.jar" "$c"
+c="$(req POST "/api/v1/builds/${V_ID}/artifacts" "$DT" "$(jq -nc --arg a "$P_OPEN" --arg b "$P_HID" --arg l "$P_LOCAL" \
+  --arg p "$P_PUB" --arg t "$P_TYPED" --arg z "$(printf '0%.0s' $(seq 64))" \
   '{artifacts:[{module_name:"app",name:"app.jar",path:$a,checksum_sha256:$z,size_bytes:10},
                {module_name:"app",name:"secret.jar",path:$b,checksum_sha256:$z,size_bytes:20},
-               {name:"local.bin",path:$l,checksum_sha256:$z,size_bytes:30}]}')")"
-setup_ok "developer attaches three artifacts" "$c"
-ALL_PATHS="$(printf '%s\n' "$P_OPEN" "$P_HID" "$P_LOCAL" | sort | paste -sd, -)"
+               {name:"local.bin",path:$l,checksum_sha256:$z,size_bytes:30},
+               {name:"never-stored.jar",path:$p,checksum_sha256:$z,size_bytes:40},
+               {name:"typed.jar",path:$t,checksum_sha256:$z,size_bytes:50}]}')")"
+setup_ok "developer attaches five artifacts" "$c"
+ALL_PATHS="$(printf '%s\n' "$P_OPEN" "$P_HID" "$P_LOCAL" "$P_PUB" "$P_TYPED" | sort | paste -sd, -)"
 CLEAN_URL="https://github.com/org/private"
 
 # paths FILE -> the build's artifact paths, sorted, comma-joined.
@@ -409,11 +420,37 @@ for f in "$WORK/oth-get" "$WORK/oth-list"; do
   if [ "$(jq 'has("metadata") or has("vcs_url") or has("vcs_revision") or has("vcs_branch") or has("vcs_message")' "$f" 2>/dev/null)" != "false" ]; then bad="metadata or a vcs_* field present"
   elif grep -q -e "$V_SECRET" -e "$N_SECRET" -e "rma 6046" -e "$X" -e "$P_LOCAL" "$f"; then bad="a secret, the commit message, ${X} or ${P_LOCAL} in the answer"
   elif [ "$(jq -r '.id // ""' "$f")" != "$V_ID" ]; then bad="build missing"
-  elif [ "$(paths "$f")" != "$P_OPEN" ]; then bad="artifact paths '$(paths "$f")', want only ${P_OPEN}"
+  elif ! paths "$f" | tr ',' '\n' | grep -qxF "$P_OPEN"; then bad="artifact paths '$(paths "$f")' lack ${P_OPEN}"
   fi
 done
 if [ -z "$bad" ]; then pass
 else fail "non-creator view: ${bad}" "$(head -c 400 "$WORK/oth-get" | sed "s/${V_SECRET}/<token>/g; s/${N_SECRET}/<token>/g")"; fi
+
+# #6281: on 1.12.3 a recorded path was shown to a non-owner whenever its first
+# segment was a readable repository's key, stored or not, and artifact_count
+# still counted the hidden ones.
+begin_test "FIX #6281: a non-owner sees only recorded artifacts that are stored in a repository it reads (no public-key or typed path)"
+bad=""
+for f in "$WORK/oth-get" "$WORK/oth-list"; do
+  [ -z "$bad" ] || break
+  if [ "$(paths "$f")" != "$P_OPEN" ]; then bad="artifact paths '$(paths "$f")', want only ${P_OPEN}"
+  elif grep -q -e "never-stored.jar" -e "typed.jar" "$f"; then bad="an unstored recorded path in the answer"
+  fi
+done
+if [ -z "$bad" ]; then pass
+else fail "non-creator view: ${bad}" "$(head -c 400 "$WORK/oth-get")"; fi
+
+begin_test "FIX #6281: a non-owner's artifact_count is the number of artifacts it is shown"
+bad=""
+for f in "$WORK/oth-get" "$WORK/oth-list"; do
+  shown="$(jq '[.modules[]?.artifacts[]?] | length' "$f" 2>/dev/null || echo '?')"
+  count="$(jq -r '.artifact_count // "none"' "$f" 2>/dev/null || echo '?')"
+  if [ "$count" != "$shown" ] || [ "$shown" != "1" ]; then bad="${bad} $(basename "$f"): artifact_count ${count}, shown ${shown} (want 1 and 1);"; fi
+done
+c="$(jq -r '.artifact_count // "none"' "$WORK/own-get" 2>/dev/null || echo '?')"
+[ "$c" = "5" ] || bad="${bad} creator artifact_count ${c} (want 5);"
+if [ -z "$bad" ]; then pass
+else fail "count:${bad}"; fi
 
 begin_test "FIX #6240: an administrator sees metadata, vcs_url without credentials, and every artifact"
 c1="$(get_build "$AT" "$WORK/adm-get")"; c2="$(list_build "$AT" "$WORK/adm-list")"
