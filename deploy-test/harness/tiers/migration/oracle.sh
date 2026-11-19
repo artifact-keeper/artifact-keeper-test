@@ -14,6 +14,10 @@
 #   3. assert.sh           — real AK migration, then the #2457 assertions:
 #                            exit 0 on a fixed image, exit = finding-count on a
 #                            hollow-migration image (non-zero-while-bug).
+#   4. window_dryrun.sh    — a raw repository seeded in two batches: date_from
+#                            migrates only the later batch (#6195), and a dry
+#                            run over migrated content reports it as skipped
+#                            (#6196). Needs only step 1.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${DTF_SLOT:?}"
@@ -21,10 +25,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+# shellcheck source=nexus_lib.sh
+source "${HERE}/nexus_lib.sh"
+# shellcheck source=window_dryrun.sh
+source "${HERE}/window_dryrun.sh"
 
 begin_suite "migration-nexus-2457"
 
 SETUP_OK=1
+BOOTSTRAP_OK=1
 
 # Steps 1 and 2 build the FIXTURE the tier needs (a live Nexus with seeded
 # Docker images). A failure there says nothing whatsoever about the candidate,
@@ -45,6 +54,7 @@ if bash "${HERE}/nexus_bootstrap.sh" 2>&1 | tee "$BOOTSTRAP_LOG"; then
   pass
 else
   SETUP_OK=0
+  BOOTSTRAP_OK=0
   infra_fail "nexus_bootstrap.sh failed on slot ${DTF_SLOT}" "$(tail -n 40 "$BOOTSTRAP_LOG" 2>/dev/null)"
 fi
 
@@ -68,6 +78,15 @@ if [ "$SETUP_OK" = "1" ]; then
   fi
 else
   infra_fail "skipped: Nexus setup failed earlier in the suite — the candidate was never exercised"
+fi
+
+# #6195 / #6196 build their own raw-repository fixture, so they only need a
+# bootstrapped Nexus, not the Docker seed.
+if [ "$BOOTSTRAP_OK" = "1" ]; then
+  run_window_dryrun_cases
+else
+  begin_test "setup: seed a raw Nexus repository in two batches for the #6195/#6196 cases"
+  infra_fail "skipped: Nexus bootstrap failed earlier in the suite"
 fi
 
 end_suite
