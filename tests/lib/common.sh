@@ -3343,6 +3343,12 @@ assert_artifact_cached() {
 # proxy_and_verify REPO_KEY FORMAT PACKAGE_NAME PACKAGE_VERSION
 # Pulls an artifact through the remote proxy using the format-native endpoint,
 # then verifies it was cached locally.
+#
+# Format handlers are mounted at the top level (`/npm/<key>`, `/pypi/<key>`,
+# `/cargo/<key>`, ...), not under `/api/v1`. Earlier paths here used
+# `/api/v1/pypi/...`, `/api/v1/crates/...`, `/api/v1/nuget/...` (never routes;
+# since artifact-keeper/artifact-keeper PR 6301 they answer a JSON 404) and
+# `/<key>/...` without the format prefix (never routed at all).
 proxy_and_verify() {
   local repo_key="$1"
   local format="$2"
@@ -3352,23 +3358,28 @@ proxy_and_verify() {
   local pull_path=""
   case "$format" in
     npm)
-      pull_path="/${repo_key}/${package_name}/-/${package_name}-${package_version}.tgz"
+      # Scoped names keep the scope in the path but not in the tarball name.
+      pull_path="/npm/${repo_key}/${package_name}/-/${package_name##*/}-${package_version}.tgz"
       ;;
     pypi)
-      pull_path="/api/v1/pypi/${repo_key}/packages/${package_name}/${package_version}/${package_name}-${package_version}.tar.gz"
+      pull_path="/pypi/${repo_key}/simple/${package_name}/${package_name}-${package_version}.tar.gz"
       ;;
     maven)
       # Expects package_name as "group/artifact" (e.g. "org/example/mylib")
-      pull_path="/${repo_key}/${package_name}/${package_version}/${package_name##*/}-${package_version}.jar"
+      pull_path="/maven/${repo_key}/${package_name}/${package_version}/${package_name##*/}-${package_version}.jar"
       ;;
     cargo)
-      pull_path="/api/v1/crates/${repo_key}/${package_name}/${package_version}/download"
+      pull_path="/cargo/${repo_key}/api/v1/crates/${package_name}/${package_version}/download"
       ;;
     nuget)
-      pull_path="/api/v1/nuget/${repo_key}/package/${package_name}/${package_version}/${package_name}.${package_version}.nupkg"
+      # NuGet v3 flat container: lowercased id and version.
+      local nuget_id nuget_ver
+      nuget_id=$(printf '%s' "$package_name" | tr '[:upper:]' '[:lower:]')
+      nuget_ver=$(printf '%s' "$package_version" | tr '[:upper:]' '[:lower:]')
+      pull_path="/nuget/${repo_key}/v3/flatcontainer/${nuget_id}/${nuget_ver}/${nuget_id}.${nuget_ver}.nupkg"
       ;;
     go)
-      pull_path="/${repo_key}/${package_name}/@v/${package_version}.zip"
+      pull_path="/go/${repo_key}/${package_name}/@v/${package_version}.zip"
       ;;
     docker|oci)
       # For OCI/Docker, pull the manifest to trigger caching
