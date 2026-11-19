@@ -14,6 +14,10 @@
 # repository manager sends). The GA-level maven-metadata.xml lists both, with
 # latest/release 2.0.0 and lastUpdated the young deploy.
 #
+# Two more GAs, com.example.agegate:bulk and :vbulk (artifact-keeper#6284),
+# list 150 old versions and one young one, POMs only, so dating them takes the
+# backend more than one metadata request.
+#
 # Jar bytes are generated at start-up (a real zip in memory), so no binary is
 # committed. GET /__log returns every request path seen, one per line.
 # =============================================================================
@@ -88,6 +92,35 @@ FILES[f"/{G}/{A}/maven-metadata.xml.sha1"] = (
     "text/plain",
     format_datetime(_young, usegmt=True),
 )
+
+# artifact-keeper#6284: two GAs with more undated versions than one listing
+# dates (the backend probes at most 64 POMs per metadata request): 150 old
+# versions 1.0.1 .. 1.0.150 (deployed in 2024) and one young 2.0.0, POMs only,
+# each with its deploy time as Last-Modified, and a maven-metadata.xml whose
+# lastUpdated is the young deploy. `bulk` is read through the Remote,
+# `vbulk` through the Virtual, so each starts undated.
+BULK_OLD = 150
+for _a in ("bulk", "vbulk"):
+    _versions = {f"1.0.{i}": datetime(2024, 1, 2, tzinfo=timezone.utc) + timedelta(hours=i) for i in range(1, BULK_OLD + 1)}
+    _versions["2.0.0"] = _young
+    for _v, _at in _versions.items():
+        _body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<project xmlns="http://maven.apache.org/POM/4.0.0">'
+            f"<modelVersion>4.0.0</modelVersion><groupId>com.example.agegate</groupId>"
+            f"<artifactId>{_a}</artifactId><version>{_v}</version></project>\n"
+        ).encode()
+        FILES[f"/{G}/{_a}/{_v}/{_a}-{_v}.pom"] = (_body, "text/xml", format_datetime(_at, usegmt=True))
+    _listed = "".join(f"      <version>{_v}</version>\n" for _v in _versions)
+    _meta = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<metadata>\n'
+        "  <groupId>com.example.agegate</groupId>\n"
+        f"  <artifactId>{_a}</artifactId>\n"
+        "  <versioning>\n    <latest>2.0.0</latest>\n    <release>2.0.0</release>\n"
+        f"    <versions>\n{_listed}    </versions>\n"
+        f"    <lastUpdated>{_young.strftime('%Y%m%d%H%M%S')}</lastUpdated>\n"
+        "  </versioning>\n</metadata>\n"
+    ).encode()
+    FILES[f"/{G}/{_a}/maven-metadata.xml"] = (_meta, "text/xml", format_datetime(_young, usegmt=True))
 LOG = []
 
 

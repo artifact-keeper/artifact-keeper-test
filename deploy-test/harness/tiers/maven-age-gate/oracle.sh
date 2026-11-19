@@ -22,14 +22,22 @@ setup_workdir
 SUF="${DTF_SLOT}x${RUN_ID##*-}"
 REPO="dtf-mvn-agegate-${SUF}"
 VREPO="dtf-mvn-agegate-v-${SUF}"
+# #6284: a private gated Remote and a Virtual over it. A private member turns
+# the Virtual's 60 s merge cache off (#3323), so each request runs the member's
+# filter, as it does for any Virtual with a private member.
+PREPO="dtf-mvn-agegate-p-${SUF}"
+PVREPO="dtf-mvn-agegate-pv-${SUF}"
 MOCK="ak-dtf${DTF_SLOT}-mock-maven"
 UPSTREAM="http://mock-maven/"
 G="com/example/agegate/widget"
+GG="com/example/agegate"
 OLD="1.0.0"
 YOUNG="2.0.0"
 PKG="com.example.agegate:widget"
 
 cleanup_repos() {
+  api_delete "/api/v1/repositories/${PVREPO}" >/dev/null 2>&1 || true
+  api_delete "/api/v1/repositories/${PREPO}" >/dev/null 2>&1 || true
   api_delete "/api/v1/repositories/${VREPO}" >/dev/null 2>&1 || true
   api_delete "/api/v1/repositories/${REPO}" >/dev/null 2>&1 || true
 }
@@ -170,6 +178,73 @@ begin_test "CONTROL: the old ${OLD} jar downloads through the Virtual"
 st=$(fetch "$VREPO" "${G}/${OLD}/widget-${OLD}.jar" "${WORK_DIR}/v.old.jar")
 if [ "$st" = "200" ] && [ "$(sha256_of "${WORK_DIR}/v.old.jar")" = "$(sha256_of "${WORK_DIR}/old.mock")" ]; then pass
 else fail "virtual old jar HTTP ${st}"; fi
+
+# ---------------------------------------------------------------------------
+# #6284: while a GA is still being dated (more undated versions than one
+# listing probes), the metadata body and its checksum sidecars must describe
+# the same filtered document, and two downloads in a row must agree.
+# ---------------------------------------------------------------------------
+# metadata_round REPO GA TAG: body, .sha1, .md5, body again, back to back
+metadata_round() {
+  local repo="$1" ga="$2" tag="$3"
+  R_ST1=$(fetch "$repo" "${GG}/${ga}/maven-metadata.xml" "${WORK_DIR}/${tag}.1.xml")
+  R_STS=$(fetch "$repo" "${GG}/${ga}/maven-metadata.xml.sha1" "${WORK_DIR}/${tag}.sha1")
+  R_STM=$(fetch "$repo" "${GG}/${ga}/maven-metadata.xml.md5" "${WORK_DIR}/${tag}.md5")
+  R_ST2=$(fetch "$repo" "${GG}/${ga}/maven-metadata.xml" "${WORK_DIR}/${tag}.2.xml")
+  R_N1=$(versions_in "${WORK_DIR}/${tag}.1.xml" | wc -w | tr -d ' ')
+  R_N2=$(versions_in "${WORK_DIR}/${tag}.2.xml" | wc -w | tr -d ' ')
+}
+md5_of() { md5sum "$1" 2>/dev/null | awk '{print $1}'; }
+
+# assert_round WHERE TAG: the checks on one metadata_round
+assert_round() {
+  local where="$1" tag="$2" body="${WORK_DIR}/${2}.1.xml" want got
+  begin_test "FIX #6284: ${where}: maven-metadata.xml.sha1 matches the metadata body just served"
+  want="$(sha1_of "$body")"; got="$(tr -d '[:space:]' < "${WORK_DIR}/${tag}.sha1" 2>/dev/null)"
+  if [ "$R_ST1" = "200" ] && [ "$R_STS" = "200" ] && [ -n "$want" ] && [ "$got" = "$want" ]; then pass
+  else fail "#6284: ${where} body HTTP ${R_ST1} (${R_N1} versions), .sha1 HTTP ${R_STS}: ${got:-none} vs body ${want:-none}"; fi
+
+  begin_test "FIX #6284: ${where}: maven-metadata.xml.md5 matches the metadata body just served"
+  want="$(md5_of "$body")"; got="$(tr -d '[:space:]' < "${WORK_DIR}/${tag}.md5" 2>/dev/null)"
+  if [ "$R_STM" = "200" ] && [ -n "$want" ] && [ "$got" = "$want" ]; then pass
+  else fail "#6284: ${where} .md5 HTTP ${R_STM}: ${got:-none} vs body ${want:-none}"; fi
+
+  begin_test "FIX #6284: ${where}: two metadata downloads in a row list the same versions"
+  if [ "$R_ST2" = "200" ] && [ "$R_N1" -gt 0 ] 2>/dev/null \
+     && cmp -s "$body" "${WORK_DIR}/${tag}.2.xml"; then pass
+  else fail "#6284: ${where} first download ${R_N1} versions, second ${R_N2} (HTTP ${R_ST2})"; fi
+
+  begin_test "CONTROL: ${where}: the young ${YOUNG} is never listed while dating"
+  if [ -s "$body" ] && ! grep -q "<version>${YOUNG}</version>" "$body" "${WORK_DIR}/${tag}.2.xml"; then pass
+  else fail "${where}: the young ${YOUNG} is listed" "$(head -c 400 "$body")"; fi
+}
+
+metadata_round "$REPO" bulk r1
+assert_round "Remote" r1
+
+# The memo is short-lived (15 s): the next listing after it continues dating.
+sleep 16
+metadata_round "$REPO" bulk r2
+N_FIRST="$(versions_in "${WORK_DIR}/r1.1.xml" | wc -w | tr -d ' ')"
+begin_test "CONTROL: Remote: a listing after the memo window has dated more versions than the first"
+if [ "$R_ST1" = "200" ] && [ "$R_N1" -gt "$N_FIRST" ] 2>/dev/null; then pass
+else fail "a listing after the memo window lists ${R_N1} versions, the first ${N_FIRST}"; fi
+assert_round "Remote, later pass" r2
+
+begin_test "Setup #6284: a private gated Remote over the mock and a Virtual over it"
+api_call POST "/api/v1/repositories" "{\"key\":\"${PREPO}\",\"name\":\"${PREPO}\",\"format\":\"maven\",\"repo_type\":\"remote\",\"upstream_url\":\"${UPSTREAM}\",\"is_public\":false}"
+s1="$API_STATUS"
+api_call POST "/api/v1/repositories" "{\"key\":\"${PVREPO}\",\"name\":\"${PVREPO}\",\"format\":\"maven\",\"repo_type\":\"virtual\",\"is_public\":false}"
+s2="$API_STATUS"
+api_call POST "/api/v1/repositories/${PVREPO}/members" "{\"member_key\":\"${PREPO}\",\"priority\":1}"
+s3="$API_STATUS"
+api_call PUT "/api/v1/repositories/${PREPO}/age-gate" '{"enabled":true,"min_age_days":7,"mode":"upstream_publish_time"}'
+s4="$API_STATUS"
+if [[ "$s1" == 20? && "$s2" == 20? && "$s3" == 20? && "$s4" == 200 ]]; then pass
+else fail "create remote ${s1}, virtual ${s2}, member ${s3}, age-gate ${s4}" "${API_BODY:0:300}"; fi
+
+metadata_round "$PVREPO" vbulk v1
+assert_round "Virtual" v1
 
 # ---------------------------------------------------------------------------
 # An approved review lets the young version through
