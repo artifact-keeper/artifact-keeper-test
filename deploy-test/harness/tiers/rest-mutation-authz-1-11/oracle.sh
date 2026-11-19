@@ -333,6 +333,111 @@ if [ "$c1" = "200" ] && [ "$c2" = "200" ] && [ "$(build_status)" = "success" ] &
 else fail "creator build update: PUT ${c1}, artifacts ${c2}, status=$(build_status), rows=$(build_arts)" "$(body)"; fi
 
 # =============================================================================
+# FIX artifact-keeper#6046 / #6240 - build reads return what the writes store,
+# but metadata and vcs_url only to the build's creator or an admin
+# =============================================================================
+# #6046: GET /builds and /builds/{id} answered without vcs_*, metadata and
+# modules, and ignored sort_by. #6048 fixed that and was reverted from 1.12.2
+# (#6241) because every signed-in caller, a read:artifacts token included, got
+# another user's metadata (env.NPM_TOKEN), the full vcs_url with its embedded
+# token, and artifact paths in repositories it cannot read (#6240).
+# D creates the build. R reads it with a personal read:artifacts token: R is a
+# `reader` on private Q and has no grant on private X.
+X="rma11-hid-${SLOT}-${SUF}"        # private generic local nobody but admin reads
+c="$(mkrepo "$X" generic local false)"; setup_ok "create private repo ${X}" "$c"
+c="$(req POST /api/v1/auth/tokens "$RT" "$(jq -nc --arg n "rma-read-${SUF}" '{name:$n,scopes:["read:artifacts"],expires_in_days:1}')")"
+setup_ok "mint ${R_USER} a read:artifacts token" "$c"
+RRT="$(jb '.token // empty')"
+[ -n "$RRT" ] || { begin_test "setup: read:artifacts token"; infra_fail "no token in the mint answer" "$(body)"; end_suite; }
+
+V_NAME="rma-build-vcs-${SUF}"
+V_SECRET="ghs_rma6240${SUF//-/}"
+N_SECRET="npm_rma6240${SUF//-/}"
+c="$(req POST /api/v1/builds "$DT" "$(jq -nc --arg n "$V_NAME" --arg u "https://x-access-token:${V_SECRET}@github.com/org/private" --arg s "$N_SECRET" \
+  '{name:$n,build_number:1,vcs_url:$u,vcs_revision:"0123456789abcdef",vcs_branch:"main",vcs_message:"rma 6046",metadata:{env:{NPM_TOKEN:$s},runner:"linux"}}')")"
+setup_ok "developer creates a build with vcs fields and metadata" "$c"
+V_ID="$(jb '.id // empty')"
+[ "${#V_ID}" = "36" ] || { begin_test "setup: vcs build id"; infra_fail "no build id" "$(body)"; end_suite; }
+P_OPEN="${Q}/com/org/app.jar"
+P_HID="${X}/com/org/secret.jar"
+P_LOCAL="dist/local.bin"
+c="$(req POST "/api/v1/builds/${V_ID}/artifacts" "$DT" "$(jq -nc --arg a "$P_OPEN" --arg b "$P_HID" --arg l "$P_LOCAL" --arg z "$(printf '0%.0s' $(seq 64))" \
+  '{artifacts:[{module_name:"app",name:"app.jar",path:$a,checksum_sha256:$z,size_bytes:10},
+               {module_name:"app",name:"secret.jar",path:$b,checksum_sha256:$z,size_bytes:20},
+               {name:"local.bin",path:$l,checksum_sha256:$z,size_bytes:30}]}')")"
+setup_ok "developer attaches three artifacts" "$c"
+ALL_PATHS="$(printf '%s\n' "$P_OPEN" "$P_HID" "$P_LOCAL" | sort | paste -sd, -)"
+CLEAN_URL="https://github.com/org/private"
+
+# paths FILE -> the build's artifact paths, sorted, comma-joined.
+paths() { jq -r '[.modules[]?.artifacts[]?.path] | sort | join(",")' "$1" 2>/dev/null || true; }
+# get_build TOKEN OUT -> HTTP code of GET /builds/{V_ID}, body copied to OUT.
+get_build() { local c; c="$(req GET "/api/v1/builds/${V_ID}" "$1")"; cp "$WORK/body" "$2"; echo "$c"; }
+# list_build TOKEN OUT -> HTTP code of the list searched by name, the one item in OUT.
+list_build() {
+  local c; c="$(req GET "/api/v1/builds?search=${V_NAME}" "$1")"
+  jq '.items | if length == 1 then .[0] else error("items: \(length)") end' "$WORK/body" > "$2" 2>/dev/null || cp "$WORK/body" "$2"
+  echo "$c"
+}
+# sees_all FILE -> 0 when FILE carries the creator's full view.
+sees_all() {
+  [ "$(jq -r '.vcs_url // ""' "$1")" = "$CLEAN_URL" ] &&
+  [ "$(jq -r '.vcs_branch // ""' "$1")" = "main" ] &&
+  [ "$(jq -r '.vcs_revision // ""' "$1")" = "0123456789abcdef" ] &&
+  [ "$(jq -r '.metadata.env.NPM_TOKEN // ""' "$1")" = "$N_SECRET" ] &&
+  [ "$(paths "$1")" = "$ALL_PATHS" ] &&
+  ! grep -q "$V_SECRET" "$1"
+}
+
+begin_test "FIX #6046: the creator reads back vcs fields, metadata and every artifact (GET by id and list)"
+c1="$(get_build "$DT" "$WORK/own-get")"; c2="$(list_build "$DT" "$WORK/own-list")"
+if [ "$c1" = "200" ] && [ "$c2" = "200" ] && sees_all "$WORK/own-get" && sees_all "$WORK/own-list"; then pass
+else fail "creator view: GET ${c1}, list ${c2}; want vcs_url ${CLEAN_URL}, branch, revision, metadata and paths ${ALL_PATHS}" \
+  "$(head -c 400 "$WORK/own-get") | $(head -c 400 "$WORK/own-list")"; fi
+
+begin_test "FIX #6240: vcs_url is stored without its credentials"
+STORED="$(db "SELECT vcs_url FROM builds WHERE id='${V_ID}';")"
+if [ "$STORED" = "$CLEAN_URL" ]; then pass
+else fail "stored vcs_url keeps userinfo: ${STORED//${V_SECRET}/<token>}"; fi
+
+begin_test "FIX #6240: another user's read:artifacts token gets no metadata, no vcs_* fields, only artifacts in repositories it reads"
+c1="$(get_build "$RRT" "$WORK/oth-get")"; c2="$(list_build "$RRT" "$WORK/oth-list")"
+bad=""
+[ "$c1" = "200" ] && [ "$c2" = "200" ] || bad="GET ${c1}, list ${c2}"
+for f in "$WORK/oth-get" "$WORK/oth-list"; do
+  [ -z "$bad" ] || break
+  if [ "$(jq 'has("metadata") or has("vcs_url") or has("vcs_revision") or has("vcs_branch") or has("vcs_message")' "$f" 2>/dev/null)" != "false" ]; then bad="metadata or a vcs_* field present"
+  elif grep -q -e "$V_SECRET" -e "$N_SECRET" -e "rma 6046" -e "$X" -e "$P_LOCAL" "$f"; then bad="a secret, the commit message, ${X} or ${P_LOCAL} in the answer"
+  elif [ "$(jq -r '.id // ""' "$f")" != "$V_ID" ]; then bad="build missing"
+  elif [ "$(paths "$f")" != "$P_OPEN" ]; then bad="artifact paths '$(paths "$f")', want only ${P_OPEN}"
+  fi
+done
+if [ -z "$bad" ]; then pass
+else fail "non-creator view: ${bad}" "$(head -c 400 "$WORK/oth-get" | sed "s/${V_SECRET}/<token>/g; s/${N_SECRET}/<token>/g")"; fi
+
+begin_test "FIX #6240: an administrator sees metadata, vcs_url without credentials, and every artifact"
+c1="$(get_build "$AT" "$WORK/adm-get")"; c2="$(list_build "$AT" "$WORK/adm-list")"
+if [ "$c1" = "200" ] && [ "$c2" = "200" ] && sees_all "$WORK/adm-get" && sees_all "$WORK/adm-list"; then pass
+else fail "admin view: GET ${c1}, list ${c2}" "$(head -c 400 "$WORK/adm-get")"; fi
+
+# sort_by: build 1 `-c` created 1h ago, build 2 `-b` 3h ago, build 3 `-a` 2h
+# ago, so build number, name and creation order all differ.
+S_PRE="rma-sort-${SUF}"
+for spec in "1 c 1" "2 b 3" "3 a 2"; do
+  read -r num sfx hrs <<<"$spec"
+  c="$(req POST /api/v1/builds "$DT" "$(jq -nc --arg n "${S_PRE}-${sfx}" --argjson b "$num" '{name:$n,build_number:$b}')")"
+  setup_ok "create sort build ${S_PRE}-${sfx}" "$c"
+  db "UPDATE builds SET created_at = NOW() - make_interval(hours => ${hrs}) WHERE name='${S_PRE}-${sfx}';" >/dev/null
+done
+numbers() { req GET "/api/v1/builds?search=${S_PRE}&$1" "$DT" >/dev/null; jq -r '[.items[].number] | join(",")' "$WORK/body" 2>/dev/null || true; }
+
+begin_test "FIX #6046: sort_by orders the build list (created_at, name), unknown values keep build number order"
+a="$(numbers 'sort_by=created_at&sort_order=asc')"; d="$(numbers 'sort_by=created_at&sort_order=desc')"
+n="$(numbers 'sort_by=name&sort_order=asc')"; u="$(numbers 'sort_by=nope&sort_order=asc')"
+if [ "$a" = "2,3,1" ] && [ "$d" = "1,3,2" ] && [ "$n" = "3,2,1" ] && [ "$u" = "1,2,3" ]; then pass
+else fail "created_at asc ${a} (want 2,3,1), desc ${d} (want 1,3,2), name ${n} (want 3,2,1), unknown ${u} (want 1,2,3)"; fi
+
+# =============================================================================
 # FIX artifact-keeper#4818 (RED on main 2f08663f and every 1.11.x release,
 # GREEN from main adfa0206): a `repository-owner` ROLE member may use the two
 # routes that moved to the repository `admin` action, as the 1.11.0 CHANGELOG
