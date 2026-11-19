@@ -79,8 +79,19 @@
 #              completes, and completes no sooner than 6 s after the trigger
 #              (so the stub really sat in front of grype).
 #
+# #6282 (artifact-keeper, for 1.12.3): a retry that reuses an identical scan.
+#   (FIX)      RED on main with #6266 and without its fix (the dedup
+#              conversion only converts a `running` row, so the timed-out row
+#              stays `failed` while the job completes). GREEN on the fix.
+#              Phase 8, same backend as phase 7: after a queued on-demand
+#              scan's grype attempt times out, the same bytes stored as another
+#              artifact (repository sq-twin) get a completed grype scan row (the
+#              oracle writes it, since the stub hangs every real grype run). The
+#              retry reuses it: the timed-out row ends `completed`, is_reused,
+#              source_scan_id that row, and holds that scan's finding only.
+#
 # RATE_LIMIT_ENABLED=false: ~200 API calls back to back.
-COVERS="5946 5947 5942"
+COVERS="5946 5947 5942 6282"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
