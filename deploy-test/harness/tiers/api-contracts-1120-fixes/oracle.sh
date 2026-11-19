@@ -8,8 +8,9 @@
 #   inline repo-admin gates (#4834), upstream auth on the repository list
 #   (#4851), PATCH that refuses writes nothing (#5201), admin settings in force
 #   (#5652), artifacts of a repository under delete by id (#5694), 5-field
-#   cron weekdays (#5487), the audited cold HEAD probe (#5347) and releasing a
-#   held proxied path straight after its 409 (#5223). See the manifest.
+#   cron weekdays (#5487), the audited cold HEAD probe (#5347), releasing a
+#   held proxied path straight after its 409 (#5223) and, for 1.12.3, the
+#   JSON 404 for an unknown /api/v1 path (#6299). See the manifest.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
 # RELEASE_GATE=1, JUNIT_OUTPUT_DIR, COMMON_SH.
@@ -452,5 +453,49 @@ done
 note "held2 after release: ${c} $(stat -c %s "${W}/hb" 2>/dev/null) bytes"
 [ -n "$ok" ] && cmp -s "${W}/hb" "${W}/big.bin" || fail_g "the released held2 never served the upstream bytes (last ${c})"
 finish_case "a held proxied path answers 404 to a release right after its 409"
+
+# =============================================================================
+# #6299 unknown /api/v1 paths answer the API's own 404
+# =============================================================================
+# probe <METHOD> <PATH> <TOKEN or -> [JSON body]: like req, also sets CTYPE.
+probe(){
+  local m="$1" p="$2" t="$3" d="${4:-}"
+  local -a ca=(-s -o "${W}/body" -D "${W}/hdrs" -w '%{http_code}' --max-time 30 -X "$m")
+  [ "$t" != "-" ] && ca+=(-H "Authorization: Bearer ${t}")
+  [ -n "$d" ] && ca+=(-H 'Content-Type: application/json' --data-binary "$d")
+  : >"${W}/body"; : >"${W}/hdrs"
+  CODE="$(curl "${ca[@]}" "${BASE}${p}")"
+  BODY="$(cat "${W}/body" 2>/dev/null || true)"
+  CTYPE="$(tr -d '\r' <"${W}/hdrs" | grep -i '^content-type:' | tail -1 | cut -d: -f2- | sed 's/^ *//')"
+}
+
+begin_test "CONTROL: a real /api/v1 route still answers (GET /repositories 200) and a known path with the wrong method is 405"
+reset_case
+probe GET /api/v1/repositories "$TOK"
+note "GET /api/v1/repositories: ${CODE} (${CTYPE})"
+[ "$CODE" = "200" ] || fail_g "GET /api/v1/repositories answered ${CODE}: ${BODY:0:160}"
+jq -e '.items | type == "array"' <<<"$BODY" >/dev/null 2>&1 || fail_g "GET /api/v1/repositories has no items array: ${BODY:0:160}"
+probe PUT /api/v1/repositories "$TOK" '{}'
+note "PUT /api/v1/repositories: ${CODE} ${BODY:0:120}"
+[ "$CODE" = "405" ] || fail_g "PUT on the GET/POST /api/v1/repositories route answered ${CODE}, expected 405"
+probe GET /api/v1/auth/login -
+note "GET /api/v1/auth/login: ${CODE}"
+[ "$CODE" = "405" ] || fail_g "GET on the POST-only /api/v1/auth/login answered ${CODE}, expected 405"
+finish_case "a real /api/v1 route or its method check changed"
+
+begin_test "FIX #6299: an unknown /api/v1 path (GET signed in and anonymous, POST) is a JSON 404 'Not found', not 'Repository not found'"
+reset_case
+for spec in "GET|${TOK}|" "GET|-|" "POST|${TOK}|{\"name\":\"x\"}"; do
+  IFS='|' read -r m t d <<<"$spec"
+  who="signed in"; [ "$t" = "-" ] && who="anonymous"
+  probe "$m" /api/v1/does-not-exist "$t" "$d"
+  msg="$(jqr '.message // empty' <<<"$BODY")"
+  note "${m} /api/v1/does-not-exist (${who}): ${CODE} (${CTYPE}) ${BODY:0:160}"
+  [ "$CODE" = "404" ] || fail_g "${m} (${who}) answered ${CODE}, expected 404"
+  case "$CTYPE" in application/json*) ;; *) fail_g "${m} (${who}) content-type '${CTYPE}', expected application/json";; esac
+  [ "$msg" = "Not found" ] || fail_g "${m} (${who}) message is '${msg}', expected 'Not found'"
+  case "$BODY" in *[Rr]epository*) fail_g "${m} (${who}) body names a repository: ${BODY:0:160}";; esac
+done
+finish_case "an unknown /api/v1 path falls through to the format routes"
 
 end_suite
