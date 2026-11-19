@@ -16,9 +16,9 @@
 #      (then the oracle seeds the old DB build on two digests' scan rows)
 #   3  queue on, worker on, rescan cap unset    CONTROL no rescan
 #   4  + SCAN_RESCAN_MAX_PER_DAY=100, claim hold FIX #5947 one rescan/digest
-#   5  queue off, grype stub 6 s, limit 12 s    CONTROL slow scan completes
-#   6  queue off, grype stub hangs, limit 12 s  FIX #5942 row failed at limit
-#   7  queue+worker on, stub hangs, limit 12 s  FIX #5942 failed + job retried
+#   5  queue off, grype stub 6 s, limit 30 s    CONTROL slow scan completes
+#   6  queue off, grype stub hangs, limit 30 s  FIX #5942 row failed at limit
+#   7  queue+worker on, stub hangs, limit 30 s  FIX #5942 failed + job retried
 #
 # Repositories (keys suffixed per run; all scan_enabled + scan_on_upload):
 #   C_GEN generic, C_OCI docker     phase 0 (queue off)
@@ -357,9 +357,11 @@ finish_case "a DB build change did not queue one rescan per digest, or lost the 
 # is "a scan slower than before but inside the limit completes, one that never
 # returns leaves `running` at the limit", in seconds rather than the minutes a
 # production limit would be.
-LIMIT=12
-SLOW=$(( LIMIT / 2 ))
-BUSYBOX_IMAGE="busybox:1.37.0-musl"
+# 30 s, not less: phase 5's limit has to cover the stub's 6 s sleep plus the
+# real grype on a 4 vCPU hosted runner. Phase 6's windows scale with it.
+LIMIT=30
+SLOW=6
+BUSYBOX_IMAGE="busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
 HG_GEN="sq-hang-${SUF}"
 ALL_REPOS="${ALL_REPOS} ${HG_GEN}"
 BACKEND_CTR="ak-dtf${DTF_SLOT}-backend"
