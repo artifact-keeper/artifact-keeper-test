@@ -1,0 +1,10 @@
+# Overlay the oracle recreates the adapter with (on top of compose.base +
+# storage.filesystem + scanners.trivy) for the "Java DB unreachable" cases:
+# an air-gapped install that set SCANNER_TRIVY_SKIP_DB_UPDATE but not
+# SCANNER_OFFLINE (the vulnerability DB is already in the cache), and a Java DB
+# repository nothing answers on (a closed local port, so it fails fast).
+services:
+  trivy:
+    environment:
+      SCANNER_TRIVY_SKIP_DB_UPDATE: "true"
+      TRIVY_JAVA_DB_REPOSITORY: "127.0.0.1:9/dtf/unreachable-trivy-java-db:1"

@@ -1,0 +1,46 @@
+# DTF tier manifest: scanner-adapter-java-db
+#   (artifact-keeper#5913, scanner adapter 1.7.1)
+# Profile-set: filesystem + trivy (the scanner-adapter sidecar,
+# SCANNER_ADAPTER_IMAGE; the red/green axis is the adapter image). The oracle
+# recreates the adapter with fixtures/java-db-unreachable.yml on top, then
+# without it. Images are built at run time (fixtures/mkimage.py: alpine-shaped,
+# libcrypto1.1 1.1.1c-r0, so Trivy reports CVEs; `jar` adds
+# /opt/app/lib/log4j-core-2.14.1.jar, which makes trivy open its Java DB) and
+# pushed through /v2.
+# NETWORK: the adapter downloads the Trivy DB from ghcr.io (~100 MiB,
+# pre-warmed in setup) and the trivy Java DB from mirror.gcr.io
+# (trivy-java-db:1, ~1 GiB compressed, ~1.5 GiB unpacked) once. Disk: pre-fix,
+# every concurrent first JAR scan stages its own copy (~1.9 GiB each).
+#
+# WHAT IS GATED
+#   #5913 trivy downloads its Java DB into the adapter's cache on demand, in
+#         every trivy process that meets a JAR. Concurrent first JAR scans
+#         unpacked over each other and failed ("chmod
+#         .../java-db/trivy-java.db: no such file or directory"). The adapter
+#         now downloads it once (single flight, file lock across replicas),
+#         every scan runs with --skip-java-db-update, and a scan that needs
+#         it before it is there waits for that download and runs again. When
+#         the Java DB cannot be fetched, images without JARs still scan.
+#
+# THE CASES
+#   (CONTROL) Java DB unreachable, SCANNER_TRIVY_SKIP_DB_UPDATE=true, empty
+#     Java DB cache: an image with no JAR scans to completion with its CVEs
+#     (a fix that fails every scan when the Java DB download fails, like the
+#     first attempt in PR 6055, breaks this).
+#   (CONTROL) same adapter: an image with a JAR fails closed (never completed
+#     with 0 findings), naming the Java DB.
+#   (FIX #5913) adapter recreated with the Java DB reachable, its cache
+#     still empty, and /tmp a 3 GiB tmpfs (fixtures/tmp-limit.yml, the
+#     size-limited tmp volume of a chart install); three JAR images scanned at
+#     once: all three complete with findings, and the adapter logged one Java
+#     DB download. Pre-fix: each trivy process downloads it, staging ~1.9 GiB
+#     in /tmp, so the concurrent downloads run out of space (and, without the
+#     limit, race on <cache>/java-db; that race is timing-dependent, which is
+#     why the case pins the space bound instead).
+#   (CONTROL) a JAR image scanned after that completes (the Java DB is reused).
+#
+# RATE_LIMIT_ENABLED=false: registry pushes and scan polls back to back.
+COVERS="5913"
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
