@@ -5,7 +5,8 @@
 #   (artifact-keeper#5793), tags/list answers `name` with the full request name
 #   (#5794), a Remote repairs a corrupt stored blob from its upstream
 #   (#5169), and the Referrers API through a Virtual lists the referrers of
-#   the members the caller may read (#5792).
+#   the members the caller may read (#5792), and an admin release names the
+#   digest it was decided for (#5766).
 # =============================================================================
 # run.sh has stood up `storage.filesystem upstreams.mock-oci-classify` with
 # UPSTREAM_ALLOW_PRIVATE_IPS=true and exported BASE_URL, DB_CONTAINER,
@@ -373,6 +374,66 @@ else
   case ",${d}," in *",${SBOM_A_D},"*) why="${why}; the private member's SBOM leaked" ;; esac
   fail "$why" "$(snip "${WORK}/rf-u")"
 fi
+
+# ===========================================================================
+# #5766: a release decided for one image cannot clear a newer hold on another
+# ===========================================================================
+# The administrator holds tag `t` while it names H1, then decides to release
+# H1. Before that release lands, a push moves `t` to H2 (the hold is carried to
+# H1's digest row, #5457) and H2 is held in turn. The stale release names H1
+# (`expected_digest`): it must release H1's row and leave H2's newer hold.
+HIMG="aktest/hold"
+HOLD_ROW=""
+hold_row() { db "SELECT id FROM artifacts WHERE repository_id=(SELECT id FROM repositories WHERE key='${HOSTED}') AND path='v2/${HIMG}/manifests/t' AND is_deleted=false;"; }
+hold_status() { db "SELECT COALESCE(quarantine_status,'none') FROM artifacts WHERE id='$1';"; }
+quar() { # ROW ACTION JSON -> http code, body in $WORK/api.json
+  api POST "/api/v1/quarantine/${1}/${2}" "$3"
+}
+
+begin_test "setup (#5766): ${HIMG}:t names H1 and is held for review; a push moves t to H2, which is held in turn"
+ERR=""
+make_image h1; make_image h2
+H1_D="$(digest_of "${WORK}/h1.manifest")"; H2_D="$(digest_of "${WORK}/h2.manifest")"
+ERR="${ERR}$(push_image_blobs "$HOSTED" "$HIMG" h1)$(push_image_blobs "$HOSTED" "$HIMG" h2)"
+c="$(put_manifest "$HOSTED" "$HIMG" t "${WORK}/h1.manifest" "$MT_OCI")"; is_2xx "$c" || ERR="${ERR} h1:t=${c}"
+HOLD_ROW="$(hold_row)"
+[ -n "$HOLD_ROW" ] || ERR="${ERR} no artifacts row for ${HIMG}:t"
+if [ -z "${ERR// /}" ]; then
+  c="$(quar "$HOLD_ROW" quarantine "{\"reason\":\"review H1\",\"expected_digest\":\"${H1_D}\"}")"
+  [ "$c" = "200" ] || ERR="${ERR} hold H1=${c} $(snip "${WORK}/api.json")"
+  c="$(put_manifest "$HOSTED" "$HIMG" t "${WORK}/h2.manifest" "$MT_OCI")"; is_2xx "$c" || ERR="${ERR} h2:t=${c}"
+  [ "$(hold_row)" = "$HOLD_ROW" ] || ERR="${ERR} the tag row changed id on the move"
+  c="$(quar "$HOLD_ROW" quarantine "{\"reason\":\"newer hold on H2\",\"expected_digest\":\"${H2_D}\"}")"
+  [ "$c" = "200" ] || ERR="${ERR} hold H2=${c} $(snip "${WORK}/api.json")"
+  [ "$(hold_status "$HOLD_ROW")" = "quarantined" ] || ERR="${ERR} H2 not held: $(hold_status "$HOLD_ROW")"
+fi
+if [ -n "${ERR// /}" ]; then infra_fail "#5766 fixture setup failed:${ERR}"; end_suite; fi
+pass
+
+begin_test "CONTROL (#5457): after the move H1 stays refused by digest and t (H2) is refused by tag"
+r1="$(get_manifest "$HOSTED" "$HIMG" "$H1_D" "${WORK}/h-d1")"
+r2="$(get_manifest "$HOSTED" "$HIMG" t "${WORK}/h-t")"
+if ! is_2xx "$r1" && ! is_2xx "$r2"; then pass
+else fail "H1 by digest=${r1} t=${r2}, want both refused (the carried hold on H1, the newer hold on H2)"; fi
+
+begin_test "FIX #5766: the stale release of H1 (expected_digest) leaves the newer hold on H2 in place"
+c="$(quar "$HOLD_ROW" release "{\"expected_digest\":\"${H1_D}\"}")"
+cp "${WORK}/api.json" "${WORK}/h-rel.json"
+st="$(hold_status "$HOLD_ROW")"
+g="$(get_manifest "$HOSTED" "$HIMG" t "${WORK}/h-t2")"
+if [ "$st" = "quarantined" ] && ! is_2xx "$g"; then pass
+else
+  why="release=${c}; tag row (H2) is now '${st}' and GET t=${g}, want 'quarantined' and refused"
+  [ "$st" = "released" ] && why="${why}; the release decided for H1 cleared the newer hold on H2"
+  fail "$why" "$(snip "${WORK}/h-rel.json")"
+fi
+
+begin_test "FIX #5766: that release lands on H1 instead: 200 naming held_digest H1 and moved_to_digest H2, and H1 is served again"
+held="$(jqr '.held_digest // empty' < "${WORK}/h-rel.json")"
+moved="$(jqr '.moved_to_digest // empty' < "${WORK}/h-rel.json")"
+r1="$(get_manifest "$HOSTED" "$HIMG" "$H1_D" "${WORK}/h-d1b")"
+if [ "$c" = "200" ] && [ "$held" = "$H1_D" ] && [ "$moved" = "$H2_D" ] && [ "$r1" = "200" ]; then pass
+else fail "release=${c} held_digest=${held:7:12} moved_to_digest=${moved:7:12} GET H1=${r1}, want 200 ${H1_D:7:12} ${H2_D:7:12} and 200" "$(snip "${WORK}/h-rel.json")"; fi
 
 # ===========================================================================
 # #5169: a Remote repairs a corrupt stored blob from its upstream
