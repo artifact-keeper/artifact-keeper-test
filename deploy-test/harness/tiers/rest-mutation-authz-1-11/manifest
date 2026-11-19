@@ -39,8 +39,8 @@
 #
 # FIX artifact-keeper#6046 / #6240 (builds read owner-gated): GET /builds and
 # /builds/{id} return the vcs fields, metadata and attached artifacts the
-# writes store and honour sort_by (#6046); metadata and vcs_url only to the
-# build's creator or an admin, vcs_url stored and returned without userinfo,
+# writes store and honour sort_by (#6046); metadata and the vcs_* fields only
+# to the build's creator or an admin, vcs_url stored and returned without userinfo,
 # and another user's read:artifacts token sees only the artifacts whose path
 # names a repository it reads (#6240, the reason #6048 was reverted from
 # 1.12.2). RED on main a688a53e (the reads drop every field and sort_by is

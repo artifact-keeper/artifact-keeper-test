@@ -400,15 +400,15 @@ STORED="$(db "SELECT vcs_url FROM builds WHERE id='${V_ID}';")"
 if [ "$STORED" = "$CLEAN_URL" ]; then pass
 else fail "stored vcs_url keeps userinfo: ${STORED//${V_SECRET}/<token>}"; fi
 
-begin_test "FIX #6240: another user's read:artifacts token gets no metadata, no vcs_url, only artifacts in repositories it reads"
+begin_test "FIX #6240: another user's read:artifacts token gets no metadata, no vcs_* fields, only artifacts in repositories it reads"
 c1="$(get_build "$RRT" "$WORK/oth-get")"; c2="$(list_build "$RRT" "$WORK/oth-list")"
 bad=""
 [ "$c1" = "200" ] && [ "$c2" = "200" ] || bad="GET ${c1}, list ${c2}"
 for f in "$WORK/oth-get" "$WORK/oth-list"; do
   [ -z "$bad" ] || break
-  if [ "$(jq 'has("metadata") or has("vcs_url")' "$f" 2>/dev/null)" != "false" ]; then bad="metadata or vcs_url present"
-  elif grep -q -e "$V_SECRET" -e "$N_SECRET" -e "$X" -e "$P_LOCAL" "$f"; then bad="a secret, ${X} or ${P_LOCAL} in the answer"
-  elif [ "$(jq -r '.vcs_branch // ""' "$f")" != "main" ]; then bad="vcs_branch missing"
+  if [ "$(jq 'has("metadata") or has("vcs_url") or has("vcs_revision") or has("vcs_branch") or has("vcs_message")' "$f" 2>/dev/null)" != "false" ]; then bad="metadata or a vcs_* field present"
+  elif grep -q -e "$V_SECRET" -e "$N_SECRET" -e "rma 6046" -e "$X" -e "$P_LOCAL" "$f"; then bad="a secret, the commit message, ${X} or ${P_LOCAL} in the answer"
+  elif [ "$(jq -r '.id // ""' "$f")" != "$V_ID" ]; then bad="build missing"
   elif [ "$(paths "$f")" != "$P_OPEN" ]; then bad="artifact paths '$(paths "$f")', want only ${P_OPEN}"
   fi
 done
