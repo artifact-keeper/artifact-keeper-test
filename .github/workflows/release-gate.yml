@@ -3493,6 +3493,10 @@ jobs:
           # not carry the PATCH cases.
           - group: fixes-1.11.3-ops
             tiers: remote-instance-relay push-sync-native-formats ops-log-noise readyz-hung-dependency
+          # Mounted CA additions and removals reach a retained HTTPS scanner
+          # health client without restarting the backend (artifact-keeper#5193).
+          - group: custom-ca-rotation
+            tiers: custom-ca-rotation
           # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
           # #499-#502): green on main, red on 1.11.3. api is pure HTTP + DB
           # plus the mock OIDC IdP; features stands up the conda, BSR, static
