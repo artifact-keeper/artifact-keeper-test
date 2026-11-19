@@ -19,6 +19,7 @@
 #   5  queue off, grype stub 6 s, limit 30 s    CONTROL slow scan completes
 #   6  queue off, grype stub hangs, limit 30 s  FIX #5942 row failed at limit
 #   7  queue+worker on, stub hangs, limit 30 s  FIX #5942 failed + job retried
+#   8  (same backend) + a byte-identical scan    FIX #6282 retry reuses it
 #
 # Repositories (keys suffixed per run; all scan_enabled + scan_on_upload):
 #   C_GEN generic, C_OCI docker     phase 0 (queue off)
@@ -363,7 +364,8 @@ LIMIT=30
 SLOW=6
 BUSYBOX_IMAGE="busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
 HG_GEN="sq-hang-${SUF}"
-ALL_REPOS="${ALL_REPOS} ${HG_GEN}"
+HG_TWIN="sq-twin-${SUF}"
+ALL_REPOS="${ALL_REPOS} ${HG_GEN} ${HG_TWIN}"
 BACKEND_CTR="ak-dtf${DTF_SLOT}-backend"
 
 # recreate_stubbed DELAY WORKER [extra overlay...]
@@ -418,7 +420,8 @@ bb_ctr="$(docker create "$BUSYBOX_IMAGE" 2>>"${W}/bb.log")"
 [ -n "$bb_ctr" ] && docker cp "${bb_ctr}:/bin/busybox" "${W}/busybox" >>"${W}/bb.log" 2>&1
 [ -n "$bb_ctr" ] && docker rm "$bb_ctr" >/dev/null 2>&1
 chmod 755 "${W}/busybox" 2>/dev/null
-if [ -x "${W}/busybox" ] && [ -x "${HERE}/fixtures/grype-stub" ] && create_repo "$HG_GEN" generic local; then pass
+if [ -x "${W}/busybox" ] && [ -x "${HERE}/fixtures/grype-stub" ] && create_repo "$HG_GEN" generic local \
+   && create_repo "$HG_TWIN" generic local; then pass
 else infra_fail "busybox or the repository could not be set up: $(tail -3 "${W}/bb.log" 2>/dev/null)"; fi
 
 # =============================================================================
@@ -490,5 +493,49 @@ wait_until "second attempt" $(( 30 + LIMIT * 2 + 30 )) retried_twice
 second="$(job_of)"; note "job after the retry: ${second} grype row: $(grype_row)"
 retried_twice || fail_g "the job did not run a second attempt: '${second}'"
 finish_case "a queued scan with a hung grype was not failed at the limit and retried"
+
+# =============================================================================
+# Phase 8: same backend; the retry finds a byte-identical scan (#6282)
+# =============================================================================
+reset_case
+begin_test "FIX #6282: queue on: a retry that reuses a byte-identical artifact's completed scan completes the timed-out row with that scan's findings"
+ondemand hang3
+wait_until "queued hung grype row leaves running" $(( LIMIT + 25 )) grype_settled
+row="$(grype_row)"; IFS='|' read -r g_st _ _ <<<"$row"
+note "attempt 1: grype row ${row%%|*} job: $(job_of)"
+[ "$g_st" = "failed" ] || fail_g "attempt 1 did not leave the grype row failed: '${row}'"
+# During the backoff: the same bytes, stored as another artifact, get a
+# completed grype scan (what a scan of a proxy or hosted copy leaves). The
+# stub hangs every real grype run, so the oracle writes that scan row.
+TWIN_PATH="pkg/twin-${SUF}.tgz"
+t_st=$(put "${W}/fx-hang3/npm.tgz" "${BASE_URL}/api/v1/repositories/${HG_TWIN}/artifacts/${TWIN_PATH}")
+TWIN="$(psql_q "SELECT a.id FROM artifacts a JOIN repositories r ON r.id = a.repository_id
+               WHERE r.key = '${HG_TWIN}' AND a.path LIKE '%twin-${SUF}.tgz' AND a.is_deleted = false LIMIT 1")"
+# -q: no INSERT command tag after the RETURNING row.
+SRC_SCAN="$(docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -qtAc "INSERT INTO scan_results (artifact_id, repository_id, scan_type, status, findings_count,
+                      low_count, checksum_sha256, scan_completeness, started_at, completed_at)
+                    SELECT id, repository_id, 'grype', 'completed', 1, 1, checksum_sha256, 'complete', now(), now()
+                    FROM artifacts WHERE id = '${TWIN}' RETURNING id" 2>/dev/null | tr -d '[:space:]')"
+[ -n "$SRC_SCAN" ] && psql_x "INSERT INTO scan_findings (scan_result_id, artifact_id, severity, title)
+                              VALUES ('${SRC_SCAN}', '${TWIN}', 'low', 'dtf twin source finding')"
+same="$(psql_q "SELECT count(DISTINCT checksum_sha256) FROM artifacts WHERE id IN ('${ART}', '${TWIN:-00000000-0000-0000-0000-000000000000}')")"
+note "twin upload=${t_st} twin=${TWIN:-none} source scan=${SRC_SCAN:-none} distinct checksums=${same}"
+if [ -z "$TWIN" ] || [ -z "$SRC_SCAN" ] || [ "$same" != "1" ]; then
+  infra_fail "could not stage a byte-identical artifact with a completed grype scan"
+else
+  # The retry (after the 30 s backoff) retires the job.
+  job_gone() { [ "$(job_of)" = "||" ]; }
+  wait_until "retry retires the job" $(( 30 + LIMIT + 30 )) job_gone
+  reuse="$(psql_q "SELECT status || ',' || is_reused || ',' || coalesce(source_scan_id::text, '-')
+                   FROM scan_results WHERE artifact_id = '${ART}' AND scan_type = 'grype'
+                   ORDER BY created_at DESC LIMIT 1")"
+  titles="$(docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAc \
+    "SELECT string_agg(f.title, ';' ORDER BY f.title) FROM scan_findings f JOIN scan_results s ON s.id = f.scan_result_id
+     WHERE s.artifact_id = '${ART}' AND s.scan_type = 'grype'" 2>/dev/null | head -1)"
+  note "job: $(job_of) grype row (status,is_reused,source): ${reuse} findings: ${titles:-none}"
+  [ "$reuse" = "completed,true,${SRC_SCAN}" ] || fail_g "the retried row is '${reuse}', not a completed reuse of ${SRC_SCAN}"
+  [ "$titles" = "dtf twin source finding" ] || fail_g "the retried row's findings are '${titles:-none}', not the source scan's"
+fi
+finish_case "a retry that reused a byte-identical scan left the timed-out row as it was"
 
 end_suite
