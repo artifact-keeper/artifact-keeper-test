@@ -3444,7 +3444,7 @@ jobs:
       fail-fast: false
       # At most 30 legs at once: the org's hosted runners are 60 concurrent
       # jobs (Team plan) shared with every repo's PR CI, and a full gate has
-      # 60 legs plus dtf-advisory's 9 (artifact-keeper-test#856).
+      # 60 legs plus dtf-advisory's 10 (artifact-keeper-test#856).
       max-parallel: 30
       matrix:
         include:
@@ -4231,6 +4231,18 @@ jobs:
   #              candidate's adapter (inputs.scanner_adapter_tag, default
   #              backend_tag), not the published :1. New in 1.12.0; promote
   #              it after it holds green on two candidates.
+  #   scan-grading-trivy-1.12.3 (scan-grading-os-and-jar-trivy):
+  #     reason:  scanners.trivy (the oracle starts the adapter), so the
+  #              adapter downloads the Trivy DB from ghcr, like supply-chain.
+  #              It cannot run in dtf-gate, which sets no adapter image, DB
+  #              repository or DB credentials. Its red/green axis is the
+  #              backend (artifact-keeper#6233, #6236), so it runs the
+  #              published adapter :1. New in 1.12.3; promote it after it
+  #              holds green on two candidates.
+  #     owner:   release-engineering
+  #     expires: 2027-02-01 — on/after this date either promote the leg
+  #              into dtf-gate (with the adapter env it needs) or
+  #              re-justify the waiver in a PR.
   #   mcp-1.12.0 (mcp-publish-resolve-1120):
   #     reason:  the #5702 case (20 publishes straight after a pull-through)
   #              races the catalog commit; it is discriminating on the
@@ -4311,6 +4323,13 @@ jobs:
           - group: scanner-adapter-features-1.12.0
             tiers: scanner-adapter-on-demand scanner-adapter-cache-partition scanner-adapter-max-image-size scanner-adapter-fair-queue
             adapter: candidate
+          # 1.12.3 (artifact-keeper-test#898): the Trivy filesystem scan does
+          # not grade the dependencies a JAR's embedded build POM only
+          # declares, and keeps the build POM of an archive that bundles
+          # nested jars (artifact-keeper#6233, fixed by #6236). Red on
+          # backends before #6236. Backend axis, so the published adapter :1.
+          - group: scan-grading-trivy-1.12.3
+            tiers: scan-grading-os-and-jar-trivy
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}
