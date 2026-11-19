@@ -147,16 +147,54 @@ for pair in "${SVC_MOD}/GetModules:modules" "${SVC_LBL}/GetLabels:labels"; do
 done
 finish_case "explicit protobuf routes changed behaviour on a remote repository"
 
-begin_test "CONTROL: a caller with only read on a remote cannot POST an allowlisted RPC to it (write gate on /proto POST); the upstream is not contacted"
+begin_test "AUTHZ (#6028): read on a remote lets a caller POST an allowlisted read RPC; no read, a write RPC, or no credentials is refused and the upstream is not contacted"
+# Until #6041 every POST under /proto needed write, so a read-only caller could
+# not run even an allowlisted read RPC (#4276 left that for its own change).
+# BSR reads are POSTs, so read now admits the read RPCs. What must still hold:
+# no read on the remote, a write RPC, or no credentials never reaches the
+# upstream, and the caller's own credentials never cross to it.
 reset_case
-c0="$(mock_count "${PFX}/${SVC_MOD}/ListModules")"
-read -r code rc <<<"$(rpc "$T_NO" "$R" "${SVC_MOD}/ListModules")"
-c1="$(mock_count "${PFX}/${SVC_MOD}/ListModules")"
-note "read-only caller ListModules on ${R}: HTTP ${code}, body $(body | head -c 160); upstream calls ${c0} -> ${c1}"
-[ "$code" = "403" ] || [ "$code" = "404" ] || fail_g "expected 403 or 404, got HTTP ${code}"
-[ "$c0" = "$c1" ] || fail_g "the upstream was contacted for a refused caller (${c0} -> ${c1})"
-body | grep -q 'mock-bsr' && fail_g "the refused caller saw upstream content"
-finish_case "a read-only caller reached the BSR upstream through POST"
+m="${SVC_MOD}/ListModules"
+c0="$(mock_count "${PFX}/${m}")"
+read -r code rc <<<"$(rpc "$T_NO" "$R" "$m")"
+c1="$(mock_count "${PFX}/${m}")"
+note "read-only caller ListModules on ${R}: HTTP ${code}, upstream calls ${c0} -> ${c1}"
+[ "$code" = "200" ] || fail_g "a caller with read on ${R} was refused an allowlisted read RPC (HTTP ${code})"
+[ "$((c1 - c0))" = "1" ] || fail_g "the read RPC did not reach the upstream exactly once (${c0} -> ${c1})"
+mock_headers "${PFX}/${m}" > "$W/up.hdr"
+[ "$(jqr '.cookie // empty' < "$W/up.hdr")" = "" ] || fail_g "the read-only caller's Cookie reached the upstream"
+[ "$(jqr '."buf-token" // empty' < "$W/up.hdr")" = "" ] || fail_g "the read-only caller's buf-token reached the upstream"
+[ "$(jqr '."x-caller-secret" // empty' < "$W/up.hdr")" = "" ] || fail_g "a non-allowlisted caller header reached the upstream"
+case "$(jqr '.authorization // empty' < "$W/up.hdr")" in
+  "Bearer ${T_NO}") fail_g "the read-only caller's AK token reached the upstream";;
+esac
+# No read on the remote: U_OK holds read/write on the virtual and read on its
+# member only, never on ${R}.
+c0="$(mock_count "${PFX}/${m}")"
+read -r code rc <<<"$(rpc "$T_OK" "$R" "$m")"
+c1="$(mock_count "${PFX}/${m}")"
+note "caller with no read on ${R} ListModules: HTTP ${code}, upstream calls ${c0} -> ${c1}"
+[ "$code" = "403" ] || [ "$code" = "404" ] || fail_g "a caller with no read on ${R}: expected 403 or 404, got HTTP ${code}"
+[ "$c0" = "$c1" ] || fail_g "the upstream was contacted for a caller with no read (${c0} -> ${c1})"
+body | grep -q 'mock-bsr' && fail_g "a caller with no read saw upstream content"
+# A write RPC with only read.
+for w in "${SVC_MOD}/CreateModules" "${SVC_LBL}/CreateOrUpdateLabels"; do
+  c0="$(mock_count "${PFX}/${w}")"
+  read -r code rc <<<"$(rpc "$T_NO" "$R" "$w")"
+  c1="$(mock_count "${PFX}/${w}")"
+  note "read-only caller ${w} on ${R}: HTTP ${code}, upstream calls ${c0} -> ${c1}"
+  [ "$code" = "403" ] || [ "$code" = "404" ] || fail_g "${w} with only read: expected 403 or 404, got HTTP ${code}"
+  [ "$c0" = "$c1" ] || fail_g "${w} with only read reached the upstream (${c0} -> ${c1})"
+done
+# No credentials on a private remote.
+c0="$(mock_count "${PFX}/${m}")"
+code="$(curl -s --max-time 30 -o "$W/rpc.body" -w '%{http_code}' -X POST "$BASE/proto/${R}/${m}" \
+  -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' -d '{}')"
+c1="$(mock_count "${PFX}/${m}")"
+note "anonymous ListModules on private ${R}: HTTP ${code}, upstream calls ${c0} -> ${c1}"
+[ "$code" = "401" ] || [ "$code" = "404" ] || fail_g "anonymous on a private remote: expected 401 or 404, got HTTP ${code}"
+[ "$c0" = "$c1" ] || fail_g "the upstream was contacted for an anonymous caller on a private remote (${c0} -> ${c1})"
+finish_case "BSR read authorization on a remote regressed: a read was refused, or a refused caller reached the upstream"
 
 # =============================================================================
 # #4284 FIX: allowlisted reads are proxied, with both header allowlists.
