@@ -1,0 +1,21 @@
+#!/opt/grype-stub/busybox sh
+# shellcheck shell=sh
+# Stand-in for `grype` in the scan-queue-upload-image-rescan tier
+# (artifact-keeper#5942). grype-stub.yml mounts it first on the backend's PATH,
+# with a static busybox at /opt/grype-stub/busybox as its interpreter (the
+# backend image has no shell).
+#
+# A scan (`grype <scheme>:<target> -o json ...`) first waits, per
+# DTF_GRYPE_STUB_DELAY: `hang` never returns (exec, so the child the backend
+# spawned IS the sleep and a kill reaches it), a number of seconds sleeps that
+# long and then runs the real grype. Anything else (`grype version`,
+# `grype db status`) goes straight to the real grype.
+case "${1:-}" in
+  *:*)
+    case "${DTF_GRYPE_STUB_DELAY:-0}" in
+      hang) exec /opt/grype-stub/busybox sleep 86400 ;;
+      *) /opt/grype-stub/busybox sleep "${DTF_GRYPE_STUB_DELAY:-0}" ;;
+    esac
+    ;;
+esac
+exec /usr/local/bin/grype "$@"

@@ -16,6 +16,9 @@
 #      (then the oracle seeds the old DB build on two digests' scan rows)
 #   3  queue on, worker on, rescan cap unset    CONTROL no rescan
 #   4  + SCAN_RESCAN_MAX_PER_DAY=100, claim hold FIX #5947 one rescan/digest
+#   5  queue off, grype stub 6 s, limit 30 s    CONTROL slow scan completes
+#   6  queue off, grype stub hangs, limit 30 s  FIX #5942 row failed at limit
+#   7  queue+worker on, stub hangs, limit 30 s  FIX #5942 failed + job retried
 #
 # Repositories (keys suffixed per run; all scan_enabled + scan_on_upload):
 #   C_GEN generic, C_OCI docker     phase 0 (queue off)
@@ -344,5 +347,148 @@ rescanned || fail_g "not every row of D1/D2 got a completed Grype scan on a newe
 [ "$nr_left" = "0" ] || fail_g "${nr_left} rescan job(s) still queued"
 [ "$d3new" = "0" ] || fail_g "D3 got ${d3new} new scan row(s)"
 finish_case "a DB build change did not queue one rescan per digest, or lost the old results"
+
+# =============================================================================
+# Phases 5-7: a grype that never returns (artifact-keeper#5942)
+# =============================================================================
+# fixtures/grype-stub stands in for grype: DTF_GRYPE_STUB_DELAY=hang never
+# returns, a number of seconds delays the real grype by that long. The limit
+# under test is SCANNER_PROCESS_TIMEOUT_SECS=${LIMIT}; the relationship gated
+# is "a scan slower than before but inside the limit completes, one that never
+# returns leaves `running` at the limit", in seconds rather than the minutes a
+# production limit would be.
+# 30 s, not less: phase 5's limit has to cover the stub's 6 s sleep plus the
+# real grype on a 4 vCPU hosted runner. Phase 6's windows scale with it.
+LIMIT=30
+SLOW=6
+BUSYBOX_IMAGE="busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
+HG_GEN="sq-hang-${SUF}"
+ALL_REPOS="${ALL_REPOS} ${HG_GEN}"
+BACKEND_CTR="ak-dtf${DTF_SLOT}-backend"
+
+# recreate_stubbed DELAY WORKER [extra overlay...]
+recreate_stubbed() {
+  local delay="$1" worker="$2"; shift 2
+  DTF_GRYPE_STUB_DELAY="$delay" DTF_SCANNER_PROCESS_TIMEOUT="$LIMIT" \
+    DTF_GRYPE_STUB_BUSYBOX="${W}/busybox" recreate_backend "$worker" "$@" grype-stub.yml
+}
+# ondemand TAG: upload a fresh npm.tgz to HG_GEN (scan_on_upload off) and
+# trigger an on-demand scan of it; sets ART and T0 (DB clock before the trigger)
+ondemand() {
+  local fx="${W}/fx-$1" st
+  ART=""; mkdir -p "$fx"
+  python3 -I "$MAKE_FX" "$fx" "${SUF}$1" >/dev/null 2>>"${W}/mk.err"
+  st=$(put "${fx}/npm.tgz" "${BASE_URL}/api/v1/repositories/${HG_GEN}/artifacts/pkg/$1-${SUF}.tgz")
+  ART="$(psql_q "SELECT a.id FROM artifacts a JOIN repositories r ON r.id = a.repository_id
+                 WHERE r.key = '${HG_GEN}' AND a.path LIKE '%$1-${SUF}.tgz' AND a.is_deleted = false LIMIT 1")"
+  T0="$(db_now)"
+  [ -n "$ART" ] && api_post "/api/v1/security/scan" "{\"artifact_id\":\"${ART}\"}" >"${W}/trigger.json" 2>/dev/null
+  note "upload=${st} artifact=${ART:-none} trigger=$(head -c 300 "${W}/trigger.json" 2>/dev/null)"
+}
+# grype_row -> "status|seconds from T0 to completed_at|error" of ART's newest grype row
+grype_row() {
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAF'|' -c \
+    "SELECT status, coalesce(extract(epoch FROM completed_at - '${T0}'::timestamptz)::int::text, ''),
+            coalesce(left(error_message, 300), '')
+     FROM scan_results WHERE artifact_id = '${ART}' AND scan_type = 'grype'
+     ORDER BY created_at DESC LIMIT 1" 2>/dev/null | head -1
+}
+grype_settled() { case "$(grype_row)" in ""|running*) return 1;; *) return 0;; esac; }
+other_rows() {
+  psql_q "SELECT string_agg(scan_type || '=' || status, ',' ORDER BY scan_type) FROM scan_results
+          WHERE artifact_id = '${ART}' AND scan_type <> 'grype'"
+}
+# stub_sleeps -> how many hung stub children run in the backend container
+# (`docker top` needs PID in its ps columns; empty when it cannot list them)
+stub_sleeps() {
+  local out
+  out="$(docker top "$BACKEND_CTR" -o pid,args 2>/dev/null)" || { echo unknown; return; }
+  printf '%s\n' "$out" | grep -c 'sleep 86400' || true
+}
+# job_of ART -> "state|attempts|last_error" of the artifact's hosted_artifact job
+job_of() {
+  queue_get >/dev/null
+  jq -r --arg a "$ART" '[.items[]? | select(.kind == "hosted_artifact" and .artifact_id == $a)]
+    | first // {} | "\(.state // "")|\(.attempts // "")|\(.last_error // "")"' "${W}/q.json" 2>/dev/null
+}
+
+begin_test "setup: static busybox for the grype stub, and a generic repository without scan_on_upload"
+docker pull -q "$BUSYBOX_IMAGE" >"${W}/bb.log" 2>&1
+bb_ctr="$(docker create "$BUSYBOX_IMAGE" 2>>"${W}/bb.log")"
+[ -n "$bb_ctr" ] && docker cp "${bb_ctr}:/bin/busybox" "${W}/busybox" >>"${W}/bb.log" 2>&1
+[ -n "$bb_ctr" ] && docker rm "$bb_ctr" >/dev/null 2>&1
+chmod 755 "${W}/busybox" 2>/dev/null
+if [ -x "${W}/busybox" ] && [ -x "${HERE}/fixtures/grype-stub" ] && create_repo "$HG_GEN" generic local; then pass
+else infra_fail "busybox or the repository could not be set up: $(tail -3 "${W}/bb.log" 2>/dev/null)"; fi
+
+# =============================================================================
+# Phase 5: queue off, grype ${SLOW}s slow, limit ${LIMIT}s
+# =============================================================================
+begin_test "setup: recreate the backend with the queue off, a grype that takes ${SLOW}s and SCANNER_PROCESS_TIMEOUT_SECS=${LIMIT}"
+if recreate_stubbed "$SLOW" false queue-off.yml; then pass; else fail "recreate failed"; fi
+
+reset_case
+begin_test "CONTROL: a scan slower than before but inside SCANNER_PROCESS_TIMEOUT_SECS completes"
+ondemand slow
+wait_until "slow grype scan" $(( LIMIT * 4 )) grype_settled
+row="$(grype_row)"; note "grype row: ${row} others: $(other_rows)"
+IFS='|' read -r g_st g_sec g_err <<<"$row"
+[ "$g_st" = "completed" ] || fail_g "the slow-but-finishing grype scan ended '${g_st}' (${g_err})"
+# Proves the stub sat in front of grype, so the phases below test what they say.
+[ "${g_sec:-0}" -ge "$SLOW" ] 2>/dev/null || fail_g "grype completed ${g_sec}s after the trigger, before the stub's ${SLOW}s delay: the stub is not in front of grype"
+finish_case "a scan inside the limit did not complete"
+
+# =============================================================================
+# Phase 6: queue off, grype hangs, limit ${LIMIT}s
+# =============================================================================
+begin_test "setup: recreate the backend with the queue off, a grype that never returns and SCANNER_PROCESS_TIMEOUT_SECS=${LIMIT}"
+if recreate_stubbed hang false queue-off.yml; then pass; else fail "recreate failed"; fi
+
+reset_case
+begin_test "FIX #5942: queue off: a grype that never returns leaves running at the limit, failed with the limit named, its process killed, the other scanners' rows stand"
+ondemand hang1
+# The hung child must be visible first, so "none left" below means killed.
+stub_seen() { [ "$(stub_sleeps)" -ge 1 ] 2>/dev/null; }
+wait_until "hung grype process visible" "$LIMIT" stub_seen
+seen=$?
+wait_until "hung grype row leaves running" $(( LIMIT + 25 )) grype_settled
+row="$(grype_row)"; sleeps="$(stub_sleeps)"
+[ "$seen" = 0 ] || fail_g "the hung grype process was never seen in the backend (docker top), so its kill cannot be checked"
+note "grype row: ${row} others: $(other_rows) hung stub processes: ${sleeps}"
+IFS='|' read -r g_st g_sec g_err <<<"$row"
+[ "$g_st" = "failed" ] || fail_g "the hung grype's row is '${g_st:-missing}' $(( LIMIT + 25 ))s after the trigger, not failed"
+case "$g_err" in *"SCANNER_PROCESS_TIMEOUT_SECS=${LIMIT}s"*) ;; *) fail_g "the failed row does not name the limit: '${g_err}'";; esac
+if [ "$g_st" = "failed" ]; then
+  [ "${g_sec:-0}" -ge "$LIMIT" ] 2>/dev/null || fail_g "failed after ${g_sec}s, before the ${LIMIT}s limit"
+fi
+case ",$(other_rows)," in *",dependency=completed,"*) ;; *) fail_g "the dependency scanner's row did not complete: $(other_rows)";; esac
+[ "${sleeps:-1}" = "0" ] || fail_g "${sleeps} hung grype process(es) still running in the backend"
+finish_case "a hung grype kept its scan running past SCANNER_PROCESS_TIMEOUT_SECS"
+
+# =============================================================================
+# Phase 7: queue and worker on, grype hangs, limit ${LIMIT}s
+# =============================================================================
+begin_test "setup: recreate the backend with the queue and worker on, a grype that never returns and SCANNER_PROCESS_TIMEOUT_SECS=${LIMIT}"
+if recreate_stubbed hang true; then pass; else fail "recreate failed"; fi
+
+reset_case
+begin_test "FIX #5942: queue on: the queued on-demand scan's grype row leaves running at the limit and the job is retried, not completed"
+ondemand hang2
+wait_until "queued hung grype row leaves running" $(( LIMIT + 25 )) grype_settled
+row="$(grype_row)"; IFS='|' read -r g_st g_sec g_err <<<"$row"
+first="$(job_of)"; sleeps="$(stub_sleeps)"
+note "grype row: ${row} others: $(other_rows) job: ${first} hung stub processes: ${sleeps}"
+[ "$g_st" = "failed" ] || fail_g "the hung grype's row is '${g_st:-missing}' $(( LIMIT + 25 ))s after the trigger, not failed"
+case "$g_err" in *"SCANNER_PROCESS_TIMEOUT_SECS=${LIMIT}s"*) ;; *) fail_g "the failed row does not name the limit: '${g_err}'";; esac
+# Back in the queue for another attempt (a 30 s backoff), not retired as done.
+retried_once() { case "$(job_of)" in pending\|*\|*"time limit"*|running\|*\|*"time limit"*) return 0;; *) return 1;; esac; }
+wait_until "job back in the queue" 20 retried_once
+first="$(job_of)"; note "job after the first attempt: ${first}"
+retried_once || fail_g "the job was not put back for another attempt with the timeout as its error: '${first}'"
+retried_twice() { IFS='|' read -r _ a _ <<<"$(job_of)"; [ "${a:-0}" -ge 2 ] 2>/dev/null; }
+wait_until "second attempt" $(( 30 + LIMIT * 2 + 30 )) retried_twice
+second="$(job_of)"; note "job after the retry: ${second} grype row: $(grype_row)"
+retried_twice || fail_g "the job did not run a second attempt: '${second}'"
+finish_case "a queued scan with a hung grype was not failed at the limit and retried"
 
 end_suite

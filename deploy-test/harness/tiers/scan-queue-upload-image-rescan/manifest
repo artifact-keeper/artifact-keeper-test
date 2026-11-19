@@ -1,7 +1,8 @@
 # DTF tier manifest: scan-queue-upload-image-rescan
 #   (artifact-keeper#5946, PR #5950; #5947, PR #5954; main only, for 1.12.0)
 # Profile-set: filesystem / single. LOCAL-ONLY: scans run the backend image's
-# bundled Grype with its pre-seeded DB; no scanner sidecar, no network. The
+# bundled Grype with its pre-seeded DB; no scanner sidecar, no network beyond
+# pulling busybox:1.37.0-musl (pinned by digest) for the #5942 grype stub. The
 # oracle recreates the backend (same postgres and data volume) for each phase
 # with fixtures/scan-queue.yml, and for the rescan phase also
 # fixtures/rescan-cap.yml.
@@ -55,8 +56,31 @@
 #              queue on and SCAN_RESCAN_MAX_PER_DAY unset: the seeded rows
 #              queue no rescan job and get no new scan in 30 s.
 #
+# #5942 (artifact-keeper, for 1.12.3): a scanner that never returns.
+#   fixtures/grype-stub.yml puts fixtures/grype-stub in front of the bundled
+#   grype (a static busybox copied out of busybox:1.37.0-musl is its
+#   interpreter; the backend image has no shell): DTF_GRYPE_STUB_DELAY=hang
+#   never returns, a number delays the real grype that many seconds. The
+#   backend runs with SCANNER_PROCESS_TIMEOUT_SECS=30, the knob #5942 adds
+#   (unset by default: no limit of its own). Seconds, not production minutes:
+#   the gate is the relationship between the delay and the limit.
+#   (FIX)      RED on ghcr main before the fix (the knob is unknown: the hung
+#              grype's row stays `running`, the queued job holds its 600 s
+#              budget). GREEN on the fix.
+#              queue off: an on-demand scan whose grype never returns has its
+#                    grype row `failed` 30 to 55 s after the trigger, the error
+#                    naming SCANNER_PROCESS_TIMEOUT_SECS=30s, the dependency row
+#                    completed and no hung grype process left in the backend;
+#              queue and worker on: the same scan's grype row is `failed` at
+#                    the limit and its hosted_artifact job goes back to the
+#                    queue with the timeout as last_error, then runs a second
+#                    attempt (attempts >= 2), instead of completing.
+#   (CONTROL)  both images: a grype that takes 6 s, under the 30 s limit,
+#              completes, and completes no sooner than 6 s after the trigger
+#              (so the stub really sat in front of grype).
+#
 # RATE_LIMIT_ENABLED=false: ~200 API calls back to back.
-COVERS="5946 5947"
+COVERS="5946 5947 5942"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
