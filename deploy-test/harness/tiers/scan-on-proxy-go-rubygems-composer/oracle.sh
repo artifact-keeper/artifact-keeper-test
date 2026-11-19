@@ -31,6 +31,15 @@
 #
 # Green: an image carrying #4103-#4105. Red: ak-backend:1.11.5 (every FIX
 # case; every control passes on both).
+#
+# #6214 (1.12.4): a Go Remote whose upstream answers 500 or 429, or cannot be
+# reached, answered 404 on `@v/list`, `@latest` and `.info`, which `go` reads
+# as "not here, try the next GOPROXY entry" (`direct`): the client then
+# fetched from the internet and skipped this scan gate. The FIX #6214 cases
+# assert a 5xx on all three routes, on the Remote and through a Virtual; the
+# controls assert the upstream really is failing (`.mod` is 5xx on every
+# image) and that a module the upstream does not have (404 or 410) still
+# answers 404. Red: main sha-380b43d (the five FIX #6214 cases).
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${COMMON_SH:?}"; : "${DB_CONTAINER:?}"; : "${TRIVY_PORT:?}"
@@ -63,6 +72,12 @@ CMP="sopa-cmp-${SUF}"       # Composer Remote, fail_closed
 CMP_OFF="sopa-cmpoff-${SUF}" # Composer Remote, no scanning (control)
 CMP_M="sopa-cmpm-${SUF}"    # Composer Remote member of CMP_V, fail_closed
 CMP_V="sopa-cmpv-${SUF}"    # Composer Virtual over CMP_M
+GO_F500="sopa-go500-${SUF}" # Go Remote, upstream answers 500, fail_closed (#6214)
+GO_F429="sopa-go429-${SUF}" # Go Remote, upstream answers 429, fail_closed (#6214)
+GO_DEAD="sopa-godead-${SUF}" # Go Remote, upstream port closed, fail_closed (#6214)
+GO_F410="sopa-go410-${SUF}" # Go Remote, upstream answers 410 (control, #6214)
+GO_FV="sopa-gofv-${SUF}"    # Go Virtual over GO_F500 (#6214)
+GO_DV="sopa-godv-${SUF}"    # Go Virtual over GO_DEAD (#6214)
 
 GO_VULN="example.com/dtfscan/vulnmod/@v/v1.0.0.zip"
 GO_CLEAN="example.com/dtfscan/cleanmod/@v/v1.0.0.zip"
@@ -78,8 +93,9 @@ CMP_LIAR="dist/dtf/liarpkg/1.0.0/${REF}.zip"
 
 cleanup() {
   local k
-  for k in "$GO_V" "$GEM_V" "$CMP_V" "$GO_M" "$GEM_M" "$CMP_M" "$GO" "$GO_FO" "$GO_OFF" \
-           "$GEM" "$GEM_RO" "$GEM_OFF" "$CMP" "$CMP_OFF"; do
+  for k in "$GO_V" "$GEM_V" "$CMP_V" "$GO_FV" "$GO_DV" "$GO_M" "$GEM_M" "$CMP_M" "$GO" "$GO_FO" \
+           "$GO_OFF" "$GO_F500" "$GO_F429" "$GO_DEAD" "$GO_F410" "$GEM" "$GEM_RO" "$GEM_OFF" \
+           "$CMP" "$CMP_OFF"; do
     api_delete "/api/v1/repositories/${k}" >/dev/null 2>&1 || true
   done
 }
@@ -336,5 +352,80 @@ if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ]; then
 else
   fail "status=${ST} scan='${SCAN}' body=$(snippet)"
 fi
+
+# ---------------------------------------------------------------------------
+# #6214 Go metadata routes when the upstream cannot answer
+# ---------------------------------------------------------------------------
+GO_MODULE="example.com/dtfscan/cleanmod"
+GO_MISSING="example.com/dtfscan/nosuchmod"
+code_of() { curl -s -o /dev/null -w '%{http_code}' --max-time 120 "$1" 2>/dev/null || echo 000; }
+# "list=<status> latest=<status> info=<status>" for module $2 in repo $1.
+go_routes() {
+  local base="${G}/$1/$2"
+  echo "list=$(code_of "${base}/@v/list") latest=$(code_of "${base}/@latest") info=$(code_of "${base}/@v/v1.0.0.info")"
+}
+# Every route answered 5xx (anything else, a 404 above all, is a failure).
+all_5xx() { local r; for r in $1; do [[ "${r#*=}" =~ ^5[0-9][0-9]$ ]] || return 1; done; }
+
+begin_test "Setup #6214: Go Remotes over failing upstreams (500, 429, closed port, 410) and a Virtual over two of them"
+ok=1
+create_repo "$GO_F500" go remote "${UP}/failing/500/goproxy" || ok=0
+create_repo "$GO_F429" go remote "${UP}/failing/429/goproxy" || ok=0
+create_repo "$GO_DEAD" go remote "http://172.16.${DTF_SLOT}.72:9/goproxy" || ok=0
+create_repo "$GO_F410" go remote "${UP}/failing/410/goproxy" || ok=0
+create_repo "$GO_FV" go virtual || ok=0
+create_repo "$GO_DV" go virtual || ok=0
+api_post "/api/v1/repositories/${GO_FV}/members" "{\"member_key\":\"${GO_F500}\"}" >/dev/null 2>&1 || ok=0
+api_post "/api/v1/repositories/${GO_DV}/members" "{\"member_key\":\"${GO_DEAD}\"}" >/dev/null 2>&1 || ok=0
+a="$(scan_cfg "$GO_F500" fail_closed) $(scan_cfg "$GO_F429" fail_closed) $(scan_cfg "$GO_DEAD" fail_closed)"
+if [ "$ok" = 1 ] && [ "$a" = "fail_closed fail_closed fail_closed" ]; then
+  pass
+else
+  fail "repo setup failed (ok=${ok}) or actions not persisted: '${a}'"
+fi
+
+begin_test "CONTROL #6214: a module the upstream does not have answers 404 on @v/list, @latest and .info (Remote, Virtual, upstream 410)"
+r1=$(go_routes "$GO" "$GO_MISSING")
+r2=$(go_routes "$GO_V" "$GO_MISSING")
+r3=$(go_routes "$GO_F410" "$GO_MODULE")
+want="list=404 latest=404 info=404"
+if [ "$r1" = "$want" ] && [ "$r2" = "$want" ] && [ "$r3" = "$want" ]; then
+  pass
+else
+  fail "remote: ${r1} | virtual: ${r2} | upstream-410 remote: ${r3} (want ${want})"
+fi
+
+begin_test "CONTROL #6214: the failing upstreams really fail: .mod answers 5xx on each failing Remote and Virtual"
+m="$(code_of "${G}/${GO_F500}/${GO_MODULE}/@v/v1.0.0.mod") $(code_of "${G}/${GO_F429}/${GO_MODULE}/@v/v1.0.0.mod")"
+m="$m $(code_of "${G}/${GO_DEAD}/${GO_MODULE}/@v/v1.0.0.mod") $(code_of "${G}/${GO_FV}/${GO_MODULE}/@v/v1.0.0.mod")"
+m="$m $(code_of "${G}/${GO_DV}/${GO_MODULE}/@v/v1.0.0.mod")"
+bad=0; for c in $m; do [[ "$c" =~ ^5[0-9][0-9]$ ]] || bad=1; done
+if [ "$bad" = 0 ]; then
+  pass
+else
+  fail ".mod via 500/429/closed-port Remotes and the two Virtuals: ${m}"
+fi
+
+for spec in "$GO_F500:upstream 500" "$GO_F429:upstream 429" "$GO_DEAD:upstream port closed"; do
+  k="${spec%%:*}"; why="${spec#*:}"
+  begin_test "FIX #6214: Remote, ${why}: @v/list, @latest and .info answer 5xx, never 404"
+  r=$(go_routes "$k" "$GO_MODULE")
+  if all_5xx "$r"; then
+    pass
+  else
+    fail "${r} (a 404 sends GOPROXY=<ak>,direct to the internet, past the scan gate)"
+  fi
+done
+
+for spec in "$GO_FV:member upstream 500" "$GO_DV:member upstream port closed"; do
+  k="${spec%%:*}"; why="${spec#*:}"
+  begin_test "FIX #6214: Virtual, ${why}: @v/list, @latest and .info answer 5xx, never 404"
+  r=$(go_routes "$k" "$GO_MODULE")
+  if all_5xx "$r"; then
+    pass
+  else
+    fail "${r} (a 404 sends GOPROXY=<ak>,direct to the internet, past the scan gate)"
+  fi
+done
 
 end_suite

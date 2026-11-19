@@ -117,6 +117,13 @@
 #   GET /__golden/<path>          the exact bytes served at /<path>
 #   GET /__sha256/<path>          their sha256 hex
 #
+# Failing upstream (counted like any data-plane GET):
+#   GET /failing/<code>/<path>    answers status <code> (400-599) for every
+#                                 path, whatever FILES holds: a Remote whose
+#                                 upstream URL is http://<self>/failing/500/goproxy
+#                                 sees an upstream that answers 500 to every
+#                                 request (artifact-keeper#6214)
+#
 # Stdlib only, single file, stock python image.
 #   MOCK_PORT  listen port (default 80)
 #   MOCK_SELF  absolute base URL the backend reaches this mock at (used in the
@@ -127,6 +134,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tarfile
 import threading
 import zipfile
@@ -763,6 +771,9 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 HITS.append(raw)
         key = url.path.lstrip("/")
+        failing = re.fullmatch(r"failing/([45][0-9][0-9])/.*", key)
+        if failing:
+            return self._send(int(failing.group(1)), b"mock upstream failure", "text/plain", head)
         if key in FILES:
             return self._send(200, FILES[key], ctype(key), head)
         return self._send(404, b"not found", "text/plain", head)
