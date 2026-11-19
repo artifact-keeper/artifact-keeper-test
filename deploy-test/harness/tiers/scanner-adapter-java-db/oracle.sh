@@ -172,8 +172,11 @@ finish_case "a JAR image without a reachable Java DB did not fail closed"
 # =============================================================================
 begin_test "FIX #5913: ${CONCURRENT} concurrent first scans of images with a JAR, adapter /tmp limited to 3 GiB, all complete with one Java DB download"
 reset_case
-r="$(recreate_adapter "${FX}/tmp-limit.yml")"; [ "$r" = up ] || fail_g "recreate adapter: $r"
+# Empty the Java DB cache in the old container: the new adapter starts its
+# download as soon as it is up, into the same volume.
 drop_java_db
+java_db_present && fail_g "could not empty the Java DB cache"
+r="$(recreate_adapter "${FX}/tmp-limit.yml")"; [ "$r" = up ] || fail_g "recreate adapter: $r"
 wait_adapter_ready || fail_g "adapter not ready after the recreate"
 [ -z "$(adapter_env SCANNER_TRIVY_SKIP_DB_UPDATE)" ] || fail_g "adapter still carries SCANNER_TRIVY_SKIP_DB_UPDATE"
 [ -z "$(adapter_env TRIVY_JAVA_DB_REPOSITORY)" ] || fail_g "adapter still carries the unreachable TRIVY_JAVA_DB_REPOSITORY"
