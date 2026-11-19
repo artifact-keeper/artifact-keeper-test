@@ -97,7 +97,7 @@ trigger(){ # artifact_id -> HTTP code
 image_rows(){ psqlq "SELECT count(*) FROM scan_results WHERE artifact_id='$1' AND scan_type='image'"; }
 # image_row <artifact_id>: "status|findings|error" of the latest image scan
 image_row(){
-  psqlq "SELECT status||'|'||findings_count||'|'||COALESCE(left(regexp_replace(error_message, '\s+', ' ', 'g'),300),'')
+  psqlq "SELECT status||'|'||findings_count||'|'||COALESCE(left(regexp_replace(error_message, '\s+', ' ', 'g'),2000),'')
          FROM scan_results WHERE artifact_id='$1' AND scan_type='image' ORDER BY created_at DESC LIMIT 1"
 }
 wait_settled(){ # artifact_id timeout
