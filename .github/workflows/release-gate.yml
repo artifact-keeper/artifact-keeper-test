@@ -4252,6 +4252,10 @@ jobs:
   #              runs the candidate's adapter, like the features group.
   #              New in 1.12.3; promote it after it holds green on two
   #              candidates.
+  #     owner:   release-engineering
+  #     expires: 2027-02-01 — on/after this date either promote the leg
+  #              into dtf-gate (with the adapter env it needs) or
+  #              re-justify the waiver in a PR.
   #   mcp-1.12.0 (mcp-publish-resolve-1120):
   #     reason:  the #5702 case (20 publishes straight after a pull-through)
   #              races the catalog commit; it is discriminating on the
