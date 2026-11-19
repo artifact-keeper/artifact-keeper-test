@@ -333,7 +333,7 @@ st="$(curl -s --max-time 60 -o "$WORK/note.out" -w '%{http_code}' -X PUT -H "$(a
 case "$st" in 200|201) ;; *) setup6090_err+="non-package upload to ${H} -> HTTP ${st} $(head -c 200 "$WORK/note.out"); " ;; esac
 sleep 2  # let the backend's pooled sessions take the reloaded setting
 
-begin_test "CONTROL #6090: before the non-package row, the virtual lists the remote's dtfup-blocked"
+begin_test "CONTROL #6090: before the rename to a package name, the virtual lists the remote's dtfup-blocked"
 if [ -n "$setup6090_err" ]; then
   infra_fail "#6090 setup did not complete" "$setup6090_err"
 elif virt_lists_blocked; then
