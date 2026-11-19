@@ -7,7 +7,7 @@
 # through fixtures/trivy-adapter.yml, which drops the adapter's host port so
 # it does not collide with the mock's. Every scan-on-proxy then runs the
 # bundled Grype AND the Trivy filesystem scan through the adapter.
-# fixtures/build_fixtures.py builds four Maven archives with fixed timestamps.
+# fixtures/build_fixtures.py builds six Maven archives with fixed timestamps.
 # NETWORK: the adapter downloads the Trivy DB from ghcr.io once (~100 MiB,
 # pre-warmed in setup, cached in the slot's trivy volume).
 #
@@ -19,9 +19,11 @@
 #        shipped it, and a fail_closed Remote blocked the JAR on Trivy's
 #        findings alone. Since artifact-keeper#6236 the backend drops an
 #        embedded build POM whose pom.properties sits beside it before Trivy
-#        runs, unless the archive bundles nested libraries (a .war/.ear, or a
-#        WEB-INF/lib, BOOT-INF/lib or lib/*.jar in the tree), whose build POM
-#        may be the only thing naming them.
+#        runs, unless the archive bundles nested libraries (a .war/.ear, a
+#        WEB-INF/lib or BOOT-INF/lib directory, or a nested .jar/.war/.ear/
+#        .aar/.hpi/.jpi anywhere in the tree), whose build POM may be the
+#        only thing naming them. TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS=false
+#        turns the drop off.
 #
 # THE GATES
 #   (FIX)      RED on a backend without #6236, GREEN with it:
@@ -33,9 +35,12 @@
 #              is its build POM (the WEB-INF/lib JAR has no pom.properties,
 #              manifest or version) is 403 scan_blocked; a JAR with a build
 #              POM declaring log4j-core and no pom.properties is 403
-#              scan_blocked. Grype excludes build POMs, so the last two are
-#              Trivy's findings: they show Trivy is in the loop and that the
-#              fix keeps the POMs it must.
+#              scan_blocked; so are a Spring Boot .jar and an OSGi bundle
+#              whose only record of a bundled log4j-core is their build POM
+#              (the nested JAR, under BOOT-INF/lib or at the bundle root, has
+#              no pom.properties). Grype excludes build POMs, so the last four
+#              are Trivy's findings: they show Trivy is in the loop and that
+#              the fix keeps the POMs it must.
 #
 # RATE_LIMIT_ENABLED=false: requests back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.

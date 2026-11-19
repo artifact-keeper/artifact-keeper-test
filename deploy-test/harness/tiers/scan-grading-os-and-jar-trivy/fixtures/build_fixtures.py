@@ -27,6 +27,14 @@
 #   com/example/dtfgrade/dtf-no-props/1.0.0/dtf-no-props-1.0.0.jar
 #       a build POM declaring log4j-core 2.14.1 and no pom.properties, so the
 #       POM is the only record of the archive (control)
+#   com/example/dtfgrade/dtf-boot-app/1.0.0/dtf-boot-app-1.0.0.jar
+#       a Spring Boot style .jar: its own pom.properties, a build POM declaring
+#       log4j-core 2.14.1, and that library as BOOT-INF/lib/logging.jar with
+#       no pom.properties (control)
+#   com/example/dtfgrade/dtf-osgi-bundle/1.0.0/dtf-osgi-bundle-1.0.0.jar
+#       an OSGi bundle (Embed-Dependency): its own pom.properties, a build POM
+#       declaring log4j-core 2.14.1, and that library embedded at the bundle
+#       root as logging.jar with no pom.properties (control)
 # =============================================================================
 import hashlib
 import io
@@ -78,10 +86,11 @@ def pom(group, artifact, version, packaging="jar", deps=()):
     )
 
 
-def maven(group, artifact, version, packaging="jar", deps=(), props=True, extra=()):
+def maven(group, artifact, version, packaging="jar", deps=(), props=True, extra=(),
+          manifest="Manifest-Version: 1.0\nCreated-By: dtf\n\n"):
     p = pom(group, artifact, version, packaging, deps)
     meta = f"META-INF/maven/{group}/{artifact}"
-    entries = [("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: dtf\n\n")]
+    entries = [("META-INF/MANIFEST.MF", manifest)]
     if props:
         entries.append(
             (
@@ -114,6 +123,20 @@ maven(
     ],
 )
 maven("com.example.dtfgrade", "dtf-no-props", "1.0.0", deps=[LOG4J], props=False)
+UNIDENTIFIABLE_LOG4J = zip_bytes([("org/apache/logging/log4j/core/Logger.class", b"\xca\xfe\xba\xbe")])
+maven(
+    "com.example.dtfgrade", "dtf-boot-app", "1.0.0",
+    deps=[LOG4J],
+    extra=[("BOOT-INF/lib/logging.jar", UNIDENTIFIABLE_LOG4J)],
+)
+maven(
+    "com.example.dtfgrade", "dtf-osgi-bundle", "1.0.0",
+    deps=[LOG4J],
+    extra=[("logging.jar", UNIDENTIFIABLE_LOG4J)],
+    manifest="Manifest-Version: 1.0\nBundle-ManifestVersion: 2\n"
+    "Bundle-SymbolicName: com.example.dtfgrade.osgi\nBundle-ClassPath: .,logging.jar\n"
+    "Embed-Dependency: log4j-core;inline=false\n\n",
+)
 
 with open(os.path.join(OUT, "files.tsv"), "w") as f:
     for p, local, ct in INDEX:

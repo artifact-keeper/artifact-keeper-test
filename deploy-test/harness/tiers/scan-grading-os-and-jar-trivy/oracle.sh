@@ -89,6 +89,8 @@ JAR_DECLARED="com/example/dtfgrade/dtf-declared-only/1.0.0/dtf-declared-only-1.0
 JAR_LOG4J="org/apache/logging/log4j/log4j-core/2.14.1/log4j-core-2.14.1.jar"
 WAR_NESTED="com/example/dtfgrade/dtf-grade-webapp/1.0.0/dtf-grade-webapp-1.0.0.war"
 JAR_NOPROPS="com/example/dtfgrade/dtf-no-props/1.0.0/dtf-no-props-1.0.0.jar"
+JAR_BOOT="com/example/dtfgrade/dtf-boot-app/1.0.0/dtf-boot-app-1.0.0.jar"
+JAR_OSGI="com/example/dtfgrade/dtf-osgi-bundle/1.0.0/dtf-osgi-bundle-1.0.0.jar"
 
 # =============================================================================
 # Setup
@@ -168,7 +170,7 @@ fi
 
 # Grype excludes embedded build POMs (#5340) and cannot identify a nested JAR
 # with no pom.properties, manifest or version in its name, so only Trivy,
-# reading the build POM, names log4j-core in the next two archives. They
+# reading the build POM, names log4j-core in the next four archives. They
 # also prove the Trivy filesystem scan is in the loop.
 begin_test "CONTROL: a WAR bundling an unidentifiable WEB-INF/lib JAR its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (Trivy keeps a WAR's build POM)"
 pull "${M}/${MVN}/${WAR_NESTED}"
@@ -182,6 +184,24 @@ fi
 begin_test "CONTROL: a JAR whose build POM declares log4j-core 2.14.1 and that has no pom.properties is 403 scan_blocked (the POM is its only record)"
 pull "${M}/${MVN}/${JAR_NOPROPS}"
 d=$(fx_sha "/maven2/${JAR_NOPROPS}")
+if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
+  pass
+else
+  fail "status=${ST} scan='${SCAN}' body=$(snippet "$BODY") verdict='$(verdict_of "$d")' findings='$(findings_of "$d")'"
+fi
+
+begin_test "CONTROL: a .jar bundling an unidentifiable BOOT-INF/lib JAR its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (Trivy keeps the build POM of a jar that bundles jars)"
+pull "${M}/${MVN}/${JAR_BOOT}"
+d=$(fx_sha "/maven2/${JAR_BOOT}")
+if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
+  pass
+else
+  fail "status=${ST} scan='${SCAN}' body=$(snippet "$BODY") verdict='$(verdict_of "$d")' findings='$(findings_of "$d")'"
+fi
+
+begin_test "CONTROL: an OSGi bundle embedding an unidentifiable JAR at its root that its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (a nested jar anywhere keeps the build POM)"
+pull "${M}/${MVN}/${JAR_OSGI}"
+d=$(fx_sha "/maven2/${JAR_OSGI}")
 if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
   pass
 else
