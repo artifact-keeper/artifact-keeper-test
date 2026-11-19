@@ -1,0 +1,13 @@
+# Overlay the oracle brings the scanner adapter up with and recreates the
+# backend with, on top of compose.base + storage.filesystem +
+# upstreams.mock-files + scanners.trivy.
+#
+# upstreams.mock-files publishes the mock's control API on the slot's spare
+# port, ${TRIVY_PORT}, and scanners.trivy publishes the adapter on the same
+# port. The tier needs the first (the oracle fills the mock from the host)
+# and only reaches the adapter through the backend and `docker exec`, so the
+# adapter keeps no host port here. Everything else, the backend's
+# TRIVY_ADAPTER_URL and TRIVY_URL included, is scanners.trivy as is.
+services:
+  trivy:
+    ports: !reset []

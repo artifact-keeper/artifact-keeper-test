@@ -1,0 +1,57 @@
+# DTF tier manifest: scan-grading-os-and-jar-trivy
+#   (artifact-keeper#6233, an opt-in fix for 1.12.3; the Trivy half of #5262)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files,
+# the same mock as scan-grading-os-and-jar, its control API on the slot's
+# TRIVY_PORT). The oracle then starts the scanner adapter (scanners.trivy,
+# SCANNER_ADAPTER_IMAGE) and recreates the backend with TRIVY_ADAPTER_URL,
+# through fixtures/trivy-adapter.yml, which drops the adapter's host port so
+# it does not collide with the mock's. Every scan-on-proxy then runs the
+# bundled Grype AND the Trivy filesystem scan through the adapter. Halfway
+# through, the oracle recreates the backend once more with
+# fixtures/opt-in.yml (TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS=true).
+# fixtures/build_fixtures.py builds seven Maven archives with fixed
+# timestamps; each mode pulls its own, so every verdict is that mode's.
+# NETWORK: the adapter downloads the Trivy DB from ghcr.io once (~100 MiB,
+# pre-warmed in setup, cached in the slot's trivy volume).
+#
+# THE BUG
+# #6233  #5262 (fixed in #5340) kept a JAR's embedded build POM
+#        (META-INF/maven/<g>/<a>/pom.xml) out of the Grype directory scan.
+#        The Trivy filesystem scan of the same staged workspace still reads
+#        it, so Trivy grades every dependency the POM DECLARES as if the JAR
+#        shipped it, and a fail_closed Remote blocks the JAR on Trivy's
+#        findings alone. artifact-keeper#6236 adds the opt-in
+#        TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS (default false: unchanged).
+#        Set to true, the backend drops an embedded build POM whose
+#        pom.properties sits beside it before Trivy runs, unless the archive
+#        bundles nested libraries (a .war/.ear, a WEB-INF/lib or BOOT-INF/lib
+#        directory, or a nested .jar/.war/.ear/.aar/.hpi/.jpi anywhere in
+#        the tree), whose build POM may be the only thing naming them.
+#
+# THE GATES
+#   (FIX)      with TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS=true; RED on a
+#              backend without #6236 (no such setting), GREEN with it: the
+#              JAR whose build POM declares compile-scope log4j-core 2.14.1
+#              and jackson-databind 2.9.8, bundling neither: 200 X-AK-Scan:
+#              clean, verdict clean.
+#   (CONTROL)  hold on BOTH images. Default mode (setting unset):
+#              log4j-core 2.14.1 itself is 403 scan_blocked, and a JAR of the
+#              FIX case's shape is still graded on its declarations, 403
+#              scan_blocked (the default is unchanged). Opted in: a WAR, a
+#              Spring Boot .jar and an OSGi bundle whose only record of a
+#              bundled log4j-core is their build POM (the nested JAR, under
+#              WEB-INF/lib, BOOT-INF/lib or at the bundle root, has no
+#              pom.properties, manifest or version), and a JAR with a build
+#              POM declaring log4j-core and no pom.properties, are 403
+#              scan_blocked. Grype excludes build POMs, so those four are
+#              Trivy's findings: they show Trivy is in the loop and that the
+#              opt-in keeps the POMs it must.
+#
+# RATE_LIMIT_ENABLED=false: requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="6233"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+NEEDS_INTERNET="true"
