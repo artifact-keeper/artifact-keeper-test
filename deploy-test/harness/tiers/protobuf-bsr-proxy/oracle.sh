@@ -114,7 +114,7 @@ U_OK="pbxok${SUF//-/}"; U_NO="pbxno${SUF//-/}"
 U_OK_ID="$(mk_user "$U_OK" "$U_PASS")"; U_NO_ID="$(mk_user "$U_NO" "$U_PASS")"
 [ -n "$U_OK_ID" ] && [ -n "$U_NO_ID" ] || SETUP_ERR="${SETUP_ERR} users"
 # Both users may write (hence POST) the virtual; only U_OK may read its member.
-# U_NO also reads the `ok` remote directly, which is not enough to POST it.
+# U_NO also reads the `ok` remote directly: enough for its read RPCs (#6028), not its write RPCs.
 [ -n "$(grant "$U_OK_ID" "$V_ID" read,write)" ] || SETUP_ERR="${SETUP_ERR} grant-ok-virtual"
 [ -n "$(grant "$U_OK_ID" "${RID[virt]}" read)" ] || SETUP_ERR="${SETUP_ERR} grant-ok-member"
 [ -n "$(grant "$U_NO_ID" "$V_ID" read,write)" ] || SETUP_ERR="${SETUP_ERR} grant-no-virtual"
@@ -160,7 +160,8 @@ read -r code rc <<<"$(rpc "$T_NO" "$R" "$m")"
 c1="$(mock_count "${PFX}/${m}")"
 note "read-only caller ListModules on ${R}: HTTP ${code}, upstream calls ${c0} -> ${c1}"
 [ "$code" = "200" ] || fail_g "a caller with read on ${R} was refused an allowlisted read RPC (HTTP ${code})"
-[ "$((c1 - c0))" = "1" ] || fail_g "the read RPC did not reach the upstream exactly once (${c0} -> ${c1})"
+{ [ -n "$c1" ] && [ "$c1" = "$(( ${c0:-0} + 1 ))" ]; } || fail_g "the read RPC did not reach the upstream exactly once (${c0} -> ${c1})"
+[ "$(body | jqr '.servedBy // empty')" = "mock-bsr" ] || fail_g "the read-only caller did not get the upstream's answer"
 mock_headers "${PFX}/${m}" > "$W/up.hdr"
 [ "$(jqr '.cookie // empty' < "$W/up.hdr")" = "" ] || fail_g "the read-only caller's Cookie reached the upstream"
 [ "$(jqr '."buf-token" // empty' < "$W/up.hdr")" = "" ] || fail_g "the read-only caller's buf-token reached the upstream"
@@ -183,7 +184,9 @@ for w in "${SVC_MOD}/CreateModules" "${SVC_LBL}/CreateOrUpdateLabels"; do
   read -r code rc <<<"$(rpc "$T_NO" "$R" "$w")"
   c1="$(mock_count "${PFX}/${w}")"
   note "read-only caller ${w} on ${R}: HTTP ${code}, upstream calls ${c0} -> ${c1}"
-  [ "$code" = "403" ] || [ "$code" = "404" ] || fail_g "${w} with only read: expected 403 or 404, got HTTP ${code}"
+  # 403 exactly: if the write gate let it through, the handler would answer
+  # 405 ("Cannot publish to a remote"), so a 404 here would hide a regression.
+  [ "$code" = "403" ] || fail_g "${w} with only read: expected 403, got HTTP ${code}"
   [ "$c0" = "$c1" ] || fail_g "${w} with only read reached the upstream (${c0} -> ${c1})"
 done
 # No credentials on a private remote.
