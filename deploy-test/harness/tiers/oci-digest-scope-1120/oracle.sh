@@ -3,8 +3,9 @@
 # tiers/oci-digest-scope-1120/oracle.sh
 #   a hosted OCI digest resolves only under the image that holds it
 #   (artifact-keeper#5793), tags/list answers `name` with the full request name
-#   (#5794), and a Remote repairs a corrupt stored blob from its upstream
-#   (#5169).
+#   (#5794), a Remote repairs a corrupt stored blob from its upstream
+#   (#5169), and the Referrers API through a Virtual lists the referrers of
+#   the members the caller may read (#5792).
 # =============================================================================
 # run.sh has stood up `storage.filesystem upstreams.mock-oci-classify` with
 # UPSTREAM_ALLOW_PRIVATE_IPS=true and exported BASE_URL, DB_CONTAINER,
@@ -273,6 +274,105 @@ begin_test "FIX #5794: tags/list through the Virtual answers name ${VIRT}/${IMG}
 c="$(tags_list "$VIRT" "$IMG" "" "${WORK}/tlv")"; n="$(jqr '.name' < "${WORK}/tlv")"
 if [ "$c" = "200" ] && [ "$n" = "${VIRT}/${IMG}" ]; then pass
 else fail "HTTP ${c} name='${n}', want 200 '${VIRT}/${IMG}'" "$(snip "${WORK}/tlv")"; fi
+
+# ===========================================================================
+# #5792: the Referrers API through a Virtual lists its members' referrers
+# ===========================================================================
+# Referrers of the platform manifest PLAT_D, pushed by digest as oras/cosign
+# do: an SBOM only in HOSTED, a signature in HOSTED and in the PUBLIC hosted
+# PUB, and a second SBOM only in PUB. VIRT is over HOSTED alone; the PUBLIC
+# VIRT2 is over HOSTED (private, priority 1) and PUB (public, priority 2).
+MT_SBOM='application/vnd.dtf.sbom'
+MT_SIG='application/vnd.dtf.sig'
+PUB="odsp-${SLOT}-${SUF}"
+VIRT2="odsw-${SLOT}-${SUF}"
+OUTSIDER="odsu-${SLOT}-${SUF}"
+OUTSIDER_PASS="Dtf-ods-${SUF}-pw1!"
+
+referrers() { # REPO IMAGE QUERY OUTFILE [curl auth args...] -> http code (headers in OUTFILE.h)
+  local r="$1" i="$2" q="$3" o="$4"; shift 4
+  code_to_file "${BASE_URL}/v2/${r}/${i}/referrers/${PLAT_D}${q}" "$o" -D "${o}.h" "$@"
+}
+ref_digests() { jqr '[.manifests[].digest] | join(",")' < "$1"; }
+filters_hdr() { grep -i '^oci-filters-applied:' "${1}.h" 2>/dev/null | cut -d: -f2- | tr -d '[:space:]'; }
+# make_referrer NAME ARTIFACT_TYPE -> $WORK/<name>.ref (subject PLAT_D, empty config, one layer)
+make_referrer() {
+  printf 'dtf-ods-%s-%s' "$1" "$SUF" > "${WORK}/${1}.rl"
+  printf '{"schemaVersion":2,"mediaType":"%s","artifactType":"%s","config":{"mediaType":"application/vnd.oci.empty.v1+json","size":2,"digest":"%s"},"layers":[{"mediaType":"application/octet-stream","size":%s,"digest":"%s"}],"subject":{"mediaType":"%s","size":%s,"digest":"%s"},"annotations":{"org.dtf.name":"%s"}}' \
+    "$MT_OCI" "$2" "$(digest_of "${WORK}/empty.json")" "$(size_of "${WORK}/${1}.rl")" "$(digest_of "${WORK}/${1}.rl")" \
+    "$MT_OCI" "$(size_of "${WORK}/plat.manifest")" "$PLAT_D" "$1" > "${WORK}/${1}.ref"
+}
+push_referrer() { # REPO NAME -> "" or diagnostics
+  local f="" c
+  c="$(push_blob "$1" "$IMG" "${WORK}/empty.json")"; is_2xx "$c" || f="${f} ${1}:empty=${c}"
+  c="$(push_blob "$1" "$IMG" "${WORK}/${2}.rl")"; is_2xx "$c" || f="${f} ${1}:${2}.rl=${c}"
+  c="$(put_manifest "$1" "$IMG" "$(digest_of "${WORK}/${2}.ref")" "${WORK}/${2}.ref" "$MT_OCI")"
+  is_2xx "$c" || f="${f} ${1}:${2}@d=${c}"
+  echo "$f"
+}
+
+begin_test "setup (#5792): referrers pushed into a private and a public hosted member; a public Virtual over both; a user with no grant"
+ERR=""
+printf '{}' > "${WORK}/empty.json"
+make_referrer sbom-a "$MT_SBOM"; make_referrer sig "$MT_SIG"; make_referrer sbom-b "$MT_SBOM"
+SBOM_A_D="$(digest_of "${WORK}/sbom-a.ref")"; SIG_D="$(digest_of "${WORK}/sig.ref")"; SBOM_B_D="$(digest_of "${WORK}/sbom-b.ref")"
+for k in "$PUB" "$VIRT2"; do
+  t=local; [ "$k" = "$VIRT2" ] && t=virtual
+  c="$(api POST /api/v1/repositories \
+    "{\"key\":\"${k}\",\"name\":\"${k}\",\"format\":\"docker\",\"repo_type\":\"${t}\",\"is_public\":true}")"
+  is_2xx "$c" || ERR="${ERR} create ${k}=${c} $(snip "${WORK}/api.json")"
+done
+for m in "${HOSTED}:1" "${PUB}:2"; do
+  c="$(api POST "/api/v1/repositories/${VIRT2}/members" "{\"member_key\":\"${m%:*}\",\"priority\":${m##*:}}")"
+  is_2xx "$c" || ERR="${ERR} virtual2 member ${m}=${c}"
+done
+ERR="${ERR}$(push_referrer "$HOSTED" sbom-a)$(push_referrer "$HOSTED" sig)"
+ERR="${ERR}$(push_referrer "$PUB" sig)$(push_referrer "$PUB" sbom-b)"
+c="$(api POST /api/v1/users "{\"username\":\"${OUTSIDER}\",\"password\":\"${OUTSIDER_PASS}\",\"email\":\"${OUTSIDER}@dtf.test\"}")"
+is_2xx "$c" || ERR="${ERR} create user=${c} $(snip "${WORK}/api.json")"
+OUTSIDER_AUTH=(-u "${OUTSIDER}:${OUTSIDER_PASS}")
+# Control: the user reads the public member's referrer by digest through the
+# public Virtual (PUB holds no tags, so its tags/list would be 404).
+c="$(code_to_file "${BASE_URL}/v2/${VIRT2}/${IMG}/manifests/${SBOM_B_D}" "${WORK}/u-man" "${OUTSIDER_AUTH[@]}" -H "Accept: ${MT_OCI}")"
+[ "$c" = "200" ] || ERR="${ERR} outsider GET ${IMG}@sbom-b on the public Virtual=${c} $(snip "${WORK}/u-man")"
+if [ -n "${ERR// /}" ]; then infra_fail "#5792 fixture setup failed:${ERR}"; end_suite; fi
+pass
+
+begin_test "CONTROL: the hosted member lists its referrers of ${IMG}@platform directly"
+c="$(referrers "$HOSTED" "$IMG" "" "${WORK}/rf-h" "${AUTHZ[@]}")"; d="$(ref_digests "${WORK}/rf-h")"
+if [ "$c" = "200" ] && [ "$d" = "${SBOM_A_D},${SIG_D}" ]; then pass
+else fail "HTTP ${c} manifests='${d}', want 200 ${SBOM_A_D:7:12},${SIG_D:7:12}" "$(snip "${WORK}/rf-h")"; fi
+
+begin_test "FIX #5792: referrers through the Virtual list the hosted member's referrers (an image index, no OCI-Filters-Applied)"
+c="$(referrers "$VIRT" "$IMG" "" "${WORK}/rf-v" "${AUTHZ[@]}")"; d="$(ref_digests "${WORK}/rf-v")"
+mt="$(jqr '.mediaType' < "${WORK}/rf-v")"; at="$(jqr "[.manifests[] | select(.digest==\"${SBOM_A_D}\") | .artifactType] | .[0] // empty" < "${WORK}/rf-v")"
+if [ "$c" = "200" ] && [ "$d" = "${SBOM_A_D},${SIG_D}" ] && [ "$mt" = "$MT_INDEX" ] && \
+   [ "$at" = "$MT_SBOM" ] && [ -z "$(filters_hdr "${WORK}/rf-v")" ]; then pass
+else
+  why="HTTP ${c} manifests='${d}' mediaType=${mt} sbom artifactType=${at:-none} filters=$(filters_hdr "${WORK}/rf-v"), want 200 ${SBOM_A_D:7:12},${SIG_D:7:12} as an index"
+  [ "$c" = "200" ] && [ -z "$d" ] && why="${why}; pre-#5792 a Virtual answered an empty index"
+  fail "$why" "$(snip "${WORK}/rf-v")"
+fi
+
+begin_test "FIX #5792: ?artifactType=${MT_SBOM} through the Virtual keeps only the SBOM and sets OCI-Filters-Applied: artifactType"
+c="$(referrers "$VIRT" "$IMG" "?artifactType=application%2Fvnd.dtf.sbom" "${WORK}/rf-vf" "${AUTHZ[@]}")"
+d="$(ref_digests "${WORK}/rf-vf")"; h="$(filters_hdr "${WORK}/rf-vf")"
+if [ "$c" = "200" ] && [ "$d" = "$SBOM_A_D" ] && [ "$h" = "artifactType" ]; then pass
+else fail "HTTP ${c} manifests='${d}' OCI-Filters-Applied='${h}', want 200 ${SBOM_A_D:7:12} and artifactType" "$(snip "${WORK}/rf-vf")"; fi
+
+begin_test "FIX #5792: through the two-member Virtual the admin sees both members' referrers in member order, the shared signature once"
+c="$(referrers "$VIRT2" "$IMG" "" "${WORK}/rf-w" "${AUTHZ[@]}")"; d="$(ref_digests "${WORK}/rf-w")"
+if [ "$c" = "200" ] && [ "$d" = "${SBOM_A_D},${SIG_D},${SBOM_B_D}" ]; then pass
+else fail "HTTP ${c} manifests='${d}', want 200 ${SBOM_A_D:7:12},${SIG_D:7:12},${SBOM_B_D:7:12}" "$(snip "${WORK}/rf-w")"; fi
+
+begin_test "FIX #5792: a user with no read on the private member sees only the public member's referrers through the public Virtual"
+c="$(referrers "$VIRT2" "$IMG" "" "${WORK}/rf-u" "${OUTSIDER_AUTH[@]}")"; d="$(ref_digests "${WORK}/rf-u")"
+if [ "$c" = "200" ] && [ "$d" = "${SIG_D},${SBOM_B_D}" ]; then pass
+else
+  why="HTTP ${c} manifests='${d}', want 200 ${SIG_D:7:12},${SBOM_B_D:7:12}"
+  case ",${d}," in *",${SBOM_A_D},"*) why="${why}; the private member's SBOM leaked" ;; esac
+  fail "$why" "$(snip "${WORK}/rf-u")"
+fi
 
 # ===========================================================================
 # #5169: a Remote repairs a corrupt stored blob from its upstream

@@ -1,8 +1,9 @@
 # DTF tier manifest: oci-digest-scope-1120
 #   artifact-keeper#5793 (a hosted digest resolves only under the image that
 #   holds it), #5794 (tags/list answers `name` with the full request name) and
-#   #5169 (a Remote repairs a corrupt stored blob from its upstream). All
-#   1.12.0. Profile-set: filesystem / single + upstreams.mock-oci-classify (a
+#   #5169 (a Remote repairs a corrupt stored blob from its upstream), all
+#   1.12.0, and #5792 (the Referrers API through a Virtual lists its members'
+#   referrers, 1.12.3). Profile-set: filesystem / single + upstreams.mock-oci-classify (a
 #   raw-body OCI upstream on 172.16.<slot>.83; only its `runnable` image and
 #   blobs are used here).
 #
@@ -42,12 +43,27 @@
 #   Hosted keeps its 502 on main; that is not asserted here because 1.11.x
 #   serves the corrupt hosted blob with 200 (artifact-keeper#4323, covered by
 #   storage-integrity-serve-routes).
+# * #5792: `GET /v2/<virtual>/<image>/referrers/<digest>` answered 200 with an
+#   EMPTY image index: the handler read `oci_manifest_subjects` under the
+#   Virtual's own id, which owns no rows, and never consulted the members, so
+#   `oras discover` listed nothing and cosign v3 (new bundle format) found no
+#   signature through the Virtual. The fix (artifact-keeper PR #6258) merges
+#   the referrers of the members the caller may read, in member order, each
+#   digest once, and applies `artifactType` with `OCI-Filters-Applied` to the
+#   merged list. Fixture: SBOM/signature referrers of the platform manifest
+#   pushed by digest into HOSTED (private) and a PUBLIC hosted repo, a public
+#   second Virtual over both, and a user with no grant (HTTP Basic).
+#   Controls: the hosted member's direct listing; the user pulls the public
+#   member's referrer by digest through the public Virtual.
 #
 # Red: ak-backend:1.11.13 (every FIX case; #5169 serves the corrupt bytes) and
 #      ak-backend:sha-12808b8 (main 2026-11-02, before #5215, #5838 and #5859;
 #      every FIX case; #5169 is the 502).
-# Green: ak-backend:sha-6e652be (main with #5859, #5838 and #5215).
-COVERS="5793 5794 5169"
+# Green: ak-backend:sha-6e652be (main with #5859, #5838 and #5215) for #5793,
+#        #5794 and #5169. #5792 is red on every image before PR #6258,
+#        ghcr artifact-keeper-backend:main at 15e91b9 included (every FIX
+#        #5792 case: an empty index), and green with PR #6258.
+COVERS="5793 5794 5169 5792"
 PROFILES="storage.filesystem upstreams.mock-oci-classify"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
