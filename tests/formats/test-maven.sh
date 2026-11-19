@@ -241,4 +241,62 @@ if require_feature "maven_grouped_hosted_direct_put"; then
   fi
 fi
 
+# -------------------------------------------------------------------------
+# Files outside the GAV layout register no package (artifact-keeper#6271,
+# backend change artifact-keeper/artifact-keeper PR 6286, 1.12.3)
+#
+# Regression: a file that is not groupId/artifactId/version/file, uploaded
+# into a hosted Maven repository through the REST API (the web UI's upload),
+# fell back to the generic path coordinate and registered a package named
+# after its first directory: com/myDomain/notes.txt became package `com` at
+# version `myDomain`. The packages list must hold only groupId:artifactId
+# entries. The release gate also runs this as FIX #6271 in the DTF tier
+# deploy-test/harness/tiers/maven-contract-1120.
+# -------------------------------------------------------------------------
+
+CAT_REPO="test-maven-cat-${RUN_ID}"
+CAT_GROUP="com.acme.cat${RUN_ID//[^a-zA-Z0-9]/}"
+CAT_PKG="${CAT_GROUP}:widget"
+
+# api_put_file <repo> <path> <file> -> HTTP status of the REST API upload
+api_put_file() {
+  curl -s -o /dev/null -w '%{http_code}' $CURL_TIMEOUT -X PUT \
+    -H "$(auth_header)" -H "Content-Type: application/octet-stream" \
+    --data-binary "@$3" "${BASE_URL}/api/v1/repositories/$1/artifacts/$2" 2>/dev/null || echo "000"
+}
+cat_packages() {
+  api_get "/api/v1/packages?repository_key=${CAT_REPO}&per_page=100" 2>/dev/null \
+    | jq -r '[.items[]?.name] | sort | join(" ")' 2>/dev/null || echo ""
+}
+
+begin_test "Upload a GAV jar plus com/myDomain/notes.txt and _remote.repositories through the API"
+if create_local_repo "$CAT_REPO" "maven"; then
+  printf 'notes %s\n' "$RUN_ID" > "${WORK_DIR}/notes.txt"
+  printf '#NOTE: This is a Maven Resolver internal implementation file\nwidget-1.0.jar>central=\n' > "${WORK_DIR}/_remote.repositories"
+  s_jar=$(api_put_file "$CAT_REPO" "$(echo "$CAT_GROUP" | tr '.' '/')/widget/1.0/widget-1.0.jar" "$JAR_FILE")
+  s_notes=$(api_put_file "$CAT_REPO" "com/myDomain/notes.txt" "${WORK_DIR}/notes.txt")
+  s_remote=$(api_put_file "$CAT_REPO" "_remote.repositories" "${WORK_DIR}/_remote.repositories")
+  if assert_http_2xx "$s_jar" "API upload of the GAV jar failed" \
+     && assert_http_2xx "$s_notes" "API upload of com/myDomain/notes.txt failed" \
+     && assert_http_2xx "$s_remote" "API upload of _remote.repositories failed"; then
+    pass
+  fi
+else
+  fail "could not create maven repo ${CAT_REPO}"
+fi
+
+begin_test "Packages API lists only the groupId:artifactId package (no notes.txt / myDomain / _remote.repositories)"
+cat_names=""
+for _ in $(seq 1 10); do
+  cat_names="$(cat_packages)"
+  [[ " ${cat_names} " == *" ${CAT_PKG} "* ]] && break
+  sleep 1
+done
+if [ "$cat_names" = "$CAT_PKG" ]; then
+  pass
+else
+  fail "packages for ${CAT_REPO} are '${cat_names}', expected only ${CAT_PKG}" \
+    "a package named com, myDomain, notes.txt or _remote.repositories is the artifact-keeper#6271 regression"
+fi
+
 end_suite

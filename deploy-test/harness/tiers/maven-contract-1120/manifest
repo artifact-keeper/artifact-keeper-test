@@ -1,10 +1,11 @@
 # DTF tier manifest: maven-contract-1120
 #   (artifact-keeper 1.12.0 Maven native-protocol contracts: #5668, #5678,
-#   #5693, #5713)
+#   #5693, #5713; and the 1.12.3 Maven catalog fix #6271)
 # Profile-set: filesystem only. Every case drives the native /maven/ route
 # with curl (PUT of jars, sidecars and maven-metadata.xml; GET of
 # maven-metadata.xml, sidecars and .meta/prefixes.txt). The only non-native
-# calls are repository creation and, for #5693, the artifact listing.
+# calls are repository creation, for #5693 the artifact listing, and for
+# #6271 the REST API upload and the packages listing.
 #
 # RED images: ak-backend:1.11.13 (red for #5668 and #5713; the #5678 sidecar
 # gate and the #5693 plugin-prefix path are new in 1.12.0, so 1.11.13 has
@@ -64,8 +65,18 @@
 #   the issue names no concrete set and none is asserted here (the backend
 #   property test `sort_maven_versions` no-panic case covers it).
 #
+# FIX artifact-keeper#6271 (1.12.3, artifact-keeper/artifact-keeper PR 6286):
+#   a file outside the groupId/artifactId/version/file layout, uploaded into
+#   a hosted Maven repository through PUT /api/v1/repositories/{key}/artifacts,
+#   fell back to the generic path coordinate and registered a package: the
+#   first directory (`com` at version `myDomain` for com/myDomain/notes.txt).
+#   CONTROL: a GAV jar uploaded the same way lists com.acme.cat<sfx>:widget.
+#   FIX: after com/myDomain/notes.txt and _remote.repositories, the packages
+#   API still lists exactly that one package. RED on main sha-380b43d,
+#   GREEN with the backend change.
+#
 # RATE_LIMIT_ENABLED=false: many quick native PUTs and GETs.
-COVERS="5668 5678 5693 5713"
+COVERS="5668 5678 5693 5713 6271"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

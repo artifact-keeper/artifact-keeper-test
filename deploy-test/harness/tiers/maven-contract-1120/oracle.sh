@@ -4,9 +4,11 @@
 #   Maven native-protocol contracts fixed for 1.12.0:
 #   #5668 empty hosted repo prefix file, unreachable Remote upstream status;
 #   #5678 identical checksum-sidecar re-upload; #5693 plugin-prefix path for
-#   non-group-level metadata; #5713 Maven ComparableVersion ordering.
+#   non-group-level metadata; #5713 Maven ComparableVersion ordering; #6271
+#   files outside the GAV layout register no package.
 #   See the manifest for the gates. Every request is a native /maven/ PUT or
-#   GET except repository creation and the #5693 artifact listing read.
+#   GET except repository creation, the #5693 artifact listing read and the
+#   #6271 REST API uploads and packages listing.
 #
 # run.sh exported BASE_URL, ADMIN_PASS, RUN_ID, DTF_SLOT, RELEASE_GATE=1,
 # JUNIT_OUTPUT_DIR, COMMON_SH.
@@ -258,5 +260,63 @@ reset_case
 publish_versions qual 1.0-a 1.0
 check_order qual "1.0 1.0-a" 1.0-a 1.0-a
 finish_case "maven-metadata.xml does not follow Maven's ComparableVersion for a bare qualifier letter"
+
+# =============================================================================
+# #6271 files outside the GAV layout register no package
+# =============================================================================
+R_CAT="mc12cat${SFX}"
+# aput <repo> <path> <body>: upload through the REST API (the web UI's and the
+# CLI's path into the generic finalize), not the native /maven/ route.
+aput(){
+  printf '%s' "$3" >"${W}/put"
+  CODE="$(curl -s -o "${W}/body" -w '%{http_code}' --max-time 60 -X PUT \
+    -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/octet-stream' \
+    --data-binary "@${W}/put" "${BASE}/api/v1/repositories/$1/artifacts/$2")"
+  BODY="$(cat "${W}/body" 2>/dev/null || true)"
+}
+# pkg_names: sets NAMES to the package names the packages API lists for
+# R_CAT, sorted and space separated (and CODE/BODY from the listing).
+pkg_names(){
+  req GET "/api/v1/packages?repository_key=${R_CAT}&per_page=100"
+  NAMES="$(jqr '[.items[]?.name] | sort | join(" ")' <<<"$BODY")"
+}
+GAV_PKG="com.acme.cat${SFX}:widget"
+
+begin_test "CONTROL: a GAV jar uploaded through the API registers its groupId:artifactId package"
+reset_case
+mk_repo "$R_CAT" local
+note "create ${R_CAT}: ${CODE}"
+is_2xx "$CODE" || fail_g "creating ${R_CAT} answered ${CODE}: ${BODY:0:200}"
+aput "$R_CAT" "com/acme/cat${SFX}/widget/1.0/widget-1.0.jar" "catalog jar ${SFX}"
+note "API PUT com/acme/cat${SFX}/widget/1.0/widget-1.0.jar: ${CODE}"
+is_2xx "$CODE" || fail_g "the GAV jar upload answered ${CODE}: ${BODY:0:200}"
+NAMES=""
+for _ in $(seq 1 10); do
+  pkg_names
+  [[ " ${NAMES} " == *" ${GAV_PKG} "* ]] && break
+  sleep 1
+done
+note "packages (${CODE}): '${NAMES}'"
+[[ " ${NAMES} " == *" ${GAV_PKG} "* ]] || fail_g "the packages API does not list ${GAV_PKG}"
+finish_case "a GAV upload through the API registers no groupId:artifactId package"
+
+begin_test "FIX #6271: com/myDomain/notes.txt and _remote.repositories uploaded through the API register no package"
+reset_case
+aput "$R_CAT" "com/myDomain/notes.txt" "notes ${SFX}"
+note "API PUT com/myDomain/notes.txt: ${CODE}"
+is_2xx "$CODE" || fail_g "the notes.txt upload answered ${CODE}: ${BODY:0:200}"
+aput "$R_CAT" "_remote.repositories" "#NOTE: This is a Maven Resolver internal implementation file
+widget-1.0.jar>central="
+note "API PUT _remote.repositories: ${CODE}"
+is_2xx "$CODE" || fail_g "the _remote.repositories upload answered ${CODE}: ${BODY:0:200}"
+sleep 2
+pkg_names
+note "packages (${CODE}): '${NAMES}'"
+[ "$CODE" = "200" ] || fail_g "the packages API answered ${CODE}"
+[ "$NAMES" = "$GAV_PKG" ] || fail_g "the packages are '${NAMES}', expected only ${GAV_PKG}"
+for bad in com myDomain notes.txt _remote.repositories; do
+  [[ " ${NAMES} " == *" ${bad} "* ]] && fail_g "a file outside the GAV layout registered package '${bad}'"
+done
+finish_case "a Maven file outside groupId/artifactId/version/file registers a package"
 
 end_suite

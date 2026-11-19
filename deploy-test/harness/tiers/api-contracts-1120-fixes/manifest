@@ -1,6 +1,7 @@
 # DTF tier manifest: api-contracts-1120-fixes
 #   (artifact-keeper 1.12.0 REST API contract fixes: #4800, #4825, #4843,
-#    #4834, #4851, #5201, #5652, #5694, #5487, #5347, #5223)
+#    #4834, #4851, #5201, #5652, #5694, #5487, #5347, #5223; and the
+#    1.12.3 fix #6299)
 # Profile-set: filesystem + audit.upstream-fetches-all (AUDIT_UPSTREAM_FETCHES
 # =all, so a cold HEAD's upstream contact is countable in the audit log).
 # Sibling of api-contracts-1120 (features); this one holds the bug fixes.
@@ -52,11 +53,18 @@
 #   #5223 a release POSTed straight after a held path's 409 answers 200 and
 #     the path then serves the upstream bytes (was 404 "No cached artifact at
 #     that path" while the 50 MB fill was still running).
+#   #6299 (1.12.3, artifact-keeper/artifact-keeper PR 6301) GET (signed in
+#     and anonymous) and POST /api/v1/does-not-exist answer 404,
+#     application/json, message "Not found" (was 404 "Repository not found":
+#     the path fell through to the format routes). CONTROL: GET
+#     /api/v1/repositories is 200, PUT /api/v1/repositories and GET
+#     /api/v1/auth/login are 405. RED on main sha-380b43d, GREEN with the
+#     backend change.
 #
 # The Remotes proxy the backend itself on its container address, so the SSRF
 # guard needs UPSTREAM_ALLOW_PRIVATE_IPS. RATE_LIMIT_ENABLED=false: ~250
 # quick API calls.
-COVERS="4800 4825 4843 4834 4851 5201 5652 5694 5487 5347 5223"
+COVERS="4800 4825 4843 4834 4851 5201 5652 5694 5487 5347 5223 6299"
 PROFILES="storage.filesystem audit.upstream-fetches-all"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
