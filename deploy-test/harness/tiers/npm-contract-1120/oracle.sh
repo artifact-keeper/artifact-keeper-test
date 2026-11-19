@@ -5,7 +5,8 @@
 #   npm native-protocol contracts fixed for 1.12.0: artifact-keeper#5345 (/-/
 #   meta failure names its cause), #5399 (concurrent same-version publishes),
 #   #5403 (stale unpublish), #5676 (retention deletes retract dist-tags), #5724
-#   (derived latest by SemVer precedence), #5725 (package-name rules). See the
+#   (derived latest by SemVer precedence), #5725 (package-name rules), and
+#   1.12.4's #5779 (deletes in yarn/pnpm Locals invalidate the Virtual packument). See the
 #   manifest for each bug and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
@@ -537,5 +538,81 @@ begin_test "FIX #5725: for a hosted @_dtfsh/x@1.0.1 (scope starting with '_') th
 reset_case
 shadow_drop "@_dtfsh/x"; shadow_after_miss "@_dtfsh/x"
 finish_case "a Remote member shadows a hosted package whose scope starts with '_'"
+
+
+# =============================================================================
+# #5779: a delete in an npm-family Local leaves the Virtual packument at once
+# =============================================================================
+# yarn and pnpm repositories are served by the npm handler and its packument
+# cache (a Virtual over public members is cached; a Local is not). The REST
+# delete, the retention sweep and trash restore invalidated that cache for
+# format "npm" only, so a Virtual over a yarn/pnpm Local kept listing a deleted
+# version for the fresh window (300 s). The npm Virtual is the control (#2162).
+# Each Virtual is warmed (full and abbreviated) before the delete, and read
+# straight after it, well inside the fresh window.
+mkfam(){ # <key> <format> <type> [member key]: sets RID
+  req POST /api/v1/repositories "$(jq -nc --arg k "$1" --arg f "$2" --arg t "$3" --arg m "${4:-}" \
+    '{key:$k,name:$k,format:$f,repo_type:$t,is_public:true} + (if $m == "" then {} else {member_repos:[{repo_key:$m,priority:1}]} end)')"
+  RID="$(jqr '.id // empty' <<<"$BODY")"
+  is_2xx "$CODE" && [ -n "$RID" ] || note "creating $2 $3 repo $1 answered ${CODE}: ${BODY:0:200}"
+}
+# fam_versions <repo> <pkg>: "<full versions>|<abbreviated versions>"
+fam_versions(){
+  local full abbr
+  full="$(versions_of "$1" "$2")"
+  abbr="$(curl -s --max-time 30 -H "Authorization: Bearer ${TOK}" -H 'Accept: application/vnd.npm.install-v1+json' \
+    "${BASE}/npm/$1/$2" | jqr -c '.versions | keys | sort')"
+  echo "${full}|${abbr}"
+}
+# fam_setup <format> <pkg>: Local + Virtual of <format>, <pkg> 1.0.0 and 1.1.0
+# published, the Virtual warmed; sets FL, FL_ID, FV.
+fam_setup(){
+  FL="npmc-$1-l-${SUF}"; FV="npmc-$1-v-${SUF}"
+  mkfam "$FL" "$1" local; FL_ID="$RID"
+  mkfam "$FV" "$1" virtual "$FL"
+  publish "$FL" "$2" 1.0.0; is_2xx "$CODE" || note "publish $2@1.0.0 to ${FL}: ${CODE} ${BODY:0:160}"
+  publish "$FL" "$2" 1.1.0; is_2xx "$CODE" || note "publish $2@1.1.0 to ${FL}: ${CODE} ${BODY:0:160}"
+  local warm; warm="$(fam_versions "$FV" "$2")"; fam_versions "$FV" "$2" >/dev/null
+  note "${FV} over ${FL} warmed: ${warm}"
+  [ "$warm" = '["1.0.0","1.1.0"]|["1.0.0","1.1.0"]' ] || fail_g "the warmed ${1} Virtual lists ${warm} (precondition)"
+}
+fam_rest_delete(){ # <local> <pkg> <version>
+  req DELETE "/api/v1/repositories/$1/artifacts/$2/$3/$2-$3.tgz"
+  note "REST delete $2@$3 in $1: ${CODE} ${BODY:0:120}"
+  is_2xx "$CODE" || fail_g "the REST delete answered ${CODE}"
+}
+fam_after(){ # <virtual> <pkg>
+  local got; got="$(fam_versions "$1" "$2")"
+  note "${1} right after the delete (full|abbreviated): ${got}"
+  [ "$got" = '["1.1.0"]|["1.1.0"]' ] || fail_g "the Virtual still lists ${got} right after the delete; want only 1.1.0"
+}
+
+begin_test "CONTROL: a REST delete in an npm Local removes the version from the warmed npm Virtual packument at once"
+reset_case
+fam_setup npm dtffam-npm
+fam_rest_delete "$FL" dtffam-npm 1.0.0
+fam_after "$FV" dtffam-npm
+finish_case "the npm Virtual packument is not invalidated by a member REST delete"
+
+begin_test "FIX #5779: a REST delete in a yarn Local removes the version from the warmed yarn Virtual packument at once"
+reset_case
+fam_setup yarn dtffam-yarn
+fam_rest_delete "$FL" dtffam-yarn 1.0.0
+fam_after "$FV" dtffam-yarn
+finish_case "a yarn Virtual keeps serving a version deleted from its member"
+
+begin_test "FIX #5779: a retention sweep of a pnpm Local removes the version from the warmed pnpm Virtual packument at once"
+reset_case
+fam_setup pnpm dtffam-pnpm
+AGED="$(psql_q "UPDATE artifacts SET created_at = NOW() - INTERVAL '60 days' WHERE repository_id = '${FL_ID}' AND name = 'dtffam-pnpm' AND version = '1.0.0' RETURNING id" | grep -cE '^[0-9a-f-]{36}$')"
+req POST /api/v1/admin/lifecycle "$(jq -nc --arg n "npmc-famret-${SUF}" --arg r "$FL_ID" \
+  '{name:$n,policy_type:"max_age_days",config:{days:30},repository_ids:[$r],enabled:true}')"
+FLP_ID="$(jqr '.id // empty' <<<"$BODY")"
+req POST "/api/v1/admin/lifecycle/${FLP_ID}/execute"
+note "aged rows: ${AGED}; policy ${FLP_ID:-none}; execute ${CODE} removed=$(jqr '.artifacts_removed // empty' <<<"$BODY")"
+[ "$AGED" = "1" ] && is_2xx "$CODE" && [ "$(jqr '.artifacts_removed // empty' <<<"$BODY")" = "1" ] \
+  || fail_g "the retention sweep did not remove exactly the aged version (precondition)"
+fam_after "$FV" dtffam-pnpm
+finish_case "a pnpm Virtual keeps serving a version a retention sweep removed from its member"
 
 end_suite
