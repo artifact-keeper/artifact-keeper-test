@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # =============================================================================
 # tiers/scan-grading-os-and-jar-trivy/oracle.sh
-#   #6233 the Trivy filesystem scan does not grade the dependencies a JAR's
-#         embedded build POM only declares (the Trivy half of #5262)
+#   #6233 with TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS=true (opt-in), the
+#         Trivy filesystem scan does not grade the dependencies a JAR's
+#         embedded build POM only declares (the Trivy half of #5262); by
+#         default it still does, unchanged
 # The scan-grading-os-and-jar tier proves #5262 with the bundled Grype alone;
 # this tier runs the same kind of fail_closed Maven Remote with the scanner
 # adapter wired in, so every scan-on-proxy also runs the Trivy filesystem
-# scan. See the manifest for the bug and the gates.
+# scan: first with the setting unset, then with the backend recreated with
+# it set to true. See the manifest for the bug and the gates.
 #
 # run.sh exported BASE_URL, ADMIN_PASS, RUN_ID, DTF_SLOT, TRIVY_PORT (the
 # mock's published control port), DB_CONTAINER, DTF_DIR, RELEASE_GATE=1,
@@ -37,6 +40,7 @@ BACKEND="ak-dtf${DTF_SLOT}-backend"
 FILES=(-f "${DTF_DIR}/compose.base.yml" -f "${DTF_DIR}/profiles/storage.filesystem.yml"
        -f "${DTF_DIR}/profiles/upstreams.mock-files.yml" -f "${DTF_DIR}/profiles/scanners.trivy.yml"
        -f "${HERE}/fixtures/trivy-adapter.yml")
+OPT_IN=(-f "${HERE}/fixtures/opt-in.yml")
 
 MVN="sgt-mvn-${SUF}"       # maven Remote, fail_closed
 
@@ -76,15 +80,17 @@ scan_cfg() { # key action -> echoes the persisted proxy_scan_action
 fx() { awk -F'\t' -v p="$1" '$1==p {print $2; exit}' "${W}/fx/files.tsv"; }
 fx_sha() { sha_of "$(fx "$1")"; }
 backend_env() { docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$BACKEND" 2>/dev/null | grep "^$1=" | cut -d= -f2- || true; }
-# up <service>: start one service with the overlay and wait for it to be
-# healthy. Prints "up" or the failure.
+# up <service> [extra -f args]: start one service with the overlays and wait
+# for it to be healthy. Prints "up" or the failure.
 up() {
-  docker compose -p "$PROJECT" "${FILES[@]}" up -d --no-deps --force-recreate --wait "$1" \
-    >"${W}/up-$1.log" 2>&1 && { echo up; return; }
-  echo "failed: $(tail -3 "${W}/up-$1.log" | tr '\n' ' ' | head -c 300)"
+  local svc="$1"; shift
+  docker compose -p "$PROJECT" "${FILES[@]}" "$@" up -d --no-deps --force-recreate --wait "$svc" \
+    >"${W}/up-${svc}.log" 2>&1 && { echo up; return; }
+  echo "failed: $(tail -3 "${W}/up-${svc}.log" | tr '\n' ' ' | head -c 300)"
 }
 
 M="${BASE_URL}/maven"
+JAR_DECLARED_DEFAULT="com/example/dtfgrade/dtf-declared-default/1.0.0/dtf-declared-default-1.0.0.jar"
 JAR_DECLARED="com/example/dtfgrade/dtf-declared-only/1.0.0/dtf-declared-only-1.0.0.jar"
 JAR_LOG4J="org/apache/logging/log4j/log4j-core/2.14.1/log4j-core-2.14.1.jar"
 WAR_NESTED="com/example/dtfgrade/dtf-grade-webapp/1.0.0/dtf-grade-webapp-1.0.0.war"
@@ -100,6 +106,7 @@ err=""
 r="$(up trivy)"; [ "$r" = up ] || err="${err} adapter: ${r};"
 r="$(up backend)"; [ "$r" = up ] || err="${err} backend: ${r};"
 [ "$(backend_env TRIVY_ADAPTER_URL)" = "http://trivy:8090" ] || err="${err} backend has no TRIVY_ADAPTER_URL;"
+[ -z "$(backend_env TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS)" ] || err="${err} backend already carries TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS;"
 warmed=0
 if [ -z "$err" ]; then
   for attempt in 1 2 3 4 5; do
@@ -111,7 +118,10 @@ if [ -z "$err" ]; then
   [ "$warmed" = 1 ] || err="${err} could not download the Trivy DB in ${ADAPTER};"
 fi
 # The backend logs which Trivy filesystem engine it registered at start.
-docker logs "$BACKEND" 2>&1 | grep -q "Trivy filesystem scanner enabled (scanner-adapter" \
+# (Read into a file first: `docker logs | grep -q` fails under pipefail when
+# grep stops reading early.)
+docker logs "$BACKEND" >"${W}/backend-start.log" 2>&1 || true
+grep -q "Trivy filesystem scanner enabled (scanner-adapter" "${W}/backend-start.log" \
   || err="${err} the backend did not register the Trivy filesystem scanner on the adapter;"
 if [ -z "$err" ]; then
   pass
@@ -157,7 +167,7 @@ else
 fi
 
 # =============================================================================
-# Controls (pass on every image)
+# Default mode: TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS unset (every image)
 # =============================================================================
 begin_test "CONTROL: log4j-core 2.14.1 is graded on the component the JAR carries: 403 scan_blocked"
 pull "${M}/${MVN}/${JAR_LOG4J}"
@@ -168,11 +178,36 @@ else
   fail "status=${ST} scan='${SCAN}' body=$(snippet "$BODY") verdict='$(verdict_of "$d")'"
 fi
 
+begin_test "CONTROL: with TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS unset (the default), a JAR whose build POM only declares log4j-core 2.14.1 and jackson-databind 2.9.8 is still graded on them: 403 scan_blocked (unchanged)"
+pull "${M}/${MVN}/${JAR_DECLARED_DEFAULT}"
+d=$(fx_sha "/maven2/${JAR_DECLARED_DEFAULT}")
+if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
+  pass
+else
+  fail "status=${ST} scan='${SCAN}' body=$(snippet "$BODY") verdict='$(verdict_of "$d")' findings='$(findings_of "$d")'"
+fi
+
+# =============================================================================
+# Opt-in mode: the backend recreated with TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS=true
+# =============================================================================
+# The archives below are pulled only now, so each verdict is this mode's.
+begin_test "Setup: backend recreated with TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS=true"
+r="$(up backend "${OPT_IN[@]}")"
+if [ "$r" = up ] && [ "$(backend_env TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS)" = "true" ] \
+   && [ "$(backend_env TRIVY_ADAPTER_URL)" = "http://trivy:8090" ]; then
+  pass
+else
+  infra_fail "backend: ${r}; TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS='$(backend_env TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS)'"
+  end_suite
+fi
+auth_admin
+
 # Grype excludes embedded build POMs (#5340) and cannot identify a nested JAR
 # with no pom.properties, manifest or version in its name, so only Trivy,
 # reading the build POM, names log4j-core in the next four archives. They
-# also prove the Trivy filesystem scan is in the loop.
-begin_test "CONTROL: a WAR bundling an unidentifiable WEB-INF/lib JAR its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (Trivy keeps a WAR's build POM)"
+# show the opt-in keeps the build POMs it must, and that Trivy is still in
+# the loop.
+begin_test "CONTROL (opted in): a WAR bundling an unidentifiable WEB-INF/lib JAR its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (Trivy keeps a WAR's build POM)"
 pull "${M}/${MVN}/${WAR_NESTED}"
 d=$(fx_sha "/maven2/${WAR_NESTED}")
 if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
@@ -181,7 +216,7 @@ else
   fail "status=${ST} scan='${SCAN}' body=$(snippet "$BODY") verdict='$(verdict_of "$d")' findings='$(findings_of "$d")'"
 fi
 
-begin_test "CONTROL: a JAR whose build POM declares log4j-core 2.14.1 and that has no pom.properties is 403 scan_blocked (the POM is its only record)"
+begin_test "CONTROL (opted in): a JAR whose build POM declares log4j-core 2.14.1 and that has no pom.properties is 403 scan_blocked (the POM is its only record)"
 pull "${M}/${MVN}/${JAR_NOPROPS}"
 d=$(fx_sha "/maven2/${JAR_NOPROPS}")
 if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
@@ -190,7 +225,7 @@ else
   fail "status=${ST} scan='${SCAN}' body=$(snippet "$BODY") verdict='$(verdict_of "$d")' findings='$(findings_of "$d")'"
 fi
 
-begin_test "CONTROL: a .jar bundling an unidentifiable BOOT-INF/lib JAR its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (Trivy keeps the build POM of a jar that bundles jars)"
+begin_test "CONTROL (opted in): a .jar bundling an unidentifiable BOOT-INF/lib JAR its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (Trivy keeps the build POM of a jar that bundles jars)"
 pull "${M}/${MVN}/${JAR_BOOT}"
 d=$(fx_sha "/maven2/${JAR_BOOT}")
 if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
@@ -199,7 +234,7 @@ else
   fail "status=${ST} scan='${SCAN}' body=$(snippet "$BODY") verdict='$(verdict_of "$d")' findings='$(findings_of "$d")'"
 fi
 
-begin_test "CONTROL: an OSGi bundle embedding an unidentifiable JAR at its root that its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (a nested jar anywhere keeps the build POM)"
+begin_test "CONTROL (opted in): an OSGi bundle embedding an unidentifiable JAR at its root that its build POM declares as log4j-core 2.14.1 is 403 scan_blocked (a nested jar anywhere keeps the build POM)"
 pull "${M}/${MVN}/${JAR_OSGI}"
 d=$(fx_sha "/maven2/${JAR_OSGI}")
 if [ "$ST" = "403" ] && [ "$(body_err)" = "scan_blocked" ] && [ "$(verdict_of "$d")" = "vulnerable" ]; then
@@ -211,7 +246,7 @@ fi
 # =============================================================================
 # #6233 build-POM declarations are not shipped dependencies, for Trivy too
 # =============================================================================
-begin_test "FIX #6233: a JAR whose build POM declares compile-scope log4j-core 2.14.1 and jackson-databind 2.9.8 without bundling them is 200 clean through Trivy (was 403)"
+begin_test "FIX #6233: with TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS=true, a JAR whose build POM declares compile-scope log4j-core 2.14.1 and jackson-databind 2.9.8 without bundling them is 200 clean through Trivy (was 403)"
 pull "${M}/${MVN}/${JAR_DECLARED}"
 d=$(fx_sha "/maven2/${JAR_DECLARED}")
 if [ "$ST/$SCAN" = "200/clean" ] && [ "$BSHA" = "$d" ] && [ "$(verdict_of "$d")" = "clean" ]; then
