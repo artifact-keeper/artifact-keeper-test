@@ -74,10 +74,12 @@ case "$C" in 2??) ;; *) SETUP_ERR="${SETUP_ERR} repo(${C}: $(body "$W/repo.json"
 printf '%s' "$TOK" | put /work/token || SETUP_ERR="${SETUP_ERR} token-file"
 printf 'version: v1\ntls:\n  use: false\n' | put /work/bufcfg/config.yaml || SETUP_ERR="${SETUP_ERR} buf-config"
 bx . 'buf --version' && BUF_VERSION="$(tr -d '\n' <"$W/bx.out")" || SETUP_ERR="${SETUP_ERR} buf(--version: $(body "$W/bx.out" 200))"
-# The proxy is up and maps its root onto the repository: an anonymous POST is
-# answered by the backend's /proto write gate with a 401, not a proxy error.
+# The proxy is up and maps its root onto the repository: an anonymous POST of
+# a WRITE RPC is answered by the backend's /proto write gate with a 401, not a
+# proxy error. (A read RPC such as GetModules is now served anonymously on this
+# public repository, #6028, so it no longer proves the proxy reached the gate.)
 docker exec "$BUFC" sh -c "wget -S -q -O - --header 'Content-Type: application/json' --post-data '{}' \
-  http://${REGISTRY}/buf.registry.module.v1.ModuleService/GetModules" >"$W/probe.out" 2>&1
+  http://${REGISTRY}/buf.registry.module.v1.ModuleService/CreateModules" >"$W/probe.out" 2>&1
 PROXY_PROBE="$(body "$W/probe.out" 300)"
 echo "-- buf ${BUF_VERSION:-?}; anonymous probe through the proxy: ${PROXY_PROBE}"
 grep -q '401' "$W/probe.out" || SETUP_ERR="${SETUP_ERR} proxy(anonymous probe was not the backend's 401: ${PROXY_PROBE})"
