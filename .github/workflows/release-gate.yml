@@ -4323,11 +4323,12 @@ jobs:
           - group: scanner-adapter-features-1.12.0
             tiers: scanner-adapter-on-demand scanner-adapter-cache-partition scanner-adapter-max-image-size scanner-adapter-fair-queue
             adapter: candidate
-          # 1.12.3 (artifact-keeper-test#898): the Trivy filesystem scan does
-          # not grade the dependencies a JAR's embedded build POM only
-          # declares, and keeps the build POM of an archive that bundles
-          # nested jars (artifact-keeper#6233, fixed by #6236). Red on
-          # backends before #6236. Backend axis, so the published adapter :1.
+          # 1.12.3 (artifact-keeper-test#898): by default the Trivy filesystem
+          # scan still grades the dependencies a JAR's embedded build POM
+          # declares; with the opt-in TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS=true
+          # it does not, and keeps the build POM of an archive that bundles
+          # nested jars (artifact-keeper#6233, #6236). The opt-in case is red
+          # on backends before #6236. Backend axis, so the published adapter :1.
           - group: scan-grading-trivy-1.12.3
             tiers: scan-grading-os-and-jar-trivy
     env:
