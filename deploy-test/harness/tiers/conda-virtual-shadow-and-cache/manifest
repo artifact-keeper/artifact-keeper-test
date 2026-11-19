@@ -30,7 +30,19 @@
 #        upstream>} and is refused 403 "blocked by the repository's scan
 #        policy", cached entries included, and a virtual does not serve it.
 #
-# RED image: ak-backend:1.10.0 (every fix case). GREEN: 1.11.0 and later.
+# #6090  the conda shard dirty-mark triggers ran on every artifact write in
+#        every format (a PL/pgSQL call and a repositories lookup per row).
+#        Fixed: they run only for package rows (.conda/.tar.bz2), and the
+#        virtual's owned-name set, kept per hosted-member revision, counts
+#        package rows only, so a non-package row (which no longer moves a
+#        revision) can never leave it stale (the defect that backed out the
+#        first attempt, #6091, see #6234). Proved with pg_stat_user_functions
+#        under track_functions = 'pl' (ALTER SYSTEM on the slot Postgres, reset
+#        at the end) and the virtual's merged repodata.json.
+#
+# RED image: ak-backend:1.10.0 (every #4555/#4506 fix case); main before the
+# #6090 fix for the FIX #6090 cases. GREEN: 1.11.0 and later for #4555/#4506;
+# the #6090 fix and later for #6090.
 #
 # RATE_LIMIT_ENABLED=false: one admin login then ~30 authenticated calls back
 # to back. UPSTREAM_ALLOW_PRIVATE_IPS=true: the remotes' upstream is the mock
@@ -39,3 +51,4 @@ PROFILES="storage.filesystem upstreams.mock-conda"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
+COVERS="6090"

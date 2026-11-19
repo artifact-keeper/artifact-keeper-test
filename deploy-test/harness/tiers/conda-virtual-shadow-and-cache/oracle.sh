@@ -291,4 +291,127 @@ else
   fail "an unrelated Remote stopped serving after R2's policy was attached: HTTP ${st}"
 fi
 
+# =============================================================================
+# #6090 conda dirty marks for package rows only, and the guard that agrees
+# =============================================================================
+# The conda dirty-mark triggers ran for every artifact write in every format.
+# They now run only for package rows (.conda/.tar.bz2), and the virtual's
+# owned-name set (kept per hosted-member revision) counts package rows only,
+# so it can never go stale on a non-package row (#6234). Function calls are
+# counted from pg_stat_user_functions with track_functions = 'pl' (ALTER
+# SYSTEM, reset at the end); ak_artifacts_origin_fill runs BEFORE INSERT on
+# every artifacts row, so its count is the flush witness: once it shows the
+# generic uploads, the same transactions' conda calls are flushed too.
+fn_calls() {  # fn_calls <function> -> cumulative calls (0 if never called)
+  psql_q "SELECT COALESCE(SUM(calls), 0) FROM pg_stat_user_functions WHERE funcname = '$1'"
+}
+wait_calls() {  # wait_calls <function> <at least> -> final count
+  local n i
+  for i in $(seq 1 40); do
+    n="$(fn_calls "$1")"
+    [ "${n:-0}" -ge "$2" ] 2>/dev/null && break
+    sleep 1
+  done
+  echo "${n:-0}"
+}
+virt_lists_blocked() {  # 0 when the virtual's repodata lists the remote's dtfup-blocked
+  hget "/conda/${V}/noarch/repodata.json" "$WORK/v_6090.json" >/dev/null
+  jq -e --arg b "$UP_BLOCKED" '.packages | has($b)' "$WORK/v_6090.json" >/dev/null 2>&1
+}
+
+G="cvs-generic-${SUF}"
+NOTE_PATH="noarch/dtfup-blocked-NOTES.txt"
+setup6090_err=""
+psql_q "ALTER SYSTEM SET track_functions = 'pl'" >/dev/null
+psql_q "SELECT pg_reload_conf()" >/dev/null
+[ "$(psql_q "SHOW track_functions")" = "pl" ] || setup6090_err+="track_functions not set; "
+create_repo "$G" generic local || setup6090_err+="create generic; "
+printf 'release notes\n' > "$WORK/notes.txt"
+st="$(curl -s --max-time 60 -o "$WORK/note.out" -w '%{http_code}' -X PUT -H "$(auth_header)" \
+  -H 'Content-Type: text/plain' --data-binary "@$WORK/notes.txt" \
+  "${BASE_URL}/api/v1/repositories/${H}/artifacts/${NOTE_PATH}" 2>/dev/null || echo 000)"
+case "$st" in 200|201) ;; *) setup6090_err+="non-package upload to ${H} -> HTTP ${st} $(head -c 200 "$WORK/note.out"); " ;; esac
+sleep 2  # let the backend's pooled sessions take the reloaded setting
+
+begin_test "CONTROL #6090: before the rename to a package name, the virtual lists the remote's dtfup-blocked"
+if [ -n "$setup6090_err" ]; then
+  infra_fail "#6090 setup did not complete" "$setup6090_err"
+elif virt_lists_blocked; then
+  pass
+else
+  fail "the virtual dropped the remote's unowned dtfup-blocked before any #6090 step"
+fi
+
+# A non-package row in the hosted member takes the remote package's name.
+psql_q "UPDATE artifacts a SET name = 'dtfup-blocked' FROM repositories r
+  WHERE r.id = a.repository_id AND r.key = '${H}' AND a.path = '${NOTE_PATH}'" >/dev/null
+NOTE_NAME="$(psql_q "SELECT a.name FROM artifacts a JOIN repositories r ON r.id = a.repository_id
+  WHERE r.key = '${H}' AND a.path = '${NOTE_PATH}' AND NOT a.is_deleted")"
+virt_lists_blocked; warm_lists=$?
+
+# Generic writes in another format: five uploads.
+o0="$(fn_calls ak_artifacts_origin_fill)"
+c0="$(fn_calls conda_artifacts_mark_dirty)"
+m0="$(fn_calls conda_mark_artifact_dirty)"
+gen_err=""
+for i in 1 2 3 4 5; do
+  printf 'generic %s %s\n' "$i" "$SUF" > "$WORK/gen-$i.bin"
+  st="$(curl -s --max-time 60 -o /dev/null -w '%{http_code}' -X PUT -H "$(auth_header)" \
+    --data-binary "@$WORK/gen-$i.bin" "${BASE_URL}/api/v1/repositories/${G}/artifacts/tool/${i}/tool-${i}.bin" 2>/dev/null || echo 000)"
+  case "$st" in 200|201) ;; *) gen_err+="upload ${i} -> HTTP ${st}; " ;; esac
+done
+o1="$(wait_calls ak_artifacts_origin_fill $((o0 + 5)))"
+c1="$(fn_calls conda_artifacts_mark_dirty)"
+m1="$(fn_calls conda_mark_artifact_dirty)"
+
+begin_test "FIX #6090: generic uploads run no conda dirty-mark trigger"
+if [ -n "$gen_err" ]; then
+  infra_fail "generic uploads failed" "$gen_err"
+elif [ "$((o1 - o0))" -lt 5 ]; then
+  infra_fail "function stats never showed the generic inserts (ak_artifacts_origin_fill ${o0} -> ${o1})"
+elif [ "$((c1 - c0))" -eq 0 ] && [ "$((m1 - m0))" -eq 0 ]; then
+  pass
+else
+  fail "5 generic uploads called conda_artifacts_mark_dirty $((c1 - c0)) and conda_mark_artifact_dirty $((m1 - m0)) times (want 0)" \
+    "origin_fill ${o0}->${o1}"
+fi
+
+# A real package upload to the hosted member: still marks, and moves its
+# revision, so the virtual re-reads its owned names from the rows.
+BUMP="dtfhost-bump-1.0-0.tar.bz2"
+bash "$BUILD" "$WORK" dtfhost-bump 1.0 0 noarch >/dev/null 2>&1
+st_bump="$(conda_put "$H" "$WORK/$BUMP" "$BUMP")"
+c2="$(wait_calls conda_artifacts_mark_dirty $((c1 + 1)))"
+
+begin_test "CONTROL #6090: a conda package upload still runs the dirty-mark trigger"
+if { [ "$st_bump" = "201" ] || [ "$st_bump" = "200" ]; } && [ "$((c2 - c1))" -ge 1 ]; then
+  pass
+else
+  fail "package upload HTTP ${st_bump}; conda_artifacts_mark_dirty ${c1} -> ${c2}"
+fi
+
+virt_lists_blocked; cold_lists=$?
+
+begin_test "FIX #6090: a non-package row named dtfup-blocked owns nothing, before and after the member's revision moves"
+# Before the fix the row's name was owned (dtfup-blocked dropped) both times.
+# With #6091 alone the kept set was stale: listed before, dropped after.
+if [ "$NOTE_NAME" = "dtfup-blocked" ] && [ "$warm_lists" -eq 0 ] && [ "$cold_lists" -eq 0 ]; then
+  pass
+else
+  fail "the virtual's owned-name set counts (or kept a stale view of) a non-package row" \
+    "row name='${NOTE_NAME}' listed: after row edit=$([ "$warm_lists" -eq 0 ] && echo yes || echo no), after revision bump=$([ "$cold_lists" -eq 0 ] && echo yes || echo no)"
+fi
+
+begin_test "CONTROL #6090: the hosted package name dtfup-alpha is still owned after the bump"
+if jq -e --arg a "$UP_ALPHA2" --arg h "$OWNED_HOSTED" --arg n "$BUMP" \
+     '.packages | (has($a) | not) and has($h) and has($n)' "$WORK/v_6090.json" >/dev/null 2>&1; then
+  pass
+else
+  fail "the guard stopped owning a hosted package's name, or the new package is missing" \
+    "$(jq -c '.packages | keys' "$WORK/v_6090.json" 2>/dev/null | head -c 400)"
+fi
+
+psql_q "ALTER SYSTEM RESET track_functions" >/dev/null
+psql_q "SELECT pg_reload_conf()" >/dev/null
+
 end_suite
