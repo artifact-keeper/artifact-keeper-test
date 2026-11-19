@@ -300,16 +300,20 @@ note "anonymous on missing ${R_MISS}: GET ${a_get}, PUT ${a_put}"
 [ "$a_get" = "401" ] && [ "$a_put" = "401" ] || fail_g "anonymous on a missing repository answered GET ${a_get} / PUT ${a_put}, expected 401/401 (#1808 existence oracle)"
 finish_case "an anonymous caller can tell a missing repository key from a private one"
 
-begin_test "FIX #6160: a directory user's Maven PUT with the directory password is 201 on an existing repository and 404 on a missing one"
+begin_test "FIX #6160: a non-admin directory user with a repository write grant PUTs a Maven jar with the directory password: 201 on the repository, 404 on a missing key"
 reset_case
-# The write needs a grant, as for any account: provision the directory user
-# with a read, give it admin, then upload.
+# The write needs a grant, as for any account. Provision the directory user
+# with a read, then give it read+write on R_MVN only (no admin: admin bypasses
+# repository permissions and would hide a non-admin upload regression).
 r0="$(basic "$U_UP" "$P_UP" "/maven/${R_MVN}/${MVN_PATH}")"
 uid="$(psqlq "SELECT id FROM users WHERE lower(username) = '${U_UP}'")"
 if [ -n "$uid" ]; then
-  areq PATCH "/api/v1/users/${uid}" '{"is_admin":true}'
-  note "provisioning read ${r0}; user id ${uid}; PATCH is_admin=true: ${CODE}"
-  case "$CODE" in 2??) ;; *) fail_g "granting admin answered ${CODE}: ${BODY:0:200}";; esac
+  rid="$(psqlq "SELECT id FROM repositories WHERE key='${R_MVN}'")"
+  areq POST /api/v1/permissions "$(jq -nc --arg u "$uid" --arg r "$rid" '{principal_type:"user",principal_id:$u,target_type:"repository",target_id:$r,actions:["read","write"]}')"
+  adm="$(psqlq "SELECT is_admin FROM users WHERE id = '${uid}'")"
+  note "provisioning read ${r0}; user id ${uid}; repository grant read+write on ${R_MVN}: ${CODE}; is_admin=${adm}"
+  case "$CODE" in 2??) ;; *) fail_g "the repository grant answered ${CODE}: ${BODY:0:200}";; esac
+  [ "$adm" = "f" ] || fail_g "${U_UP} is_admin=${adm}, expected f (the case must run as a non-admin)"
 else
   note "provisioning read ${r0}; no account was provisioned"
   fail_g "the directory password did not provision ${U_UP} (read ${r0})"
@@ -339,6 +343,6 @@ note "${U_MW}: right password on ${R_MVN} ${r0}; wrong password PUT on missing $
 [ "$r0" = "200" ] || fail_g "the right directory password answered ${r0} on the existing repository, expected 200"
 [ "$c1" = "401" ] || fail_g "a wrong directory password on the missing repository answered ${c1}, expected 401"
 [ "$((b1 - b0))" = "1" ] || fail_g "the wrong password caused $((b1 - b0)) directory BIND(s), expected exactly 1 (pre-#6160 the no-repository path never consults the directory)"
-finish_case "the no-repository path does not run the LDAP passthrough exactly once"
+finish_case "the no-repository path does not bind a wrong directory password exactly once"
 
 end_suite
