@@ -1,0 +1,47 @@
+# DTF tier manifest: scan-grading-os-and-jar-trivy
+#   (artifact-keeper#6233, fixed for 1.12.3; the Trivy half of #5262)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files,
+# the same mock as scan-grading-os-and-jar, its control API on the slot's
+# TRIVY_PORT). The oracle then starts the scanner adapter (scanners.trivy,
+# SCANNER_ADAPTER_IMAGE) and recreates the backend with TRIVY_ADAPTER_URL,
+# through fixtures/trivy-adapter.yml, which drops the adapter's host port so
+# it does not collide with the mock's. Every scan-on-proxy then runs the
+# bundled Grype AND the Trivy filesystem scan through the adapter.
+# fixtures/build_fixtures.py builds four Maven archives with fixed timestamps.
+# NETWORK: the adapter downloads the Trivy DB from ghcr.io once (~100 MiB,
+# pre-warmed in setup, cached in the slot's trivy volume).
+#
+# THE BUG
+# #6233  #5262 (fixed in #5340) kept a JAR's embedded build POM
+#        (META-INF/maven/<g>/<a>/pom.xml) out of the Grype directory scan.
+#        The Trivy filesystem scan of the same staged workspace still read
+#        it, so Trivy graded every dependency the POM DECLARES as if the JAR
+#        shipped it, and a fail_closed Remote blocked the JAR on Trivy's
+#        findings alone. Since artifact-keeper#6236 the backend drops an
+#        embedded build POM whose pom.properties sits beside it before Trivy
+#        runs, unless the archive bundles nested libraries (a .war/.ear, or a
+#        WEB-INF/lib, BOOT-INF/lib or lib/*.jar in the tree), whose build POM
+#        may be the only thing naming them.
+#
+# THE GATES
+#   (FIX)      RED on a backend without #6236, GREEN with it:
+#              the JAR whose build POM declares compile-scope log4j-core
+#              2.14.1 and jackson-databind 2.9.8, bundling neither: 200
+#              X-AK-Scan: clean, verdict clean.
+#   (CONTROL)  hold on BOTH images: log4j-core 2.14.1 itself is 403
+#              scan_blocked; a WAR whose only record of a bundled log4j-core
+#              is its build POM (the WEB-INF/lib JAR has no pom.properties,
+#              manifest or version) is 403 scan_blocked; a JAR with a build
+#              POM declaring log4j-core and no pom.properties is 403
+#              scan_blocked. Grype excludes build POMs, so the last two are
+#              Trivy's findings: they show Trivy is in the loop and that the
+#              fix keeps the POMs it must.
+#
+# RATE_LIMIT_ENABLED=false: requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="6233"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+NEEDS_INTERNET="true"

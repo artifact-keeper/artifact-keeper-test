@@ -638,7 +638,8 @@ case "$CMD" in
              bounded-memory-streaming debian-rpm-maintenance format-fixes-1120 \
              ldap-basic-passthrough maven-contract-1120 mcpb-ingest-validation \
              mcp-introspection-integrity range-serves-1120 s3-cross-repo-same-version \
-             s3-multipart-copy-encoding scan-grading-os-and-jar scan-proxy-identity-npm-cargo \
+             s3-multipart-copy-encoding scan-grading-os-and-jar scan-grading-os-and-jar-trivy \
+             scan-proxy-identity-npm-cargo \
              scan-remote-rows-gated storage-outage-and-full upstream-probe-egress \
              virtual-member-gates-1120 virtual-metadata-member-outage webhook-delivery-fairness \
              replication-delete-restore push-sync-oci-and-plugin-metadata \
