@@ -4,7 +4,8 @@
 # tiers/ldap-basic-passthrough/oracle.sh
 #   LDAP/AD Basic-auth passthrough on package routes (#3830) and its
 #   follow-ups (#4933): guest-guard binds, one LOGIN_FAILED row, deactivation
-#   wins over web login. See the manifest for the gates.
+#   wins over web login; directory credentials on an unknown repository key
+#   (#6160). See the manifest for the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_USER, ADMIN_PASS, RUN_ID,
 # DTF_SLOT, DTF_DIR, RELEASE_GATE=1, JUNIT_OUTPUT_DIR, COMMON_SH.
@@ -90,9 +91,11 @@ U_BAD="ptb${SFX}";  P_BAD="$(rand_pw)"
 U_MGT="ptm${SFX}";  P_MGT="$(rand_pw)"
 U_DEA="ptd${SFX}";  P_DEA="$(rand_pw)"
 U_LOC="ptl${SFX}";  P_LOC="$(rand_pw)"
+U_UP="ptu${SFX}";   P_UP="$(rand_pw)"
+U_MW="ptx${SFX}";   P_MW="$(rand_pw)"
 {
   printf 'dn: %s\nobjectClass: organizationalUnit\nou: people\n\n' "$LDAP_PEOPLE"
-  for pair in "$U_WEB:$P_WEB" "$U_PKG:$P_PKG" "$U_BAD:$P_BAD" "$U_MGT:$P_MGT" "$U_DEA:$P_DEA" "$U_LOC:$P_LOC"; do
+  for pair in "$U_WEB:$P_WEB" "$U_PKG:$P_PKG" "$U_BAD:$P_BAD" "$U_MGT:$P_MGT" "$U_DEA:$P_DEA" "$U_LOC:$P_LOC" "$U_UP:$P_UP" "$U_MW:$P_MW"; do
     u="${pair%%:*}"; p="${pair#*:}"
     printf 'dn: uid=%s,%s\nobjectClass: inetOrgPerson\nuid: %s\ncn: %s\nsn: DTF\nmail: %s@dtf.local\nuserPassword: %s\n\n' \
       "$u" "$LDAP_PEOPLE" "$u" "$u" "$u" "$p"
@@ -101,7 +104,7 @@ U_LOC="ptl${SFX}";  P_LOC="$(rand_pw)"
 seed_out="$(docker exec -i "$LDAP_CONTAINER" ldapadd -c -x -H ldap://localhost:389 -D "$LDAP_ADMIN_DN" -w "$LDAP_ADMIN_PW" < "${W}/seed.ldif" 2>&1)"
 rm -f "${W}/seed.ldif"
 n_added="$(grep -c 'adding new entry "uid=' <<<"$seed_out")"
-[ "$n_added" = "6" ] || { infra_fail "ldapadd seeded ${n_added} of 6 users" "$seed_out"; end_suite; }
+[ "$n_added" = "8" ] || { infra_fail "ldapadd seeded ${n_added} of 8 users" "$seed_out"; end_suite; }
 
 areq POST /api/v1/admin/sso/ldap "$(jq -nc --arg n "dtf-pt-${SFX}" --arg b "$LDAP_ADMIN_DN" --arg bp "$LDAP_ADMIN_PW" --arg base "$LDAP_PEOPLE" \
   '{name:$n, server_url:"ldap://ldap.dtf.local:389", bind_dn:$b, bind_password:$bp, user_base_dn:$base,
@@ -276,5 +279,66 @@ else
   [ "$p2" = "401" ] || fail_g "after the web login the passthrough served the account (${p2})"
 fi
 finish_case "web LDAP login reactivates an account an administrator deactivated"
+
+# =============================================================================
+# #6160: directory credentials on Maven uploads, and on a repository key that
+# does not exist. R_MISS is never created.
+R_MISS="ptmiss-${SFX}"
+UP_PATH="com/dtf/pt/up/1.0/up-1.0.jar"
+printf 'ldap-basic-passthrough upload %s\n' "$SFX" > "${W}/up.jar"
+# bput <user> <password> <PATH>: PUT up.jar with Basic, echoes the status.
+bput(){
+  curl -s -o "${W}/bput" -w '%{http_code}' --max-time 60 -X PUT -u "$1:$2" \
+    --data-binary "@${W}/up.jar" "${BASE}$3" 2>/dev/null || echo 000
+}
+
+begin_test "CONTROL: anonymous Maven GET and PUT on a repository key that does not exist are 401"
+reset_case
+a_get="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "${BASE}/maven/${R_MISS}/${MVN_PATH}")"
+a_put="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X PUT --data-binary "@${W}/up.jar" "${BASE}/maven/${R_MISS}/${UP_PATH}")"
+note "anonymous on missing ${R_MISS}: GET ${a_get}, PUT ${a_put}"
+[ "$a_get" = "401" ] && [ "$a_put" = "401" ] || fail_g "anonymous on a missing repository answered GET ${a_get} / PUT ${a_put}, expected 401/401 (#1808 existence oracle)"
+finish_case "an anonymous caller can tell a missing repository key from a private one"
+
+begin_test "FIX #6160: a directory user's Maven PUT with the directory password is 201 on an existing repository and 404 on a missing one"
+reset_case
+# The write needs a grant, as for any account: provision the directory user
+# with a read, give it admin, then upload.
+r0="$(basic "$U_UP" "$P_UP" "/maven/${R_MVN}/${MVN_PATH}")"
+uid="$(psqlq "SELECT id FROM users WHERE lower(username) = '${U_UP}'")"
+if [ -n "$uid" ]; then
+  areq PATCH "/api/v1/users/${uid}" '{"is_admin":true}'
+  note "provisioning read ${r0}; user id ${uid}; PATCH is_admin=true: ${CODE}"
+  case "$CODE" in 2??) ;; *) fail_g "granting admin answered ${CODE}: ${BODY:0:200}";; esac
+else
+  note "provisioning read ${r0}; no account was provisioned"
+  fail_g "the directory password did not provision ${U_UP} (read ${r0})"
+fi
+p1="$(bput "$U_UP" "$P_UP" "/maven/${R_MVN}/${UP_PATH}")"
+g1="$(basic "$U_UP" "$P_UP" "/maven/${R_MVN}/${UP_PATH}" "${W}/got-up.jar")"
+p2="$(bput "$U_UP" "$P_UP" "/maven/${R_MISS}/${UP_PATH}")"
+p2_body="$(head -c 160 "${W}/bput")"
+g2="$(basic "$U_UP" "$P_UP" "/maven/${R_MISS}/${MVN_PATH}")"
+note "${U_UP}: PUT existing ${p1}, GET it back ${g1}; missing ${R_MISS}: PUT ${p2} ${p2_body}, GET ${g2}"
+[ "$p1" = "201" ] || fail_g "the directory password's Maven PUT to ${R_MVN} answered ${p1}, expected 201"
+if [ "$g1" != "200" ] || ! cmp -s "${W}/got-up.jar" "${W}/up.jar"; then fail_g "reading the uploaded jar back answered ${g1} or other bytes"; fi
+[ "$p2" = "404" ] || fail_g "the directory password's PUT to the missing repository answered ${p2}, expected the valid-credential 404 (pre-#6160: the anonymous 401)"
+[ "$g2" = "404" ] || fail_g "the directory password's GET on the missing repository answered ${g2}, expected 404 (pre-#6160: 401)"
+finish_case "a valid directory credential is treated as no credential on an unknown repository key"
+
+begin_test "FIX #6160: a wrong directory password on a missing repository is 401 after exactly one directory BIND"
+reset_case
+# Provision first so the failure is a bad password, not a directory miss.
+r0="$(basic "$U_MW" "$P_MW" "/maven/${R_MVN}/${MVN_PATH}")"
+settle
+b0="$(dir_binds "$U_MW")"
+c1="$(bput "$U_MW" "Wrong-$(rand_pw)" "/maven/${R_MISS}/${UP_PATH}")"
+settle
+b1="$(dir_binds "$U_MW")"
+note "${U_MW}: right password on ${R_MVN} ${r0}; wrong password PUT on missing ${R_MISS} ${c1}; user BIND lines ${b0} -> ${b1}"
+[ "$r0" = "200" ] || fail_g "the right directory password answered ${r0} on the existing repository, expected 200"
+[ "$c1" = "401" ] || fail_g "a wrong directory password on the missing repository answered ${c1}, expected 401"
+[ "$((b1 - b0))" = "1" ] || fail_g "the wrong password caused $((b1 - b0)) directory BIND(s), expected exactly 1 (pre-#6160 the no-repository path never consults the directory)"
+finish_case "the no-repository path does not run the LDAP passthrough exactly once"
 
 end_suite

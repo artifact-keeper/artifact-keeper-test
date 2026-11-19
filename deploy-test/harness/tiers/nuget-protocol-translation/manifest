@@ -1,5 +1,5 @@
 # DTF tier manifest: nuget-protocol-translation
-#   (artifact-keeper#4122, #4021, #3870; all fixed in 1.11.0)
+#   (artifact-keeper#4122, #4021, #3870, fixed in 1.11.0; #6062, 1.12.4)
 # Profile-set: filesystem / single + upstreams=mock-multi (the stdlib-python
 # upstream at 172.16.<slot>.91 serves a V2 OData NuGet feed at
 # /nuget/v2/api/v2 (index.json -> 404), a V3 feed at /nuget/v3/index.json with
@@ -25,11 +25,19 @@
 #        rewritten onto AK; the service index advertises
 #        RegistrationsBaseUrl/3.6.0 and a SearchAutocompleteService, and
 #        autocomplete answers from the upstream.
+# #6062  A .nupkg uploaded at a hosted repository's root through the generic
+#        artifact PUT (the web UI upload) was stored as an unversioned file:
+#        no V3 search hit, no registration, no flat-container entry. Fixed:
+#        the shared upload finalizer reads the .nuspec, checks it against the
+#        filename (a mismatch is 400 and stores nothing) and indexes the
+#        package.
 #
-# RED image: ak-backend:1.10.0. GREEN: 1.11.0 and later.
+# RED image: ak-backend:1.10.0 for #4122/#4021/#3870 (GREEN: 1.11.0 and
+# later); main sha-380b43d for #6062 (GREEN: 1.12.4 and later).
 #
 # RATE_LIMIT_ENABLED=false: one admin login and ~30 API calls back to back.
 PROFILES="storage.filesystem upstreams.mock-multi"
+COVERS="6062"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

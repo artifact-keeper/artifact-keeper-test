@@ -2,7 +2,8 @@
 # =============================================================================
 # tiers/nuget-protocol-translation/oracle.sh: NuGet V2 <-> V3 translation for
 #   remote upstreams, a virtual's V2 feed from remote members, and proxied
-#   registration pages (artifact-keeper#4122, #4021, #3870)
+#   registration pages (artifact-keeper#4122, #4021, #3870); a root .nupkg
+#   uploaded through the generic artifact PUT is indexed (#6062)
 # =============================================================================
 # run.sh has stood up `storage.filesystem upstreams.mock-multi` and exported
 # BASE_URL, DB_CONTAINER, ADMIN_USER, ADMIN_PASS, RUN_ID, DTF_SLOT, DTF_DIR,
@@ -14,9 +15,10 @@
 #   N3   remote -> /nuget/v3/index.json    (V3 upstream, paged registration)
 #   N3D  remote -> /nuget/v3down/index.json (V3 upstream answering 503)
 #   NH   hosted, SHARED 1.0.0 pushed       NVV virtual {NH (1), N2 (2)}
+#   NU   hosted, filled only by the #6062 cases through the generic PUT
 #
-# Every FIX case is RED on 1.10.0 and GREEN on 1.11.0+; every CONTROL holds on
-# both.
+# Every #4122/#4021/#3870 FIX case is RED on 1.10.0 and GREEN on 1.11.0+;
+# every CONTROL holds on both. The #6062 cases are RED on main before the fix.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${DTF_SLOT:?}"
@@ -33,11 +35,13 @@ MOCK="http://172.16.${SLOT}.91"
 MOCK_CTR="ak-dtf${SLOT}-mock-multi"
 
 N2="npt-n2-${SUF}"; N3="npt-n3-${SUF}"; N3D="npt-n3d-${SUF}"
-NH="npt-nh-${SUF}"; NVV="npt-nvv-${SUF}"
+NH="npt-nh-${SUF}"; NVV="npt-nvv-${SUF}"; NU="npt-nu-${SUF}"
 ID_V2="dtfnu-a${SUF}"       # resolved through the V2-upstream remote
 ID_V3="dtfnu-b${SUF}"       # resolved through the V3-upstream remote
 ID_REMOTE="dtfnu-r${SUF}"   # only the virtual's remote member has it
 ID_SHARED="dtfnu-s${SUF}"   # hosted 1.0.0 AND remote 1.0.0/2.0.0
+ID_UI="Dtf.UiUpload${SUF}"  # #6062: uploaded to NU through the generic PUT
+ID_UI_LC="$(printf '%s' "$ID_UI" | tr '[:upper:]' '[:lower:]')"
 
 WORK="$(mktemp -d -t dtf-npt-XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
@@ -87,6 +91,7 @@ remote "$N2" "${MOCK}/nuget/v2/api/v2"
 remote "$N3" "${MOCK}/nuget/v3/index.json"
 remote "$N3D" "${MOCK}/nuget/v3down/index.json"
 mkrepo "{\"key\":\"${NH}\",\"name\":\"${NH}\",\"format\":\"nuget\",\"repo_type\":\"local\",\"is_public\":true}"
+mkrepo "{\"key\":\"${NU}\",\"name\":\"${NU}\",\"format\":\"nuget\",\"repo_type\":\"local\",\"is_public\":true}"
 mkrepo "{\"key\":\"${NVV}\",\"name\":\"${NVV}\",\"format\":\"nuget\",\"repo_type\":\"virtual\",\"is_public\":true,\"member_repos\":[{\"repo_key\":\"${NH}\",\"priority\":1},{\"repo_key\":\"${N2}\",\"priority\":2}]}"
 python3 -I - "$WORK/shared.nupkg" "$ID_SHARED" <<'PY'
 import sys, zipfile
@@ -269,6 +274,67 @@ if [ "$st" = "200" ] && cmp -s "$WORK/nvvs.nupkg" "$WORK/shared.nupkg"; then
   pass
 else
   fail "HTTP ${st}, $(wc -c < "$WORK/nvvs.nupkg") bytes; want the pushed $(wc -c < "$WORK/shared.nupkg") bytes" "$(head -c 200 "$WORK/nvvs.nupkg")"
+fi
+
+# =============================================================================
+# E. #6062: a .nupkg uploaded at the repository root through the generic
+#    artifact PUT (the web UI upload) is indexed as a NuGet package
+# =============================================================================
+# mknupkg OUT ID VERSION: a minimal package whose .nuspec declares ID VERSION.
+mknupkg() {
+  python3 -I - "$1" "$2" "$3" <<'PY'
+import sys, zipfile
+out, pid, ver = sys.argv[1:]
+nuspec = ('<?xml version="1.0" encoding="utf-8"?>\n'
+          '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata>'
+          f'<id>{pid}</id><version>{ver}</version><authors>dtf</authors>'
+          '<description>dtf-ui-upload</description></metadata></package>\n')
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr(f"{pid}.nuspec", nuspec)
+    z.writestr("lib/net8.0/placeholder.txt", f"dtf-ui-upload {pid} {ver}\n")
+PY
+}
+gput() {  # gput FILE PATH -> HTTP status of the generic artifact PUT into NU
+  curl -s --max-time 60 -o "$WORK/gput.out" -w '%{http_code}' -X PUT \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Content-Type: application/octet-stream' \
+    --data-binary "@$1" "${BASE_URL}/api/v1/repositories/${NU}/artifacts/$2" 2>/dev/null || echo 000
+}
+
+begin_test "FIX #6062: a generic PUT of <id>.1.2.3.nupkg at the repository root is found by the V3 search and the registration"
+mknupkg "$WORK/ui.nupkg" "$ID_UI" "1.2.3"
+put_st="$(gput "$WORK/ui.nupkg" "${ID_UI}.1.2.3.nupkg")"
+put_body="$(head -c 200 "$WORK/gput.out")"
+s_st="$(get "/nuget/${NU}/v3/search?q=${ID_UI_LC}" "$WORK/uisearch.json")"
+r_st="$(get "/nuget/${NU}/v3/registration/${ID_UI_LC}/index.json" "$WORK/uireg.json")"
+f_st="$(get "/nuget/${NU}/v3/flatcontainer/${ID_UI_LC}/1.2.3/${ID_UI_LC}.1.2.3.nupkg" "$WORK/uiflat.nupkg")"
+err=""
+ok2xx "$put_st" || err+="generic PUT -> ${put_st} ${put_body}; "
+jq -e --arg id "$ID_UI_LC" \
+  '[.data[] | select((.id | ascii_downcase) == $id) | (.version, (.versions[]?.version))] | index("1.2.3") != null' \
+  "$WORK/uisearch.json" >/dev/null 2>&1 \
+  || err+="search -> ${s_st} $(head -c 300 "$WORK/uisearch.json"); "
+jq -e '[.items[] | (.items // [])[] | .catalogEntry.version] | index("1.2.3") != null' "$WORK/uireg.json" >/dev/null 2>&1 \
+  || err+="registration -> ${r_st} $(head -c 300 "$WORK/uireg.json"); "
+if [ "$f_st" != "200" ] || ! cmp -s "$WORK/uiflat.nupkg" "$WORK/ui.nupkg"; then
+  err+="flat-container download -> ${f_st}, $(wc -c < "$WORK/uiflat.nupkg") bytes; "
+fi
+if [ -z "$err" ]; then
+  pass
+else
+  fail "want a 2xx PUT, then 1.2.3 in /v3/search?q=${ID_UI_LC}, the registration index and the flat container (pre-#6062 the upload is an unversioned file no index finds)" "$err"
+fi
+
+begin_test "FIX #6062: a generic PUT whose filename disagrees with the .nuspec is refused with 400 and stores nothing"
+mknupkg "$WORK/ui-bad.nupkg" "$ID_UI" "1.2.4"
+bad_path="${ID_UI}.9.9.9.nupkg"
+put_st="$(gput "$WORK/ui-bad.nupkg" "$bad_path")"
+put_body="$(head -c 200 "$WORK/gput.out")"
+g_st="$(curl -s --max-time 60 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "${BASE_URL}/api/v1/repositories/${NU}/artifacts/${bad_path}" 2>/dev/null || echo 000)"
+if [ "$put_st" = "400" ] && [ "$g_st" = "404" ]; then
+  pass
+else
+  fail "PUT ${bad_path} (nuspec ${ID_UI} 1.2.4) -> ${put_st}, then GET -> ${g_st}; want 400 then 404 (pre-#6062 the mismatch is stored as an unversioned file)" "$put_body"
 fi
 
 end_suite
