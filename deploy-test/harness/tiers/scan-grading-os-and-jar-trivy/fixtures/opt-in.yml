@@ -1,0 +1,8 @@
+# Overlay the oracle recreates the backend with for the opt-in half of the
+# tier, on top of trivy-adapter.yml: the backend ignores the dependencies an
+# embedded build POM only declares (artifact-keeper#6233, #6236; the setting
+# is opt-in, default false).
+services:
+  backend:
+    environment:
+      TRIVY_IGNORE_EMBEDDED_POM_DECLARATIONS: "true"

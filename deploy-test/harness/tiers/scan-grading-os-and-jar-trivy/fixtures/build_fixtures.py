@@ -12,6 +12,10 @@
 # and POM builders are those of scan-grading-os-and-jar/fixtures. Stdlib only.
 #
 # Maven (Remote upstream /maven2)
+#   com/example/dtfgrade/dtf-declared-default/1.0.0/dtf-declared-default-1.0.0.jar
+#       the same shape as dtf-declared-only below, under another coordinate
+#       (other bytes, so its own verdict): pulled before the backend opts in
+#       (default mode)
 #   com/example/dtfgrade/dtf-declared-only/1.0.0/dtf-declared-only-1.0.0.jar
 #       its own pom.properties, and a build POM (META-INF/maven/.../pom.xml)
 #       that declares org.apache.logging.log4j:log4j-core:2.14.1 and
@@ -110,6 +114,7 @@ def maven(group, artifact, version, packaging="jar", deps=(), props=True, extra=
     emit(base + ".pom.sha1", hashlib.sha1(p.encode()).hexdigest(), "text/plain")
 
 
+maven("com.example.dtfgrade", "dtf-declared-default", "1.0.0", deps=[LOG4J, JACKSON])
 maven("com.example.dtfgrade", "dtf-declared-only", "1.0.0", deps=[LOG4J, JACKSON])
 maven("org.apache.logging.log4j", "log4j-core", "2.14.1")
 maven(
