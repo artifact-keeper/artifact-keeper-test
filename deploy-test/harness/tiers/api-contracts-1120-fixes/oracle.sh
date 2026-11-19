@@ -10,7 +10,9 @@
 #   (#5652), artifacts of a repository under delete by id (#5694), 5-field
 #   cron weekdays (#5487), the audited cold HEAD probe (#5347), releasing a
 #   held proxied path straight after its 409 (#5223) and, for 1.12.3, the
-#   JSON 404 for an unknown /api/v1 path (#6299). See the manifest.
+#   JSON 404 for an unknown /api/v1 path (#6299) and, for 1.12.4, the
+#   Warning on versioning_enabled for a format that ignores it (#6063). See
+#   the manifest.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
 # RELEASE_GATE=1, JUNIT_OUTPUT_DIR, COMMON_SH.
@@ -497,5 +499,69 @@ for spec in "GET|${TOK}|" "GET|-|" "POST|${TOK}|{\"name\":\"x\"}"; do
   case "$BODY" in *[Rr]epository*) fail_g "${m} (${who}) body names a repository: ${BODY:0:160}";; esac
 done
 finish_case "an unknown /api/v1 path falls through to the format routes"
+
+# =============================================================================
+# #6063 (1.12.4) versioning_enabled on a format whose uploads ignore it
+# =============================================================================
+# req_h <METHOD> <PATH> <JSON body>: like req, signed in as admin, and also
+# sets WARN to the response's Warning header(s) ('' when absent).
+req_h(){
+  : >"${W}/body"; : >"${W}/hdrs"
+  CODE="$(curl -s -o "${W}/body" -D "${W}/hdrs" -w '%{http_code}' --max-time 60 -X "$1" \
+    -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/json' --data-binary "$3" "${BASE}$2")"
+  BODY="$(cat "${W}/body" 2>/dev/null || true)"
+  WARN="$(grep -i '^warning:' "${W}/hdrs" 2>/dev/null | cut -d' ' -f2- | tr -d '\r' | paste -sd'|' -)"
+}
+vers_row(){ psql_q "SELECT versioning_enabled FROM repositories WHERE key = '$1';"; }
+V_GEN="ac12f-vers-gen-${SFX}"
+V_NPM="ac12f-vers-npm-${SFX}"
+V_NPM2="ac12f-vers-npm2-${SFX}"
+
+begin_test "CONTROL: a generic repository created with versioning_enabled true answers 200 without a Warning and reads the flag back"
+reset_case
+req_h POST /api/v1/repositories "$(jq -nc --arg k "$V_GEN" '{key:$k,name:$k,format:"generic",repo_type:"local",versioning_enabled:true}')"
+note "create generic: ${CODE} versioning_enabled=$(jqr .versioning_enabled <<<"$BODY") Warning='${WARN}'"
+[ "$CODE" = "200" ] || fail_g "creating the generic repository answered ${CODE}: ${BODY:0:200}"
+[ -z "$WARN" ] || fail_g "the generic create carries a Warning header: ${WARN}"
+req GET "/api/v1/repositories/${V_GEN}" "$TOK"
+[ "$(jqr .versioning_enabled <<<"$BODY")" = "true" ] || fail_g "GET reads versioning_enabled '$(jqr .versioning_enabled <<<"$BODY")', expected true"
+finish_case "a generic repository's versioning_enabled round trip changed"
+
+begin_test "FIX #6063: an npm repository created with versioning_enabled true answers 200 with Warning 299 and still stores and reads back true"
+reset_case
+req_h POST /api/v1/repositories "$(jq -nc --arg k "$V_NPM" '{key:$k,name:$k,format:"npm",repo_type:"local",versioning_enabled:true}')"
+note "create npm: ${CODE} versioning_enabled=$(jqr .versioning_enabled <<<"$BODY") Warning='${WARN}'"
+[ "$CODE" = "200" ] || fail_g "creating the npm repository answered ${CODE}, expected 200 (patch release keeps accepting the flag): ${BODY:0:200}"
+[ "$(jqr .versioning_enabled <<<"$BODY")" = "true" ] || fail_g "the create response echoes versioning_enabled '$(jqr .versioning_enabled <<<"$BODY")', expected true (no IaC drift)"
+case "$WARN" in
+  *'299 - "versioning_enabled has no effect for format npm"'*) ;;
+  *) fail_g "no 'Warning: 299 - \"versioning_enabled has no effect for format npm\"' header (got '${WARN}')" ;;
+esac
+req GET "/api/v1/repositories/${V_NPM}" "$TOK"
+note "GET: ${CODE} versioning_enabled=$(jqr .versioning_enabled <<<"$BODY"); row=$(vers_row "$V_NPM")"
+[ "$(jqr .versioning_enabled <<<"$BODY")" = "true" ] || fail_g "GET reads versioning_enabled '$(jqr .versioning_enabled <<<"$BODY")', expected true (no IaC drift)"
+[ "$(vers_row "$V_NPM")" = "t" ] || fail_g "the stored versioning_enabled is '$(vers_row "$V_NPM")', expected t"
+finish_case "versioning_enabled on npm is accepted with no sign that it does nothing"
+
+begin_test "FIX #6063: PATCH versioning_enabled true on an npm repository answers 200 with Warning 299; a PATCH without the flag has none"
+reset_case
+req_h POST /api/v1/repositories "$(jq -nc --arg k "$V_NPM2" '{key:$k,name:$k,format:"npm",repo_type:"local"}')"
+note "create npm (flag omitted): ${CODE} Warning='${WARN}'"
+[ "$CODE" = "200" ] || fail_g "creating the second npm repository answered ${CODE}: ${BODY:0:200}"
+[ -z "$WARN" ] || fail_g "a create without versioning_enabled carries a Warning header: ${WARN}"
+req_h PATCH "/api/v1/repositories/${V_NPM2}" '{"versioning_enabled":true}'
+note "PATCH {versioning_enabled:true}: ${CODE} versioning_enabled=$(jqr .versioning_enabled <<<"$BODY") Warning='${WARN}'"
+[ "$CODE" = "200" ] || fail_g "the PATCH answered ${CODE}, expected 200: ${BODY:0:200}"
+[ "$(jqr .versioning_enabled <<<"$BODY")" = "true" ] || fail_g "the PATCH response echoes versioning_enabled '$(jqr .versioning_enabled <<<"$BODY")', expected true"
+case "$WARN" in
+  *'299 - "versioning_enabled has no effect for format npm"'*) ;;
+  *) fail_g "the PATCH has no 'Warning: 299 - \"versioning_enabled has no effect for format npm\"' header (got '${WARN}')" ;;
+esac
+[ "$(vers_row "$V_NPM2")" = "t" ] || fail_g "the stored versioning_enabled is '$(vers_row "$V_NPM2")', expected t"
+req_h PATCH "/api/v1/repositories/${V_NPM2}" "$(jq -nc --arg d "described ${SFX}" '{description:$d}')"
+note "PATCH {description}: ${CODE} Warning='${WARN}'"
+[ "$CODE" = "200" ] || fail_g "the description PATCH answered ${CODE}"
+[ -z "$WARN" ] || fail_g "a PATCH that does not send versioning_enabled carries a Warning header: ${WARN}"
+finish_case "a PATCH of versioning_enabled on npm gives no sign that it does nothing"
 
 end_suite
