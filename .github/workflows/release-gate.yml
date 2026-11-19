@@ -4245,6 +4245,13 @@ jobs:
   #     expires: 2027-02-01 — on/after this date either promote the leg
   #              into dtf-gate (with the adapter env it needs) or
   #              re-justify the waiver in a PR.
+  #   scanner-adapter-1.12.3 (scanner-adapter-java-db):
+  #     reason:  scanners.trivy; the adapter downloads the Trivy DB from ghcr
+  #              and the trivy Java DB (~1 GiB) from mirror.gcr.io. Its
+  #              red/green axis is the scanner-adapter image (#5913), so it
+  #              runs the candidate's adapter, like the features group.
+  #              New in 1.12.3; promote it after it holds green on two
+  #              candidates.
   #   mcp-1.12.0 (mcp-publish-resolve-1120):
   #     reason:  the #5702 case (20 publishes straight after a pull-through)
   #              races the catalog commit; it is discriminating on the
@@ -4324,6 +4331,15 @@ jobs:
           # (inputs.scanner_adapter_tag, default backend_tag), not :1.
           - group: scanner-adapter-features-1.12.0
             tiers: scanner-adapter-on-demand scanner-adapter-cache-partition scanner-adapter-max-image-size scanner-adapter-fair-queue
+            adapter: candidate
+          # 1.12.3 (artifact-keeper-test PR for #5913): concurrent first JAR
+          # scans no longer race on trivy's on-demand Java DB download, and an
+          # image without JARs still scans when the Java DB is unreachable.
+          # Its own group: the ~1 GiB Java DB download (and, on an adapter
+          # before the fix, one per concurrent scan) would crowd the
+          # features group's 60 minutes.
+          - group: scanner-adapter-1.12.3
+            tiers: scanner-adapter-java-db
             adapter: candidate
           # 1.12.3 (artifact-keeper-test#898): by default the Trivy filesystem
           # scan still grades the dependencies a JAR's embedded build POM
