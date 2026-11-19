@@ -1,0 +1,21 @@
+# Tier-local compose override for scan-queue-upload-image-rescan
+# (artifact-keeper#5942): layered after scan-queue.yml (and queue-off.yml for
+# the in-process phases). Puts fixtures/grype-stub first on the backend's PATH,
+# with a static busybox (copied out of busybox:1.37.0-musl by the oracle) as
+# its interpreter, and sets the local scanner process limit under test.
+#   DTF_GRYPE_STUB_DELAY          `hang`, or seconds before the real grype runs
+#   DTF_SCANNER_PROCESS_TIMEOUT   SCANNER_PROCESS_TIMEOUT_SECS for the backend
+#   DTF_GRYPE_STUB_BUSYBOX        host path of the static busybox
+services:
+  backend:
+    environment:
+      PATH: /opt/grype-stub/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      DTF_GRYPE_STUB_DELAY: "${DTF_GRYPE_STUB_DELAY:?set DTF_GRYPE_STUB_DELAY}"
+      SCANNER_PROCESS_TIMEOUT_SECS: "${DTF_SCANNER_PROCESS_TIMEOUT:?set DTF_SCANNER_PROCESS_TIMEOUT}"
+    volumes:
+      - "${DTF_GRYPE_STUB_BUSYBOX:?set DTF_GRYPE_STUB_BUSYBOX}:/opt/grype-stub/busybox:ro"
+      - "${DTF_DIR:?set DTF_DIR}/harness/tiers/scan-queue-upload-image-rescan/fixtures/grype-stub:/opt/grype-stub/bin/grype:ro"
+    # The bind-mounted stub is unreadable to the container on an
+    # SELinux-enforcing host without this.
+    security_opt:
+      - label=disable

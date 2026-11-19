@@ -1,0 +1,7 @@
+# Tier-local compose override for scan-queue-upload-image-rescan
+# (artifact-keeper#5942): layered after scan-queue.yml to turn the durable scan
+# queue back off, so an on-demand scan runs in-process as by default.
+services:
+  backend:
+    environment:
+      SCAN_QUEUE_ENABLED: "false"
