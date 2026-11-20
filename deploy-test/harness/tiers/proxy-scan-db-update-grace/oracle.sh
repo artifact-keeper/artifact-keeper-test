@@ -122,6 +122,10 @@ esac
 CLI="grype-${LIVE_NUM#v}"
 PREV="${CLI}+db-2000-01-02"
 STALE="${CLI}+db-2000-01-01"
+# Newer than the live build: one another replica recorded an hour ago, one
+# recorded three days ago (a build since rolled back).
+NEWER="${CLI}+db-2999-01-01"
+ROLLED_BACK="${CLI}+db-2999-01-02"
 if [ "$ok" = 1 ] && [ "$acts" = "fail_openfail_closed" ] && [ -n "$LIVE_NUM" ]; then
   pass
 else
@@ -133,7 +137,8 @@ fi
 # the live version and reads the build below it. On a build without the table
 # this fails harmlessly: there is nothing to record.
 psql_q "INSERT INTO proxy_scan_db_versions (scanner_version, first_seen_at) VALUES
-          ('${PREV}', now() - interval '1 day'), ('${STALE}', now() - interval '1 minute')
+          ('${PREV}', now() - interval '1 day'), ('${STALE}', now() - interval '1 minute'),
+          ('${NEWER}', now() - interval '1 hour'), ('${ROLLED_BACK}', now() - interval '3 days')
         ON CONFLICT (scanner_version) DO NOTHING" >/dev/null || true
 
 begin_test "SETUP: first fail_closed pulls grade both jars against the live DB build (dtf-clean 200, log4j-core 403)"
@@ -188,6 +193,26 @@ if [ "$(row_of "$CL_D")" = "clean|${LIVE}" ] && [ "$(row_of "$L4_D")" = "vulnera
 else
   fail "not re-graded within 90 s, or the re-graded verdict is not enforced" \
     "rows clean='$(row_of "$CL_D")' log4j='$(row_of "$L4_D")' (want ${LIVE}); log4j=${l_st}"
+fi
+
+begin_test "FIX #6300: a fail_closed pull of a verdict graded by a NEWER build another replica recorded an hour ago is reused, not re-scanned with the older build"
+age_row "$CL_D" "$NEWER"
+pull "$FC" "$CLEAN"
+if [ "$ST" = "200" ] && [ "$(row_of "$CL_D")" = "clean|${NEWER}" ]; then
+  pass
+else
+  fail "the older replica re-scanned a newer build's verdict (the rolling-upgrade ping-pong)" \
+    "status=${ST} row='$(row_of "$CL_D")'"
+fi
+
+begin_test "CONTROL: a verdict graded by a NEWER build recorded three days ago (rolled back) is re-scanned before the pull is answered"
+age_row "$CL_D" "$ROLLED_BACK"
+pull "$FC" "$CLEAN"
+if [ "$ST" = "200" ] && [ "$(scanned_inline "$CL_D" "$AT")" = "t" ]; then
+  pass
+else
+  fail "a rolled-back newer build must not keep standing for the TTL" \
+    "status=${ST} row='$(row_of "$CL_D")' scanned-inline=$(scanned_inline "$CL_D" "$AT")"
 fi
 
 # ---------------------------------------------------------------------------
