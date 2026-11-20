@@ -195,25 +195,36 @@ else
     "rows clean='$(row_of "$CL_D")' log4j='$(row_of "$L4_D")' (want ${LIVE}); log4j=${l_st}"
 fi
 
-begin_test "FIX #6300: a fail_closed pull of a verdict graded by a NEWER build another replica recorded an hour ago is reused, not re-scanned with the older build"
+begin_test "FIX #6300: a fail_open pull of a verdict graded by a NEWER build another replica recorded an hour ago is decided by it (X-AK-Scan: clean), not re-scanned with the older build"
 age_row "$CL_D" "$NEWER"
-pull "$FC" "$CLEAN"
-if [ "$ST" = "200" ] && [ "$(row_of "$CL_D")" = "clean|${NEWER}" ]; then
+pull "$FO" "$CLEAN"
+if [ "$ST" = "200" ] && [ "$SCAN" = "clean" ] && [ "$(row_of "$CL_D")" = "clean|${NEWER}" ]; then
   pass
 else
-  fail "the older replica re-scanned a newer build's verdict (the rolling-upgrade ping-pong)" \
-    "status=${ST} row='$(row_of "$CL_D")'"
+  fail "the older replica treated a newer build's verdict as stale (the rolling-upgrade ping-pong)" \
+    "status=${ST} X-AK-Scan='${SCAN}' row='$(row_of "$CL_D")'"
 fi
 
-begin_test "CONTROL: a verdict graded by a NEWER build recorded three days ago (rolled back) is re-scanned before the pull is answered"
-age_row "$CL_D" "$ROLLED_BACK"
+begin_test "CONTROL: by default a fail_closed pull of the same newer build's verdict is re-scanned before it is answered, as before 1.13.0"
+age_row "$CL_D" "$NEWER"
 pull "$FC" "$CLEAN"
 if [ "$ST" = "200" ] && [ "$(scanned_inline "$CL_D" "$AT")" = "t" ]; then
   pass
 else
-  fail "a rolled-back newer build must not keep standing for the TTL" \
+  fail "fail_closed at its default must not trust a newer build" \
     "status=${ST} row='$(row_of "$CL_D")' scanned-inline=$(scanned_inline "$CL_D" "$AT")"
 fi
+
+begin_test "CONTROL: a fail_open pull of a verdict graded by a NEWER build recorded three days ago (rolled back) is treated as stale (X-AK-Scan: pending)"
+age_row "$CL_D" "$ROLLED_BACK"
+pull "$FO" "$CLEAN"
+if [ "$ST" = "200" ] && [ "$SCAN" = "pending" ]; then
+  pass
+else
+  fail "a rolled-back newer build must not keep standing for the TTL" \
+    "status=${ST} X-AK-Scan='${SCAN}' row='$(row_of "$CL_D")'"
+fi
+for _ in $(seq 1 60); do [ "$(row_of "$CL_D")" = "clean|${LIVE}" ] && break; sleep 1; done
 
 # ---------------------------------------------------------------------------
 # Phase 2: the operator opts fail_closed in. The same DB update again.

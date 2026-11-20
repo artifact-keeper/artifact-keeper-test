@@ -28,10 +28,12 @@
 #              (X-AK-Scan: clean) with no scan on the request path. Pre-fix
 #              (RED): served `pending`, a scan per pull.
 #   CONTROL    both re-graded in the background; log4j-core then 403.
-#   FIX #6300  a verdict from a NEWER build recorded an hour ago is reused by
-#              a fail_closed pull (Pre-fix: re-scanned with the older build).
+#   FIX #6300  a verdict from a NEWER build recorded an hour ago decides a
+#              fail_open pull (clean). Pre-fix: treated as stale (pending).
+#   CONTROL    the same verdict is re-scanned inline by a fail_closed pull
+#              (fail_closed at its default trusts no other build).
 #   CONTROL    one from a NEWER build recorded three days ago (rolled back)
-#              is re-scanned inline.
+#              is treated as stale by a fail_open pull (pending).
 # Phase 2, the backend recreated with the fail_closed opt-in
 # (fixtures/fail-closed-grace.yml):
 #   FIX #6300  the clean jar's fail_closed pull is 200 with no scan on the
