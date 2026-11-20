@@ -286,12 +286,9 @@ else
 fi
 
 begin_test "Packages API lists only the groupId:artifactId package (no notes.txt / myDomain / _remote.repositories)"
-cat_names=""
-for _ in $(seq 1 10); do
-  cat_names="$(cat_packages)"
-  [[ " ${cat_names} " == *" ${CAT_PKG} "* ]] && break
-  sleep 1
-done
+cat_pkg_listed() { [[ " $(cat_packages) " == *" ${CAT_PKG} "* ]]; }
+wait_until "${CAT_PKG} listed in ${CAT_REPO}" 10 cat_pkg_listed || true
+cat_names="$(cat_packages)"
 if [ "$cat_names" = "$CAT_PKG" ]; then
   pass
 else
