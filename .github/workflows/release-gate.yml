@@ -4073,6 +4073,13 @@ jobs:
           # #5856). Same 1.12.0-only rule. Required.
           - group: fixes-1.12.0-backup-fresh-server
             tiers: backup-restore-fresh-server
+          # 1.12.4 (artifact-keeper#5643): a PyPI Remote's proxy 502 names the
+          # upstream's status in X-AK-Upstream-Status, and PEP 691
+          # negotiation reads q-values and the `latest` alias
+          # (pypi-remote-index-path, upstreams.mock-files on
+          # 172.16.<slot>.76). Red on 1.12.3. Required.
+          - group: fixes-1.12.4-pypi
+            tiers: pypi-remote-index-path
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}
