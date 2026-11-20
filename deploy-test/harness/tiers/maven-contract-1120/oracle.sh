@@ -309,7 +309,7 @@ aput "$R_CAT" "_remote.repositories" "#NOTE: This is a Maven Resolver internal i
 widget-1.0.jar>central="
 note "API PUT _remote.repositories: ${CODE}"
 is_2xx "$CODE" || fail_g "the _remote.repositories upload answered ${CODE}: ${BODY:0:200}"
-sleep 2
+sleep 2 # sleep-ok: absence check (no package may appear), cannot poll; the GAV control above proves indexing completes within the poll window
 pkg_names
 note "packages (${CODE}): '${NAMES}'"
 [ "$CODE" = "200" ] || fail_g "the packages API answered ${CODE}"
