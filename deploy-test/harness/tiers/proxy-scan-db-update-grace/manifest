@@ -1,0 +1,39 @@
+# DTF tier manifest: proxy-scan-db-update-grace  (artifact-keeper#6300)
+# Profile-set: filesystem + the mock-scan-formats upstream (172.16.<slot>.72).
+# Verdicts come from the backend image's bundled Grype and its pre-seeded DB:
+# no scanner sidecar, no internet, so the tier can gate.
+#
+# WHAT IT GUARDS (#6300): a stored proxy verdict carries the scanner version it
+# was graded with, and since #3287 that string includes the vulnerability-DB
+# build (`grype-X.Y.Z+db-YYYY-MM-DD`). Every DB update therefore made every
+# stored verdict stale at once, and the next pull of each cached package was
+# scanned again on the request path under fail_closed (the client waited or got
+# a 423), all in the same hour. Since 1.13.0, within PROXY_SCAN_DB_GRACE_HOURS
+# (default 6) of the fleet first seeing a new build, a verdict the same scanner
+# binary graded against the PREVIOUS build decides the pull and the pull
+# re-grades the bytes in the background.
+#
+# The DB bump is simulated from the stored side: the tier records an older
+# build of the live binary as seen first (`proxy_scan_db_versions`, a day
+# earlier), then rewrites the stored verdicts' scanner_version to it. The
+# known-CVE jar's row is also rewritten `clean`, as a build that did not yet
+# know the advisory would have graded it.
+#
+#   FIX #6300  the clean jar's pull is 200 and its row still carries the older
+#              build when the response returns: no scan on the request path.
+#              Pre-fix (RED): the pull re-scans inline and the row carries the
+#              live build before the response.
+#   FIX #6300  the CVE jar's pull, also decided by the previous build's row,
+#              is not blocked or scanned synchronously (200, row unchanged).
+#              Pre-fix (RED): 403 after an inline re-scan.
+#   CONTROL    both rows are re-graded in the background against the live
+#              build, and the CVE jar's next pull is then 403 (both images:
+#              a vulnerable artifact is blocked once re-graded).
+#   CONTROL    a verdict from another scanner BINARY, and one two DB builds
+#              behind, are still re-scanned before the pull is answered (both
+#              images).
+PROFILES="storage.filesystem upstreams.mock-scan-formats"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+COVERS="6300"

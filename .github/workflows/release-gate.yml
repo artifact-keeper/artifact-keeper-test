@@ -4073,6 +4073,18 @@ jobs:
           # #5856). Same 1.12.0-only rule. Required.
           - group: fixes-1.12.0-backup-fresh-server
             tiers: backup-restore-fresh-server
+          # 1.13.0 (artifact-keeper#6300): a vulnerability-DB update does not
+          # re-scan every cached proxy package on its next pull. Within the
+          # DB-update grace a fail_closed Maven pull is decided by the previous
+          # build's verdict without a scan on the request path, the pull
+          # re-grades the jar in the background, and log4j-core is blocked
+          # once re-graded; a binary upgrade and a verdict two builds behind
+          # still re-scan inline (proxy-scan-db-update-grace;
+          # upstreams.mock-scan-formats, bundled Grype, under a minute). Red
+          # on every image before 1.13.0, NOT ON THIS LINE on a 1.12.x
+          # candidate. Required.
+          - group: perf-1.13.0-scan
+            tiers: proxy-scan-db-update-grace
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}
