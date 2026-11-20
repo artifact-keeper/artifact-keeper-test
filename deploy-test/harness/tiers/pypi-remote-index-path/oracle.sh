@@ -48,7 +48,7 @@ get(){
 mkrepo(){ # <key> <type> [upstream] [index path or "-"]: HTTP code on stdout
   curl -s -o "$W/mk.body" -w '%{http_code}' --max-time 30 -X POST "${BASE}/api/v1/repositories" \
     -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg k "$1" --arg t "$2" --arg u "${3:-}" --arg ip "${4:--}" \
+    -d "$(jq -nc --arg k "$1" --arg t "$2" --arg u "${3:-}" --arg ip "${4--}" \
       '{key:$k,name:$k,format:"pypi",repo_type:$t,is_public:true}
        + (if $u == "" then {} else {upstream_url:$u} end)
        + (if $ip == "-" then {} else {pypi_upstream_index_path:$ip} end)')" 2>/dev/null || echo 000
@@ -105,6 +105,7 @@ note "flat Remote: ${CODE} ${CT} ($(printf '%s' "$BODY" | grep -c "${PROJ}-1.0-p
 [ "$CODE" = "200" ] && grep -q "${PROJ}-1.0-py3-none-any.whl" <<<"$BODY" || fail_g "the flat-layout Remote answered ${CODE}: ${BODY:0:160}"
 get "/pypi/${R_DEF}/simple/${PROJ}/" "text/html"
 note "default Remote: ${CODE} body '${BODY:0:80}'"
+note "upstream requests seen: $(curl -s --max-time 5 "${MOCK}/__log" 2>/dev/null | grep -F "/idx/" | tail -4 | tr '\n' ';')"
 [ "$CODE" = "502" ] || fail_g "the default-index-path Remote answered ${CODE}, not 502"
 [ "$BODY" = "Failed to fetch from upstream" ] || fail_g "the 502 body changed: '${BODY:0:120}'"
 finish_case "flat index or default-path 502"
