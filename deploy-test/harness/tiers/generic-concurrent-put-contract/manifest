@@ -1,4 +1,4 @@
-# DTF tier manifest: generic-concurrent-put-contract (artifact-keeper#4832)
+# DTF tier manifest: generic-concurrent-put-contract (artifact-keeper#4832, #6317)
 # Profile-set: filesystem / single.
 #
 # THE CONTRACT
@@ -20,8 +20,31 @@
 #
 # RED image: ak-backend:1.11.0 to 1.11.3. GREEN: an image with the #4832 fix.
 #
+# #6317  An upload does more database work after its artifact row commits.
+#        Under a saturated pool that work failed on the acquire timeout and
+#        the handler answered 503 POOL_EXHAUSTED for an upload that was
+#        stored, so the client's retry got 409. PyPI's failing step was the
+#        `pypi` metadata write, which left a stored package without the
+#        metadata the simple index and JSON API serve. The generic PUT failed
+#        on reads that only fill the response (download count, revision).
+#        Fixed: PyPI metadata commits with the row, and the generic PUT's
+#        response-only reads fall back to defaults.
+#        THE PRIMITIVE: pool exhaustion cannot be aimed at one step, so each
+#        FIX case injects a database fault in this slot's own Postgres that
+#        fails exactly that step, then removes it (an EXIT trap removes any
+#        left behind): a trigger that refuses this run's `pypi` metadata row,
+#        and renaming `download_statistics` around one generic PUT.
+#        (FIX)     PyPI: an upload answered with an error stored nothing, and
+#                  the retry is 200 with the row, its metadata and a simple
+#                  index entry. RED on main: the error left a live row
+#                  without metadata and the retry was 409.
+#        (FIX)     generic: the PUT is 201 with its checksum and the bytes
+#                  are stored. RED on main: 500 for a stored artifact.
+#        (CONTROL) without a fault: generic 201 with download_count 0, and a
+#                  duplicate PyPI upload is still refused.
+#
 # RATE_LIMIT_ENABLED=false: 16 concurrent uploads plus ~25 calls back to back.
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
-COVERS="4832"
+COVERS="4832 6317"
 RATE_LIMIT_ENABLED="false"
