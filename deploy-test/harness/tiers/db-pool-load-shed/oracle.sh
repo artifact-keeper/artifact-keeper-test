@@ -155,10 +155,10 @@ if [ "$C" != "503" ]; then
   fail "overflow download returned ${C}, expected 503" "$EV"
 elif [ "$(retry_after)" != "1" ]; then
   fail "503 without Retry-After: 1" "$EV"
-elif [ "$(jq -r '.code // empty' "${WORK}/body" 2>/dev/null)" != "POOL_EXHAUSTED" ]; then
-  fail "503 body is not {code: POOL_EXHAUSTED}" "$EV"
 elif ! lt "$T" "$FAST_SHED_SECS"; then
   fail "503 took ${T}s: the request queued to the pool's acquire timeout instead of being shed" "$EV"
+elif [ "$(jq -r '.code // empty' "${WORK}/body" 2>/dev/null)" != "POOL_EXHAUSTED" ]; then
+  fail "503 body is not {code: POOL_EXHAUSTED}" "$EV"
 else
   echo "  503 POOL_EXHAUSTED in ${T}s"
   pass
