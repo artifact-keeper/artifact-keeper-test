@@ -4233,6 +4233,17 @@ jobs:
   #              candidate's adapter (inputs.scanner_adapter_tag, default
   #              backend_tag), not the published :1. New in 1.12.0; promote
   #              it after it holds green on two candidates.
+  #   sbom-license-trivy-1.12.4 (sbom-license-expression-trivy):
+  #     reason:  scanners.trivy, so the adapter downloads the Trivy DB from
+  #              ghcr, like scan-grading-trivy-1.12.3 below; it cannot run
+  #              in dtf-gate, which sets no adapter image, DB repository or
+  #              DB credentials. Its red/green axis is the backend
+  #              (artifact-keeper#5629). New in 1.12.4; promote it after it
+  #              holds green on two candidates.
+  #     owner:   release-engineering
+  #     expires: 2027-02-01 — on/after this date either promote the leg
+  #              into dtf-gate (with the adapter env it needs) or
+  #              re-justify the waiver in a PR.
   #   scan-grading-trivy-1.12.3 (scan-grading-os-and-jar-trivy):
   #     reason:  scanners.trivy (the oracle starts the adapter), so the
   #              adapter downloads the Trivy DB from ghcr, like supply-chain.
@@ -4353,6 +4364,13 @@ jobs:
           # on backends before #6236. Backend axis, so the published adapter :1.
           - group: scan-grading-trivy-1.12.3
             tiers: scan-grading-os-and-jar-trivy
+          # 1.12.4 (artifact-keeper#5629): with the Trivy filesystem scanner
+          # enabled, an SBOM keeps a compound license as a CycloneDX
+          # expression instead of Trivy's LicenseRef- wrapping of it. The
+          # sbom-license-expression tier (dtf-gate) has no adapter, so it
+          # cannot see this. Backend axis, so the published adapter :1.
+          - group: sbom-license-trivy-1.12.4
+            tiers: sbom-license-expression-trivy
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

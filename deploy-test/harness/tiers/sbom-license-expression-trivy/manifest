@@ -1,0 +1,38 @@
+# DTF tier manifest: sbom-license-expression-trivy   ADVISORY (needs internet)
+#   (artifact-keeper#5629, 1.12.4)
+# Profile-set: filesystem + scanners.trivy (the scanner adapter, image
+# $SCANNER_ADAPTER_IMAGE), so the backend registers the Trivy filesystem
+# scanner on the adapter beside its bundled Grype. The adapter downloads the
+# Trivy DB from TRIVY_DB_REPOSITORY on its first scan (warmed in setup).
+#
+# THE BUG
+# #5629  With the Trivy filesystem scanner enabled (a standard Helm install
+#        has one), a package-lock.json entry licensed `MIT AND PSF-2.0` came
+#        out of the CycloneDX SBOM as `license.name:
+#        LicenseRef-MIT-AND-PSF-2.0` instead of `{"expression": ...}` (#3866),
+#        and `Public Domain` as `LicenseRef-Public-Domain`. Both scanners
+#        catalog the package: Trivy stores a license it cannot read as one
+#        SPDX id wrapped as `LicenseRef-<sanitised>` (#1152), Grype stores the
+#        text. The SBOM read kept whichever row the query returned first, and
+#        `LicenseRef-...` sorts before `MIT ...` and `Public ...`.
+#        `Apache-2.0 WITH LLVM-exception` sorts first and survived. Fixed: a
+#        LicenseRef that is exactly the wrapped form of the other scanner's
+#        text gives way to that text. Licenses that differ are never swapped.
+#
+# THE GATES
+#   (CONTROL) every image: both scans complete; the Trivy filesystem scan
+#     stored dtf-compound as LicenseRef-MIT-AND-PSF-2.0 and Grype as the
+#     text (without both rows the FIX case proves nothing); a single SPDX id
+#     stays license.id and `Apache-2.0 WITH LLVM-exception` is an expression.
+#   (FIX) #5629: dtf-compound is {"expression":"MIT AND PSF-2.0"} and dtf-free
+#     is {"license":{"name":"Public Domain"}}. RED before the fix.
+#
+# The sbom-license-expression tier (dtf-gate) gates #3866 with Grype alone;
+# it has no adapter, which is why it never saw this.
+#
+# RATE_LIMIT_ENABLED=false: requests back to back.
+COVERS="5629"
+PROFILES="storage.filesystem scanners.trivy"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+NEEDS_INTERNET="true"
