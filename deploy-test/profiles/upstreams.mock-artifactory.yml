@@ -49,7 +49,9 @@ services:
       #            two listings is where a RUNNING dry run is observed
       #   *-full : an uninterrupted control migration (fast)
       #   *-race : the cancel-race gate, small and fast
-      MOCK_REPOS: "dtfmig-int:24,dtfmig-drya:6,dtfmig-dryb:6,dtfmig-full:6,dtfmig-race:2"
+      #   *-claim: the lost-claim gate (artifact-keeper#6305), fast; the
+      #            oracle throttles that job itself
+      MOCK_REPOS: "dtfmig-int:24,dtfmig-drya:6,dtfmig-dryb:6,dtfmig-full:6,dtfmig-race:2,dtfmig-claim:6"
       # Slow to LIST (the steering knob): the interrupt job, so a resumed run
       # can be re-paused while it waits for its first page; and both dry-run
       # repositories, so a RUNNING dry run can be observed between them.

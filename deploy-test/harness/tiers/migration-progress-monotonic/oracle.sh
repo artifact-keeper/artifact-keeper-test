@@ -50,6 +50,8 @@ SRC_DRYA="dtfmig-drya"    # 6 files, slow  -- dry run, first repository
 SRC_DRYB="dtfmig-dryb"    # 6 files, slow  -- dry run, second repository
 SRC_FULL="dtfmig-full"    # 6 files, fast  -- the uninterrupted control
 SRC_RACE="dtfmig-race"    # 2 files, fast  -- the cancel-race gate
+SRC_CLAIM="dtfmig-claim"  # 6 files, fast  -- the lost-claim gate (#6305)
+CLAIM_FILES=6
 FULL_FILES=6
 FULL_BYTES=3072           # 6 x MOCK_FILE_BYTES(512)
 DRY_FILES=12              # drya + dryb
@@ -150,7 +152,7 @@ fi
 
 SRC_LIST="$(aj GET "/api/v1/migrations/connections/${CONN_ID}/repositories")"
 MISSING=""
-for r in "$SRC_INT" "$SRC_DRYA" "$SRC_DRYB" "$SRC_FULL" "$SRC_RACE"; do
+for r in "$SRC_INT" "$SRC_DRYA" "$SRC_DRYB" "$SRC_FULL" "$SRC_RACE" "$SRC_CLAIM"; do
   echo "$SRC_LIST" | jq -e --arg k "$r" '[.items[]?.key] | index($k)' >/dev/null 2>&1 \
     || MISSING="${MISSING} ${r}"
 done
@@ -430,5 +432,71 @@ else
 total_bytes_transferred=${FR_B} (want ${FULL_BYTES})" \
     "$(echo "$FULL_REPORT" | jq -c '.summary' 2>/dev/null || echo "$FULL_REPORT" | head -c 400)"
 fi
+
+# ===========================================================================
+# GATE 6 (FIX #6305) — a worker that lost its claim on the job stops
+#
+# Since #6295 a running job carries a worker claim (`claim_token`, a 300 s
+# TTL the worker renews every 100 s). When the claim lapses the janitor
+# pauses the job and `/resume` hands it to a new worker under a new token.
+# The old worker's renewal then reports the claim lost, but the worker threw
+# that signal away (`let (_renewal, _lost)`) and kept migrating, alongside the
+# new owner, for as long as the row still read `running`.
+#
+# The oracle produces the takeover directly: once the job is moving, it
+# rewrites the row's claim to another (fictitious) worker, exactly the row a
+# resume elsewhere leaves behind, with a far-off expiry so the janitor leaves
+# it alone. A 30 s throttle between artifacts keeps the old worker busy past
+# its first renewal (~100 s after the start). Fixed: that renewal finds the
+# claim gone, the worker is cancelled at once and writes nothing, so the row
+# stays `running` under the new owner with the transfers stopped short of the
+# end. Vulnerable: the worker migrates every artifact and stamps the job that
+# another worker owns `completed`.
+# ===========================================================================
+CLAIM_THROTTLE_MS=30000
+JOB_CLAIM="$(make_job "$SRC_CLAIM" false "$CLAIM_THROTTLE_MS")"
+CLAIM_START="$(ac POST "/api/v1/migrations/${JOB_CLAIM}/start")"
+CLAIM_FIRST=0
+for ((i = 0; i < 25; i++)); do
+  CLAIM_FIRST="$(job_field "$JOB_CLAIM" completed_items)"; CLAIM_FIRST="${CLAIM_FIRST:-0}"
+  [ "$CLAIM_FIRST" -ge 1 ] && break
+  sleep 1
+done
+OTHER_OWNER="dtf-other-replica:1:6305"
+TAKEN="$(psql_ak "WITH t AS (UPDATE migration_jobs SET claimed_by = '${OTHER_OWNER}', \
+  claim_token = gen_random_uuid(), claim_expires_at = NOW() + interval '1 hour' \
+  WHERE id = '${JOB_CLAIM}' AND status = 'running' AND claim_token IS NOT NULL RETURNING 1) \
+  SELECT count(*) FROM t;")"
+CLAIM_TRACE=""; CLAIM_ST="?"; CLAIM_C=0
+if [ "$TAKEN" = "1" ]; then
+  # Long enough for the vulnerable worker to finish (6 x 30 s) and for the
+  # fixed one to have renewed, been cancelled and stayed stopped.
+  for ((i = 0; i < 230; i += 10)); do
+    R="$(job_row "$JOB_CLAIM")"
+    CLAIM_ST="$(jqf "$R" '.status // "?"' '?')"; CLAIM_C="$(jqf "$R" '.completed_items // 0' 0)"
+    CLAIM_TRACE="${CLAIM_TRACE}
+  t+${i}s status=${CLAIM_ST} completed_items=${CLAIM_C}"
+    case "$CLAIM_ST" in completed|completed_with_errors|failed|cancelled) break ;; esac
+    sleep 10
+  done
+fi
+CLAIM_OWNER="$(psql_ak "SELECT claimed_by FROM migration_jobs WHERE id = '${JOB_CLAIM}';")"
+CLAIM_LIVE="$(psql_ak "SELECT count(*) FROM migration_items WHERE job_id = '${JOB_CLAIM}' AND status = 'completed';")"
+
+begin_test "FIX #6305: a migration worker that lost its claim stops and leaves the job to its new owner"
+if [ "$CLAIM_START" != "200" ] || [ "${CLAIM_FIRST:-0}" -lt 1 ] || [ "$TAKEN" != "1" ]; then
+  infra_fail "start=${CLAIM_START} first_items=${CLAIM_FIRST} takeover_rows=${TAKEN}; the job was never running \
+under a claim the oracle could take over" "$(job_row "$JOB_CLAIM" | head -c 400)"
+elif [ "$CLAIM_ST" = "running" ] && [ "${CLAIM_C:-0}" -lt "$CLAIM_FILES" ] \
+     && [ "${CLAIM_LIVE:-0}" -lt "$CLAIM_FILES" ] && [ "$CLAIM_OWNER" = "$OTHER_OWNER" ]; then
+  pass
+else
+  fail "WORKER KEPT RUNNING AFTER LOSING ITS CLAIM (#6305): another worker took the job over, but the original \
+worker went on to status=${CLAIM_ST} with ${CLAIM_C}/${CLAIM_FILES} items (${CLAIM_LIVE} migration_items completed) \
+and the claim now reads '${CLAIM_OWNER}' (want '${OTHER_OWNER}', status running, fewer than ${CLAIM_FILES} items). \
+Its claim renewal reported the loss within ~100 s, and the worker must stop on that signal and write nothing \
+onto a row that is no longer its own." "samples:${CLAIM_TRACE}"
+fi
+ac POST "/api/v1/migrations/${JOB_CLAIM}/cancel" >/dev/null
 
 end_suite
