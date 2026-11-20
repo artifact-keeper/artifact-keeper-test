@@ -6,8 +6,9 @@
 #   meta failure names its cause), #5399 (concurrent same-version publishes),
 #   #5403 (stale unpublish), #5676 (retention deletes retract dist-tags), #5724
 #   (derived latest by SemVer precedence), #5725 (package-name rules), and
-#   1.12.4's #5779 (deletes in yarn/pnpm Locals invalidate the Virtual packument). See the
-#   manifest for each bug and the gates.
+#   1.12.4's #5779 (deletes in yarn/pnpm Locals invalidate the Virtual packument)
+#   and #5634 (ping/whoami answered locally, the Local 501 not logged at ERROR).
+#   See the manifest for each bug and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
 # RELEASE_GATE=1, JUNIT_OUTPUT_DIR, COMMON_SH.
@@ -182,6 +183,54 @@ note "cache-only search: ${CODE} ${BODY:0:200}"
 [ "$CODE" = "404" ] || fail_g "the cache-only search answered ${CODE}, not 404"
 grep -q "is cache-only" <<<"$BODY" && grep -q "$CO" <<<"$BODY" || fail_g "the message does not name ${CO}'s cache-only mode"
 finish_case "a cache-only Remote's /-/ refusal does not name the mode"
+
+# =============================================================================
+# #5634: /-/ping and /-/whoami are answered here on every repository type
+# =============================================================================
+# meta_get <path> [-]: sets CODE/BODY (admin bearer; "-" sends no credential).
+meta_get(){
+  local -a ca=(-s -o "${W}/body" -w '%{http_code}' --max-time 30)
+  [ "${2:-}" = "-" ] || ca+=(-H "Authorization: Bearer ${TOK}")
+  : >"${W}/body"
+  CODE="$(curl "${ca[@]}" "${BASE}$1" 2>/dev/null)"; [ -n "$CODE" ] || CODE=000
+  BODY="$(cat "${W}/body" 2>/dev/null || true)"
+}
+begin_test "FIX #5634: npm whoami and npm ping on a Virtual over a reachable Remote are answered by Artifact Keeper, not forwarded upstream"
+reset_case
+meta_get "/npm/${SH_V}/-/whoami"
+note "virtual whoami (admin): ${CODE} ${BODY:0:160}"
+[ "$CODE" = "200" ] && [ "$(jqr -c . <<<"$BODY")" = '{"username":"admin"}' ] \
+  || fail_g "whoami on the Virtual answered ${CODE} ${BODY:0:120}, not 200 {\"username\":\"admin\"}"
+meta_get "/npm/${SH_V}/-/whoami" -
+note "virtual whoami (anonymous): ${CODE} ${BODY:0:120}"
+[ "$CODE" = "401" ] || fail_g "anonymous whoami on the Virtual answered ${CODE}, not 401"
+meta_get "/npm/${SH_V}/-/ping?write=true"
+note "virtual ping: ${CODE} ${BODY:0:120}"
+[ "$CODE" = "200" ] && [ "$(jqr -c . <<<"$BODY")" = '{}' ] || fail_g "ping on the Virtual answered ${CODE} ${BODY:0:120}, not 200 {}"
+meta_get "/npm/${SH_R}/-/whoami"
+note "remote whoami (admin): ${CODE} ${BODY:0:160}"
+[ "$CODE" = "200" ] && [ "$(jqr -c . <<<"$BODY")" = '{"username":"admin"}' ] \
+  || fail_g "whoami on the Remote answered ${CODE} ${BODY:0:120}, not 200 {\"username\":\"admin\"}"
+WHO="$( { npmrc "$SH_V" "/tmp/who-${SUF}"; echo "cd /tmp/who-${SUF} && npm whoami --userconfig .npmrc"; } | npm_sh)"
+note "real npm whoami through the Virtual: ${WHO:0:200}"
+[ "$(printf '%s\n' "$WHO" | tail -1 | tr -d '\r')" = "admin" ] || fail_g "the real npm whoami through the Virtual printed '${WHO:0:120}', not 'admin'"
+finish_case "ping/whoami on a Remote or Virtual are forwarded upstream"
+
+begin_test "FIX #5634: a Local repository's documented /-/v1/search 501 is not logged as an ERROR 'response failed'"
+reset_case
+BACKEND_CTR="ak-dtf${DTF_SLOT}-backend"
+since="$(date +%s)"; sleep 1
+req GET "/npm/${L}/-/v1/search?text=dtf5634"
+code501="$CODE"
+sleep 2
+docker logs --since "$since" "$BACKEND_CTR" >"${W}/log5634" 2>&1 || true
+seen="$(grep -c 'dtf5634' "${W}/log5634" 2>/dev/null || true)"
+errs="$(grep 'response failed' "${W}/log5634" 2>/dev/null | grep -c '501' || true)"
+note "local search -> ${code501}; log lines naming the request: ${seen:-0}; ERROR 'response failed' lines for a 501: ${errs:-0}"
+[ "$code501" = "501" ] || fail_g "the Local search answered ${code501}, not 501"
+[ "${seen:-0}" -ge 1 ] 2>/dev/null || fail_g "the backend log has no line for the request (log window or level wrong; the case proves nothing)"
+[ "${errs:-0}" = "0" ] || fail_g "the expected 501 was logged as an ERROR 'response failed' (${errs} line(s)): $(grep 'response failed' "${W}/log5634" | head -1 | cut -c1-240)"
+finish_case "the documented Local 501 is logged as a server failure"
 
 # =============================================================================
 # #5399: concurrent publishes of one version
