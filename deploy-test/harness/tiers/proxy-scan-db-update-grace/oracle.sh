@@ -181,7 +181,8 @@ else
 fi
 
 begin_test "CONTROL: fail_open: both jars are re-graded against the live build, and log4j-core is then blocked (403)"
-wait_regraded; pull "$FO" "$LOG4J"; l_st="$ST"
+wait_regraded || true
+pull "$FO" "$LOG4J"; l_st="$ST"
 if [ "$(row_of "$CL_D")" = "clean|${LIVE}" ] && [ "$(row_of "$L4_D")" = "vulnerable|${LIVE}" ] && [ "$l_st" = "403" ]; then
   pass
 else
@@ -216,7 +217,7 @@ else
 fi
 
 begin_test "CONTROL: both jars are re-graded against the live build, and log4j-core is blocked once re-graded (403)"
-wait_regraded
+wait_regraded || true
 pull "$FC" "$LOG4J"; l_st="$ST"
 pull "$FC" "$CLEAN"; c_st="$ST"
 if [ "$(row_of "$CL_D")" = "clean|${LIVE}" ] && [ "$(row_of "$L4_D")" = "vulnerable|${LIVE}" ] \
