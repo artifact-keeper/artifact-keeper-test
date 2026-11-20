@@ -6,7 +6,8 @@
 #                                    stays ready (artifact-keeper#4182)
 # =============================================================================
 # run.sh has stood up `storage.filesystem limits.db-pool` with
-# DATABASE_MAX_CONNECTIONS=4, DATABASE_MIN_CONNECTIONS=0 and
+# DATABASE_MAX_CONNECTIONS=4, DATABASE_MIN_CONNECTIONS=0,
+# DATABASE_REQUEST_CONCURRENCY=4, DATABASE_REQUEST_ACQUIRE_WAIT_MS=500 and
 # RATE_LIMIT_ENABLED=false, and exported BASE_URL, DB_CONTAINER, ADMIN_USER,
 # ADMIN_PASS, RUN_ID, RELEASE_GATE=1, JUNIT_OUTPUT_DIR, COMMON_SH.
 #
@@ -19,7 +20,7 @@
 #
 # Gates (see the manifest for the full prose):
 #   (CONTROL) before / during / after the window, true on BOTH images.
-#   (FIX #4182) the overflow request: 503 POOL_EXHAUSTED + Retry-After: 1 in
+#   (FIX #4182) the overflow request: 503 POOL_EXHAUSTED + Retry-After in
 #             under 2.5 s (main: after the 5 s acquire timeout).
 #   (FIX #4182) /readyz during the window: 200 (main: 503 not_ready).
 #   (FIX #4182) ak_db_requests_shed_total >= 1 after the window (main: absent).
@@ -148,13 +149,13 @@ else
   end_suite
 fi
 
-begin_test "FIX #4182: overflow request (anonymous download) -> 503 POOL_EXHAUSTED + Retry-After: 1 in < ${FAST_SHED_SECS}s"
+begin_test "FIX #4182: overflow request (anonymous download) -> 503 POOL_EXHAUSTED + Retry-After in < ${FAST_SHED_SECS}s"
 read -r C T <<<"$(req GET "$DL_URL")"
 EV="$(evidence "$C" "$T")"
 if [ "$C" != "503" ]; then
   fail "overflow download returned ${C}, expected 503" "$EV"
-elif [ "$(retry_after)" != "1" ]; then
-  fail "503 without Retry-After: 1" "$EV"
+elif ! [[ "$(retry_after)" =~ ^[1-9][0-9]*$ ]]; then
+  fail "503 without a Retry-After in whole seconds" "$EV"
 elif ! lt "$T" "$FAST_SHED_SECS"; then
   fail "503 took ${T}s: the request queued to the pool's acquire timeout instead of being shed" "$EV"
 elif [ "$(jq -r '.code // empty' "${WORK}/body" 2>/dev/null)" != "POOL_EXHAUSTED" ]; then

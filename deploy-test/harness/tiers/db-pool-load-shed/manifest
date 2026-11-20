@@ -16,10 +16,10 @@
 # THE FIX (1.13.0)
 #   * a router-wide admission gate, before any auth or handler work: at most
 #     DATABASE_REQUEST_CONCURRENCY requests run their handler phase while the
-#     pool is busy; past it a request waits at most
-#     DATABASE_REQUEST_ACQUIRE_WAIT_MS (500 ms) for a slot and is then
-#     answered the same 503 POOL_EXHAUSTED + Retry-After: 1 at once, counted
-#     in ak_db_requests_shed_total;
+#     pool is busy; past it a request queues at most
+#     DATABASE_REQUEST_ACQUIRE_WAIT_MS for a slot (or is shed at once when
+#     the predicted backlog is longer) and is answered the same
+#     503 POOL_EXHAUSTED + Retry-After, counted in ak_db_requests_shed_total;
 #   * /health and /readyz read the database through their own one-connection
 #     pool (DATABASE_PROBE_CONNECTIONS=1), so a saturated request pool does
 #     not fail them.
@@ -28,7 +28,8 @@
 # The backend runs with DATABASE_MAX_CONNECTIONS=4 and
 # DATABASE_REQUEST_CONCURRENCY=4 (the shipped default is four slots per
 # connection; one per connection makes "every slot held" reachable with a
-# handful of requests, and main ignores the variable). The oracle opens its own
+# handful of requests) and DATABASE_REQUEST_ACQUIRE_WAIT_MS=500 (shipped
+# default 2000; 500 keeps the fast-vs-5 s split wide). Main ignores both. The oracle opens its own
 # psql session in this slot's Postgres container that takes ACCESS EXCLUSIVE
 # on `repositories` and sleeps, then issues 6 admin GET /api/v1/repositories
 # ("slow requests"): each takes a pooled connection and blocks on the lock,
@@ -49,8 +50,8 @@
 #             of 20 parallel downloads all answer 200, and the slow requests
 #             that held the connections complete.
 #   (FIX #4182) during the window the overflow request (the anonymous
-#             download) answers 503 {code: POOL_EXHAUSTED} + Retry-After: 1
-#             in under 2.5 s. RED on main: the same 503 only after the 5 s
+#             download) answers 503 {code: POOL_EXHAUSTED} + a Retry-After
+#             of whole seconds in under 2.5 s. RED on main: the same 503 only after the 5 s
 #             acquire timeout.
 #   (FIX #4182) during the window /readyz answers 200 ready (database
 #             healthy). RED on main: 503 not_ready, "Database unreachable:
@@ -67,3 +68,4 @@ COVERS="4182"
 export DATABASE_MAX_CONNECTIONS="4"
 export DATABASE_MIN_CONNECTIONS="0"
 export DATABASE_REQUEST_CONCURRENCY="4"
+export DATABASE_REQUEST_ACQUIRE_WAIT_MS="500"
