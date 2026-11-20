@@ -1,0 +1,27 @@
+# =============================================================================
+# profiles/limits.db-pool.yml: pass the database pool's sizing and admission
+# knobs (artifact-keeper#4549, #4182) through to the backend
+# =============================================================================
+# DATABASE_MAX_CONNECTIONS / DATABASE_MIN_CONNECTIONS size the request pool,
+# DATABASE_ACQUIRE_TIMEOUT_SECS bounds a queued acquire,
+# DATABASE_REQUEST_ACQUIRE_WAIT_MS is how long a request waits at the
+# admission gate for a permit and a connection when every connection is in
+# use (1.13), DATABASE_REQUEST_CONCURRENCY caps the requests admitted while
+# the pool is saturated (1.13), and
+# DATABASE_PROBE_CONNECTIONS sizes the separate pool /health and /readyz read
+# the database through (1.13).
+#
+# A tier sets the values by exporting them from its manifest. Unset, each is
+# passed as an empty string, which the backend treats as unset (an
+# unparseable value takes the default), so stacking this overlay without
+# exporting anything leaves the defaults in force.
+# =============================================================================
+services:
+  backend:
+    environment:
+      DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-}
+      DATABASE_MIN_CONNECTIONS: ${DATABASE_MIN_CONNECTIONS:-}
+      DATABASE_ACQUIRE_TIMEOUT_SECS: ${DATABASE_ACQUIRE_TIMEOUT_SECS:-}
+      DATABASE_REQUEST_ACQUIRE_WAIT_MS: ${DATABASE_REQUEST_ACQUIRE_WAIT_MS:-}
+      DATABASE_REQUEST_CONCURRENCY: ${DATABASE_REQUEST_CONCURRENCY:-}
+      DATABASE_PROBE_CONNECTIONS: ${DATABASE_PROBE_CONNECTIONS:-}
