@@ -81,6 +81,13 @@
 # RATE_LIMIT_ENABLED=false: the oracle polls job state once a second for
 # several minutes across five jobs; the base default (ON) would throttle the
 # poll and turn a progress sample into a 429.
+#
+# FIX #6305 (artifact-keeper#6305): a worker whose job claim was taken over by
+# another worker must stop on its renewal's loss signal and write nothing onto
+# the row. The oracle rewrites the claim with psql once the job is moving and
+# throttles the job past the first renewal (~100 s); the vulnerable image
+# finishes the migration and stamps the taken-over job `completed`.
+COVERS="6305"
 PROFILES="storage.filesystem upstreams.mock-artifactory"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
