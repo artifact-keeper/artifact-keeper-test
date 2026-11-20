@@ -30,11 +30,24 @@
 #             bytes from the Remote and the Virtual; the metadata .sha1
 #             matches the metadata body.
 #
+# #6284 (GA-level metadata while dating is in progress): two more GAs on the
+# mock list 150 old versions and one young one, more than the 64 POMs one
+# listing dates. Back to back, the Remote's maven-metadata.xml, its .sha1,
+# its .md5 and a second download, and the same through a Virtual over a
+# private gated Remote (a private member turns the 60 s merge cache off):
+#   (FIX)     the .sha1 and .md5 hash the body just served, and the two
+#             downloads are identical. RED on 1.12.3/main: every sidecar
+#             request ran another filter pass that dated 64 more versions, so
+#             it hashed a longer document and the next download listed more.
+#   (CONTROL) the young 2.0.0 is never listed; a listing after the 15 s memo
+#             window has dated more versions than the first (dating goes on).
+#
 # The age gate has no record-only mode (that is the scan policy's
 # `record_only`); the sanctioned way to let a young version through is an
 # approved review, which this tier exercises instead.
 #
 # RATE_LIMIT_ENABLED=false: admin login + setup + a few dozen GETs back to back.
+COVERS="6284"
 PROFILES="storage.filesystem upstreams.mock-maven-agegate"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
