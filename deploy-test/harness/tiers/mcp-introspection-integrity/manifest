@@ -56,7 +56,16 @@
 # None of these issues has a security advisory (checked
 # gh api repos/artifact-keeper/artifact-keeper/security-advisories), and the
 # issues are public, so the tier asserts the full behaviour.
-COVERS="5461 5462 5464 5466"
+#
+# FIX #6249 (artifact-keeper 1.12.4): a Remote MCP sync pass that fails on a
+#   database error must record its failure before it releases the sync lock.
+#   psql installs a trigger on mcp_remote_sync_state, scoped to one Remote
+#   whose upstream (https://example.com/mcp) is never contacted, that fails
+#   the pass's start write and holds the failure record for six seconds. The
+#   first poll of GET .../mcp/sync with running false must already carry
+#   lastFinishedAt and this pass's lastError. Red: running false with
+#   lastFinishedAt unset for those six seconds.
+COVERS="5461 5462 5464 5466 6249"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

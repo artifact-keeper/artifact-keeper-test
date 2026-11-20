@@ -369,4 +369,81 @@ for spec in 'ttlMs|{"ttlMs":-1}' 'cacheScope|{"cacheScope":"shared"}' "observedA
 done
 finish_case "introspection completion accepts invalid result metadata"
 
+# =============================================================================
+# #6249 a failed Remote MCP sync pass is recorded before its lock is released
+# =============================================================================
+# A background pass (POST .../mcp/sync) that failed on a database error
+# released the repository's sync lock first and recorded the failure after,
+# so a poller saw `running: false` beside the previous pass's state (here:
+# nothing at all) and could report success for a pass that failed. psql
+# installs a trigger on mcp_remote_sync_state, scoped to this Remote, that
+# fails the pass's own start write (a database error, before any upstream
+# request, so the example.com upstream is never contacted) and holds the
+# failure record for six seconds: on the old order that is six seconds of
+# `running: false` with no outcome; fixed, `running` stays true until the
+# outcome is stored.
+begin_test "FIX #6249: a Remote MCP sync pass that fails on a database error is recorded before the sync status reads running false"
+reset_case
+RREMOTE="l6-mii-rs-${SFX}"
+api POST /api/v1/repositories "$(jq -nc --arg k "$RREMOTE" '{key:$k,name:$k,format:"mcp",repo_type:"remote",upstream_url:"https://example.com/mcp",is_public:true}')"
+RREMOTE_ID="$(jqr '.id // empty' "$R")"
+TRG="dtf_6249_$(printf '%s' "$SFX" | tr -c 'a-z0-9' '_')"
+if [ -z "$RREMOTE_ID" ]; then
+  infra_fail "creating the Remote mcp repository answered ${CODE}" "$(head -c 300 "$R")"
+else
+  add_exit_handler "curl -s -o /dev/null --max-time 30 -X DELETE -H 'Authorization: Bearer ${TOK}' '${BASE}/api/v1/repositories/${RREMOTE}' || true"
+  docker exec "$DBC" psql -U registry -d artifact_registry -v ON_ERROR_STOP=1 -q -c "
+    CREATE FUNCTION ${TRG}() RETURNS trigger LANGUAGE plpgsql AS \$f\$
+    BEGIN
+      IF NEW.repository_id = '${RREMOTE_ID}'::uuid THEN
+        IF position('dtf-6249' IN coalesce(NEW.last_error, '')) = 0 THEN
+          RAISE EXCEPTION 'dtf-6249 injected database failure';
+        END IF;
+        PERFORM pg_sleep(6);
+      END IF;
+      RETURN NEW;
+    END \$f\$;
+    CREATE TRIGGER ${TRG} BEFORE INSERT OR UPDATE ON mcp_remote_sync_state
+      FOR EACH ROW EXECUTE FUNCTION ${TRG}();" >/dev/null 2>"${W}/trg.err"
+  TRG_RC=$?
+  add_exit_handler "docker exec '${DBC}' psql -U registry -d artifact_registry -q -c 'DROP TRIGGER IF EXISTS ${TRG} ON mcp_remote_sync_state; DROP FUNCTION IF EXISTS ${TRG}();' >/dev/null 2>&1 || true"
+  if [ "$TRG_RC" -ne 0 ]; then
+    infra_fail "installing the failure trigger failed" "$(head -c 300 "${W}/trg.err")"
+  else
+    # A scheduled pass may hold the lock for a moment; retry a 409.
+    for _ in 1 2 3 4 5; do
+      api POST "/api/v1/repositories/${RREMOTE}/mcp/sync"
+      [ "$CODE" = "409" ] || break
+      sleep 2
+    done
+    TRIG_CODE="$CODE"
+    note "POST .../mcp/sync: ${TRIG_CODE} $(jqr -c '{status}' "$R")"
+    ENDED=""
+    if [ "$TRIG_CODE" = "202" ]; then
+      for ((i = 0; i < 120; i++)); do
+        api GET "/api/v1/repositories/${RREMOTE}/mcp/sync"
+        if [ "$CODE" = "200" ] && [ "$(jqr '.running' "$R")" = "false" ]; then
+          ENDED="$(jqr -c '{running,lastStartedAt,lastFinishedAt,lastError}' "$R")"
+          break
+        fi
+        sleep 0.25
+      done
+    fi
+    if [ "$TRIG_CODE" != "202" ]; then
+      infra_fail "the manual sync trigger answered ${TRIG_CODE}, expected 202" "$(head -c 300 "$R")"
+    else
+      note "first poll with running false: ${ENDED:-none within 30s}"
+      if [ -z "$ENDED" ]; then
+        fail_g "the failed pass never released its sync lock (running stayed true for 30s)"
+      else
+        FIN="$(printf '%s' "$ENDED" | jqr '.lastFinishedAt // empty')"
+        ERR="$(printf '%s' "$ENDED" | jqr '.lastError // empty')"
+        [ -n "$FIN" ] || fail_g "running read false while lastFinishedAt was still unset: the lock was released before the failed pass was recorded"
+        case "$ERR" in *dtf-6249*) ;; *) fail_g "running read false while lastError did not name this pass's failure (got '${ERR}'): the lock was released before the failed pass was recorded" ;; esac
+      fi
+      finish_case "a failed Remote MCP sync pass released its lock before recording the failure"
+    fi
+  fi
+fi
+
 end_suite
