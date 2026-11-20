@@ -1,6 +1,6 @@
 # DTF tier manifest: npm-contract-1120
 #   (artifact-keeper#5345, #5399, #5403, #5631, #5676, #5724, #5725; all fixed for 1.12.0;
-#    #5779 fixed for 1.12.4)
+#    #5779 and #5634 fixed for 1.12.4)
 # Profile-set: filesystem / single + the real npm CLI client (client.npm) +
 # upstreams.mock-multi (stdlib-python upstream at 172.16.<slot>.91; /ok/npm/<name>
 # answers a packument for ANY name, scoped or not, at version 1.0.1 and serves
@@ -66,6 +66,14 @@
 #        Local; a real max_age_days sweep of a pnpm Local, the version aged in
 #        the DB) and reads the Virtual straight away. The same REST delete in
 #        an npm Local is the control (#2162). RED on sha-380b43d.
+# #5634 (1.12.4)  `npm whoami` and `npm ping` on a Remote or a Virtual were
+#        forwarded anonymously to the upstream: whoami answered the upstream's
+#        401 (or, here, mock-multi's packument for the name "-/whoami") even
+#        with a valid AK credential, and every ping paid an upstream round
+#        trip. Now every repository type answers them itself. Also: a Local's
+#        documented `/-/v1/search` 501 was logged as an ERROR `response
+#        failed` line; it is now an expected outcome. The oracle reads the
+#        backend log around that one request. RED on sha-30a358c.
 #
 # Oracle (oracle.sh, RELEASE_GATE=1):
 #   (FIX)     RED on ak-backend:1.11.13: every FIX case fails.
@@ -81,6 +89,6 @@
 # RATE_LIMIT_ENABLED=false: ~200 authenticated calls incl. 80 racing publishes.
 PROFILES="storage.filesystem client.npm upstreams.mock-multi"
 ORACLE="oracle.sh"
-COVERS="5345 5399 5403 5631 5676 5724 5725 5779"
+COVERS="5345 5399 5403 5631 5676 5724 5725 5779 5634"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
