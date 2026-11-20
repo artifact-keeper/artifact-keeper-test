@@ -8,6 +8,7 @@
 #         two packages is reported for each
 #   #4080 an advisory-feed outage grades the dependency scan `partial`, and an
 #         unanswered query is not cached as clean
+#   #5691 a package matching ADVISORY_EXCLUDE_PATTERNS is never sent to the feed
 # See the manifest for the fixes and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
@@ -120,7 +121,10 @@ P_SHX="dtf-shared-x-${SFX}"      # both GHSA-dtfs-${SFX}-0002 / CVE-2099-1002
 P_SHY="dtf-shared-y-${SFX}"
 P_OUT="dtf-outage-${SFX}"        # GHSA-dtfo-${SFX}-0003 / CVE-2099-1003, asked during an outage
 P_CTL="dtf-control-${SFX}"       # no advisory (control)
+P_INT="dtf-internal-${SFX}"      # #5691: matches ADVISORY_EXCLUDE_PATTERNS; never sent
+P_PUB="dtf-public-${SFX}"        # GHSA-dtfp-${SFX}-0004 / CVE-2099-1004, beside P_INT
 ID_V="GHSA-dtfv-${SFX}-0001"; ID_S="GHSA-dtfs-${SFX}-0002"; ID_O="GHSA-dtfo-${SFX}-0003"
+ID_P="GHSA-dtfp-${SFX}-0004"
 rec(){ # <id> <cve> <summary> <severity> <fixed> <pkg>...
   local id="$1" cve="$2" sum="$3" sev="$4" fixed="$5"; shift 5
   jq -nc --arg id "$id" --arg cve "$cve" --arg sum "$sum" --arg sev "$sev" --arg fx "$fixed" \
@@ -130,21 +134,23 @@ rec(){ # <id> <cve> <summary> <severity> <fixed> <pkg>...
         ranges:[{type:"ECOSYSTEM",events:[{introduced:"0"},{fixed:$fx}]}]}]}' "$@"
 }
 ADV="$(jq -nc \
-  --arg pv "$P_VULN" --arg px "$P_SHX" --arg py "$P_SHY" --arg po "$P_OUT" \
-  --arg iv "$ID_V" --arg is "$ID_S" --arg io "$ID_O" \
+  --arg pv "$P_VULN" --arg px "$P_SHX" --arg py "$P_SHY" --arg po "$P_OUT" --arg pp "$P_PUB" \
+  --arg iv "$ID_V" --arg is "$ID_S" --arg io "$ID_O" --arg ip "$ID_P" \
   --argjson rv "$(rec "$ID_V" CVE-2099-1001 "DTF vuln package remote code execution" HIGH 1.0.1 "$P_VULN")" \
   --argjson rs "$(rec "$ID_S" CVE-2099-1002 "DTF shared library heap overflow" CRITICAL 1.0.2 "$P_SHX" "$P_SHY")" \
   --argjson ro "$(rec "$ID_O" CVE-2099-1003 "DTF outage package path traversal" MODERATE 1.0.3 "$P_OUT")" \
+  --argjson rp "$(rec "$ID_P" CVE-2099-1004 "DTF public package injection" HIGH 1.0.4 "$P_PUB")" \
   '{rules:[{ecosystem:"PyPI",name:$pv,version:"1.0.0",ids:[$iv]},
            {ecosystem:"PyPI",name:$px,version:"1.0.0",ids:[$is]},
            {ecosystem:"PyPI",name:$py,version:"1.0.0",ids:[$is]},
-           {ecosystem:"PyPI",name:$po,version:"1.0.0",ids:[$io]}],
-    records:{($iv):$rv, ($is):$rs, ($io):$ro}}')"
+           {ecosystem:"PyPI",name:$po,version:"1.0.0",ids:[$io]},
+           {ecosystem:"PyPI",name:$pp,version:"1.0.0",ids:[$ip]}],
+    records:{($iv):$rv, ($is):$rs, ($io):$ro, ($ip):$rp}}')"
 reg="$(curl -s --max-time 5 -X PUT --data "$ADV" "${MOCK}/__advisories" | jqr '.records // empty')"
 mock_mode ok >/dev/null; mock_reset
 REPO="osvpos-${SFX}"
 code="$(api POST /api/v1/repositories "$(jq -nc --arg k "$REPO" '{key:$k,name:$k,format:"generic",repo_type:"local",is_public:false}')")"
-if [ "$reg" = "3" ] && { [ "$code" = "200" ] || [ "$code" = "201" ]; }; then
+if [ "$reg" = "4" ] && { [ "$code" = "200" ] || [ "$code" = "201" ]; }; then
   pass
 else
   infra_fail "setup: advisories registered='${reg}', repo create -> ${code}: $(abody | head -c 300)"; end_suite
@@ -274,6 +280,29 @@ elif scan "$A5"; then
   [ "${cnt:-0}" -ge 1 ] || fail_g "findings_count ${cnt}, expected the ${ID_O} finding"
 else fail_g "scan did not settle"; fi
 finish_case "outage cached as an all-clear"
+
+# -----------------------------------------------------------------------------
+# #5691: profiles/advisory.exclude-internal.yml sets
+# ADVISORY_EXCLUDE_PATTERNS=pkg:pypi/dtf-internal-*. One manifest names an
+# internal package (matches) and a public one (does not).
+begin_test "FIX #5691: a package matching ADVISORY_EXCLUDE_PATTERNS is never sent to OSV; the public one beside it still is, and its finding is reported"
+reset_case
+A6="$(upload app6 "${P_INT}==1.0.0
+${P_PUB}==1.0.0
+")"
+if [ -z "$A6" ]; then fail_g "upload of app6/requirements.txt failed"
+elif scan "$A6"; then
+  IFS='|' read -r sid st comp cnt <<<"$(dep_row "$A6")"
+  qi="$(mock_queried "$P_INT")"; qp="$(mock_queried "$P_PUB")"
+  note "dependency row: status=${st} completeness=${comp} findings=${cnt}; querybatch naming ${P_INT}: ${qi}, naming ${P_PUB}: ${qp}"
+  note "findings: $(dep_findings "$sid" | tr '\n' ';')"
+  [ "${qi:-1}" = "0" ] || fail_g "the internal package ${P_INT} was sent to the advisory feed ${qi} time(s); it matches ADVISORY_EXCLUDE_PATTERNS"
+  [ "${qp:-0}" -ge 1 ] || fail_g "the public package ${P_PUB} was never sent to the advisory feed"
+  [ "$comp" = "complete" ] || fail_g "scan_completeness '${comp}', expected complete (leaving out an excluded name is deliberate, not a gap)"
+  comps="$(dep_findings "$sid" | cut -d'|' -f1 | sort -u | tr '\n' ' ')"
+  [ "$comps" = "${P_PUB} " ] || fail_g "affected_component set '${comps}', expected only ${P_PUB} (its ${ID_P} finding)"
+else fail_g "scan did not settle"; fi
+finish_case "an internal package name reached the external advisory feed"
 
 # -----------------------------------------------------------------------------
 begin_test "CONTROL: the backend reached the mock over TLS as api.osv.dev (no feed errors on the control batch)"

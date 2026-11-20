@@ -1,0 +1,16 @@
+# =============================================================================
+# profiles/advisory.exclude-internal.yml: internal names never go to OSV
+# =============================================================================
+# Sets ADVISORY_EXCLUDE_PATTERNS (artifact-keeper#5691, 1.12.4) on the backend
+# to `pkg:pypi/dtf-internal-*`: a PyPI package whose name starts with
+# `dtf-internal-` must never be named in a request to an external advisory
+# feed. Combined with upstreams.mock-osv, whose /__requests log records every
+# querybatch the backend sends, a tier can prove an internal name is never
+# sent while a public one in the same manifest still is. Images before 1.12.4
+# ignore the variable and send every name. Only names with that prefix are
+# affected, so the other cases of a tier using this overlay are unchanged.
+# =============================================================================
+services:
+  backend:
+    environment:
+      ADVISORY_EXCLUDE_PATTERNS: "pkg:pypi/dtf-internal-*"
