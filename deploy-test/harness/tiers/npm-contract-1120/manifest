@@ -1,5 +1,6 @@
 # DTF tier manifest: npm-contract-1120
-#   (artifact-keeper#5345, #5399, #5403, #5631, #5676, #5724, #5725; all fixed for 1.12.0)
+#   (artifact-keeper#5345, #5399, #5403, #5631, #5676, #5724, #5725; all fixed for 1.12.0;
+#    #5779 fixed for 1.12.4)
 # Profile-set: filesystem / single + the real npm CLI client (client.npm) +
 # upstreams.mock-multi (stdlib-python upstream at 172.16.<slot>.91; /ok/npm/<name>
 # answers a packument for ANY name, scoped or not, at version 1.0.1 and serves
@@ -56,6 +57,16 @@
 #        names whose scope starts with `_` (a Remote member could serve its
 #        bytes for a hosted `@_scope/x@ver`).
 #
+# #5779 (1.12.4)  yarn, pnpm and bower repositories are served by the npm
+#        handler and its packument cache, but the REST artifact delete, the
+#        retention sweep and trash restore invalidated that cache for format
+#        "npm" only: a Virtual over a yarn/pnpm Local kept listing a deleted
+#        version for the cache's fresh window (300 s). The oracle warms each
+#        Virtual (full and abbreviated), deletes 1.0.0 (REST delete in a yarn
+#        Local; a real max_age_days sweep of a pnpm Local, the version aged in
+#        the DB) and reads the Virtual straight away. The same REST delete in
+#        an npm Local is the control (#2162). RED on sha-380b43d.
+#
 # Oracle (oracle.sh, RELEASE_GATE=1):
 #   (FIX)     RED on ak-backend:1.11.13: every FIX case fails.
 #   (CONTROL) both images: Local /-/ 501 and Remote /-/ping 200; sequential
@@ -70,6 +81,6 @@
 # RATE_LIMIT_ENABLED=false: ~200 authenticated calls incl. 80 racing publishes.
 PROFILES="storage.filesystem client.npm upstreams.mock-multi"
 ORACLE="oracle.sh"
-COVERS="5345 5399 5403 5631 5676 5724 5725"
+COVERS="5345 5399 5403 5631 5676 5724 5725 5779"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
