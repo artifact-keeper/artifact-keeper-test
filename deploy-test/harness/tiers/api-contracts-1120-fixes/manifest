@@ -60,11 +60,19 @@
 #     /api/v1/repositories is 200, PUT /api/v1/repositories and GET
 #     /api/v1/auth/login are 405. RED on main sha-380b43d, GREEN with the
 #     backend change.
+#   #6063 (1.12.4, artifact-keeper/artifact-keeper PR 6323) POST an npm local
+#     repository with versioning_enabled true, and PATCH one to true: 200, the
+#     flag echoed, read back and stored as true (an IaC read-back sees no
+#     drift), plus `Warning: 299 - "versioning_enabled has no effect for
+#     format npm"` (was the same 200 with no sign that npm uploads ignore the
+#     flag). CONTROL: a generic create with the flag has no Warning, and
+#     neither has an npm create or PATCH that does not send it. RED on main
+#     sha-380b43d, GREEN with the backend change.
 #
 # The Remotes proxy the backend itself on its container address, so the SSRF
 # guard needs UPSTREAM_ALLOW_PRIVATE_IPS. RATE_LIMIT_ENABLED=false: ~250
 # quick API calls.
-COVERS="4800 4825 4843 4834 4851 5201 5652 5694 5487 5347 5223 6299"
+COVERS="4800 4825 4843 4834 4851 5201 5652 5694 5487 5347 5223 6299 6063"
 PROFILES="storage.filesystem audit.upstream-fetches-all"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
