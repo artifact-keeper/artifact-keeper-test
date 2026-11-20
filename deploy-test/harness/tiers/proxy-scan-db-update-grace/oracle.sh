@@ -195,6 +195,16 @@ else
     "rows clean='$(row_of "$CL_D")' log4j='$(row_of "$L4_D")' (want ${LIVE}); log4j=${l_st}"
 fi
 
+begin_test "CONTROL: by default a fail_closed pull of a verdict graded by a NEWER build another replica recorded an hour ago is re-scanned before it is answered, as before 1.13.0"
+age_row "$CL_D" "$NEWER"
+pull "$FC" "$CLEAN"
+if [ "$ST" = "200" ] && [ "$(scanned_inline "$CL_D" "$AT")" = "t" ]; then
+  pass
+else
+  fail "fail_closed at its default must not trust a newer build" \
+    "status=${ST} row='$(row_of "$CL_D")' scanned-inline=$(scanned_inline "$CL_D" "$AT")"
+fi
+
 begin_test "FIX #6300: a fail_open pull of a verdict graded by a NEWER build another replica recorded an hour ago is decided by it (X-AK-Scan: clean), not re-scanned with the older build"
 age_row "$CL_D" "$NEWER"
 pull "$FO" "$CLEAN"
@@ -205,15 +215,9 @@ else
     "status=${ST} X-AK-Scan='${SCAN}' row='$(row_of "$CL_D")'"
 fi
 
-begin_test "CONTROL: by default a fail_closed pull of the same newer build's verdict is re-scanned before it is answered, as before 1.13.0"
-age_row "$CL_D" "$NEWER"
-pull "$FC" "$CLEAN"
-if [ "$ST" = "200" ] && [ "$(scanned_inline "$CL_D" "$AT")" = "t" ]; then
-  pass
-else
-  fail "fail_closed at its default must not trust a newer build" \
-    "status=${ST} row='$(row_of "$CL_D")' scanned-inline=$(scanned_inline "$CL_D" "$AT")"
-fi
+# Before main's asynchronous re-scan of that pull lands, a later age_row
+# could be overwritten; let it land (on the fix the row keeps the newer build).
+for _ in $(seq 1 15); do [ "$(row_of "$CL_D")" = "clean|${LIVE}" ] && break; sleep 1; done
 
 begin_test "CONTROL: a fail_open pull of a verdict graded by a NEWER build recorded three days ago (rolled back) is treated as stale (X-AK-Scan: pending)"
 age_row "$CL_D" "$ROLLED_BACK"
