@@ -37,6 +37,11 @@
 #          action but not the token scope, so a read:artifacts-only token held
 #          by a repository admin could switch scanning off. Fixed: the route
 #          requires write:repositories (403 otherwise).
+#   #5643  (1.12.4) POST /api/v1/users/{id}/tokens and /users/me/tokens
+#          refused repo_selector as an unknown field (400) while
+#          /auth/tokens took it. Fixed: they take it, validate it and apply
+#          the #4225 ceiling exactly as /auth/tokens does. RED on sha-30a358c
+#          (the two FIX #5643 cases), every other case unchanged.
 #
 # THE FIXTURE
 #   A, B   private generic repositories, each holding dir/obj.txt with distinct
@@ -63,6 +68,7 @@
 # restriction at work.
 #
 # RATE_LIMIT_ENABLED=false: ~90 authenticated calls back to back.
+COVERS="5643"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

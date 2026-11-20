@@ -1,0 +1,41 @@
+# DTF tier manifest: pypi-remote-index-path
+#   (artifact-keeper#5643, 1.12.4)
+# Profile-set: filesystem + upstreams.mock-files (a stdlib-python upstream at
+# 172.16.<slot>.76 whose files and forced statuses the oracle sets over its
+# control API on the slot's TRIVY_PORT).
+#
+# The mock stands in for a flat-layout index such as
+# https://download.pytorch.org/whl/cpu: the project page is at
+# /idx/<project>/, and /idx/simple/<project>/ answers 403, as that CDN does.
+#
+# THE BUGS (#5643)
+#   1. A PyPI Remote pointed at such an index with the default index path
+#      ("simple") answered `502 Failed to fetch from upstream` with nothing
+#      naming the cause; the upstream 403 was only in the backend log, and
+#      the `pypi_upstream_index_path` setting that fixes it was undocumented.
+#      Fixed: the generic proxy 502 carries `X-AK-Upstream-Status: <status>`
+#      (body unchanged), and docs/pypi-remote.md documents the setting.
+#   2. PEP 691 content negotiation was a substring check that ignored
+#      q-values: `Accept: application/vnd.pypi.simple.latest+json` got HTML,
+#      and `v1+json;q=0.1, text/html` (HTML preferred) got JSON. Fixed: q
+#      values and the `latest` alias are read; a tie still goes to JSON.
+#
+# THE GATES
+#   (CONTROL) both images: with `pypi_upstream_index_path: ""` the Remote
+#     serves the flat index; with the default it answers 502 with the
+#     unchanged "Failed to fetch from upstream" body. pip's and uv's Accept
+#     header gets JSON, `text/html` and `*/*` get HTML (project page and the
+#     root index of a hosted repository).
+#   (FIX) #5643: the 502 carries `X-AK-Upstream-Status: 403`; `latest+json`
+#     gets JSON and `v1+json;q=0.1, text/html` gets HTML. RED on sha-30a358c.
+#
+# Item 3 of #5643 (repo_selector on /users/{id}/tokens) is gated in
+# token-repo-restriction.
+#
+# RATE_LIMIT_ENABLED=false: requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5643"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
