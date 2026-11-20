@@ -6,6 +6,8 @@
 # shape, a Virtual with it as the only member; curl checks plus a real
 # `composer update --prefer-dist` against a second Virtual alone. Each check
 # has its own Remote so no check is answered from a cache another one warmed.
+# artifact-keeper#6285: a third Virtual over a Local (one published package)
+# and the Remote finds the Local's package through its own search.json.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${COMMON_SH:?}"; : "${DTF_SLOT:?}"; : "${TRIVY_PORT:?}"; : "${RUN_ID:?}"
@@ -24,6 +26,10 @@ R="cvpm-r-${SUF}"       # member of V (curl checks)
 V="cvpm-v-${SUF}"
 R2="cvpm-r2-${SUF}"     # member of V2 (composer client); separate proxy cache
 V2="cvpm-v2-${SUF}"
+L3="cvpm-l3-${SUF}"     # hosted member of V3 (search.json, #6285)
+V3="cvpm-v3-${SUF}"     # Virtual over L3 and R
+WORD3="search${SUF//[^a-z0-9]/}"
+PKG3="dtf6285/${WORD3}"
 REF="0123456789abcdef0123456789abcdef01234567"
 DIST="dist/dtf/cleanpkg/1.0.0/${REF}.zip"
 CLIENT="ak-dtf${DTF_SLOT}-client-composer"
@@ -31,7 +37,7 @@ INT="http://backend:8080/composer"
 
 cleanup() {
   local k
-  for k in "$V" "$V2" "$R" "$R2" "$R_CTL"; do
+  for k in "$V3" "$L3" "$V" "$V2" "$R" "$R2" "$R_CTL"; do
     api_delete "/api/v1/repositories/${k}" >/dev/null 2>&1 || true
   done
 }
@@ -69,6 +75,47 @@ if [ "$st" = "200" ] && [[ "$url" == *"/composer/${V}/dist/dtf/cleanpkg/"* ]]; t
 begin_test "FIX #4951: the Virtual serves the member's real dist bytes (was 404)"
 st=$(hget "${P}/${V}/${DIST}" "$W/v.zip")
 if [ "$st" = "200" ] && [ "$(sha "$W/v.zip")" = "$GOLD" ]; then pass; else fail "HTTP ${st} $(head -c 120 "$W/v.zip" | tr -c '[:print:]' '.')"; fi
+
+begin_test "CONTROL: a package published to a Local is found by the Local's own search.json"
+err=""
+create_repo "$L3" composer local || err+="create L3; "
+create_repo "$V3" composer virtual || err+="create V3; "
+api_post "/api/v1/repositories/${V3}/members" "{\"member_key\":\"${L3}\"}" >/dev/null 2>&1 || err+="member V3 L3; "
+api_post "/api/v1/repositories/${V3}/members" "{\"member_key\":\"${R}\"}" >/dev/null 2>&1 || err+="member V3 R; "
+python3 -I -c '
+import json, sys, zipfile
+name, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("composer.json", json.dumps({"name": name, "version": "1.0.0", "type": "library",
+               "license": "MIT", "description": "dtf 6285 search probe"}))
+    z.writestr("src/A.php", "<?php\n")
+' "$PKG3" "$W/pkg3.zip" || err+="build zip; "
+up=$(curl -s --max-time 60 -o "$W/up3.json" -w '%{http_code}' -X PUT -H "$(auth_header)" \
+  -H 'Content-Type: application/zip' --data-binary "@$W/pkg3.zip" \
+  "${BASE_URL}/composer/${L3}/api/packages" 2>/dev/null || echo 000)
+[ "$up" = "201" ] || err+="upload HTTP ${up} $(head -c 200 "$W/up3.json" 2>/dev/null); "
+if [ -n "$err" ]; then
+  infra_fail "search setup did not complete" "$err"
+else
+  st=$(hget "${P}/${L3}/search.json?q=${WORD3}" "$W/l3_search.json")
+  n=$(jq -r --arg p "$PKG3" '[.results[]? | select(.name==$p)] | length' "$W/l3_search.json" 2>/dev/null || true)
+  if [ "$st" = "200" ] && [ "$n" = "1" ]; then pass; else fail "HTTP ${st}" "$(head -c 200 "$W/l3_search.json")"; fi
+fi
+
+begin_test "FIX #6285: the Virtual's search.json finds the hosted member's package (was an empty result)"
+st=$(hget "${P}/${V3}/search.json?q=${WORD3}" "$W/v3_search.json")
+hit=$(jq -r --arg p "$PKG3" '[.results[]? | select(.name==$p)][0] | "\(.description)|\(.url)"' "$W/v3_search.json" 2>/dev/null || true)
+total=$(jq -r '.total // 0' "$W/v3_search.json" 2>/dev/null || echo 0)
+if [ "$st" = "200" ] && [ "$hit" = "dtf 6285 search probe|/composer/${V3}/p2/${PKG3}.json" ] && [ "$total" -ge 1 ] 2>/dev/null; then
+  pass
+else
+  fail "HTTP ${st} hit='${hit}' total='${total}'" "$(head -c 300 "$W/v3_search.json")"
+fi
+
+begin_test "CONTROL: the Virtual's search.json answers 0 for a term no member has"
+st=$(hget "${P}/${V3}/search.json?q=nomatch${WORD3}" "$W/v3_none.json")
+total=$(jq -r '.total // empty' "$W/v3_none.json" 2>/dev/null || true)
+if [ "$st" = "200" ] && [ "$total" = "0" ]; then pass; else fail "HTTP ${st}" "$(head -c 200 "$W/v3_none.json")"; fi
 
 begin_test "FIX #4951: a real composer update --prefer-dist against the Virtual alone installs from dist"
 cat > "$W/composer.json" <<JSON
