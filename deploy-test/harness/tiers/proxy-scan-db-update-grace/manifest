@@ -8,30 +8,35 @@
 # build (`grype-X.Y.Z+db-YYYY-MM-DD`). Every DB update therefore made every
 # stored verdict stale at once, and the next pull of each cached package was
 # scanned again on the request path under fail_closed (the client waited or got
-# a 423), all in the same hour. Since 1.13.0, within PROXY_SCAN_DB_GRACE_HOURS
-# (default 6) of the fleet first seeing a new build, a verdict the same scanner
-# binary graded against the PREVIOUS build decides the pull and the pull
-# re-grades the bytes in the background.
+# a 423) or queued a scan under fail_open, all in the same hour. Since
+# 1.13.0, within a window of the fleet first seeing a new build, a verdict the
+# same scanner binary graded against the PREVIOUS build decides the pull and
+# the pull re-grades the bytes in the background. The window is 6 h by default
+# for fail_open and record_only, and off by default for fail_closed
+# (PROXY_SCAN_DB_GRACE_HOURS_FAIL_CLOSED is the operator's opt-in).
 #
-# The DB bump is simulated from the stored side: the tier records an older
-# build of the live binary as seen first (`proxy_scan_db_versions`, a day
-# earlier), then rewrites the stored verdicts' scanner_version to it. The
-# known-CVE jar's row is also rewritten `clean`, as a build that did not yet
-# know the advisory would have graded it.
+# The DB bump is simulated from the stored side: the previous build of the
+# live binary is recorded as first seen a day ago, an older build is recorded
+# a minute ago (a stale replica recorded late, which must NOT become the
+# previous build), and the stored verdicts are rewritten to the previous build
+# (log4j-core `clean`, as a build that did not know the advisory would have
+# graded it).
 #
-#   FIX #6300  the clean jar's pull is 200 and its row still carries the older
-#              build when the response returns: no scan on the request path.
-#              Pre-fix (RED): the pull re-scans inline and the row carries the
-#              live build before the response.
-#   FIX #6300  the CVE jar's pull, also decided by the previous build's row,
-#              is not blocked or scanned synchronously (200, row unchanged).
+# Phase 1, defaults:
+#   CONTROL    a fail_closed pull is still re-scanned inline (opt-in only).
+#   FIX #6300  fail_open pulls are decided by the stored verdicts
+#              (X-AK-Scan: clean) with no scan on the request path. Pre-fix
+#              (RED): served `pending`, a scan per pull.
+#   CONTROL    both re-graded in the background; log4j-core then 403.
+# Phase 2, the backend recreated with the fail_closed opt-in
+# (fixtures/fail-closed-grace.yml):
+#   FIX #6300  the clean jar's fail_closed pull is 200 with no scan on the
+#              request path. Pre-fix (RED): re-scanned inline.
+#   FIX #6300  the log4j-core pull is not blocked or scanned synchronously.
 #              Pre-fix (RED): 403 after an inline re-scan.
-#   CONTROL    both rows are re-graded in the background against the live
-#              build, and the CVE jar's next pull is then 403 (both images:
-#              a vulnerable artifact is blocked once re-graded).
-#   CONTROL    a verdict from another scanner BINARY, and one two DB builds
-#              behind, are still re-scanned before the pull is answered (both
-#              images).
+#   CONTROL    both re-graded in the background; log4j-core then 403.
+#   CONTROL    a verdict from another binary, and one from the stale build
+#              recorded late, are re-scanned before the pull is answered.
 PROFILES="storage.filesystem upstreams.mock-scan-formats"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

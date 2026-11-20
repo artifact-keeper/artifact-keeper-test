@@ -1,0 +1,12 @@
+# Tier-local compose override for proxy-scan-db-update-grace
+# (artifact-keeper#6300): the operator's opt-in to the DB-update grace for
+# fail_closed repositories, which is off by default. Layered on
+# compose.base.yml, storage.filesystem and upstreams.mock-scan-formats when
+# the oracle recreates the backend for its second phase. json-file logging
+# keeps the backend log readable.
+services:
+  backend:
+    environment:
+      PROXY_SCAN_DB_GRACE_HOURS_FAIL_CLOSED: "6"
+    logging:
+      driver: json-file
