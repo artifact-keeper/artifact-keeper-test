@@ -513,4 +513,122 @@ note "APKINDEX -> ${ST} Retry-After='$(hdr "$W/av-d" retry-after)'"
 [ -n "$(hdr "$W/av-d" retry-after)" ] || fail_g "no Retry-After"
 finish_case "an all-down Alpine virtual answered an empty index"
 
+# =============================================================================
+# #5013: per-upstream circuit breaker
+# =============================================================================
+# The backend runs with its defaults: AK_UPSTREAM_CIRCUIT_FAILURES=5,
+# AK_UPSTREAM_CIRCUIT_OPEN_SECS=10 (jittered by +/-20 %, doubling after a
+# failed probe). Upstream contact is counted on the mock (GET + HEAD per path).
+CB_N=12           # requests per counting case, well past the threshold of 5
+CB_MAX_HITS=6     # the threshold, plus one for a probe if a case runs long
+up_hits(){ curl -s --max-time 5 "${MOCK}/__requests?path=$1" | jqr '(.get // 0) + (.head // 0)'; }
+
+begin_test "setup (#5013): a dead and a healthy Helm member, a Remote with an expiring entry, a hung Maven member"
+SETUP_ERR=""
+[ -n "$(mock_put "/${P}/cbok/index.yaml" "$W/ha.yaml" application/x-yaml)" ] || SETUP_ERR="${SETUP_ERR} mock:cbok"
+[ "$(mock_status "/${P}/cbdead/index.yaml" 503)" = "503" ] || SETUP_ERR="${SETUP_ERR} mock:cbdead"
+CB_OK="vmo-cbok-${SUF}"; CB_DEAD="vmo-cbdead-${SUF}"; CBV="vmo-cbv-${SUF}"
+mk "$CB_OK" helm remote "${UP}/${P}/cbok"
+mk "$CB_DEAD" helm remote "${UP}/${P}/cbdead"
+virt "$CBV" helm "$CB_DEAD" "$CB_OK"
+head -c 3000 /dev/urandom > "$W/cbstale.bin"
+[ -n "$(mock_put "/${P}/cbstale/s/f.bin" "$W/cbstale.bin")" ] || SETUP_ERR="${SETUP_ERR} mock:cbstale"
+CB_STALE="vmo-cbstale-${SUF}"; CB_404="vmo-cb404-${SUF}"
+mk "$CB_STALE" generic remote "${UP}/${P}/cbstale/"
+mk "$CB_404" generic remote "${UP}/${P}/cb404/"
+CBM_HANG="vmo-cbmhang-${SUF}"; CBM_OK="vmo-cbmok-${SUF}"; CBMV="vmo-cbmv-${SUF}"
+for i in 1 2 3 4 5 6; do
+  sed "s#<artifactId>md</artifactId>#<artifactId>cb${i}</artifactId>#" "$W/meta.xml" > "$W/cb${i}.xml"
+  [ -n "$(mock_put "/${P}/cbmok/${G}/cb${i}/maven-metadata.xml" "$W/cb${i}.xml" text/xml)" ] || SETUP_ERR="${SETUP_ERR} mock:cbmok${i}"
+  [ -n "$(mock_put "/${P}/cbmhang/${G}/cb${i}/maven-metadata.xml" "$W/cb${i}.xml" text/xml)" ] || SETUP_ERR="${SETUP_ERR} mock:cbmhang${i}"
+  [ "$(mock_delay "/${P}/cbmhang/${G}/cb${i}/maven-metadata.xml" 120000)" = "120000" ] || SETUP_ERR="${SETUP_ERR} mock:cbmhang${i}-delay"
+done
+mk "$CBM_HANG" maven remote "${UP}/${P}/cbmhang/"
+mk "$CBM_OK" maven remote "${UP}/${P}/cbmok/"
+virt "$CBMV" maven "$CBM_HANG" "$CBM_OK"
+get "/api/v1/repositories/${CB_STALE}/download/s/f.bin" "$W/cbp"; [ "$ST" = "200" ] || SETUP_ERR="${SETUP_ERR} prime-cbstale:${ST}"
+set_ttl "$CB_STALE" 2
+if [ -n "$SETUP_ERR" ]; then infra_fail "#5013 setup failed:${SETUP_ERR}"; else pass; fi
+
+begin_test "FIX #5013: a Helm virtual [503 member, healthy member] stops contacting the dead member after the threshold and keeps serving the healthy merge"
+reset_case
+h0="$(up_hits "/${P}/cbdead/index.yaml")"; codes=""
+for i in $(seq 1 "$CB_N"); do
+  get "/helm/${CBV}/index.yaml" "$W/cbv-${i}.yaml"; codes="${codes} ${ST}"
+  [ "$ST" = "200" ] || fail_g "request ${i}: index.yaml answered ${ST}, expected 200: $(snip "$W/cbv-${i}.yaml")"
+  grep -q "${CH_A}:" "$W/cbv-${i}.yaml" || fail_g "request ${i}: the healthy member's chart ${CH_A} is missing"
+done
+check_partial "$W/cbv-${CB_N}.yaml" "$CB_DEAD" "helm [dead, ok] after the circuit opened"
+dead_hits=$(( $(up_hits "/${P}/cbdead/index.yaml") - h0 ))
+note "statuses:${codes}; the dead member's upstream was contacted ${dead_hits} times for ${CB_N} merges"
+[ "$dead_hits" -le "$CB_MAX_HITS" ] || fail_g "the dead member's upstream was contacted ${dead_hits} times for ${CB_N} requests, expected at most ${CB_MAX_HITS} (the breaker threshold)"
+finish_case "a dead virtual member was contacted on every request"
+
+begin_test "CONTROL (#5013): after the dead member recovers, the merge uses it again (once its circuit lets a probe through)"
+reset_case
+h0="$(up_hits "/${P}/cbdead/index.yaml")"
+mock_status "/${P}/cbdead/index.yaml" 0 >/dev/null
+[ -n "$(mock_put "/${P}/cbdead/index.yaml" "$W/hb.yaml" application/x-yaml)" ] || fail_g "could not restore the dead member's index"
+recovered=""; t0="$(date +%s)"
+while [ $(( $(date +%s) - t0 )) -lt 60 ]; do
+  get "/helm/${CBV}/index.yaml" "$W/cbv-rec.yaml"
+  if [ "$ST" = "200" ] && grep -q "${CH_B}:" "$W/cbv-rec.yaml" && [ -z "$(hdr "$W/cbv-rec.yaml" x-ak-partial-members)" ]; then
+    recovered="$(( $(date +%s) - t0 ))"; break
+  fi
+  sleep 2
+done
+note "recovered after ${recovered:-never} s; the member's upstream was contacted $(( $(up_hits "/${P}/cbdead/index.yaml") - h0 )) times"
+[ -n "$recovered" ] || fail_g "the recovered member was not merged again within 60 s (last: ${ST}, partial='$(hdr "$W/cbv-rec.yaml" x-ak-partial-members)')"
+[ "$(( $(up_hits "/${P}/cbdead/index.yaml") - h0 ))" -ge 1 ] || fail_g "the recovered member's upstream was never contacted"
+grep -q "${CH_A}:" "$W/cbv-rec.yaml" || fail_g "the healthy member's chart ${CH_A} is missing after recovery"
+finish_case "a recovered member stayed cut off"
+
+begin_test "FIX #5013: a Remote serves its expired entry stale without contacting a dead upstream once the circuit is open"
+reset_case
+sleep 3
+mock_status "/${P}/cbstale/s/f.bin" 503 >/dev/null
+h0="$(up_hits "/${P}/cbstale/s/f.bin")"; codes=""
+for i in $(seq 1 "$CB_N"); do
+  get "/api/v1/repositories/${CB_STALE}/download/s/f.bin" "$W/cbs-${i}"; codes="${codes} ${ST}"
+  [ "$ST" = "200" ] || fail_g "request ${i}: the expired entry answered ${ST}, expected 200 (stale)"
+  cmp -s "$W/cbs-${i}" "$W/cbstale.bin" || fail_g "request ${i}: the stale body is not the cached bytes"
+done
+stale_hits=$(( $(up_hits "/${P}/cbstale/s/f.bin") - h0 ))
+note "statuses:${codes}; the upstream was contacted ${stale_hits} times for ${CB_N} stale serves; last Warning='$(hdr "$W/cbs-${CB_N}" warning)'"
+[ "$stale_hits" -le "$CB_MAX_HITS" ] || fail_g "the dead upstream was contacted ${stale_hits} times for ${CB_N} stale serves, expected at most ${CB_MAX_HITS}"
+finish_case "every stale serve still waited on the dead upstream"
+
+begin_test "CONTROL (#5013): a Remote whose upstream answers 404 keeps answering 404, never 503, however many misses"
+reset_case
+codes=""
+for i in $(seq 1 "$CB_N"); do
+  get "/api/v1/repositories/${CB_404}/download/m/missing-${i}.bin" "$W/cb404-${i}"; codes="${codes} ${ST}"
+done
+note "statuses:${codes}"
+for c in $codes; do [ "$c" = "404" ] || { fail_g "a miss answered ${c}, expected 404:${codes}"; break; }; done
+finish_case "repeated misses tripped the breaker"
+
+begin_test "FIX #5013: Maven virtual metadata behind a hung member answers within seconds once the member's circuit is open"
+reset_case
+# Five distinct artifacts at once: five fills, each waiting out the 60 s
+# upstream read timeout behind the 20 s member deadline, open the circuit at
+# about t0 + 60 s. It stays open for 10 s +/- 20 %, so the next merge is sent
+# at t0 + 63 s, inside the shortest open period (a later one would be the
+# half-open probe, which waits for the hung member again).
+pids=""; t0="$(date +%s)"
+for i in 1 2 3 4 5; do
+  curl -s --max-time 90 -o "$W/cbm-${i}.xml" -H "Authorization: Bearer $TOK" \
+    "${BASE}/maven/${CBMV}/${G}/cb${i}/maven-metadata.xml" & pids="$pids $!"
+done
+# shellcheck disable=SC2086
+wait $pids
+while [ $(( $(date +%s) - t0 )) -lt 63 ]; do sleep 1; done
+get "/maven/${CBMV}/${G}/cb6/maven-metadata.xml" "$W/cbm-6.xml"
+note "after the circuit opened: maven-metadata.xml -> ${ST} in ${SECS}s"
+[ "$ST" = "200" ] || fail_g "maven-metadata.xml answered ${ST}, expected 200: $(snip "$W/cbm-6.xml")"
+grep -q "<version>1.0</version>" "$W/cbm-6.xml" || fail_g "the healthy member's version is missing"
+check_partial "$W/cbm-6.xml" "$CBM_HANG" "maven [hung, ok] after the circuit opened"
+awk -v s="$SECS" 'BEGIN{exit !(s < 8)}' || fail_g "took ${SECS}s behind a hung member whose circuit should be open, expected < 8 s (the 20 s member deadline means it was waited for)"
+finish_case "a hung member still cost every request the member deadline"
+
 end_suite
