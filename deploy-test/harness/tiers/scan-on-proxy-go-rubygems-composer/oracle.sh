@@ -403,8 +403,8 @@ api_post "/api/v1/repositories/${GO_GV}/members" "{\"member_key\":\"${GO_F410}\"
 # Credentials the upstream refuses: an expired or revoked token looks like this.
 # Public like the other Remotes so the anonymous probes reach it, which the
 # backend accepts only with allow_public_with_upstream_credentials.
-cred=$(api_post "/api/v1/repositories" "$(jq -nc --arg k "$GO_CRED" --arg u "${UP}/failing/401/goproxy" \
-  '{key:$k,name:$k,format:"go",repo_type:"remote",is_public:true,upstream_url:$u,upstream_auth_type:"basic",upstream_username:"dtf-reader",upstream_password:"not-a-real-secret-6214",allow_public_with_upstream_credentials:true}')" 2>/dev/null \
+cred=$(api_post "/api/v1/repositories" "$(jq -nc --arg k "$GO_CRED" --arg u "${UP}/failing/401/goproxy" --arg pw "dtf-$$-$RANDOM" \
+  '{key:$k,name:$k,format:"go",repo_type:"remote",is_public:true,upstream_url:$u,upstream_auth_type:"basic",upstream_username:"dtf-reader",upstream_password:$pw,allow_public_with_upstream_credentials:true}')" 2>/dev/null \
   | jq -r '.upstream_auth_type // empty' 2>/dev/null || true)
 [ "$cred" = "basic" ] || ok=0
 create_repo "$GO_A403" go remote "${UP}/failing/403/goproxy" || ok=0
