@@ -3,7 +3,8 @@
 #   holds it), #5794 (tags/list answers `name` with the full request name) and
 #   #5169 (a Remote repairs a corrupt stored blob from its upstream), all
 #   1.12.0, and #5792 (the Referrers API through a Virtual lists its members'
-#   referrers, 1.12.3). Profile-set: filesystem / single + upstreams.mock-oci-classify (a
+#   referrers, 1.12.3) and #5766 (an admin release is bound to the digest it
+#   was decided for, 1.12.4). Profile-set: filesystem / single + upstreams.mock-oci-classify (a
 #   raw-body OCI upstream on 172.16.<slot>.83; only its `runnable` image and
 #   blobs are used here).
 #
@@ -55,6 +56,15 @@
 #   second Virtual over both, and a user with no grant (HTTP Basic).
 #   Controls: the hosted member's direct listing; the user pulls the public
 #   member's referrer by digest through the public Virtual.
+# * #5766: `POST /api/v1/quarantine/{id}/release` acted on whatever image the
+#   tag row named when the request landed, so a release an administrator
+#   decided for H1 could clear a newer hold on H2 after a push moved the tag.
+#   The fix (1.12.4) binds the release to `expected_digest` (default: the
+#   digest the row names when read), as #5646 bound quarantine and reject:
+#   after a move it releases H1's held digest row and answers `held_digest` /
+#   `moved_to_digest`. Fixture: `aktest/hold:t` held while it names H1, moved
+#   to H2, H2 held; then the release names H1. Control: both images are
+#   refused before the release (the carried hold, #5457, and the new hold).
 #
 # Red: ak-backend:1.11.13 (every FIX case; #5169 serves the corrupt bytes) and
 #      ak-backend:sha-12808b8 (main 2026-11-02, before #5215, #5838 and #5859;
@@ -63,7 +73,7 @@
 #        #5794 and #5169. #5792 is red on every image before PR #6258,
 #        ghcr artifact-keeper-backend:main at 15e91b9 included (every FIX
 #        #5792 case: an empty index), and green with PR #6258.
-COVERS="5793 5794 5169 5792"
+COVERS="5793 5794 5169 5792 5766"
 PROFILES="storage.filesystem upstreams.mock-oci-classify"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
