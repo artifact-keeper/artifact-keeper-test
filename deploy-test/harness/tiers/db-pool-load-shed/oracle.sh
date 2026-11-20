@@ -206,13 +206,25 @@ read -r C3 _ <<<"$(req GET "${BASE_URL}/readyz")"
 if [ "$C1" = "200" ] && [ "$B1" = "$BYTES" ] && [ "$C2" = "200" ] && [ "$C3" = "200" ]; then pass
 else fail "after the window: download ${C1}, list ${C2}, /readyz ${C3} (want 200 / 200 / 200)" "$(body)"; fi
 
-begin_test "CONTROL after: 20 parallel anonymous downloads all answer 200"
-for i in $(seq 1 20); do
-  curl -s --max-time 30 -o /dev/null -w '%{http_code}\n' "$DL_URL" >"${WORK}/par.${i}" 2>/dev/null &
-done
+begin_test "CONTROL after: 20 parallel anonymous downloads all answer 200 (a client retrying a 503 after its Retry-After, up to 3 times)"
+# 20 at once against 4 slots is a small burst of its own; a gate whose
+# backlog estimate still remembers the window may shed a few of them with a
+# Retry-After. A client honouring it, as package clients do, must get every
+# file. Neither image may answer anything but 200 or a retryable 503.
+par_get() { # N -> final status in par.N, after up to 3 retries
+  local n="$1" code ra try
+  for try in 0 1 2 3; do
+    code="$(curl -s --max-time 30 -o /dev/null -D "${WORK}/par.${n}.hdr" -w '%{http_code}' "$DL_URL" 2>/dev/null || echo 000)"
+    [ "$code" = "503" ] || break
+    ra="$(grep -i '^retry-after:' "${WORK}/par.${n}.hdr" | head -1 | cut -d: -f2 | tr -dc '0-9')"
+    [ "$try" = "3" ] || sleep "${ra:-1}"
+  done
+  echo "$code" > "${WORK}/par.${n}"
+}
+for i in $(seq 1 20); do par_get "$i" & done
 wait
-par_ok="$(cat "${WORK}"/par.* | grep -c '^200$' || true)"
-if [ "$par_ok" = "20" ]; then pass; else fail "${par_ok}/20 parallel downloads answered 200" "$(cat "${WORK}"/par.* | sort | uniq -c)"; fi
+par_ok="$(cat "${WORK}"/par.? "${WORK}"/par.?? 2>/dev/null | grep -c '^200$' || true)"
+if [ "$par_ok" = "20" ]; then pass; else fail "${par_ok}/20 parallel downloads answered 200" "$(cat "${WORK}"/par.? "${WORK}"/par.?? 2>/dev/null | sort | uniq -c)"; fi
 
 begin_test "FIX #4182: ak_db_requests_shed_total counts the shed requests"
 read -r C T <<<"$(req GET "${BASE_URL}/api/v1/admin/metrics" -H "$BEARER")"

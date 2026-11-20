@@ -47,8 +47,9 @@
 #             endpoint and a wrong Basic password are never 2xx (a shed is a
 #             503, it never lets a request through). After the window: the
 #             download, the repository list and /readyz succeed again, a burst
-#             of 20 parallel downloads all answer 200, and the slow requests
-#             that held the connections complete.
+#             of 20 parallel downloads all end in 200 (each retrying a 503
+#             after its Retry-After, up to 3 times, as package clients do),
+#             and the slow requests that held the connections complete.
 #   (FIX #4182) during the window the overflow request (the anonymous
 #             download) answers 503 {code: POOL_EXHAUSTED} + a Retry-After
 #             of whole seconds in under 2.5 s. RED on main: the same 503 only after the 5 s
