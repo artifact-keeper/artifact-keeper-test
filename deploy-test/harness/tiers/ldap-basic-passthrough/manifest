@@ -1,4 +1,4 @@
-# DTF tier manifest: ldap-basic-passthrough  (artifact-keeper#3830, #4933)
+# DTF tier manifest: ldap-basic-passthrough  (artifact-keeper#3830, #4933, #6160)
 # Profile-set: filesystem / single + the osixia LDAP server (sso.ldap) +
 # sso.ldap-basic-passthrough (LDAP_BASIC_AUTH_PASSTHROUGH=true,
 # AK_GUEST_ACCESS_ENABLED=false, json-file logs for the directory).
@@ -36,9 +36,19 @@
 #     sha-8d0e6e2: web login answers 200 and reactivates the account, and
 #     the passthrough then serves it. (1.11.13 already refuses; the
 #     reactivation half is not new on that line.)
+#   #6160 a non-admin directory user with a read+write repository grant
+#     (POST /api/v1/permissions; is_admin stays false) PUTs a Maven jar with
+#     the directory password: 201 on the granted repository; the same
+#     credential on a repository key that does not exist gets the
+#     valid-credential 404 for PUT and GET. RED on main sha-380b43d:
+#     the no-repository path skips the passthrough and answers the anonymous
+#     401. (Anonymous on the missing key stays 401: CONTROL.)
+#   #6160 a wrong directory password on the missing repository key is 401
+#     after exactly one directory BIND. RED on main sha-380b43d: 401 with no
+#     BIND, the directory is never consulted.
 #
 # RATE_LIMIT_ENABLED=false: back-to-back admin and directory logins.
 PROFILES="storage.filesystem sso.ldap sso.ldap-basic-passthrough"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
-COVERS="3830 4933"
+COVERS="3830 4933 6160"
