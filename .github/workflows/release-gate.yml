@@ -4087,6 +4087,19 @@ jobs:
           # 172.16.<slot>.76). Red on 1.12.3. Required.
           - group: fixes-1.12.4-pypi
             tiers: pypi-remote-index-path
+          # 1.13.0 (artifact-keeper#6300): a vulnerability-DB update does not
+          # re-scan every cached proxy package on its next pull. On the
+          # defaults a fail_open Maven pull is decided by the previous build's
+          # verdict and re-graded in the background while fail_closed still
+          # re-scans inline; with the fail_closed opt-in (the backend
+          # recreated) a fail_closed pull is not scanned on the request path
+          # either, log4j-core is blocked once re-graded, and a binary upgrade
+          # or a stale build recorded late still re-scans inline
+          # (proxy-scan-db-update-grace; upstreams.mock-scan-formats, bundled
+          # Grype, about a minute). Red on every image before 1.13.0, NOT ON
+          # THIS LINE on a 1.12.x candidate. Required.
+          - group: perf-1.13.0-scan
+            tiers: proxy-scan-db-update-grace
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}

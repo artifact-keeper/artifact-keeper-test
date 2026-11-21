@@ -652,7 +652,8 @@ case "$CMD" in
              scan-queue-upload-image-rescan openscap-evaluates-image-rootfs openscap-root-mode \
              backup-restore-fresh-server \
              scanner-adapter-on-demand scanner-adapter-cache-partition \
-             scanner-adapter-max-image-size scanner-adapter-fair-queue; do
+             scanner-adapter-max-image-size scanner-adapter-fair-queue \
+             proxy-scan-db-update-grace; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
