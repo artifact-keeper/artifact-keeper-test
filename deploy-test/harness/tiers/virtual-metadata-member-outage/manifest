@@ -1,7 +1,7 @@
 # DTF tier manifest: virtual-metadata-member-outage
 #   (artifact-keeper#5504, #5616, #5621, #5622; all fixed on main for 1.12.0,
 #   none on the 1.11.x line. artifact-keeper#5013, the per-upstream circuit
-#   breaker, is 1.13.0)
+#   breaker, and #5620, the metadata walks, are 1.13.0)
 # Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files:
 # a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes over
 # a control API). One mock stands in for every Remote member: each member's
@@ -26,6 +26,11 @@
 #        `virtual_metadata_partial` was not readable through the API.
 # #5622  An Alpine Virtual's APKINDEX left out hosted members' packages, and
 #        with every member down it answered 200 with an empty index.
+# #5620  The #5504 rule did not reach the package metadata walks: a Virtual
+#        whose members were [404, 503] answered the npm packument, the PyPI
+#        simple page and the Cargo sparse index 404 ("Package not found in any
+#        member repository"), which npm, pip and cargo report as "not found"
+#        (and the npm packument cache evicted its entry on that 404).
 # #5013  A dead or hung upstream was contacted on every request: a Virtual's
 #        metadata merge asked a member answering 503 every time, a Remote
 #        serving an expired entry stale re-asked its dead upstream first on
@@ -56,6 +61,9 @@
 #              #5622 alpine virtual [hosted] and [hosted, down remote] list
 #                    the hosted package; [hosted, remote] lists both;
 #                    [down remote] -> 503 + Retry-After.
+#              #5620 (RED on main before the fix, GREEN with it) npm
+#                    packument, PyPI simple page and Cargo sparse index of a
+#                    virtual [404, 503] answer 503 + Retry-After;
 #              #5013 (RED on main before the breaker, GREEN with it;
 #                    counted on the mock): helm [503, ok] x12 -> every merge
 #                    200 partial and the dead member's upstream contacted at
@@ -73,6 +81,7 @@
 #              one answering remote passes its APKINDEX through byte for
 #              byte, and one over a remote that 404s answers an empty 200
 #              index.
+#              #5620: the same three walks over [404, 403] answer 404.
 #              #5013: after the dead helm member recovers, the merge uses it
 #              again within 60 s; a Remote whose upstream 404s answers 404 to
 #              12 misses in a row, never 503.
@@ -84,7 +93,7 @@
 #
 # RATE_LIMIT_ENABLED=false: ~150 requests back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
-COVERS="5504 5616 5621 5622 5013"
+COVERS="5504 5616 5621 5622 5013 5620"
 PROFILES="storage.filesystem upstreams.mock-files"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

@@ -260,6 +260,29 @@ virt "$AV_R" alpine "$A_OK"
 virt "$AV_D" alpine "$A_DOWN"
 virt "$AV_404" alpine "$A_404"
 
+# --- package metadata walks (#5620): npm packument, PyPI simple page, Cargo
+# sparse index. Each virtual has a member that 404s (nothing stored) and one
+# that answers 503 (or, for the controls, a permanent 403).
+NPKG="dtfn${SUF}"; PYPKG="dtfp${SUF}"; CRATE="dtfk${SUF}"
+CRATE_IDX="${CRATE:0:2}/${CRATE:2:2}/${CRATE}"
+for m in n503:503 n403:403; do
+  [ "$(mock_status "/${P}/${m%%:*}/${NPKG}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}"
+done
+for m in p503:503 p403:403; do
+  for f in "simple/${PYPKG}/" "simple/${PYPKG}"; do
+    [ "$(mock_status "/${P}/${m%%:*}/${f}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}:${f}"
+  done
+done
+for m in k503:503 k403:403; do
+  [ "$(mock_status "/${P}/${m%%:*}/${CRATE_IDX}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}"
+done
+for fmt in npm:n pypi:p cargo:k; do
+  f="${fmt%%:*}"; x="${fmt#*:}"
+  for m in 404 503 403; do mk "vmo-${x}${m}-${SUF}" "$f" remote "${UP}/${P}/${x}${m}"; done
+  virt "vmo-${x}v503-${SUF}" "$f" "vmo-${x}404-${SUF}" "vmo-${x}503-${SUF}"
+  virt "vmo-${x}v403-${SUF}" "$f" "vmo-${x}404-${SUF}" "vmo-${x}403-${SUF}"
+done
+
 # Uploads: the hosted .apk and the hosted Maven jar.
 up(){ # <path> <file>
   local c
@@ -390,6 +413,45 @@ get "/api/v1/repositories/${GV_503}/download/v/f.bin" "$W/gv503.bin"
 note "download -> ${ST}: $(snip "$W/gv503.bin")"
 [ "$ST" = "503" ] || fail_g "the generic download answered ${ST}, expected 503"
 finish_case "the generic route mapped a member 5xx to 404"
+
+# #5620: the package metadata walks follow the #5504 rule: a member that could
+# not answer makes an empty walk 503 + Retry-After, a miss or a permanent 4xx
+# stays 404.
+meta_walk(){ # <label> <virtual-503> <virtual-403> <path-under-the-virtual-route>
+  local r
+  get "${4//@V@/$2}" "$W/mw503"; r="$ST"
+  note "$1 [404 member, 503 member] -> ${r} (Retry-After '$(hdr "$W/mw503" retry-after)'): $(snip "$W/mw503")"
+  [ "$r" = "503" ] || fail_g "$1 [404, 503] answered ${r}, expected 503 (a client caches the 404)"
+  [ -n "$(hdr "$W/mw503" retry-after)" ] || fail_g "$1 [404, 503]: no Retry-After"
+  get "${4//@V@/$3}" "$W/mw403"
+  note "$1 [404 member, 403 member] -> ${ST}"
+  CONTROL_ST="$ST"
+}
+begin_test "FIX #5620: an npm virtual [404 member, 503 member] answers the packument 503 with Retry-After, not 404"
+reset_case
+meta_walk "npm packument" "vmo-nv503-${SUF}" "vmo-nv403-${SUF}" "/npm/@V@/${NPKG}"
+NPM_CONTROL="$CONTROL_ST"
+finish_case "an unavailable member made the npm packument 404"
+
+begin_test "FIX #5620: a PyPI virtual [404 member, 503 member] answers the simple page 503 with Retry-After, not 404"
+reset_case
+meta_walk "PyPI simple page" "vmo-pv503-${SUF}" "vmo-pv403-${SUF}" "/pypi/@V@/simple/${PYPKG}/"
+PYPI_CONTROL="$CONTROL_ST"
+finish_case "an unavailable member made the PyPI simple page 404"
+
+begin_test "FIX #5620: a Cargo virtual [404 member, 503 member] answers the sparse index 503 with Retry-After, not 404"
+reset_case
+meta_walk "Cargo sparse index" "vmo-kv503-${SUF}" "vmo-kv403-${SUF}" "/cargo/@V@/index/${CRATE_IDX}"
+CARGO_CONTROL="$CONTROL_ST"
+finish_case "an unavailable member made the Cargo sparse index 404"
+
+begin_test "CONTROL (#5620): npm, PyPI and Cargo virtuals [404 member, 403 member] answer 404 (a permanent 4xx is a miss)"
+reset_case
+for c in "npm:${NPM_CONTROL}" "pypi:${PYPI_CONTROL}" "cargo:${CARGO_CONTROL}"; do
+  [ "${c#*:}" = "404" ] || fail_g "${c%%:*} [404, 403] answered ${c#*:}, expected 404"
+done
+note "npm ${NPM_CONTROL}, pypi ${PYPI_CONTROL}, cargo ${CARGO_CONTROL}"
+finish_case "a permanent member 4xx did not read as a miss on a metadata walk"
 
 begin_test "FIX #5504: a Maven virtual over a hosted member whose stored object is gone answers .sha1 503, not 404"
 reset_case
