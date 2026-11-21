@@ -494,6 +494,63 @@ fi
 finish_case "restore buffers the whole archive in memory"
 
 # -----------------------------------------------------------------------------
+# #6358: whatever is stored at a manifest path of a Docker repository is served
+# by the generic download route with its real length, which it learned by
+# buffering the whole object, on a HEAD too. The manifest PUT itself buffers
+# its body, so the oracle pushes a small manifest and then puts the BIG_MIB
+# fixture in its place (the stored object and the row's digest), as an object
+# written at that path by any other means would be.
+OCI_ID="$(psql_q -c "SELECT id FROM repositories WHERE key='${OCI}'")"
+MAN='{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:'"$(printf '1%.0s' $(seq 1 64))"'","size":2},"layers":[]}'
+MAN_C="$(curl -s -o "$W/man.out" -w '%{http_code}' --max-time 60 -X PUT -H "$BASIC" \
+  -H 'Content-Type: application/vnd.oci.image.manifest.v1+json' --data-binary "$MAN" \
+  "$BASE/v2/${OCI}/big/manifests/1.0" || true)"
+MAN_PATH="v2/big/manifests/1.0"
+MAN_KEY="$(psql_q -c "SELECT storage_key FROM artifacts WHERE repository_id='${OCI_ID}' AND path='${MAN_PATH}' AND NOT is_deleted")"
+MAN_ROOT="$(psql_q -c "SELECT storage_path FROM repositories WHERE id='${OCI_ID}'")"
+MAN_URL="$BASE/api/v1/repositories/${OCI}/download/${MAN_PATH}"
+MAN_ERR=""
+if [ "$MAN_C" != "201" ] || [ -z "$MAN_KEY" ] || [ -z "$MAN_ROOT" ]; then
+  MAN_ERR="manifest push ${MAN_C} ($(head -c 120 "$W/man.out")), storage key '${MAN_KEY}', root '${MAN_ROOT}'"
+elif ! docker cp "$W/big.bin" "${BACKEND_CTR}:${MAN_ROOT}/${MAN_KEY}" >/dev/null 2>&1; then
+  MAN_ERR="docker cp of the ${BIG_MIB} MiB object to ${MAN_ROOT}/${MAN_KEY} failed"
+else
+  psql_q -c "UPDATE artifacts SET checksum_sha256='${BIG_SHA}' WHERE repository_id='${OCI_ID}' AND path='${MAN_PATH}'" >/dev/null
+fi
+
+begin_test "FIX #6358: a HEAD of a ${BIG_MIB} MiB object at a Docker manifest path on the generic download route reads no body (< 1 MiB read, pre-fix the whole object, buffered)"
+reset_case
+if [ -n "$MAN_ERR" ]; then infra_fail "setup: ${MAN_ERR}"; else
+  case_start
+  r0="$(rchar)"
+  c="$(curl -s -I -o "$W/man.h" -w '%{http_code}' --max-time 300 -H "$BASIC" "$MAN_URL" || true)"
+  r1="$(rchar)"
+  len="$(grep -i '^content-length:' "$W/man.h" | tr -d '\r' | awk '{print $2}')"
+  # A backend that died during the HEAD is a new process: its rchar starts over.
+  if [ -n "$r0" ] && [ -n "$r1" ] && [ "$r1" -ge "$r0" ]; then rd="$(mib $(( r1 - r0 ))) MiB"; else rd="? (not the same process)"; fi
+  note "HEAD -> ${c}, Content-Length ${len:-?}; backend read ${rd}"
+  if case_survived "HEAD of the ${BIG_MIB} MiB manifest path"; then
+    [ "$c" = "200" ] || fail_g "HEAD answered ${c}"
+    [ "$len" = "$(( BIG_MIB * 1048576 ))" ] || fail_g "HEAD Content-Length ${len:-none}, expected the stored length $(( BIG_MIB * 1048576 ))"
+    if [ -z "$r0" ] || [ -z "$r1" ]; then fail_g "could not read /proc/1/io of the backend around the HEAD"
+    elif [ $(( r1 - r0 )) -ge 1048576 ]; then fail_g "the HEAD read $(mib $(( r1 - r0 ))) MiB of the stored object"; fi
+  fi
+  finish_case "a HEAD of a manifest path reads and buffers the stored object"
+fi
+
+begin_test "FIX #6358: a GET of that ${BIG_MIB} MiB object (more than the ${CAP} cap) streams it byte-exact"
+reset_case
+if [ -n "$MAN_ERR" ]; then infra_fail "setup: ${MAN_ERR}"; else
+  case_start
+  read -r c s <<<"$(get_sha "$MAN_URL")"
+  note "GET -> ${c}"
+  if case_survived "GET of the ${BIG_MIB} MiB manifest path"; then
+    [ "$c" = "200" ] && [ "$s" = "$BIG_SHA" ] || fail_g "GET answered ${c} or other bytes"
+  fi
+  finish_case "a GET of a manifest path buffers the stored object whole"
+fi
+
+# -----------------------------------------------------------------------------
 # Last: this case raises the cap (RPM_CAP) and leaves it raised.
 begin_test "FIX #4924: a cold repodata render of a ${RPM_PACKAGES}-package hosted RPM root answers 200 under a ${RPM_CAP} cap, and the documents are complete"
 reset_case
