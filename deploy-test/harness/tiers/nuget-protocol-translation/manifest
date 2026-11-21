@@ -30,7 +30,10 @@
 #        no V3 search hit, no registration, no flat-container entry. Fixed:
 #        the shared upload finalizer reads the .nuspec, checks it against the
 #        filename (a mismatch is 400 and stores nothing) and indexes the
-#        package.
+#        package. The whole filename is compared, so an id ending in a
+#        numeric segment (Foo.2) is not misread; an id+version already in
+#        the repository (a native push) is refused with 409; a body that is
+#        not a package archive is 400 without the archive library's error.
 #
 # RED image: ak-backend:1.10.0 for #4122/#4021/#3870 (GREEN: 1.11.0 and
 # later); main sha-380b43d for #6062 (GREEN: 1.12.4 and later).

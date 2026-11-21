@@ -42,6 +42,11 @@ ID_REMOTE="dtfnu-r${SUF}"   # only the virtual's remote member has it
 ID_SHARED="dtfnu-s${SUF}"   # hosted 1.0.0 AND remote 1.0.0/2.0.0
 ID_UI="Dtf.UiUpload${SUF}"  # #6062: uploaded to NU through the generic PUT
 ID_UI_LC="$(printf '%s' "$ID_UI" | tr '[:upper:]' '[:lower:]')"
+ID_DUP="Dtf.UiDup${SUF}"      # #6062: natively pushed, then re-uploaded at the root
+ID_DUP_LC="$(printf '%s' "$ID_DUP" | tr '[:upper:]' '[:lower:]')"
+ID_UI_NUM_BASE="Dtf.UiNum${SUF}"
+ID_NUM="${ID_UI_NUM_BASE}.2"  # #6062: an id whose last segment is numeric
+ID_NUM_LC="$(printf '%s' "$ID_NUM" | tr '[:upper:]' '[:lower:]')"
 
 WORK="$(mktemp -d -t dtf-npt-XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
@@ -335,6 +340,64 @@ if [ "$put_st" = "400" ] && [ "$g_st" = "404" ]; then
   pass
 else
   fail "PUT ${bad_path} (nuspec ${ID_UI} 1.2.4) -> ${put_st}, then GET -> ${g_st}; want 400 then 404 (pre-#6062 the mismatch is stored as an unversioned file)" "$put_body"
+fi
+
+
+begin_test "FIX #6062: a root generic PUT of an id and version a native push already stored is refused with 409, one copy stays"
+mknupkg "$WORK/dup.nupkg" "$ID_DUP" "1.0.0"
+push_st="$(curl -s --max-time 60 -o "$WORK/duppush.out" -w '%{http_code}' -X PUT \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" -F "package=@$WORK/dup.nupkg;type=application/octet-stream" \
+  "${BASE_URL}/nuget/${NU}/api/v2/package" 2>/dev/null || echo 000)"
+dup_path="${ID_DUP}.1.0.0.nupkg"
+put_st="$(gput "$WORK/dup.nupkg" "$dup_path")"
+put_body="$(head -c 200 "$WORK/gput.out")"
+g_st="$(curl -s --max-time 60 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "${BASE_URL}/api/v1/repositories/${NU}/artifacts/${dup_path}" 2>/dev/null || echo 000)"
+f_st="$(get "/nuget/${NU}/v3/flatcontainer/${ID_DUP_LC}/1.0.0/${ID_DUP_LC}.1.0.0.nupkg" "$WORK/dupflat.nupkg")"
+err=""
+ok2xx "$push_st" || err+="native push -> ${push_st} $(head -c 160 "$WORK/duppush.out"); "
+[ "$put_st" = "409" ] || err+="root PUT ${dup_path} -> ${put_st} ${put_body}; "
+[ "$g_st" = "404" ] || err+="GET ${dup_path} after the refusal -> ${g_st}; "
+if [ "$f_st" != "200" ] || ! cmp -s "$WORK/dupflat.nupkg" "$WORK/dup.nupkg"; then
+  err+="flat-container download of the pushed copy -> ${f_st}, $(wc -c < "$WORK/dupflat.nupkg") bytes; "
+fi
+if [ -z "$err" ]; then
+  pass
+else
+  fail "want the native push 2xx, the root PUT of the same id+version 409 and not stored, the pushed copy still served (pre-#6062 the root copy is stored as a second, unversioned file)" "$err"
+fi
+
+begin_test "FIX #6062: an id ending in a numeric segment (<id>.2) uploaded at the root is indexed under the whole id"
+mknupkg "$WORK/num.nupkg" "$ID_NUM" "1.0.0"
+put_st="$(gput "$WORK/num.nupkg" "${ID_NUM}.1.0.0.nupkg")"
+put_body="$(head -c 200 "$WORK/gput.out")"
+r_st="$(get "/nuget/${NU}/v3/registration/${ID_NUM_LC}/index.json" "$WORK/numreg.json")"
+f_st="$(get "/nuget/${NU}/v3/flatcontainer/${ID_NUM_LC}/1.0.0/${ID_NUM_LC}.1.0.0.nupkg" "$WORK/numflat.nupkg")"
+err=""
+ok2xx "$put_st" || err+="generic PUT -> ${put_st} ${put_body}; "
+jq -e '[.items[] | (.items // [])[] | .catalogEntry.version] | index("1.0.0") != null' "$WORK/numreg.json" >/dev/null 2>&1 \
+  || err+="registration ${ID_NUM_LC} -> ${r_st} $(head -c 300 "$WORK/numreg.json"); "
+if [ "$f_st" != "200" ] || ! cmp -s "$WORK/numflat.nupkg" "$WORK/num.nupkg"; then
+  err+="flat-container download -> ${f_st}, $(wc -c < "$WORK/numflat.nupkg") bytes; "
+fi
+if [ -z "$err" ]; then
+  pass
+else
+  fail "want a 2xx PUT of ${ID_NUM}.1.0.0.nupkg, then 1.0.0 under id ${ID_NUM_LC} in the registration and the flat container (splitting at the first numeric segment would read ${ID_UI_NUM_BASE} 2.1.0.0)" "$err"
+fi
+
+begin_test "FIX #6062: a root .nupkg that is not a package archive is refused with 400 without the archive error, and stores nothing"
+printf 'not a zip archive\n' > "$WORK/junk.nupkg"
+junk_path="${ID_UI}.3.0.0.nupkg"
+put_st="$(gput "$WORK/junk.nupkg" "$junk_path")"
+put_body="$(head -c 400 "$WORK/gput.out")"
+g_st="$(curl -s --max-time 60 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "${BASE_URL}/api/v1/repositories/${NU}/artifacts/${junk_path}" 2>/dev/null || echo 000)"
+if [ "$put_st" = "400" ] && [ "$g_st" = "404" ] \
+   && ! printf '%s' "$put_body" | grep -qiE 'zip archive|eocd|central directory|/tmp/|/data/'; then
+  pass
+else
+  fail "PUT ${junk_path} (not a ZIP) -> ${put_st}, then GET -> ${g_st}; want 400 then 404, and a body without the archive library's error (pre-#6062 the bytes are stored as an unversioned file)" "$put_body"
 fi
 
 end_suite
