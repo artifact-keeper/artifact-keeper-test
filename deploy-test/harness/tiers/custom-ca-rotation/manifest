@@ -1,0 +1,7 @@
+# artifact-keeper#5193: a retained scanner health client must honor atomic
+# changes to the custom CA bundle. The mock switches between two private CAs
+# without restarting the backend. Controls prove the fixture starts trusted
+# and the new CA initially fails. The fix cases cover addition and removal.
+PROFILES="storage.filesystem scanners.mock-ca-rotation"
+ORACLE="oracle.sh"
+COVERS="5193"
