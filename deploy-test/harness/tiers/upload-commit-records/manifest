@@ -1,0 +1,55 @@
+# DTF tier manifest: upload-commit-records  (artifact-keeper#6383, #6346,
+# #6318; 1.13.0)
+# Profile-set: filesystem / single. HTTP plus DB truth (docker exec psql
+# against this slot's Postgres, DB_CONTAINER). No egress, no object storage.
+#
+# THE PROBLEM
+#   (#6383) Several upload paths wrote the format metadata a package is served
+#   from AFTER the artifact row committed, and only logged (or discarded) a
+#   failure there: a generic PUT of a package into a PyPI, Debian or RPM
+#   repository, the native RPM upload, the NuGet push. Under pool exhaustion
+#   the package was then stored without its metadata row: out of its format's
+#   index, and its retry refused with 409. A versioning-enabled Generic
+#   repository appended the revision after the commit too, so a failure there
+#   answered an error for an upload that had replaced the HEAD.
+#   (#6346, #6318) The PyPI upload (and NuGet, Debian, nested RPM and the
+#   generic PUT's native finalize) upserted its package catalog row twice:
+#   once in the upload service's finalize, again in the handler. Every write is
+#   a pool checkout; per-upload connection demand is what a small pool runs out
+#   of.
+#
+# THE FIX (1.13.0)
+#   The metadata document and the revision commit in the transaction that
+#   commits the artifact row (a failure rolls the upload back, so the error is
+#   true and the retry starts clean); the handler that registers the catalog
+#   row tells the upload service, which then writes none of its own.
+#
+# THE PRIMITIVES
+#   * Fault injection: a BEFORE INSERT OR UPDATE trigger on artifact_metadata
+#     (and one on artifact_versions) raises for rows naming the marker
+#     `dtfw13ufault` while a switch row is set. Only this tier's packages carry
+#     the marker; the oracle drops the triggers on exit.
+#   * Write counting: AFTER INSERT OR UPDATE row triggers on packages and
+#     package_versions log each row write with the package name.
+#
+# Oracle (RELEASE_GATE=1):
+#   (FIX #6383) with the metadata write failing, a generic PUT of a wheel into
+#     a PyPI repository, a NuGet push and a native RPM upload each leave no
+#     live artifact row without its metadata. RED on main: 201 and a stored
+#     package with no artifact_metadata row.
+#   (FIX #6383) the same uploads, retried with the fault cleared, are 2xx with
+#     metadata. RED on main: 409, the first attempt holds the path.
+#   (FIX #6383) on a versioning-enabled generic repository, a replacement
+#     whose revision write fails leaves the HEAD serving the previous bytes.
+#     RED on main: the HEAD already serves the new bytes.
+#   (FIX #6346) a twine-style PyPI upload and a NuGet push each write their
+#     packages row twice (insert, update) and package_versions once. RED on
+#     main: four packages writes.
+#   (FIX #6318) a generic PUT of a wheel into a PyPI repository writes the
+#     catalog once. RED on main: the finalize and the native record both write.
+#   (CONTROL) the uploaded project is listed in the simple index with its
+#     summary; the catalog row carries the description (green on both).
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="6383 6346 6318"

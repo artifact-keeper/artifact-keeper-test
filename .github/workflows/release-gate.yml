@@ -3498,8 +3498,12 @@ jobs:
           # overflow request is shed with 503 + Retry-After within the
           # admission wait and /readyz stays ready. HTTP + its own Postgres
           # only, about 1 min. Red on 1.12.x and on main before the fix.
+          # upload-commit-records (artifact-keeper#6383, #6346, #6318): with
+          # the metadata or revision write failing, an upload stores nothing
+          # (no package without its index metadata), and one upload writes
+          # its catalog row once. HTTP + its own Postgres, under 1 min.
           - group: resilience-1.13.0
-            tiers: db-pool-load-shed
+            tiers: db-pool-load-shed upload-commit-records
           # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
           # #499-#502): green on main, red on 1.11.3. api is pure HTTP + DB
           # plus the mock OIDC IdP; features stands up the conda, BSR, static
