@@ -3493,6 +3493,13 @@ jobs:
           # not carry the PATCH cases.
           - group: fixes-1.11.3-ops
             tiers: remote-instance-relay push-sync-native-formats ops-log-noise readyz-hung-dependency
+          # 1.13.0 resilience (artifact-keeper#4182): with every pooled
+          # database connection held (a 4-connection pool, a table lock), an
+          # overflow request is shed with 503 + Retry-After within the
+          # admission wait and /readyz stays ready. HTTP + its own Postgres
+          # only, about 1 min. Red on 1.12.x and on main before the fix.
+          - group: resilience-1.13.0
+            tiers: db-pool-load-shed
           # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
           # #499-#502): green on main, red on 1.11.3. api is pure HTTP + DB
           # plus the mock OIDC IdP; features stands up the conda, BSR, static
@@ -4073,6 +4080,13 @@ jobs:
           # #5856). Same 1.12.0-only rule. Required.
           - group: fixes-1.12.0-backup-fresh-server
             tiers: backup-restore-fresh-server
+          # 1.12.4 (artifact-keeper#5643): a PyPI Remote's proxy 502 names the
+          # upstream's status in X-AK-Upstream-Status, and PEP 691
+          # negotiation reads q-values and the `latest` alias
+          # (pypi-remote-index-path, upstreams.mock-files on
+          # 172.16.<slot>.76). Red on 1.12.3. Required.
+          - group: fixes-1.12.4-pypi
+            tiers: pypi-remote-index-path
           # 1.13.0 (artifact-keeper#6300): a vulnerability-DB update does not
           # re-scan every cached proxy package on its next pull. On the
           # defaults a fail_open Maven pull is decided by the previous build's
@@ -4246,6 +4260,17 @@ jobs:
   #              candidate's adapter (inputs.scanner_adapter_tag, default
   #              backend_tag), not the published :1. New in 1.12.0; promote
   #              it after it holds green on two candidates.
+  #   sbom-license-trivy-1.12.4 (sbom-license-expression-trivy):
+  #     reason:  scanners.trivy, so the adapter downloads the Trivy DB from
+  #              ghcr, like scan-grading-trivy-1.12.3 below; it cannot run
+  #              in dtf-gate, which sets no adapter image, DB repository or
+  #              DB credentials. Its red/green axis is the backend
+  #              (artifact-keeper#5629). New in 1.12.4; promote it after it
+  #              holds green on two candidates.
+  #     owner:   release-engineering
+  #     expires: 2027-02-01 — on/after this date either promote the leg
+  #              into dtf-gate (with the adapter env it needs) or
+  #              re-justify the waiver in a PR.
   #   scan-grading-trivy-1.12.3 (scan-grading-os-and-jar-trivy):
   #     reason:  scanners.trivy (the oracle starts the adapter), so the
   #              adapter downloads the Trivy DB from ghcr, like supply-chain.
@@ -4366,6 +4391,13 @@ jobs:
           # on backends before #6236. Backend axis, so the published adapter :1.
           - group: scan-grading-trivy-1.12.3
             tiers: scan-grading-os-and-jar-trivy
+          # 1.12.4 (artifact-keeper#5629): with the Trivy filesystem scanner
+          # enabled, an SBOM keeps a compound license as a CycloneDX
+          # expression instead of Trivy's LicenseRef- wrapping of it. The
+          # sbom-license-expression tier (dtf-gate) has no adapter, so it
+          # cannot see this. Backend axis, so the published adapter :1.
+          - group: sbom-license-trivy-1.12.4
+            tiers: sbom-license-expression-trivy
     env:
       BACKEND_TAG: ${{ inputs.backend_tag }}
       BACKEND_DIGEST: ${{ inputs.backend_digest }}

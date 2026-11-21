@@ -17,6 +17,18 @@
 # record_only -> served X-AK-Scan: recorded; metadata stays unscanned.
 #
 # Red: ak-backend:1.11.5. Green: an image carrying artifact-keeper#4103-#4105.
+#
+# artifact-keeper#6214 (1.12.4): when a Go Remote's upstream answered 5xx or
+# 429, could not be reached, or refused the Remote's configured credentials,
+# `@v/list`, `@latest` and `.info` answered 404
+# (`.mod` and `.zip` answered 502/503), and so did a Virtual over it. `go`
+# reads 404/410 as "this proxy does not have the module" and moves on to the
+# next GOPROXY entry, so with GOPROXY=<ak>,direct an outage sent the client
+# to the internet, past this scan gate. The fix answers those three routes
+# with a 5xx; a module the upstream does not have still answers 404. The
+# failing upstreams are the mock's /failing/<code>/ prefix and a closed port
+# on the mock's address. Red: main sha-380b43d. Green: the fix.
+COVERS="6214"
 PROFILES="storage.filesystem upstreams.mock-scan-formats"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

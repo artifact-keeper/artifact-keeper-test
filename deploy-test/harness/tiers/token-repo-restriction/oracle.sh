@@ -12,6 +12,8 @@
 #          repository restriction, and redeeming one works again.
 #   GHSA-gvhj-8vg9-358g  PUT /repositories/{key}/security needs
 #          write:repositories.
+#   #5643  POST /users/{id}/tokens and /users/me/tokens take a repo_selector,
+#          stored and enforced as on /auth/tokens (was 400 unknown field).
 # See the manifest for THE BUGS, the fixture and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_USER, ADMIN_PASS, RUN_ID,
@@ -349,6 +351,37 @@ for ep in /api/v1/profile/access-tokens /api/v1/users/me/tokens; do
   [ "$(tokens_named "$nm")" = "0" ] || gate "${ep} stored a token for the misspelled request"
 done
 finish_case "a misspelled mint field is silently dropped"
+
+# =============================================================================
+# FIX #5643: the /users/{id}/tokens mint routes take a repo_selector
+# =============================================================================
+begin_test "FIX #5643: /users/me/tokens and /users/{id}/tokens store a repo_selector and the token reads A and not B"
+reset_case
+for spec in "${UT}|/api/v1/users/me/tokens|self-me" "${UT}|/api/v1/users/${U_ID}/tokens|self-id" "${ADMIN_TOKEN}|/api/v1/users/${U_ID}/tokens|admin-id"; do
+  tok="${spec%%|*}"; rest="${spec#*|}"; ep="${rest%%|*}"; who="${rest##*|}"
+  mint "$tok" "$ep" "{\"name\":\"trr-u-${who}-${SUF}\",\"scopes\":[\"read:artifacts\"],\"repo_selector\":{\"match_repos\":[\"${A_ID}\"]}}"
+  note "${who} mints via ${ep}: ${MINT_CODE}; stored selector $(selector_of "$MINT_ID")"
+  if ! is_2xx "$MINT_CODE" || [ -z "$MINT_TOKEN" ]; then gate "${who} mint via ${ep} with repo_selector answered ${MINT_CODE}: $(snip | head -c 160)"; continue; fi
+  [ "$(db "SELECT repo_selector->'match_repos'->>0 FROM api_tokens WHERE id = '${MINT_ID}'")" = "$A_ID" ] \
+    || gate "${who} via ${ep} stored selector $(selector_of "$MINT_ID"), expected match_repos [A]"
+  code="$(dl "$RA" "$MINT_TOKEN")"; expect_bytes "$code" "$BYTES_A" "${who} token download A"
+  code="$(dl "$RB" "$MINT_TOKEN")"; expect_denied "$code" "${who} token download B"
+done
+finish_case "the user token routes refuse or drop repo_selector"
+
+begin_test "FIX #5643: on /users/me/tokens a selector that would not restrict is 400 and a restricted token naming its own is 403"
+reset_case
+nm="trr-u-bad-${SUF}"
+code="$(req POST /api/v1/users/me/tokens "$UT" "{\"name\":\"${nm}\",\"scopes\":[\"read:artifacts\"],\"repo_selector\":{\"match_repoz\":[\"${A_ID}\"]}}")"
+note "misspelled criterion: ${code} $(snip | head -c 140)"
+[ "$code" = "400" ] || gate "a misspelled selector criterion answered ${code}, expected 400"
+[ "$(tokens_named "$nm")" = "0" ] || gate "the misspelled selector still stored a token"
+nm="trr-u-widen-${SUF}"
+code="$(req POST /api/v1/users/me/tokens "$TA" "{\"name\":\"${nm}\",\"scopes\":[\"read:artifacts\"],\"repo_selector\":{\"match_repos\":[\"${B_ID}\"]}}")"
+note "TA naming selector [B]: ${code} $(snip | head -c 140)"
+[ "$code" = "403" ] || gate "TA naming a selector for B on /users/me/tokens answered ${code}, expected 403"
+[ "$(tokens_named "$nm")" = "0" ] || gate "the refused widening still stored a token"
+finish_case "the user token routes accept a selector they should refuse"
 
 begin_test "FIX #4226: a stored selector that does not parse grants no repository at all"
 reset_case
