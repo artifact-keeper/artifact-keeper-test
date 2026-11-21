@@ -3493,6 +3493,13 @@ jobs:
           # not carry the PATCH cases.
           - group: fixes-1.11.3-ops
             tiers: remote-instance-relay push-sync-native-formats ops-log-noise readyz-hung-dependency
+          # 1.13.0 resilience (artifact-keeper#4182): with every pooled
+          # database connection held (a 4-connection pool, a table lock), an
+          # overflow request is shed with 503 + Retry-After within the
+          # admission wait and /readyz stays ready. HTTP + its own Postgres
+          # only, about 1 min. Red on 1.12.x and on main before the fix.
+          - group: resilience-1.13.0
+            tiers: db-pool-load-shed
           # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
           # #499-#502): green on main, red on 1.11.3. api is pure HTTP + DB
           # plus the mock OIDC IdP; features stands up the conda, BSR, static
