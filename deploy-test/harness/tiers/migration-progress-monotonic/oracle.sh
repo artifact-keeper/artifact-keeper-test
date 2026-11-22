@@ -33,6 +33,9 @@ set -uo pipefail
 
 # shellcheck source=/dev/null
 source "$COMMON_SH"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=nexus_listing.sh
+source "${HERE}/nexus_listing.sh"
 
 # common.sh runs under `set -euo pipefail`, so every probe below swallows its
 # own failure explicitly: an unguarded pipeline that 404s would kill the oracle
@@ -498,5 +501,11 @@ Its claim renewal reported the loss within ~100 s, and the worker must stop on t
 onto a row that is no longer its own." "samples:${CLAIM_TRACE}"
 fi
 ac POST "/api/v1/migrations/${JOB_CLAIM}/cancel" >/dev/null
+
+# ===========================================================================
+# GATES (#6360, #6260) — a Nexus source's listing work is bounded
+# ===========================================================================
+# See nexus_listing.sh: the scripted Nexus counts its listing requests.
+run_nexus_listing_cases
 
 end_suite

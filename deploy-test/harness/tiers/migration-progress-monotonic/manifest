@@ -87,7 +87,13 @@
 # the row. The oracle rewrites the claim with psql once the job is moving and
 # throttles the job past the first renewal (~100 s); the vulnerable image
 # finishes the migration and stamps the taken-over job `completed`.
-COVERS="6305"
-PROFILES="storage.filesystem upstreams.mock-artifactory"
+#
+# FIX #6360 / #6260 (1.13.0, nexus_listing.sh): a scripted Nexus source
+# (upstreams.mock-nexus, stacked on this tier's mockartifactory network)
+# counts its listing requests. An npm repository's migration must make no
+# /assets request (#6360), and a cancel of a date-windowed migration over 400
+# empty pages must stop the listing within one 50-page budget (#6260).
+COVERS="6305 6360 6260"
+PROFILES="storage.filesystem upstreams.mock-artifactory upstreams.mock-nexus"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
