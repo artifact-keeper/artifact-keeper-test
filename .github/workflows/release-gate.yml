@@ -4131,9 +4131,15 @@ jobs:
           # proxy-cache row, PyPI metadata and the conda, Alpine, RPM, Debian,
           # Go, Helm, Cargo and generic routes, checks the sidecar first).
           # Red on main before the fix, NOT ON THIS LINE on a 1.12.x
-          # candidate. Required.
+          # candidate. Since artifact-keeper#6439 also PyPI PEP 658 metadata
+          # follows its distribution's download gate (a held or rejected
+          # hosted row, a member wheel a scanning virtual refuses), and since
+          # artifact-keeper#5983 the client-facing PyPI index is fetched
+          # gzip-coded and a cold sidecar is resolved from the cached index
+          # (pypi-metadata-gate-index-fetch; filesystem, upstreams.mock-files
+          # on 172.16.<slot>.76; about a minute). Required.
           - group: security-1.13.0-proxy-redirect
-            tiers: proxy-redirect-hold-replicas
+            tiers: proxy-redirect-hold-replicas pypi-metadata-gate-index-fetch
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}
