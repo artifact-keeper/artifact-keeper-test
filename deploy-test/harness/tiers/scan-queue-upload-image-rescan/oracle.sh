@@ -20,6 +20,9 @@
 #   6  queue off, grype stub hangs, limit 30 s  FIX #5942 row failed at limit
 #   7  queue+worker on, stub hangs, limit 30 s  FIX #5942 failed + job retried
 #   8  (same backend) + a byte-identical scan    FIX #6282 retry reuses it
+#   9  queue+worker on, stub hangs, no limit     CONTROL live claim's row stays
+#      then the backend is killed mid-scan and   FIX #6232 recovery fails the
+#      its claim lapses                          row the dead claim left running
 #
 # Repositories (keys suffixed per run; all scan_enabled + scan_on_upload):
 #   C_GEN generic, C_OCI docker     phase 0 (queue off)
@@ -537,5 +540,93 @@ else
   [ "$titles" = "dtf twin source finding" ] || fail_g "the retried row's findings are '${titles:-none}', not the source scan's"
 fi
 finish_case "a retry that reused a byte-identical scan left the timed-out row as it was"
+
+# =============================================================================
+# Phase 9: a replica dies mid-scan (artifact-keeper#6232)
+# =============================================================================
+# A scan_on_upload upload is a hosted_upload job; its worker creates the grype
+# row and then hangs in the stub (no process limit in reach). The oracle kills
+# the backend (SIGKILL: a replica that died, nothing runs its shutdown) and
+# ages the dead claim past its TTL instead of waiting the 120 s, so the
+# replacement backend's first recovery sweep (run at start) finds it lapsed.
+# Before the fix recovery requeued the job but left the dead worker's row
+# `running` until the stuck-scan janitor failed it 1800 s after it started.
+LAPSE="sq-lapse-${SUF}"
+ALL_REPOS="${ALL_REPOS} ${LAPSE}"
+# lapse_row -> "status|seconds from T_UP to completed_at|error" of LROW
+lapse_row() {
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAF'|' -c \
+    "SELECT status, coalesce(extract(epoch FROM completed_at - '${T_UP:-now}'::timestamptz)::int::text, ''),
+            coalesce(left(error_message, 300), '')
+     FROM scan_results WHERE id = '${LROW:-00000000-0000-0000-0000-000000000000}'" 2>/dev/null | head -1
+}
+lapse_settled() { case "$(lapse_row)" in ""|running*) return 1;; *) return 0;; esac; }
+# lapse_job -> "state|attempts|claimed_by|claim_token|last_error" of the upload's job
+lapse_job() {
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAF'|' -c \
+    "SELECT state, attempts, coalesce(claimed_by, ''), coalesce(claim_token::text, ''), coalesce(left(last_error, 200), '')
+     FROM scan_queue WHERE kind = 'hosted_upload' AND artifact_id = '${LART:-00000000-0000-0000-0000-000000000000}'" 2>/dev/null | head -1
+}
+recreate_lapse() {
+  DTF_GRYPE_STUB_DELAY=hang DTF_SCANNER_PROCESS_TIMEOUT=3600 \
+    DTF_GRYPE_STUB_BUSYBOX="${W}/busybox" recreate_backend true grype-stub.yml
+}
+
+begin_test "setup: recreate the backend with the queue and worker on and a grype that never returns (no process limit in reach)"
+if recreate_lapse && create_repo "$LAPSE" generic local && scan_on "$LAPSE"; then pass; else fail "recreate or repository setup failed"; fi
+
+reset_case
+begin_test "CONTROL: a queued scan whose worker is alive keeps its row running and its claim across a recovery sweep"
+LFX="${W}/fx-lapse"; mkdir -p "$LFX"
+python3 -I "$MAKE_FX" "$LFX" "${SUF}lapse" >/dev/null 2>>"${W}/mk.err"
+l_up=$(put "${LFX}/npm.tgz" "${BASE_URL}/api/v1/repositories/${LAPSE}/artifacts/pkg/lapse-${SUF}.tgz")
+LART="$(psql_q "SELECT a.id FROM artifacts a JOIN repositories r ON r.id = a.repository_id
+               WHERE r.key = '${LAPSE}' AND a.is_deleted = false LIMIT 1")"
+LROW=""
+lapse_running() {
+  LROW="$(psql_q "SELECT id FROM scan_results WHERE artifact_id = '${LART:-00000000-0000-0000-0000-000000000000}'
+                  AND scan_type = 'grype' AND status = 'running' ORDER BY created_at LIMIT 1")"
+  [ -n "$LROW" ] && case "$(lapse_job)" in running\|*) return 0;; *) return 1;; esac
+}
+wait_until "hung queued grype row" 90 lapse_running
+job0="$(lapse_job)"
+IFS='|' read -r _ _ _ TOKEN0 _ <<<"$job0"
+note "upload=${l_up} artifact=${LART:-none} grype row=${LROW:-none} job=${job0}"
+[ -n "$LROW" ] || fail_g "the queued upload's grype row never showed running under a claimed job"
+# Longer than the 30 s sweep interval: a live claim is renewed, never recovered.
+sleep 35
+job1="$(lapse_job)"; IFS='|' read -r j1_st _ _ TOKEN1 _ <<<"$job1"
+note "after 35 s: grype row=$(lapse_row) job=${job1}"
+case "$(lapse_row)" in running*) ;; *) fail_g "a live claim's grype row left running: '$(lapse_row)'";; esac
+[ "$j1_st" = "running" ] && [ -n "$TOKEN0" ] && [ "$TOKEN1" = "$TOKEN0" ] \
+  || fail_g "the live job lost its claim: before '${job0}' after '${job1}'"
+finish_case "recovery touched a scan whose worker was alive"
+
+reset_case
+begin_test "FIX #6232: a replica that dies mid-scan: once its claim lapses, recovery fails the scan row it left running at once, not after the 1800 s stuck-scan janitor"
+if [ -z "$LROW" ]; then
+  infra_fail "no running queued grype row to strand (the control above could not stage one)"
+else
+  docker kill "$BACKEND_CTR" >/dev/null 2>&1; k_rc=$?
+  psql_x "UPDATE scan_queue SET claim_expires_at = now() - interval '1 second'
+          WHERE kind = 'hosted_upload' AND artifact_id = '${LART}' AND state = 'running'"
+  x_rc=$?
+  note "kill rc=${k_rc} claim aged rc=${x_rc} row before restart: $(lapse_row)"
+  T_UP="$(db_now)"
+  if ! recreate_lapse; then
+    fail_g "the replacement backend did not come up"
+  else
+    wait_until "dead claim's row leaves running" 60 lapse_settled
+    row="$(lapse_row)"; IFS='|' read -r l_st l_sec l_err <<<"$row"
+    job2="$(lapse_job)"
+    janitor="$(psql_q "SELECT extract(epoch FROM started_at + interval '1800 seconds' - now())::int FROM scan_results WHERE id = '${LROW}'")"
+    note "dead claim's grype row: ${row} (seconds after the replacement backend started) job: ${job2}"
+    note "MEASURE: the dead claim's row left running ${l_sec:-not yet (still running)} s after the replacement backend started; the stuck-scan janitor would fail it ${janitor:-?} s from now"
+    [ "$l_st" = "failed" ] || fail_g "the dead worker's grype row is still '${l_st:-missing}' 60 s after recovery requeued its job"
+    case "$l_err" in *"claim"*"lapsed"*) ;; *) fail_g "the failed row does not name the lapsed claim: '${l_err}'";; esac
+    case "$job2" in pending\|1\|*|running\|1\|*) ;; *) fail_g "the job was not requeued once for a rerun: '${job2}'";; esac
+  fi
+fi
+finish_case "the scan row a dead worker left running stayed running after recovery requeued its job"
 
 end_suite

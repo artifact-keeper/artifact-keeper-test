@@ -90,8 +90,21 @@
 #              retry reuses it: the timed-out row ends `completed`, is_reused,
 #              source_scan_id that row, and holds that scan's finding only.
 #
+# #6232 (artifact-keeper, for 1.13.0): a replica that dies mid-scan.
+#   (CONTROL)  both images: queue and worker on, the grype stub hangs (no
+#              process limit in reach): a hosted_upload job's grype row stays
+#              `running` and its claim keeps its token across a 35 s window,
+#              longer than the 30 s recovery sweep.
+#   (FIX)      RED on main (the row stays `running` until the stuck-scan
+#              janitor fails it 1800 s after it started). GREEN on the fix.
+#              The oracle kills the backend (SIGKILL) mid-scan, ages the dead
+#              claim past its TTL instead of waiting 120 s, and recreates the
+#              backend: its first recovery sweep requeues the job (attempts 1)
+#              and, within 60 s, fails the dead claim's grype row with an
+#              error naming the lapsed claim.
+#
 # RATE_LIMIT_ENABLED=false: ~200 API calls back to back.
-COVERS="5946 5947 5942 6282"
+COVERS="5946 5947 5942 6282 6232"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
