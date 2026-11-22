@@ -42,12 +42,25 @@
 #   (CONTROL) the young 2.0.0 is never listed; a listing after the 15 s memo
 #             window has dated more versions than the first (dating goes on).
 #
+# #6345 (review decisions and the Virtual's 60 s merge cache): after the
+# approval above, the public Virtual over the public gated Remote caches a
+# merge listing 1.0.0 and 2.0.0 (fully dated, so cacheable). Then, each read
+# right after the decision:
+#   (FIX)     rejecting the review: the Virtual's metadata withholds 2.0.0
+#             (latest/release 1.0.0) at once; approving then reopening it:
+#             the approval lists 2.0.0 at once and the reopen withholds it at
+#             once. RED on main: the Virtual keeps serving the cached merge
+#             (2.0.0 listed after the rejection and the reopen) for up to 60 s.
+#   (CONTROL) after the rejection the Remote's own metadata withholds 2.0.0,
+#             the Virtual's .sha1 matches the body it served, and the young
+#             jar answers 451 through the Virtual.
+#
 # The age gate has no record-only mode (that is the scan policy's
 # `record_only`); the sanctioned way to let a young version through is an
 # approved review, which this tier exercises instead.
 #
 # RATE_LIMIT_ENABLED=false: admin login + setup + a few dozen GETs back to back.
-COVERS="6284"
+COVERS="6284 6345"
 PROFILES="storage.filesystem upstreams.mock-maven-agegate"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

@@ -262,4 +262,87 @@ else
   else fail "approve HTTP ${ap}, young jar then HTTP ${st}" "$(head -c 300 "${WORK_DIR}/young.ok.jar" 2>/dev/null)"; fi
 fi
 
+# ---------------------------------------------------------------------------
+# #6345: a review decision reaches the Virtual's 60 s merge cache. The Virtual
+# over the public gated Remote keeps its merged widget metadata (fully dated,
+# so cacheable) for 60 s. Each check below reads the Virtual right after the
+# decision, well inside that window.
+# ---------------------------------------------------------------------------
+# virtual_meta TAG -> V_ST, V_VERS, V_FILE: the Virtual's merged widget metadata
+virtual_meta() {
+  V_FILE="${WORK_DIR}/v6345.$1.xml"
+  V_ST=$(fetch "$VREPO" "${G}/maven-metadata.xml" "$V_FILE")
+  V_VERS="$(versions_in "$V_FILE")"
+}
+# assert_withheld WHAT: the Virtual's metadata lists only OLD, latest/release OLD
+assert_withheld() {
+  if [ "$V_ST" = "200" ] && [ "$V_VERS" = "$OLD" ] && grep -q "<latest>${OLD}</latest>" "$V_FILE" \
+     && grep -q "<release>${OLD}</release>" "$V_FILE"; then pass
+  else fail "#6345: $1: the Virtual's metadata HTTP ${V_ST} lists [${V_VERS}]; a resolver picks the ${YOUNG} the gate now refuses" \
+    "$(head -c 500 "$V_FILE" 2>/dev/null)"; fi
+}
+
+begin_test "Setup #6345: the Virtual's merged metadata lists the approved ${YOUNG} (cache warm)"
+# The approval above may still be hidden behind a merge cached before it (on
+# an image without the fix, up to 60 s), so wait for the listing.
+deadline=$((SECONDS + 75))
+while :; do
+  virtual_meta warm
+  if [ "$V_ST" = "200" ] && [ "$V_VERS" = "${OLD} ${YOUNG}" ]; then break; fi
+  [ "$SECONDS" -ge "$deadline" ] && break
+  sleep 3
+done
+if [ "$V_ST" = "200" ] && [ "$V_VERS" = "${OLD} ${YOUNG}" ] && [ -n "$rv" ]; then pass
+else fail "Virtual metadata HTTP ${V_ST} lists [${V_VERS}] after the approval (review ${rv:-none})"; end_suite; fi
+
+begin_test "FIX #6345: right after the review is rejected, the Virtual's metadata withholds ${YOUNG}"
+api_call POST "/api/v1/admin/age-gate/reviews/${rv}/reject" '{"reason":"dtf #6345 reject"}'
+rj="$API_STATUS"
+t_reject=$SECONDS
+virtual_meta rejected
+if [ "$rj" != "200" ]; then fail "reject HTTP ${rj}" "${API_BODY:0:300}"
+else
+  assert_withheld "after the rejection"
+  # How long the Virtual keeps listing the rejected version (the number the
+  # fix brings to 0; bounded by the 60 s merge cache).
+  while [ "$V_VERS" != "$OLD" ] && [ $((SECONDS - t_reject)) -lt 75 ]; do
+    sleep 1; virtual_meta converging
+  done
+  echo "  #6345 metric: the Virtual listed the rejected ${YOUNG} for $((SECONDS - t_reject)) s after the rejection"
+fi
+
+begin_test "CONTROL #6345: the Remote's own metadata withholds the rejected ${YOUNG}"
+st=$(fetch "$REPO" "${G}/maven-metadata.xml" "${WORK_DIR}/r6345.rejected.xml")
+vers="$(versions_in "${WORK_DIR}/r6345.rejected.xml")"
+if [ "$st" = "200" ] && [ "$vers" = "$OLD" ]; then pass
+else fail "Remote metadata HTTP ${st} lists [${vers}] after the rejection"; fi
+
+begin_test "CONTROL #6345: the Virtual's metadata .sha1 matches the body served after the rejection"
+st=$(fetch "$VREPO" "${G}/maven-metadata.xml.sha1" "${WORK_DIR}/v6345.sha1")
+want="$(sha1_of "$V_FILE")"; got="$(tr -d '[:space:]' < "${WORK_DIR}/v6345.sha1" 2>/dev/null)"
+if [ "$st" = "200" ] && [ -n "$want" ] && [ "$got" = "$want" ]; then pass
+else fail "Virtual .sha1 HTTP ${st}: ${got:-none} vs body ${want:-none}"; fi
+
+begin_test "CONTROL #6345: the rejected ${YOUNG} jar answers 451 through the Virtual"
+f="${WORK_DIR}/v6345.young.jar"
+st=$(fetch "$VREPO" "${G}/${YOUNG}/widget-${YOUNG}.jar" "$f")
+if [ "$st" = "451" ] && [ "$(jqr '.error' < "$f")" = "age_gate_blocked" ]; then pass
+else fail "Virtual young jar HTTP ${st} after the rejection" "$(head -c 300 "$f" 2>/dev/null)"; fi
+
+# Approve then reopen: the reopened (pending) version is withheld again at
+# once. Without the fix the merge cached right after the approval keeps
+# listing it.
+begin_test "FIX #6345: approved, then reopened, the Virtual's metadata withholds ${YOUNG} at once"
+api_call POST "/api/v1/admin/age-gate/reviews/${rv}/approve" '{"reason":"dtf #6345 approve"}'
+ap="$API_STATUS"
+virtual_meta reapproved
+ap_vers="$V_VERS"
+api_call POST "/api/v1/admin/age-gate/reviews/${rv}/reopen" '{"reason":"dtf #6345 reopen"}'
+ro="$API_STATUS"
+virtual_meta reopened
+if [ "$ap" != "200" ] || [ "$ro" != "200" ]; then fail "approve HTTP ${ap}, reopen HTTP ${ro}" "${API_BODY:0:300}"
+elif [ "$ap_vers" != "${OLD} ${YOUNG}" ]; then
+  fail "#6345: right after the approval the Virtual lists [${ap_vers}], not ${OLD} ${YOUNG}"
+else assert_withheld "after the reopen"; fi
+
 end_suite
