@@ -1,0 +1,53 @@
+# DTF tier manifest: pypi-metadata-gate-index-fetch
+#   (artifact-keeper#6439, artifact-keeper#5983, 1.13.0)
+# Profile-set: filesystem + upstreams.mock-files (a stdlib-python upstream at
+# 172.16.<slot>.76 whose files the oracle sets over its control API on the
+# slot's TRIVY_PORT; it serves a file gzip-coded to a request that asks for
+# gzip when stored with gzip=1, a PEP 691 JSON variant to a JSON Accept, and
+# counts each path's GETs, body bytes and Accept-Encoding).
+#
+# THE BUGS
+# #6439  PyPI PEP 658 `.metadata` skipped the download gate its distribution
+#        passes. A hosted row that was quarantined or rejected answered 409 /
+#        403 for the wheel and 200 for its METADATA, directly and through a
+#        virtual. In a virtual whose combined scan policy scans over a Remote
+#        member that does not (#3023), the wheel answered 403 on its stored
+#        vulnerable verdict while `.metadata` answered 200: from the member's
+#        proxy-cache row when it had one, from the member's upstream sidecar
+#        when it did not.
+# #5983  PyPI metadata resolution: the client-facing simple index was fetched
+#        from the upstream as identity (about 5x the bytes of gzip for a large
+#        index), and a cold `.whl.metadata` read the whole upstream index again
+#        to find the sidecar's URL even though the client had just been served
+#        that index from the proxy cache.
+#
+# THE GATES
+#   (CONTROL) both images: an open hosted wheel and its metadata answer 200;
+#     a held / rejected hosted wheel answers 409 / 403; the scanning virtual
+#     refuses the member's wheel (403, or 423 if it re-grades); the member
+#     Remote's own route (it does not scan) serves the metadata; four
+#     concurrent cold sidecars of a project whose index was never fetched
+#     share one upstream index read (#6047); a release published upstream
+#     after the index was cached resolves, with the new sidecar's bytes.
+#   (FIX) #6439: the held / rejected hosted wheel's metadata answers 409 / 403
+#     directly and through a virtual; through the scanning virtual the
+#     member's wheel metadata answers 403, with and without a row (GET and
+#     HEAD); a cached member wheel with no verdict while the CVE engine is
+#     down (grype stubbed) gets the wheel's own answer (423) for its
+#     metadata; a version the download age gate withholds answers 451 for
+#     its metadata (GET and HEAD). RED on main: 200.
+#   (FIX) #5983: the client-facing index (JSON, as uv asks, and HTML, as pip
+#     asks) is asked for gzip; after it, four concurrent cold sidecars of the
+#     project read no upstream index (1 index read in all, 2 on main). The
+#     oracle prints the index bytes on the wire and the sidecars' wall time
+#     for the before/after numbers.
+#
+# Red: main before the fix. Green: an image carrying artifact-keeper#6439 and
+# artifact-keeper#5983.
+# RATE_LIMIT_ENABLED=false: requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="6439 5983"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
