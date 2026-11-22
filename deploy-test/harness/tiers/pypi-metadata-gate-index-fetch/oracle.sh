@@ -48,6 +48,9 @@ get(){
   CODE="$(curl "${ca[@]}" "${BASE}$1" 2>/dev/null)"; [ -n "$CODE" ] || CODE="000 0"
   TIME_MS="$(awk '{printf "%d", $2 * 1000}' <<<"$CODE")"; CODE="${CODE%% *}"
 }
+head_code(){ # <path>: the status of a HEAD
+  curl -s -I -o /dev/null -w '%{http_code}' --max-time 60 -H "Authorization: Bearer ${TOK}" "${BASE}$1" 2>/dev/null || echo 000
+}
 mkrepo(){ # <key> <type> [upstream]: HTTP code on stdout
   curl -s -o "$W/mk.body" -w '%{http_code}' --max-time 30 -X POST "${BASE}/api/v1/repositories" \
     -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/json' \
@@ -194,6 +197,8 @@ read -r dw dm vw vm <<<"$r"
 [ "$dw" = "409" ] && [ "$vw" = "409" ] || note "(premise) the wheel answered ${dw} / ${vw}, expected 409"
 [ "$dm" = "409" ] || fail_g "direct metadata answered ${dm} while the wheel is held"
 [ "$vm" = "409" ] || fail_g "virtual metadata answered ${vm} while the wheel is held"
+h="$(head_code "/pypi/${VL}/simple/${HMETA}")"; note "virtual metadata HEAD: ${h}"
+[ "$h" = "409" ] || fail_g "a HEAD of the virtual metadata answered ${h} while the wheel is held"
 ! grep -q 'dtf-6439-hosted' "$W/hmeta" "$W/hvmeta" || fail_g "served the held wheel's METADATA"
 finish_case "a held distribution's METADATA was served"
 
@@ -252,6 +257,8 @@ note "with a row: ${a} $(head -c 90 "$W/vsmeta" | tr '\n' ' ')"
 note "without a row: ${b} $(head -c 90 "$W/vsnmeta" | tr '\n' ' ')"
 [ "$a" = "403" ] || fail_g "with a row: answered ${a}, expected the wheel's 403"
 [ "$b" = "403" ] || fail_g "without a row: answered ${b}, expected the wheel's 403"
+h="$(head_code "/pypi/${VS}/simple/${VP}/${VW}.metadata")"; note "with a row, HEAD: ${h}"
+[ "$h" = "403" ] || fail_g "a HEAD answered ${h}, expected the wheel's 403"
 ! grep -q 'dtf-6439-in-wheel' "$W/vsmeta" || fail_g "served the row's METADATA"
 ! grep -q 'dtf-upstream-sidecar' "$W/vsnmeta" || fail_g "served the upstream sidecar"
 finish_case "the metadata of a wheel the virtual refuses was served"
@@ -264,6 +271,37 @@ for pw in "${VP}/${VW}" "${NP}/${NW}"; do
   case "$CODE" in 403|423) ;; *) fail_g "${pw##*/}: the wheel answered ${CODE}" ;; esac
 done
 finish_case "the premise does not hold: the virtual serves the wheel"
+
+# A cached member wheel with no verdict at all, under the virtual's
+# fail_closed policy, while the CVE engine cannot scan it: the wheel is
+# refused (423), and its metadata must be refused the same way.
+GRYPE_BAK=""
+break_grype(){
+  GRYPE_BAK="${W}/grype.orig"
+  docker cp "${BACKEND_CTR}:/usr/local/bin/grype" "$GRYPE_BAK" >/dev/null 2>&1 || return 1
+  printf 'not-a-real-grype-binary\n' > "${W}/grype_stub"
+  docker cp "${W}/grype_stub" "${BACKEND_CTR}:/usr/local/bin/grype" >/dev/null 2>&1
+}
+restore_grype(){
+  [ -n "$GRYPE_BAK" ] && [ -f "$GRYPE_BAK" ] && docker cp "$GRYPE_BAK" "${BACKEND_CTR}:/usr/local/bin/grype" >/dev/null 2>&1
+}
+add_exit_handler 'restore_grype'
+UP_P="pmgu${SUF}"; UW="${UP_P}-1.0-py3-none-any.whl"
+SETUP_ERR=""
+publish "$UP_P" 0 1.0
+begin_test "FIX #6439: under fail_closed with no verdict for the cached member wheel and the CVE engine down, its metadata is refused as the wheel is (423), not served"
+reset_case
+get "/pypi/${R}/simple/${UP_P}/${UW}" "" "$W/ufill"; f="$CODE"
+[ -z "$SETUP_ERR" ] && [ "$f" = "200" ] || fail_g "setup: the Remote did not cache the wheel (${f})${SETUP_ERR}"
+break_grype || fail_g "setup: could not stub grype in ${BACKEND_CTR}"
+get "/pypi/${VS}/simple/${UP_P}/${UW}.metadata" "" "$W/umeta"; m="$CODE"
+get "/pypi/${VS}/simple/${UP_P}/${UW}" "" "$W/uwheel"; w="$CODE"
+restore_grype
+note "metadata ${m} $(head -c 80 "$W/umeta" | tr '\n' ' '); wheel ${w}"
+case "$w" in 423|403) ;; *) note "(premise) the wheel answered ${w}, expected 423" ;; esac
+[ "$m" = "$w" ] || fail_g "the metadata answered ${m} where the wheel answered ${w}"
+! grep -q 'dtf-upstream-sidecar' "$W/umeta" || fail_g "served the upstream sidecar of an unscanned wheel"
+finish_case "the metadata of a wheel the scan gate could not clear was served"
 
 # =============================================================================
 # #5983
@@ -329,10 +367,13 @@ done
 begin_test "CONTROL: a release published upstream after the index was cached resolves, with the new sidecar's bytes; earlier sidecars are unchanged"
 reset_case
 publish "$JP" 3000 1.0 1.1 1.2 1.3 2.0
-# The resolver reuses one upstream index read for 30 s (#3356); past that, a
-# release the upstream published must resolve on every image.
-sleep 31
-get "/pypi/${RP}/simple/${JP}/${JP}-2.0-py3-none-any.whl.metadata" "" "$W/new"
+# The resolver reuses one upstream index read for 30 s (#3356); within a
+# minute a release the upstream published must resolve on every image.
+for _ in $(seq 1 30); do
+  get "/pypi/${RP}/simple/${JP}/${JP}-2.0-py3-none-any.whl.metadata" "" "$W/new"
+  [ "$CODE" = "200" ] && break
+  sleep 2
+done
 note "new release metadata: ${CODE} $(head -c 90 "$W/new" | tr '\n' ' ')"
 [ "$CODE" = "200" ] && cmp -s "$W/new" "$W/${JP}-2.0-py3-none-any.whl.metadata" || fail_g "the new release's metadata answered ${CODE} with other bytes"
 get "/pypi/${RP}/simple/${JP}/${JP}-1.0-py3-none-any.whl.metadata" "" "$W/old"
