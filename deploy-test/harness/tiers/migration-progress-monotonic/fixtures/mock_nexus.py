@@ -25,6 +25,10 @@
 #               it (#6360).
 #   nx-raw      raw, 5 components plus 2 files no component owns (the asset
 #               walk must still run here and find exactly those 2).
+#   nx-maven    maven2, 3 components of a jar and a pom each, plus one file
+#               no component owns (docs/install.txt) and the regenerated
+#               maven-metadata.xml with a sha1 sidecar. The asset walk must run
+#               and list exactly the one loose file (7 artifacts).
 #   nx-wide     npm, WIDE_PAGES pages of 10 components modified in 2020, then
 #               one page with one component modified 2026-06-01. With a
 #               date_from of 2025 every page but the last is empty (#6260).
@@ -110,6 +114,23 @@ def build():
     ]
     loose = [asset("nx-raw", "raw", f"loose/l{i}.bin") for i in range(2)]
     cat["nx-raw"] = ("raw", comps, [c["assets"][0] for c in comps] + loose)
+
+    comps = []
+    for i in range(3):
+        files = [
+            asset("nx-maven", "maven2", f"com/example/lib{i}/1.0/lib{i}-1.0.{ext}")
+            for ext in ("jar", "pom")
+        ]
+        c = component("nx-maven", "maven2", f"lib{i}", files[0])
+        c["group"] = "com.example"
+        c["assets"] = files
+        comps.append(c)
+    extra = [
+        asset("nx-maven", "maven2", "docs/install.txt"),
+        asset("nx-maven", "maven2", "com/example/lib0/maven-metadata.xml"),
+        asset("nx-maven", "maven2", "com/example/lib0/maven-metadata.xml.sha1"),
+    ]
+    cat["nx-maven"] = ("maven2", comps, [a for c in comps for a in c["assets"]] + extra)
 
     for repo, pages in (("nx-wide", WIDE_PAGES), ("nx-wide-ok", WIDE_OK_PAGES)):
         comps = [npm_component(repo, i, OLD) for i in range(pages * PAGE)]

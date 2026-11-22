@@ -28,6 +28,9 @@
 #                makes no /assets request (main: 3, the whole asset listing).
 #   (CONTROL)    a migration of the raw repository still walks /assets and
 #                migrates its 5 component files and 2 loose files (both images).
+#   (CONTROL)    a dry run of the Maven repository lists its 6 component files
+#                and the one file without a component, not maven-metadata.xml
+#                (both images).
 #   (FIX #6260)  a job windowed to 2025+ over nx-wide (400 out-of-window pages
 #                ahead of one in-window component) is cancelled once its walk is
 #                under way; after the cancel the source sees at most one page
@@ -41,6 +44,7 @@
 NXL_CONTAINER="ak-dtf${DTF_SLOT}-mock-nexus"
 NXL_NPM_COMPONENTS=25
 NXL_RAW_FILES=7
+NXL_MAVEN_ITEMS=7
 # One listing call fetches at most 50 upstream pages on the fix. The slack
 # covers the page in flight when the cancel lands and the worker's own
 # status read; main walks hundreds more.
@@ -129,6 +133,22 @@ can be listed by that walk. Only raw and maven2 repositories hold component-less
   else
     fail "the raw repository's migration ended status=${st:-none} with ${done_items}/${NXL_RAW_FILES} items and \
 ${raw_assets} /assets requests; its 2 component-less files are only reachable through the asset walk" \
+      "$(echo "$row" | jq -c '{status,total_items,completed_items,failed_items,error_message}' 2>/dev/null)"
+  fi
+
+  # --- CONTROL: a Maven repository's file without a component is listed --------
+  job="$(nxl_job nx-maven true "")"; st=""
+  nxl_start "$job" && st="$(wait_status "$job" 120 completed completed_with_errors failed cancelled)"
+  row="$(job_row "$job")"
+  total="$(jqf "$row" '.total_items // 0' 0)"
+  begin_test "CONTROL: a Nexus Maven repository lists its file without a component, and not its metadata"
+  if [ "${st:-}" = "completed" ] && [ "$total" = "$NXL_MAVEN_ITEMS" ] \
+     && [ "$(nxl_stat 'assets:nx-maven')" != "0" ]; then
+    pass
+  else
+    fail "the nx-maven dry run ended status=${st:-none} with total_items=${total} and \
+$(nxl_stat 'assets:nx-maven') /assets requests; want completed with ${NXL_MAVEN_ITEMS} (6 component files plus \
+docs/install.txt; maven-metadata.xml is regenerated, not listed)" \
       "$(echo "$row" | jq -c '{status,total_items,completed_items,failed_items,error_message}' 2>/dev/null)"
   fi
 
