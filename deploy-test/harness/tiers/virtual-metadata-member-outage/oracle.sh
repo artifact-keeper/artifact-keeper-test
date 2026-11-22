@@ -283,6 +283,39 @@ for fmt in npm:n pypi:p cargo:k; do
   virt "vmo-${x}v403-${SUF}" "$f" "vmo-${x}404-${SUF}" "vmo-${x}403-${SUF}"
 done
 
+# --- the remaining walks (#6417): Helm chart archive, OCI manifest / blob /
+# tag list, PyPI distribution file, Go @v/list / @latest / .info. Same shape:
+# a virtual over [404 member, 503 member] and a control over [404, 403].
+# The PyPI file walk reuses the PyPI Remotes above (their simple page is what
+# fails). Fresh Helm Remotes, so the #5013 breaker counts of the index cases
+# above do not shape these.
+for m in hc503:503 hc403:403; do
+  [ "$(mock_status "/${P}/${m%%:*}/index.yaml" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}"
+done
+for m in 404 503 403; do mk "vmo-hc${m}-${SUF}" helm remote "${UP}/${P}/hc${m}"; done
+virt "vmo-hcv503-${SUF}" helm "vmo-hc404-${SUF}" "vmo-hc503-${SUF}"
+virt "vmo-hcv403-${SUF}" helm "vmo-hc404-${SUF}" "vmo-hc403-${SUF}"
+OIMG="app"
+ODIG="sha256:$(printf 'dtf-6417-%s' "$SUF" | sha256sum | cut -d' ' -f1)"
+OCI_ACCEPT='application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json'
+for m in o503:503 o403:403; do
+  for f in "manifests/latest" "manifests/${ODIG}" "blobs/${ODIG}" "tags/list"; do
+    [ "$(mock_status "/${P}/${m%%:*}/v2/${OIMG}/${f}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}:${f}"
+  done
+done
+for m in 404 503 403; do mk "vmo-o${m}-${SUF}" docker remote "${UP}/${P}/o${m}/"; done
+virt "vmo-ov503-${SUF}" docker "vmo-o404-${SUF}" "vmo-o503-${SUF}"
+virt "vmo-ov403-${SUF}" docker "vmo-o404-${SUF}" "vmo-o403-${SUF}"
+GOMOD="example.com/dtfg${SUF}"
+for m in go503:503 go403:403; do
+  for f in "@v/list" "@latest" "@v/v1.0.0.info"; do
+    [ "$(mock_status "/${P}/${m%%:*}/${GOMOD}/${f}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}:${f}"
+  done
+done
+for m in 404 503 403; do mk "vmo-go${m}-${SUF}" go remote "${UP}/${P}/go${m}"; done
+virt "vmo-gov503-${SUF}" go "vmo-go404-${SUF}" "vmo-go503-${SUF}"
+virt "vmo-gov403-${SUF}" go "vmo-go404-${SUF}" "vmo-go403-${SUF}"
+
 # Uploads: the hosted .apk and the hosted Maven jar.
 up(){ # <path> <file>
   local c
@@ -452,6 +485,76 @@ for c in "npm:${NPM_CONTROL}" "pypi:${PYPI_CONTROL}" "cargo:${CARGO_CONTROL}"; d
 done
 note "npm ${NPM_CONTROL}, pypi ${PYPI_CONTROL}, cargo ${CARGO_CONTROL}"
 finish_case "a permanent member 4xx did not read as a miss on a metadata walk"
+
+# #6417: the remaining walks. walk_pair <label> <path-with-@V@> <virtual-503>
+# <virtual-403> [curl args]: the [404, 503] virtual must answer 503 with
+# Retry-After; the [404, 403] control's status lands in CONTROL_ST.
+oget(){ # <path> <out> [GET|HEAD]: an OCI request with the manifest Accept set
+  local how="-G"; [ "${3:-GET}" = "HEAD" ] && how="-I"
+  ST="$(curl -s --max-time 60 "$how" -D "$2.h" -o "$2" -w '%{http_code}' \
+    -u "admin:${ADMIN_PASS}" -H "Accept: ${OCI_ACCEPT}" "${BASE}$1" || true)"
+}
+want_503(){ # <label> <file> <status>
+  note "$1 -> $3 (Retry-After '$(hdr "$2" retry-after)'): $(snip "$2")"
+  [ "$3" = "503" ] || fail_g "$1 answered $3, expected 503 (a client reports the 404 as 'not found')"
+  [ -n "$(hdr "$2" retry-after)" ] || fail_g "$1: no Retry-After"
+}
+CONTROLS_6417=""
+control_6417(){ # <label> <status>
+  note "control $1 -> $2"
+  CONTROLS_6417="${CONTROLS_6417} $1=$2"
+}
+
+begin_test "FIX #6417: a Helm virtual [404 member, 503 member] answers the chart .tgz 503 with Retry-After, not 404"
+reset_case
+get "/helm/vmo-hcv503-${SUF}/charts/${CH_A}-1.0.0.tgz" "$W/hc503"; want_503 "helm chart [404, 503]" "$W/hc503" "$ST"
+get "/helm/vmo-hcv403-${SUF}/charts/${CH_A}-1.0.0.tgz" "$W/hc403"; control_6417 "helm-chart" "$ST"
+finish_case "an unavailable member made the Helm chart 404"
+
+begin_test "FIX #6417: an OCI virtual [404 member, 503 member] answers manifest GET/HEAD (tag and digest), blob and tag list 503 with Retry-After, not 404"
+reset_case
+for spec in "manifest-tag:manifests/latest:GET" "manifest-tag-head:manifests/latest:HEAD" \
+            "manifest-digest:manifests/${ODIG}:GET" "blob:blobs/${ODIG}:GET" "blob-head:blobs/${ODIG}:HEAD" \
+            "tags:tags/list:GET"; do
+  l="${spec%%:*}"; r="${spec#*:}"; m="${r##*:}"; r="${r%:*}"
+  oget "/v2/vmo-ov503-${SUF}/${OIMG}/${r}" "$W/ov503-${l}" "$m"; want_503 "oci ${l} [404, 503]" "$W/ov503-${l}" "$ST"
+  oget "/v2/vmo-ov403-${SUF}/${OIMG}/${r}" "$W/ov403-${l}" "$m"; control_6417 "oci-${l}" "$ST"
+done
+finish_case "an unavailable member made an OCI pull 404"
+
+begin_test "FIX #6417: a plain OCI Remote whose upstream answers 503 answers manifest, blob and tag list 503 with Retry-After, not 404"
+reset_case
+for spec in "manifest:manifests/latest:GET" "manifest-head:manifests/latest:HEAD" "blob:blobs/${ODIG}:GET" \
+            "blob-head:blobs/${ODIG}:HEAD" "tags:tags/list:GET"; do
+  l="${spec%%:*}"; r="${spec#*:}"; m="${r##*:}"; r="${r%:*}"
+  oget "/v2/vmo-o503-${SUF}/${OIMG}/${r}" "$W/o503-${l}" "$m"; want_503 "oci remote ${l}" "$W/o503-${l}" "$ST"
+  oget "/v2/vmo-o404-${SUF}/${OIMG}/${r}" "$W/o404-${l}" "$m"; control_6417 "oci-remote-404-${l}" "$ST"
+done
+finish_case "an OCI Remote reported its upstream outage as a missing image"
+
+begin_test "FIX #6417: a PyPI virtual [404 member, 503 member] answers a distribution file 503 with Retry-After, not 404"
+reset_case
+get "/pypi/vmo-pv503-${SUF}/simple/${PYPKG}/${PYPKG}-1.0.tar.gz" "$W/pf503"; want_503 "pypi file [404, 503]" "$W/pf503" "$ST"
+get "/pypi/vmo-pv403-${SUF}/simple/${PYPKG}/${PYPKG}-1.0.tar.gz" "$W/pf403"; control_6417 "pypi-file" "$ST"
+finish_case "an unavailable member made the PyPI file 404"
+
+# Fixed for Go by artifact-keeper#6214 (1.12.4) before #6417 was filed; this
+# locks the [404, 503] shape in, so it holds on both images.
+begin_test "CONTROL (#6417): a Go virtual [404 member, 503 member] answers @v/list, @latest and .info 503 with Retry-After"
+reset_case
+for r in "@v/list" "@latest" "@v/v1.0.0.info"; do
+  get "/go/vmo-gov503-${SUF}/${GOMOD}/${r}" "$W/gov503"; want_503 "go ${r} [404, 503]" "$W/gov503" "$ST"
+  get "/go/vmo-gov403-${SUF}/${GOMOD}/${r}" "$W/gov403"; control_6417 "go-${r}" "$ST"
+done
+finish_case "an unavailable member made a Go metadata route 404"
+
+begin_test "CONTROL (#6417): the same walks over [404 member, 403 member], and a plain OCI Remote whose upstream answers 404, answer 404"
+reset_case
+for c in $CONTROLS_6417; do
+  [ "${c#*=}" = "404" ] || fail_g "${c%%=*} answered ${c#*=}, expected 404"
+done
+note "controls:${CONTROLS_6417}"
+finish_case "a permanent member 4xx or an upstream 404 did not read as a miss"
 
 begin_test "FIX #5504: a Maven virtual over a hosted member whose stored object is gone answers .sha1 503, not 404"
 reset_case
