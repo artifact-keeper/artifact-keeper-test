@@ -1,5 +1,5 @@
 # DTF tier manifest: pypi-metadata-gate-index-fetch
-#   (artifact-keeper#6439, artifact-keeper#5983, 1.13.0)
+#   (artifact-keeper#6439, artifact-keeper#5983, artifact-keeper#6444, 1.13.0)
 # Profile-set: filesystem + upstreams.mock-files (a stdlib-python upstream at
 # 172.16.<slot>.76 whose files the oracle sets over its control API on the
 # slot's TRIVY_PORT; it serves a file gzip-coded to a request that asks for
@@ -20,6 +20,10 @@
 #        index), and a cold `.whl.metadata` read the whole upstream index again
 #        to find the sidecar's URL even though the client had just been served
 #        that index from the proxy cache.
+# #6444  Under fail_closed, the `.metadata` of a cached wheel with no verdict
+#        whose cached copy was stale went through the wheel's own download
+#        path: it re-read the index and downloaded the whole wheel to answer
+#        a request for a few KB of METADATA.
 #
 # THE GATES
 #   (CONTROL) both images: an open hosted wheel and its metadata answer 200;
@@ -41,12 +45,16 @@
 #     project read no upstream index (1 index read in all, 2 on main). The
 #     oracle prints the index bytes on the wire and the sidecars' wall time
 #     for the before/after numbers.
+#   (FIX) #6444: a Remote caches a wheel while it does not scan; the
+#     sidecar is aged on disk and the Remote switched to fail_closed. Its
+#     `.metadata` fetches the wheel from the upstream 0 times (1 on main) and
+#     answers what the wheel then answers. The oracle prints a MEASURE line.
 #
-# Red: main before the fix. Green: an image carrying artifact-keeper#6439 and
-# artifact-keeper#5983.
+# Red: main before the fix. Green: an image carrying artifact-keeper#6439,
+# artifact-keeper#5983 and artifact-keeper#6444.
 # RATE_LIMIT_ENABLED=false: requests back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
-COVERS="6439 5983"
+COVERS="6439 5983 6444"
 PROFILES="storage.filesystem upstreams.mock-files"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

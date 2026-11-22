@@ -331,6 +331,65 @@ note "wheel ${w}; metadata ${m} (HEAD ${mh}) $(head -c 80 "$W/ameta" | tr '\n' '
 finish_case "the metadata of a version the age gate withholds was served"
 
 # =============================================================================
+# #6444: a stale cached wheel with no verdict under fail_closed
+# =============================================================================
+# The Remote caches the wheel while it does not scan. Its sidecar is then
+# made stale on disk (a wheel is immutable, so only an old sidecar or one
+# stamped with a short TTL is ever stale), and the Remote is switched to
+# fail_closed. The wheel's own request refetches a stale copy; its metadata
+# must not.
+RS="pmg-rs-${SUF}"; SP="pmgs${SUF}"; SW="${SP}-1.0-py3-none-any.whl"
+wheel_gets(){ mock_req "/${P}/files/${SW}" | jqr '.get // 0'; }
+begin_test "FIX #6444: under fail_closed, the metadata of a stale cached wheel with no verdict fetches no wheel from the upstream, and answers as the wheel does"
+reset_case
+SETUP_ERR=""
+publish "$SP" 0 1.0
+c="$(mkrepo "$RS" remote "${UP}/${P}")"; is_ok "$c" || SETUP_ERR="${SETUP_ERR} repo ${c};"
+RS_ID="$(repo_id "$RS")"
+get "/pypi/${RS}/simple/${SP}/${SW}" "" "$W/sfill"
+[ "$CODE" = "200" ] || SETUP_ERR="${SETUP_ERR} fill ${CODE};"
+# The image has no shell: the sidecar is copied out, aged, and copied back
+# as a tar owned by the backend's user, so its refill can replace it.
+# The cache key carries the cache scope, so it is found on the volume.
+SDIR="$(docker cp "${BACKEND_CTR}:/data/storage/proxy-cache" - 2>/dev/null | tar -t 2>/dev/null \
+  | grep -F "/${RS}/simple/${SP}/${SW}/__cache_meta__.json" | head -n1)"
+SDIR="/data/storage/${SDIR%/__cache_meta__.json}"
+mkdir -p "$W/age"
+docker cp "${BACKEND_CTR}:${SDIR}/__cache_meta__.json" "$W/age/__cache_meta__.json" >/dev/null 2>&1 \
+  && jq -c '.expires_at = "2020-01-01T00:00:00Z"' "$W/age/__cache_meta__.json" > "$W/age/aged.json" \
+  && mv "$W/age/aged.json" "$W/age/__cache_meta__.json" \
+  && BUSER="$(docker inspect -f '{{.Config.User}}' "$BACKEND_CTR" 2>/dev/null)" \
+  && tar -C "$W/age" --owner="${BUSER%%:*}" --group="${BUSER%%:*}" -cf - __cache_meta__.json \
+     | docker cp -a - "${BACKEND_CTR}:${SDIR}" >/dev/null 2>&1 \
+  || SETUP_ERR="${SETUP_ERR} could not age ${SDIR}/__cache_meta__.json;"
+docker cp "${BACKEND_CTR}:${SDIR}/__cache_meta__.json" - 2>/dev/null | tar -xOf - 2>/dev/null \
+  | jq -e '.expires_at | startswith("2020-")' >/dev/null 2>&1 \
+  || SETUP_ERR="${SETUP_ERR} the sidecar is not stale;"
+[[ "$(psqlq "INSERT INTO scan_configs (repository_id, scan_enabled, scan_on_upload, scan_on_proxy, block_on_policy_violation, severity_threshold, proxy_scan_action)
+             VALUES ('${RS_ID}', true, false, true, false, 'high', 'fail_closed')
+             ON CONFLICT (repository_id) DO UPDATE SET scan_enabled = true, scan_on_proxy = true, proxy_scan_action = 'fail_closed'
+             RETURNING 'cfg-ok'")" = *cfg-ok* ]] || SETUP_ERR="${SETUP_ERR} scan config;"
+[ "$(psqlq "SELECT count(*) FROM proxy_scan_results WHERE checksum_sha256 = '$(sha_of "$W/$SW")'")" = "0" ] \
+  || SETUP_ERR="${SETUP_ERR} the wheel already has a verdict;"
+[ -z "$SETUP_ERR" ] || fail_g "setup:${SETUP_ERR}"
+# The sidecar LRU keeps what the fill read for 30 s.
+sleep 31
+g0="$(wheel_gets)"
+get "/pypi/${RS}/simple/${SP}/${SW}.metadata" "" "$W/smeta"; m="$CODE"; m_ms="$TIME_MS"
+g1="$(wheel_gets)"
+get "/pypi/${RS}/simple/${SP}/${SW}" "" "$W/swheel"; w="$CODE"
+g2="$(wheel_gets)"
+note "metadata ${m} in ${m_ms} ms, upstream wheel GETs for it $((g1 - g0)); wheel ${w}, upstream wheel GETs for it $((g2 - g1))"
+echo "MEASURE stale-unscanned metadata_status=${m} metadata_ms=${m_ms} metadata_wheel_fetches=$((g1 - g0)) wheel_status=${w} wheel_fetches=$((g2 - g1))"
+[ "$((g1 - g0))" = "0" ] || fail_g "the .metadata request fetched the wheel from the upstream $((g1 - g0)) time(s)"
+[ "$((g2 - g1))" -ge 1 ] || note "(premise) the wheel's own request did not refetch the stale copy"
+[ "$m" = "$w" ] || fail_g "the metadata answered ${m} where the wheel answered ${w}"
+case "$m" in 200)
+  grep -q 'dtf-upstream-sidecar' "$W/smeta" || fail_g "the metadata is not the wheel's: $(head -c 120 "$W/smeta")" ;;
+esac
+finish_case "a .metadata request downloaded the whole wheel, or answered otherwise than the wheel"
+
+# =============================================================================
 # #5983
 # =============================================================================
 idx_gets(){ mock_req "/${P}/simple/$1/" | jqr '.get // 0'; }
