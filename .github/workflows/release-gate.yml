@@ -4104,9 +4104,15 @@ jobs:
           # or a stale build recorded late still re-scans inline
           # (proxy-scan-db-update-grace; upstreams.mock-scan-formats, bundled
           # Grype, about a minute). Red on every image before 1.13.0, NOT ON
-          # THIS LINE on a 1.12.x candidate. Required.
+          # THIS LINE on a 1.12.x candidate. Since artifact-keeper#5243 also
+          # one repository's proxy scans keep every scan slot busy after the
+          # first wave: 12 concurrent first pulls through a fail_closed Maven
+          # Remote with a 6 s grype stub run 4 at a time throughout, not 4 then
+          # 2 (scan-on-proxy-repo-concurrency; upstreams.mock-files on
+          # 172.16.<slot>.76, the scan-queue-upload-image-rescan grype stub,
+          # about a minute). Required.
           - group: perf-1.13.0-scan
-            tiers: proxy-scan-db-update-grace
+            tiers: proxy-scan-db-update-grace scan-on-proxy-repo-concurrency
           # 1.13.0 (artifact-keeper#6361): a presigned-redirect fast path takes
           # the Package Age Policy hold from the sidecar its freshness probe
           # read, so a replica that memoised a sidecar miss before the other
