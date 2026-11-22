@@ -388,6 +388,14 @@ head -c 2048 /dev/urandom > "$W/fill.bin"
 for i in $(seq 1 "$FILL_N"); do
   [ "$(mock_put "/g/f/fill-${SUF}-${i}.bin" "$W/fill.bin")" = "2048" ] || fail_g "mock:fill-${i}"
 done
+# Whatever happens below (a failed case, set -e, a signal), the server's
+# commit settings go back to their defaults before the oracle exits.
+reset_commit_delay(){
+  psql_q "ALTER SYSTEM RESET commit_delay" >/dev/null || true
+  psql_q "ALTER SYSTEM RESET commit_siblings" >/dev/null || true
+  psql_q "SELECT pg_reload_conf()" >/dev/null || true
+}
+add_exit_handler reset_commit_delay
 psql_q "ALTER SYSTEM SET commit_delay = $((FILL_DELAY_MS * 1000))" >/dev/null
 psql_q "ALTER SYSTEM SET commit_siblings = 0" >/dev/null
 psql_q "SELECT pg_reload_conf()" >/dev/null
@@ -405,9 +413,7 @@ for _ in $(seq 1 600); do
   sleep 0.05
 done
 t1="$(date +%s%N)"
-psql_q "ALTER SYSTEM RESET commit_delay" >/dev/null
-psql_q "ALTER SYSTEM RESET commit_siblings" >/dev/null
-psql_q "SELECT pg_reload_conf()" >/dev/null
+reset_commit_delay
 ms=$(( (t1 - t0) / 1000000 ))
 floor=$(( FILL_N * FILL_DELAY_MS ))
 ok=0
