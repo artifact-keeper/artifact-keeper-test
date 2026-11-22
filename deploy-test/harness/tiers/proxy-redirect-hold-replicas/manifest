@@ -47,13 +47,25 @@
 # #6418  A HEAD of a fresh cached PyPI file got a redirect to a URL signed for
 #        GET, which the object store refuses for a HEAD (403). (FIX) the HEAD
 #        answers 200 with the file's length; (CONTROL) the GET redirects.
+# #6433  Every other route that serves such a row read it with row-level
+#        checks only: PyPI PEP 658 metadata through a virtual, and the package
+#        routes of conda, Alpine, RPM, Debian, Go, Helm, Cargo and the generic
+#        download route (a redirect on `backend`). (FIX) on each route, GET
+#        and HEAD on both replicas, a held row answers 409 and a stale row is
+#        not served from the row: the Remote's proxy path answers with the
+#        upstream's (different) bytes, or for Helm and Cargo a non-2xx, and no
+#        download is recorded against the row; the held wheel row's metadata
+#        answers 409 and the
+#        stale one's is not read from the row. (CONTROL) a fresh row is served
+#        (backend-b, the exact bytes; the fresh wheel row's METADATA). RED on
+#        main: 200 / 302.
 #
 # Red: main before the fix. Green: an image carrying artifact-keeper#6361
-# (and #6416, #6418 for their cases).
+# (and #6416, #6418, #6433 for their cases).
 # RATE_LIMIT_ENABLED=false: admin calls back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet
 # (backend-b takes it from the shell; it has no CIDR allowlist).
-COVERS="6361 6416 6418"
+COVERS="6361 6416 6418 6433"
 PROFILES="storage.s3 storage.s3-presigned topology.two-replica topology.two-replica-s3 upstreams.mock-files"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

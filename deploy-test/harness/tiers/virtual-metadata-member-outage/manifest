@@ -1,8 +1,8 @@
 # DTF tier manifest: virtual-metadata-member-outage
 #   (artifact-keeper#5504, #5616, #5621, #5622; all fixed on main for 1.12.0,
 #   none on the 1.11.x line. artifact-keeper#5013, the per-upstream circuit
-#   breaker, and #5620 and #6417, the metadata and remaining walks, are
-#   1.13.0)
+#   breaker, and #5620, #6417 and #6426, the metadata and remaining walks,
+#   are 1.13.0)
 # Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files:
 # a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes over
 # a control API). One mock stands in for every Remote member: each member's
@@ -39,6 +39,13 @@
 #        any member repository"); a plain OCI Remote whose upstream answered
 #        503 answered the manifest and blob 404 and the tag list 502. The Go
 #        @v/list, @latest and .info routes were already fixed by #6214.
+# #6426  The rest of #5620: through a Virtual [404, 503] the RubyGems gem info
+#        (`api/v1/gems/{name}.json`) and quick spec, the Hex `/packages/{name}`
+#        and a conda `.sigs` sidecar answered 404. (FIX) they answer 503 +
+#        Retry-After; (CONTROL) over [404, 403] they answer 404, and a plain
+#        Go Remote over the 503 upstream answers @v/list, @latest and .info
+#        with a 5xx (fixed by #6214, held on both images); over [503, a member
+#        that has it] each walk serves the item (200).
 # #5013  A dead or hung upstream was contacted on every request: a Virtual's
 #        metadata merge asked a member answering 503 every time, a Remote
 #        serving an expired entry stale re-asked its dead upstream first on
@@ -111,7 +118,7 @@
 #
 # RATE_LIMIT_ENABLED=false: ~150 requests back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
-COVERS="5504 5616 5621 5622 5013 5620 6417"
+COVERS="5504 5616 5621 5622 5013 5620 6417 6426"
 PROFILES="storage.filesystem upstreams.mock-files"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

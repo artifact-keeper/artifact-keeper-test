@@ -443,4 +443,194 @@ fi
 [ "$CLEN" = "$(stat -c %s "$W/py.tar.gz")" ] || fail_g "Content-Length ${CLEN:-none}, expected $(stat -c %s "$W/py.tar.gz")"
 finish_case "a HEAD got a redirect to a URL signed for GET"
 
+# =============================================================================
+# #6433: every other route that serves an `artifacts` row whose storage_key is
+# a proxy-cache key (#6416 covered the PyPI virtual walk). For each route a
+# Remote gets three rows keyed on its own cache entries: fresh, held and stale.
+# The stale row's entry sits under a legacy cache path (`legacy/<row path>`), so
+# the Remote's proxy path, which caches the file under the route's upstream
+# path, has no copy of it and asks the mock upstream, which serves OTHER bytes
+# for the stale file: a response with the row's bytes came from the row, one
+# with the upstream's bytes came from the Remote's path. A route is probed on
+# `backend` (presigned downloads on) and on `backend-b` (off, the default), GET
+# and HEAD.
+# rowspec: <label> <format> <row path (@F@ = file stem)> <row name> <row version>
+#          <route on the Remote (@K@ = repo key)>
+#          <the file's path under the Remote's upstream, or - when the Remote
+#           resolves it through an index first (Helm, Cargo)>
+G_SPECS="
+generic|generic|pkg/@F@.bin|@F@|1.0|/api/v1/repositories/@K@/download/pkg/@F@.bin|pkg/@F@.bin
+conda|conda|noarch/@F@-1.0-0.tar.bz2|@F@|1.0|/conda/@K@/noarch/@F@-1.0-0.tar.bz2|noarch/@F@-1.0-0.tar.bz2
+alpine|alpine|v3.20/main/x86_64/@F@-1.0-r0.apk|@F@|1.0-r0|/alpine/@K@/v3.20/main/x86_64/@F@-1.0-r0.apk|v3.20/main/x86_64/@F@-1.0-r0.apk
+rpm|rpm|packages/@F@-1.0-1.x86_64.rpm|@F@|1.0|/rpm/@K@/packages/@F@-1.0-1.x86_64.rpm|packages/@F@-1.0-1.x86_64.rpm
+debian|debian|pool/main/d/@F@/@F@_1.0_amd64.deb|@F@|1.0|/debian/@K@/pool/main/d/@F@/@F@_1.0_amd64.deb|pool/main/d/@F@/@F@_1.0_amd64.deb
+go|go|example.com/@F@/@v/v1.0.0.zip|example.com/@F@|v1.0.0|/go/@K@/example.com/@F@/@v/v1.0.0.zip|example.com/@F@/@v/v1.0.0.zip
+helm|helm|charts/@F@-1.0.0.tgz|@F@|1.0.0|/helm/@K@/charts/@F@-1.0.0.tgz|-
+cargo|cargo|crates/@F@/@F@-1.0.0.crate|@F@|1.0.0|/cargo/@K@/api/v1/crates/@F@/1.0.0/download|-
+"
+# row_entry <repo-key> <repo-id> <row-path> <name> <version> <sidecar|none> <body>
+#           [cache path of the entry, default the row path]
+row_entry(){
+  local key="${ROOT}$1/${8:-$3}"
+  mc_put "${key}/__content__" "$7" || SETUP_ERR="${SETUP_ERR} put:$3"
+  [ "$6" = "none" ] || mc_put "${key}/__cache_meta__.json" "$W/$6" || SETUP_ERR="${SETUP_ERR} sidecar:$3"
+  [[ "$(psqlq "INSERT INTO artifacts (repository_id, path, name, version, size_bytes, checksum_sha256, content_type, storage_key, uploaded_by)
+              VALUES ('$2', '$3', '$4', '$5', $(stat -c %s "$7"), '$(sha_of "$7")', 'application/octet-stream',
+                      '${key}/__content__', '${ADMIN_ID}') RETURNING 'row-ok'")" = *row-ok* ]] || SETUP_ERR="${SETUP_ERR} row:$3"
+}
+sub(){ local x="${1//@F@/$2}"; echo "${x//@K@/$3}"; }
+
+begin_test "setup (#6433): a Remote per format route, with fresh, held and stale proxy-cache rows; a PyPI virtual over a Remote with wheel rows"
+SETUP_ERR=""
+head -c 120000 /dev/urandom > "$W/g.bin"; G_SHA="$(sha_of "$W/g.bin")"
+sidecar "$W/g-free.json" "$W/g.bin" 0
+sidecar "$W/g-held.json" "$W/g.bin" 60
+sidecar "$W/g-stale.json" "$W/g.bin" 0 "-1 hour"
+head -c 90000 /dev/urandom > "$W/g-up.bin"; G_UP_SHA="$(sha_of "$W/g-up.bin")"
+G_ROUTES=""
+while IFS='|' read -r label fmt rpath rname rver route upath; do
+  [ -n "$label" ] || continue
+  key="prh-g${label}-${SUF}"
+  mk "$key" "$fmt" remote "${UP}/${P}/g${label}"
+  rid="$(repo_id "$key")"; [ -n "$rid" ] || { SETUP_ERR="${SETUP_ERR} id:${key}"; continue; }
+  for st in free held stale; do
+    stem="dtfg${label}${st}${SUF}"
+    rp="$(sub "$rpath" "$stem" "$key")"; kp="$rp"; [ "$st" = stale ] && kp="legacy/$rp"
+    row_entry "$key" "$rid" "$rp" "$(sub "$rname" "$stem" "$key")" "$rver" "g-${st}.json" "$W/g.bin" "$kp"
+  done
+  if [ "$upath" != "-" ]; then
+    [ -n "$(mock_put "/${P}/g${label}/$(sub "$upath" "dtfg${label}stale${SUF}" "$key")" "$W/g-up.bin")" ] \
+      || SETUP_ERR="${SETUP_ERR} mock:${label}"
+  fi
+  G_ROUTES="${G_ROUTES}${label}|${key}|${route}|${upath}
+"
+done <<< "$G_SPECS"
+# PyPI PEP 658 metadata: read from a Remote member's row through a virtual.
+# A real wheel, so the row's METADATA is what main served.
+python3 - "$W/wheel.whl" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("dtfmeta-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: dtfmeta\nVersion: 1.0\nSummary: dtf-6433-row-metadata\n")
+    z.writestr("dtfmeta/__init__.py", "")
+PY
+sidecar "$W/w-free.json" "$W/wheel.whl" 0
+sidecar "$W/w-held.json" "$W/wheel.whl" 60
+sidecar "$W/w-stale.json" "$W/wheel.whl" 0 "-1 hour"
+R_PM="prh-pymeta-${SUF}"; V_PM="prh-vpymeta-${SUF}"
+mk "$R_PM" pypi remote "${UP}/${P}/pymeta"
+mk "$V_PM" pypi virtual; member "$V_PM" "$R_PM"
+R_PM_ID="$(repo_id "$R_PM")"
+for st in free held stale; do
+  proj="dtfmeta${st}${SUF}"
+  row_entry "$R_PM" "$R_PM_ID" "simple/${proj}/${proj}-1.0-py3-none-any.whl" "$proj" "1.0" "w-${st}.json" "$W/wheel.whl"
+done
+note "routes: $(echo "$G_ROUTES" | cut -d'|' -f1 | tr '\n' ' ')"
+if [ -n "$SETUP_ERR" ]; then infra_fail "setup failed:${SETUP_ERR}"; else pass; fi
+
+# g_probe <label> <key> <route> <state> -> GA (backend GET), GH (backend HEAD),
+# BB (backend-b GET), BH (backend-b HEAD); bodies in $W/g-<label>-<state>-*
+g_probe(){
+  local path; path="$(sub "$3" "dtfg$1$4${SUF}" "$2")"
+  get_a "$path" "$W/g-$1-$4-a"; GA="$ST"; GA_LOC="$LOC"
+  get_h "$path" "$W/g-$1-$4-h"; GH="$ST"
+  get_bb "$path" "$W/g-$1-$4-b"; BB="$ST"
+  get_bb "$path" "$W/g-$1-$4-bh" HEAD; BH="$ST"
+}
+
+begin_test "CONTROL: each route serves a fresh, unheld proxy-cache row of its Remote (presigned downloads off: the exact bytes)"
+reset_case
+while IFS='|' read -r label key route _; do
+  [ -n "$label" ] || continue
+  g_probe "$label" "$key" "$route" free
+  note "${label} fresh: backend GET ${GA}${GA_LOC:+ (redirect)} HEAD ${GH}; backend-b GET ${BB} HEAD ${BH}"
+  [ "$BB" = "200" ] && [ "$(sha_of "$W/g-${label}-free-b")" = "$G_SHA" ] || fail_g "${label}: backend-b answered ${BB} or other bytes for a fresh row"
+done <<< "$G_ROUTES"
+finish_case "a route does not serve its Remote's proxy-cache rows here, so the FIX cases below prove nothing"
+
+begin_test "FIX #6433: a held proxy-cache row answers the hold's 409 on every route, GET and HEAD, presigned downloads on and off"
+reset_case
+while IFS='|' read -r label key route _; do
+  [ -n "$label" ] || continue
+  g_probe "$label" "$key" "$route" held
+  note "${label} held: backend GET ${GA}${GA_LOC:+ Location ${GA_LOC:0:60}} HEAD ${GH}; backend-b GET ${BB} HEAD ${BH}"
+  for v in "backend GET:$GA" "backend HEAD:$GH" "backend-b GET:$BB" "backend-b HEAD:$BH"; do
+    [ "${v##*:}" = "409" ] || fail_g "${label} ${v%:*}: answered ${v##*:}, expected the hold's 409"
+  done
+  [ -z "$GA_LOC" ] || fail_g "${label}: redirected to the held object"
+  [ "$(sha_of "$W/g-${label}-held-b")" != "$G_SHA" ] || fail_g "${label}: backend-b served the held bytes"
+done <<< "$G_ROUTES"
+finish_case "a held proxy-cache row was served from its artifacts row with no look at its sidecar"
+
+# A stale row is declined and the Remote's proxy path answers. Its upstream
+# serves other bytes for the stale file than the row holds (see the setup), so
+# where the Remote fetches the file itself the response must be the upstream's
+# bytes; for Helm and Cargo, which resolve the file through an index the mock
+# does not serve, a non-2xx without the row's bytes. A serve from the row is
+# also recorded against the row in download_statistics, off the response path:
+# each route's own fresh row (served by the CONTROL above) is the reference
+# that the recorder has caught up before a 0 is believed.
+row_served(){ # <row path> -> count of downloads recorded against the row
+  psqlq "SELECT count(*) FROM download_statistics d JOIN artifacts a ON a.id = d.artifact_id WHERE a.path = '$1'" | tr -d '[:space:]'
+}
+row_of(){ local rpath; rpath="$(grep "^$1|" <<< "$G_SPECS" | cut -d'|' -f3)"; sub "$rpath" "dtfg$1$2${SUF}" "$3"; }
+begin_test "FIX #6433: a stale proxy-cache row is not served from the row; the status and body come from the Remote's proxy path"
+reset_case
+UNCALIBRATED=""
+while IFS='|' read -r label key route upath; do
+  [ -n "$label" ] || continue
+  g_probe "$label" "$key" "$route" stale
+  a_sha="$(sha_of "$W/g-${label}-stale-a")"; b_sha="$(sha_of "$W/g-${label}-stale-b")"
+  src(){ case "$1" in "$G_SHA") echo row ;; "$G_UP_SHA") echo upstream ;; *) echo other ;; esac; }
+  note "${label} stale: backend GET ${GA} ($(src "$a_sha"))${GA_LOC:+ Location ${GA_LOC:0:60}}; backend-b GET ${BB} ($(src "$b_sha"))"
+  [ -z "$GA_LOC" ] || fail_g "${label}: redirected to a stale entry (${GA})"
+  for v in "backend:${GA}:${a_sha}" "backend-b:${BB}:${b_sha}"; do
+    who="${v%%:*}"; rest="${v#*:}"; st="${rest%%:*}"; sh="${rest#*:}"
+    if [ "$upath" != "-" ]; then
+      [ "$st" = "200" ] && [ "$sh" = "$G_UP_SHA" ] \
+        || fail_g "${label} ${who}: answered ${st} with the $(src "$sh") bytes, expected 200 with the upstream's bytes (the Remote's path)"
+    else
+      case "$st" in 2??|3??) fail_g "${label} ${who}: answered ${st}; the Remote's path has no such file (its index is not served)" ;; esac
+      [ "$sh" != "$G_SHA" ] || fail_g "${label} ${who}: served the row's bytes"
+    fi
+  done
+  cal="$(row_of "$label" free "$key")"
+  for _ in $(seq 1 30); do [ "$(row_served "$cal")" != "0" ] && break; sleep 1; done
+  if [ "$(row_served "$cal")" = "0" ]; then
+    UNCALIBRATED="${UNCALIBRATED} ${label}"
+  else
+    n="$(row_served "$(row_of "$label" stale "$key")")"
+    note "${label}: downloads recorded against the fresh row $(row_served "$cal"), against the stale row ${n:-?}"
+    [ "${n:-1}" = "0" ] || fail_g "${label}: the stale row was served from its artifacts row (${n:-?} downloads recorded against it)"
+  fi
+done <<< "$G_ROUTES"
+if [ -n "$UNCALIBRATED" ]; then
+  infra_fail "the fresh row's download was never recorded for:${UNCALIBRATED}; cannot tell a row serve from a proxy serve"
+else
+  finish_case "a stale proxy-cache row was served from its artifacts row"
+fi
+
+PMETA(){ echo "/pypi/${V_PM}/simple/dtfmeta$1${SUF}/dtfmeta$1${SUF}-1.0-py3-none-any.whl.metadata"; }
+begin_test "CONTROL: a PyPI virtual serves the PEP 658 metadata of a fresh proxy-cache wheel row of its Remote member"
+reset_case
+get_a "$(PMETA free)" "$W/pmfree"
+note "virtual .metadata (fresh row) -> ${ST}: $(head -c 80 "$W/pmfree" | tr '\n' ' ')"
+if [ "$ST" != "200" ] || ! grep -q 'dtf-6433-row-metadata' "$W/pmfree"; then
+  fail_g "answered ${ST} without the row's METADATA"
+fi
+finish_case "the virtual does not read PEP 658 metadata from a member's row here"
+
+begin_test "FIX #6433: PEP 658 metadata of a held proxy-cache wheel row answers 409 through the virtual (GET and HEAD); a stale row's metadata is not read from the row"
+reset_case
+get_a "$(PMETA held)" "$W/pmheld"; g="$ST"
+get_h "$(PMETA held)" "$W/pmheldh"; h="$ST"
+get_bb "$(PMETA held)" "$W/pmheldb"; b="$ST"
+get_a "$(PMETA stale)" "$W/pmstale"; s="$ST"
+note "held: backend GET ${g} HEAD ${h}, backend-b GET ${b}; stale: GET ${s}"
+for v in "backend GET:$g" "backend HEAD:$h" "backend-b GET:$b"; do
+  [ "${v##*:}" = "409" ] || fail_g "held ${v%:*}: answered ${v##*:}, expected the hold's 409"
+done
+! grep -q 'dtf-6433-row-metadata' "$W/pmheld" || fail_g "served the held row's METADATA"
+! grep -q 'dtf-6433-row-metadata' "$W/pmstale" || fail_g "served the stale row's METADATA (${s})"
+finish_case "PEP 658 metadata was extracted from a proxy-cache row with no look at its sidecar"
+
 end_suite

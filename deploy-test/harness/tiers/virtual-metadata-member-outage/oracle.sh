@@ -316,6 +316,39 @@ for m in 404 503 403; do mk "vmo-go${m}-${SUF}" go remote "${UP}/${P}/go${m}"; d
 virt "vmo-gov503-${SUF}" go "vmo-go404-${SUF}" "vmo-go503-${SUF}"
 virt "vmo-gov403-${SUF}" go "vmo-go404-${SUF}" "vmo-go403-${SUF}"
 
+# --- #6426: RubyGems gem info and quick spec, Hex /packages/{name}, conda
+# .sigs sidecar. Same shape: a virtual over [404 member, 503 member] and a
+# control over [404, 403].
+GEM="dtfr${SUF}"; HEXPKG="dtfx${SUF}"; CONDA_SIGS="noarch/dtfc${SUF}-1.0-0.conda.sigs"
+for m in r503:503 r403:403; do
+  for f in "api/v1/gems/${GEM}.json" "quick/Marshal.4.8/${GEM}-1.0.0.gemspec.rz"; do
+    [ "$(mock_status "/${P}/${m%%:*}/${f}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}:${f}"
+  done
+done
+for m in x503:503 x403:403; do
+  [ "$(mock_status "/${P}/${m%%:*}/packages/${HEXPKG}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}"
+done
+for m in c503:503 c403:403; do
+  [ "$(mock_status "/${P}/${m%%:*}/${CONDA_SIGS}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}"
+done
+for fmt in rubygems:r hex:x conda:c; do
+  f="${fmt%%:*}"; x="${fmt#*:}"
+  for m in 404 503 403; do mk "vmo-${x}${m}-${SUF}" "$f" remote "${UP}/${P}/${x}${m}"; done
+  virt "vmo-${x}v503-${SUF}" "$f" "vmo-${x}404-${SUF}" "vmo-${x}503-${SUF}"
+  virt "vmo-${x}v403-${SUF}" "$f" "vmo-${x}404-${SUF}" "vmo-${x}403-${SUF}"
+  # [503 member, member that has it]: the down member comes first.
+  mk "vmo-${x}has-${SUF}" "$f" remote "${UP}/${P}/${x}has"
+  virt "vmo-${x}vhas-${SUF}" "$f" "vmo-${x}503-${SUF}" "vmo-${x}has-${SUF}"
+done
+printf '{"name":"%s","version":"1.0.0","dtf":"ok-6426"}' "$GEM" > "$W/gem.json"
+printf 'dtf-ok-6426-quickspec' > "$W/gem.rz"
+printf 'dtf-ok-6426-hex' > "$W/hex.bin"
+printf '{"dtf":"ok-6426-sigs"}' > "$W/sigs.json"
+for spec in "rhas/api/v1/gems/${GEM}.json:gem.json" "rhas/quick/Marshal.4.8/${GEM}-1.0.0.gemspec.rz:gem.rz" \
+            "xhas/packages/${HEXPKG}:hex.bin" "chas/${CONDA_SIGS}:sigs.json"; do
+  [ -n "$(mock_put "/${P}/${spec%%:*}" "$W/${spec##*:}")" ] || SETUP_ERR="${SETUP_ERR} mock:${spec%%:*}"
+done
+
 # Uploads: the hosted .apk and the hosted Maven jar.
 up(){ # <path> <file>
   local c
@@ -555,6 +588,56 @@ for c in $CONTROLS_6417; do
 done
 note "controls:${CONTROLS_6417}"
 finish_case "a permanent member 4xx or an upstream 404 did not read as a miss"
+
+# #6426: the RubyGems, Hex and conda sidecar walks follow the #5504 rule.
+CONTROLS_6426=""
+walk_6426(){ # <label> <route under the virtual, @V@ = virtual key> <x>
+  local p503="${2//@V@/vmo-${3}v503-${SUF}}" p403="${2//@V@/vmo-${3}v403-${SUF}}"
+  get "$p503" "$W/w6426"; want_503 "$1 [404, 503]" "$W/w6426" "$ST"
+  get "$p403" "$W/w6426c"; note "control $1 [404, 403] -> ${ST}"
+  CONTROLS_6426="${CONTROLS_6426} $1=${ST}"
+}
+begin_test "FIX #6426: a RubyGems virtual [404 member, 503 member] answers gem info and the quick spec 503 with Retry-After, not 404"
+reset_case
+walk_6426 "gem-info" "/gems/@V@/api/v1/gems/${GEM}.json" r
+walk_6426 "quick-spec" "/gems/@V@/quick/Marshal.4.8/${GEM}-1.0.0.gemspec.rz" r
+finish_case "an unavailable member made a RubyGems metadata walk 404"
+
+begin_test "FIX #6426: a Hex virtual [404 member, 503 member] answers /packages/{name} 503 with Retry-After, not 404"
+reset_case
+walk_6426 "hex-package" "/hex/@V@/packages/${HEXPKG}" x
+finish_case "an unavailable member made the Hex package walk 404"
+
+begin_test "FIX #6426: a conda virtual [404 member, 503 member] answers a .sigs sidecar 503 with Retry-After, not 404"
+reset_case
+walk_6426 "conda-sigs" "/conda/@V@/${CONDA_SIGS}" c
+finish_case "an unavailable member made the conda sidecar walk 404"
+
+begin_test "CONTROL (#6426): a virtual [503 member, member that has it] serves the item (200), the down member coming first"
+reset_case
+for spec in "gem-info:/gems/vmo-rvhas-${SUF}/api/v1/gems/${GEM}.json:ok-6426" \
+            "quick-spec:/gems/vmo-rvhas-${SUF}/quick/Marshal.4.8/${GEM}-1.0.0.gemspec.rz:dtf-ok-6426-quickspec" \
+            "hex-package:/hex/vmo-xvhas-${SUF}/packages/${HEXPKG}:dtf-ok-6426-hex" \
+            "conda-sigs:/conda/vmo-cvhas-${SUF}/${CONDA_SIGS}:ok-6426-sigs"; do
+  l="${spec%%:*}"; r="${spec#*:}"; want="${r##*:}"; r="${r%:*}"
+  get "$r" "$W/ok6426"
+  note "${l} [503, ok] -> ${ST}: $(snip "$W/ok6426")"
+  [ "$ST" = "200" ] && grep -qF "$want" "$W/ok6426" || fail_g "${l} [503, ok] answered ${ST} without the healthy member's item"
+done
+finish_case "a down member ahead of one that has the item made the walk fail"
+
+begin_test "CONTROL (#6426): the same walks over [404 member, 403 member] answer 404; a plain Go Remote whose upstream answers 503 answers @v/list, @latest and .info with a 5xx, not 404"
+reset_case
+for c in $CONTROLS_6426; do
+  [ "${c##*=}" = "404" ] || fail_g "${c%=*} answered ${c##*=}, expected 404"
+done
+note "controls:${CONTROLS_6426}"
+for r in "@v/list" "@latest" "@v/v1.0.0.info"; do
+  get "/go/vmo-go503-${SUF}/${GOMOD}/${r}" "$W/goremote"
+  note "plain Go Remote ${r} (upstream 503) -> ${ST}"
+  case "$ST" in 5??) ;; *) fail_g "plain Go Remote ${r} answered ${ST}, expected a 5xx for an upstream outage";; esac
+done
+finish_case "a permanent member 4xx did not read as a miss, or a plain Go Remote reported its outage as a miss"
 
 begin_test "FIX #5504: a Maven virtual over a hosted member whose stored object is gone answers .sha1 503, not 404"
 reset_case

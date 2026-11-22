@@ -4126,7 +4126,10 @@ jobs:
           # row is served, redirected or streamed, only after its sidecar's
           # freshness, hold and scan verdict are checked, with presigned
           # downloads on and off) and artifact-keeper#6418 (a HEAD of a cached
-          # PyPI file is not redirected to a URL signed for GET).
+          # PyPI file is not redirected to a URL signed for GET), and
+          # artifact-keeper#6433 (every other route that serves a Remote's
+          # proxy-cache row, PyPI metadata and the conda, Alpine, RPM, Debian,
+          # Go, Helm, Cargo and generic routes, checks the sidecar first).
           # Red on main before the fix, NOT ON THIS LINE on a 1.12.x
           # candidate. Required.
           - group: security-1.13.0-proxy-redirect
