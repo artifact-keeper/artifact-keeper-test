@@ -3354,7 +3354,10 @@ jobs:
   #                     must still be refused (artifact-keeper#3053).
   #   security-boundary — dos (rate-limit / worker-starvation), sso
   #                     (SAML XSW class), proxy-egress (SSRF egress
-  #                     control)
+  #                     control; since 1.13.0 also artifact-keeper#6359:
+  #                     an ALL_PROXY host the environment matcher never
+  #                     routes through is not exempt from the connect-time
+  #                     SSRF filter)
   #   data-integrity  — the two 1.8.2 silent data-loss classes
   #                     (artifact-keeper-test#386): maven-rollup-anchor-
   #                     escape, where an un-escaped LIKE let the GC and
@@ -4119,6 +4122,11 @@ jobs:
           # replica filled a held entry answers 409, not a redirect to the
           # held object (proxy-redirect-hold-replicas; MinIO with presigned
           # downloads, a second replica, upstreams.mock-files; about 1 min).
+          # Also artifact-keeper#6416 (a PyPI virtual's proxy-cache artifacts
+          # row is served, redirected or streamed, only after its sidecar's
+          # freshness, hold and scan verdict are checked, with presigned
+          # downloads on and off) and artifact-keeper#6418 (a HEAD of a cached
+          # PyPI file is not redirected to a URL signed for GET).
           # Red on main before the fix, NOT ON THIS LINE on a 1.12.x
           # candidate. Required.
           - group: security-1.13.0-proxy-redirect
