@@ -95,6 +95,11 @@ if [ "$AH" = "Authorization: Bearer " ]; then infra_fail "admin login failed at 
 if [ "$(curl -s --max-time 5 "${MOCK}/__readyz" || true)" != "ok" ]; then
   infra_fail "mock upstream not reachable on ${MOCK}"; end_suite
 fi
+# The mc client is used inside the 30 s window; pull it now so a cold pull
+# cannot eat that window.
+if ! docker image inspect "$MC_IMAGE" >/dev/null 2>&1 && ! docker pull -q "$MC_IMAGE" >/dev/null 2>&1; then
+  infra_fail "could not pull ${MC_IMAGE}"; end_suite
+fi
 b="$(docker exec "$BACKEND_CTR" curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/health 2>/dev/null || echo 000)"
 if [ "$b" != "200" ]; then infra_fail "backend-b is not healthy on :8081 (${b})"; end_suite; fi
 SUF="${DTF_SLOT}x${RUN_ID##*-}"
