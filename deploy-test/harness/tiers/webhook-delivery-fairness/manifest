@@ -1,4 +1,4 @@
-# DTF tier manifest: webhook-delivery-fairness  (artifact-keeper#5661, #5234)
+# DTF tier manifest: webhook-delivery-fairness  (artifact-keeper#5661, #5234, #5195)
 # Profile-set: filesystem / single + webhooks.v2-producer (event deliveries
 # are enqueued) + secrets.webhook-key (webhook secrets are
 # encrypted at rest; the key is generated per run) + webhooks.mock-blackhole
@@ -7,7 +7,8 @@
 #
 # CONTROLS (pass on every image)
 #   with no backlog, an artifact_uploaded delivery for a webhook with a secret
-#   reaches the live receiver (within 90 s; the retry worker ticks every 30 s),
+#   reaches the live receiver (within 90 s; before #5195 the worker ticked
+#   every 30 s),
 #   and its X-ArtifactKeeper-Signature v1 token is HMAC(secret, "<t>.<body>").
 #
 # FIX CASES
@@ -23,13 +24,20 @@
 #     delivered inside the wait. Fixed: up to 8 endpoints in parallel and a
 #     failed endpoint's other rows are deferred, so the live row goes out on
 #     the next pass (observed in about 30 s).
+#   #5195 with that black-hole backlog still queued, four live uploads in a
+#     row must each reach the live receiver within 10 s (each wait is capped
+#     at 45 s). RED on main before the fix: the worker claims every 30 s and a
+#     pass lasts until its slowest send times out, so an upload made right
+#     after the previous live delivery waits about 25-30 s for the pass to end.
+#     Fixed: the producer wakes the worker, each webhook has its own lane and
+#     the black holes are in per-endpoint backoff, so each lands in 1-3 s.
 #
-# Wall clock: about 1.5 minutes green, about 3.5 minutes red.
+# Wall clock: about 2 minutes green, about 5.5 minutes red.
 # RATE_LIMIT_ENABLED=false: back-to-back admin calls.
 PROFILES="storage.filesystem secrets.webhook-key webhooks.v2-producer webhooks.mock-blackhole"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
-COVERS="5661 5234"
+COVERS="5661 5234 5195"
 # A fresh 32-byte key per run (no key material in the repository).
 DTF_WEBHOOK_SECRET_KEY="$(openssl rand -base64 32)"
 export DTF_WEBHOOK_SECRET_KEY
