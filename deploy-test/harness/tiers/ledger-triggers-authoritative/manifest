@@ -37,6 +37,15 @@
 # over-quota one is refused on both images (507 on the 1.11 line, 403
 # QUOTA_EXCEEDED from 1.12.0, artifact-keeper#5915).
 #
+# #3094 (1.13.0): /admin/stats reads its four large-table counts from the
+# trigger-kept row_count_deltas (migration 414). FIX: the endpoint answers
+# while artifacts, proxy_cache_artifacts, download_statistics and
+# proxy_download_statistics are held under ACCESS EXCLUSIVE (main: times out,
+# it COUNT(*)s them). CONTROL (both images): the counts equal the live
+# COUNT(*) figures before and after inserts, soft deletes, restores, hard
+# deletes and downloads.
+COVERS="3094"
+#
 # RATE_LIMIT_ENABLED=false: the oracle drives admin login + repo creates +
 # several uploads back-to-back through one admin.
 PROFILES="storage.filesystem"
