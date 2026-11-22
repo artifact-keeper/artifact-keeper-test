@@ -51,6 +51,15 @@
 # plus a cached older one; the lifecycle-policy eviction path of #4539 (this
 # tier evicts through POST cache/invalidate, the same catalog delete).
 #
+# #5635 (1.13.0): every cold fill's catalog upsert charges the Remote's one
+# repository_usage_ledger row, and each held that row lock through its own
+# synchronous WAL flush, so concurrent fills into one Remote committed one
+# flush at a time. FIX: with every synchronous commit made to cost 100 ms
+# (commit_delay, commit_siblings 0; reset afterwards), 24 concurrent cold
+# fills land their catalog rows in under half of the 2.4 s that queue needs
+# by construction (main: >= 2.4 s).
+COVERS="5635"
+#
 # RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
 PROFILES="storage.filesystem upstreams.mock-files"

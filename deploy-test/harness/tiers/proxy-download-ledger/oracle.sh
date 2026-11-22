@@ -11,6 +11,8 @@
 #         0-byte proxy_cache_artifacts placeholder
 #   #4267 a Maven download through a virtual from a hosted member is counted
 #   #4341 an npm tarball GET through a Remote (no scan-on-proxy) is counted
+#   #5635 concurrent cold fills into one Remote do not queue on its
+#         usage-ledger row (1.13.0)
 # See the manifest for the bugs, the primitives and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
@@ -358,5 +360,64 @@ n2="$(pds_ua "$UA")"
 [ "$n2" = "1" ] || fail_g "after a HEAD the count is ${n2}, expected still 1"
 note "rows=${n} after-HEAD=${n2}"
 finish_case "an npm Remote tarball download was not counted"
+
+# =============================================================================
+# FIX #5635: concurrent cold fills into one Remote do not queue on its
+# usage-ledger row.
+#
+# Every fill's catalog upsert charges the Remote's repository_usage_ledger row
+# (migration 182's trigger), and before 1.13.0 each one held that row lock
+# through its own synchronous WAL flush, so fills into one Remote committed
+# one flush at a time. The fix commits that one transaction without waiting
+# for the flush, which releases the row as soon as the commit is recorded.
+#
+# Deterministic proxy: the flush is made to cost FILL_DELAY_MS on purpose
+# (commit_delay, with commit_siblings 0 so every synchronous commit pays it,
+# as on a slow disk). FILL_N fills that commit together then need at least
+# FILL_N x FILL_DELAY_MS on main for the last catalog row to land, because
+# each waits for the previous one's flush; with the fix the queue does not
+# form and they land within a few delays. The bound on main is arithmetic,
+# not a timing guess: the gate sits at half of it.
+# =============================================================================
+begin_test "FIX #5635: ${FILL_N:=24} concurrent cold fills into one Remote land their catalog rows without queueing on the ledger row (commit_delay ${FILL_DELAY_MS:=100} ms)"
+reset_case
+R_FILL="pdl-fill-${SUF}"
+[ "$(mk "$(repo_json "$R_FILL" generic remote "${UP}/g/")")" = "$R_FILL" ] || fail_g "could not create ${R_FILL}"
+ID_FILL="$(repo_id "$R_FILL")"
+head -c 2048 /dev/urandom > "$W/fill.bin"
+for i in $(seq 1 "$FILL_N"); do
+  [ "$(mock_put "/g/f/fill-${SUF}-${i}.bin" "$W/fill.bin")" = "2048" ] || fail_g "mock:fill-${i}"
+done
+psql_q "ALTER SYSTEM SET commit_delay = $((FILL_DELAY_MS * 1000))" >/dev/null
+psql_q "ALTER SYSTEM SET commit_siblings = 0" >/dev/null
+psql_q "SELECT pg_reload_conf()" >/dev/null
+sleep 1
+delay="$(psql_q "SHOW commit_delay")"
+t0="$(date +%s%N)"
+for i in $(seq 1 "$FILL_N"); do
+  get "$BASE/api/v1/repositories/${R_FILL}/download/f/fill-${SUF}-${i}.bin" "$W/fill-${i}.out" "pdl-fill-${SUF}" >/dev/null &
+done
+wait
+landed=""
+for _ in $(seq 1 600); do
+  landed="$(psql_q "SELECT count(*) FROM proxy_cache_artifacts WHERE repository_id = '${ID_FILL}' AND size_bytes = 2048")"
+  [ "${landed:-0}" -ge "$FILL_N" ] && break
+  sleep 0.05
+done
+t1="$(date +%s%N)"
+psql_q "ALTER SYSTEM RESET commit_delay" >/dev/null
+psql_q "ALTER SYSTEM RESET commit_siblings" >/dev/null
+psql_q "SELECT pg_reload_conf()" >/dev/null
+ms=$(( (t1 - t0) / 1000000 ))
+floor=$(( FILL_N * FILL_DELAY_MS ))
+ok=0
+for i in $(seq 1 "$FILL_N"); do
+  [ "$(sha_of "$W/fill-${i}.out")" = "$(sha_of "$W/fill.bin")" ] && ok=$((ok + 1))
+done
+note "commit_delay=${delay}; ${ok}/${FILL_N} bodies served; ${landed:-?}/${FILL_N} catalog rows landed after ${ms} ms (queued floor ${floor} ms, gate < $((floor / 2)) ms)"
+[ "$ok" = "$FILL_N" ] || fail_g "${ok}/${FILL_N} cold GETs returned the upstream bytes"
+[ "${landed:-0}" -ge "$FILL_N" ] || fail_g "only ${landed:-0}/${FILL_N} catalog rows landed"
+[ "$ms" -lt $((floor / 2)) ] || fail_g "the ${FILL_N} fills' catalog rows took ${ms} ms to land, at least the ${floor} ms a one-flush-at-a-time ledger queue needs: the fills still serialise on the Remote's usage-ledger row (#5635)"
+finish_case "concurrent cold fills still queue on the Remote's usage-ledger row"
 
 end_suite

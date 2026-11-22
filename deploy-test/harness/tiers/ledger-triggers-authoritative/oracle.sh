@@ -143,6 +143,97 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# #3094: /admin/stats reported four counts with a COUNT(*) over the whole of
+# artifacts, proxy_cache_artifacts, download_statistics and
+# proxy_download_statistics on every call, so its cost grew with the
+# catalogue and the download history. From 1.13.0 triggers keep those counts
+# exact in row_count_deltas (migration 414).
+#
+# Deterministic proxy for "the endpoint no longer scans those tables": hold
+# an ACCESS EXCLUSIVE lock on all four and ask for the stats. An endpoint that
+# reads any of them waits for the lock (the request times out); one that
+# reads only the trigger-kept counts answers at once. Request time is not
+# measured; whether the request needs the locked tables at all is.
+# CONTROL (both images): the counts equal the live COUNT(*) figures, before
+# and after writes of every kind.
+# ---------------------------------------------------------------------------
+stats_counts(){ # -> "artifacts proxy downloads proxy_downloads" as /admin/stats reports them
+  curl -s --max-time 30 "${AUTH[@]}" "$BASE/api/v1/admin/stats" \
+    | jqr '"\(.total_artifacts) \(.proxy_artifact_count) \(.total_downloads - .proxy_download_count) \(.proxy_download_count)"' || true
+}
+live_counts(){
+  psql_q "SELECT (SELECT COUNT(*) FROM artifacts WHERE is_deleted = false) || ' ' ||
+    (SELECT COUNT(*) FROM proxy_cache_artifacts) || ' ' || (SELECT COUNT(*) FROM download_statistics) || ' ' ||
+    (SELECT COUNT(*) FROM proxy_download_statistics);" || true
+}
+# The backend seeds its counts shortly after startup; an image without
+# migration 414 has no seeds table, and the wait ends at once.
+# common.sh may run under `set -e`: every probe below swallows its own failure
+# and the assertion that reads the (possibly empty) value judges it.
+seeds="-1"
+if [ "$(psql_q "SELECT to_regclass('row_count_seeds') IS NOT NULL;" | tr -d '[:space:]' || true)" = "t" ]; then
+  for _ in $(seq 1 60); do
+    seeds=$(psql_q "SELECT count(*) FROM row_count_seeds;" | tr -d '[:space:]' || true)
+    [ "${seeds:-0}" -ge 4 ] && break
+    sleep 1
+  done
+fi
+echo "-- row_count_seeds: ${seeds:-?} (-1 = no migration 414)"
+
+begin_test "CONTROL: /admin/stats counts equal the live COUNT(*) figures through inserts, soft deletes, restores, hard deletes and downloads"
+CR="ledgerstats$SUF"
+mkrepo "$CR" generic >/dev/null
+CRID=$(repo_id "$CR" || true)
+S0=$(stats_counts); L0=$(live_counts)
+psql_q "INSERT INTO artifacts (repository_id, path, name, size_bytes, checksum_sha256, content_type, storage_key, is_deleted)
+        SELECT '$CRID', 'st/' || g, 'st' || g, 10, repeat('c',64), 'application/octet-stream', 'cas/st-$SUF-' || g, g = 5
+          FROM generate_series(1, 5) g;" >/dev/null || true
+psql_q "UPDATE artifacts SET is_deleted = true WHERE repository_id = '$CRID' AND path IN ('st/1', 'st/2');" >/dev/null || true
+psql_q "UPDATE artifacts SET is_deleted = false WHERE repository_id = '$CRID' AND path = 'st/2';" >/dev/null || true
+psql_q "INSERT INTO download_statistics (artifact_id) SELECT id FROM artifacts WHERE repository_id = '$CRID';" >/dev/null || true
+psql_q "DELETE FROM artifacts WHERE repository_id = '$CRID' AND path IN ('st/3', 'st/5');" >/dev/null || true
+psql_q "INSERT INTO proxy_cache_artifacts (repository_id, path, storage_key, metadata_key, size_bytes)
+        VALUES ('$CRID', 'pc/$SUF', 'proxy-cache/$CR/pc/__content__', 'proxy-cache/$CR/pc/__cache_meta__.json', 7);" >/dev/null || true
+psql_q "INSERT INTO proxy_download_statistics (repository_id, path) VALUES ('$CRID', 'pc/$SUF');" >/dev/null || true
+S1=$(stats_counts); L1=$(live_counts)
+echo "-- before: stats [$S0] live [$L0]; after: stats [$S1] live [$L1]"
+if [ -n "$S0" ] && [ "$S0" = "$L0" ] && [ "$S1" = "$L1" ] && [ "$S1" != "$S0" ]; then
+  pass
+else
+  fail "/admin/stats counts differ from the live COUNT(*) figures (before stats [$S0] live [$L0]; after stats [$S1] live [$L1])"
+fi
+
+begin_test "FIX #3094: /admin/stats answers while artifacts, proxy_cache_artifacts, download_statistics and proxy_download_statistics are locked (it reads none of them)"
+LOCK_TABLES="artifacts, proxy_cache_artifacts, download_statistics, proxy_download_statistics"
+docker exec -e PGAPPNAME=dtf3094lock "$DBC" psql -U registry -d artifact_registry -q \
+  -c "BEGIN; LOCK TABLE ${LOCK_TABLES} IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(60); COMMIT;" \
+  >/dev/null 2>&1 &
+LOCKER=$!
+held=""
+for _ in $(seq 1 40); do
+  held=$(psql_q "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+                  WHERE a.application_name = 'dtf3094lock' AND l.granted AND l.mode = 'AccessExclusiveLock'
+                    AND l.relation IN ('artifacts'::regclass, 'proxy_cache_artifacts'::regclass,
+                                       'download_statistics'::regclass, 'proxy_download_statistics'::regclass);" | tr -d '[:space:]' || true)
+  [ "${held:-0}" = "4" ] && break
+  sleep 0.5
+done
+W_STATS="$(mktemp)"
+CODE=$(curl -s -o "$W_STATS" -w '%{http_code}' --max-time 8 "${AUTH[@]}" "$BASE/api/v1/admin/stats" || true)
+GOT=$(jq -r '"\(.total_artifacts) \(.proxy_artifact_count)"' < "$W_STATS" 2>/dev/null || true)
+rm -f "$W_STATS"
+psql_q "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'dtf3094lock';" >/dev/null || true
+wait "$LOCKER" 2>/dev/null || true
+echo "-- locks held on ${held:-?}/4 tables; /admin/stats -> HTTP ${CODE} [${GOT}]"
+if [ "${held:-0}" != "4" ]; then
+  fail "could not take the four table locks (held ${held:-?}/4); the case did not run"
+elif [ "$CODE" = "200" ] && [ -n "$GOT" ]; then
+  pass
+else
+  fail "/admin/stats did not answer within 8 s while the four large tables were locked (HTTP ${CODE}): it still reads them with COUNT(*) on every call (#3094)"
+fi
+
+# ---------------------------------------------------------------------------
 # Regression leg (same on both images): quota admission behaviour unchanged —
 # under-quota enforced upload 201, over-quota refused: 507 on the 1.11 line,
 # 403 {"code":"QUOTA_EXCEEDED"} from 1.12.0 (artifact-keeper#5915). A 403
