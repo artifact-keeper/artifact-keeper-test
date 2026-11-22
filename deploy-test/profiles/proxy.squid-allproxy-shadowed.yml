@@ -1,0 +1,63 @@
+# =============================================================================
+# profiles/proxy.squid-allproxy-shadowed.yml — on top of proxy.squid
+# =============================================================================
+# The topology of artifact-keeper#6359. Apply AFTER proxy.squid (it patches
+# that profile's services).
+#
+#   * HTTP_PROXY/HTTPS_PROXY still name `squid`, so every outbound fetch is
+#     routed exactly as under proxy.squid, and squid stays the exempt proxy
+#     (#2570 keeps holding).
+#   * ALL_PROXY names `mock-evil` (a private 10.201.x address outside
+#     AK_SSRF_ALLOW_PRIVATE_CIDRS). With both scheme variables set the
+#     environment matcher never uses ALL_PROXY, so nothing is routed through
+#     it.
+#   * NO_PROXY lists `mock-evil`, so a request for it goes direct, under the
+#     connect-time SSRF resolver only.
+#
+# Before #6359 the resolver exempted every ALL_PROXY host from the private-
+# address filter whether or not the matcher used it, so a direct request to
+# `mock-evil` connected. The patched mock-upstream serves a Helm index whose
+# chart URL is absolute and names http://mock-evil/: a Helm Remote fetches that
+# URL as given, so the oracle can tell whether the backend reached mock-evil.
+#
+# The mock-upstream keeps proxy.squid's answer (the DTF-PROXY-EGRESS-OK marker
+# for every path) except /helm/index.yaml.
+# =============================================================================
+services:
+  mock-upstream:
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cat > /etc/nginx/conf.d/default.conf <<'NGX'
+        server {
+          listen 80 default_server;
+          location = /helm/index.yaml { default_type application/x-yaml; alias /srv/helm/index.yaml; }
+          location / { default_type text/plain; return 200 "DTF-PROXY-EGRESS-OK path=$$request_uri\n"; }
+        }
+        NGX
+        mkdir -p /srv/helm
+        cat > /srv/helm/index.yaml <<'YML'
+        apiVersion: v1
+        entries:
+          dtfshadow:
+          - apiVersion: v2
+            name: dtfshadow
+            version: 1.0.0
+            created: "2026-01-01T00:00:00Z"
+            urls:
+            - http://mock-evil/dtfshadow-1.0.0.tgz
+        generated: "2026-01-01T00:00:00Z"
+        YML
+        exec nginx -g 'daemon off;'
+
+  backend:
+    environment:
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      ALL_PROXY: http://mock-evil:80
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      all_proxy: http://mock-evil:80
+      NO_PROXY: localhost,127.0.0.1,::1,mock-evil
+      no_proxy: localhost,127.0.0.1,::1,mock-evil

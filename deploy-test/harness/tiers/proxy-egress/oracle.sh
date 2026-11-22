@@ -143,4 +143,60 @@ assert_ssrf_refused() {
 assert_ssrf_refused "IP-literal private (not the proxy)" "$SSRF_IP_KEY"   "$SSRF_IP_UPSTREAM"
 assert_ssrf_refused "hostname resolving to a private IP" "$SSRF_HOST_KEY" "$SSRF_HOST_UPSTREAM"
 
+# ---------------------------------------------------------------------------
+# Half C — artifact-keeper#6359: an ALL_PROXY host the matcher never uses is
+# not exempt from the connect-time SSRF filter.
+# profiles/proxy.squid-allproxy-shadowed.yml sets ALL_PROXY=http://mock-evil:80
+# while HTTP_PROXY/HTTPS_PROXY name squid (so ALL_PROXY routes nothing), and
+# lists mock-evil in NO_PROXY (so a request for it goes direct). A Helm Remote
+# whose index (served by mock-upstream, through squid) names an absolute chart
+# URL on http://mock-evil/ fetches that URL as given; only the connect-time
+# resolver stands between it and mock-evil's private address.
+# ---------------------------------------------------------------------------
+HELM_KEY="dtf-proxy-helm-shadow-${RUN_ID}"
+HELM_CHART="dtfshadow-1.0.0.tgz"
+EVIL_CTR="ak-dtf${DTF_SLOT}-mock-evil"
+BACKEND_CTR="ak-dtf${DTF_SLOT}-backend"
+add_exit_handler "api_delete /api/v1/repositories/${HELM_KEY} >/dev/null 2>&1 || true"
+# GETs for the chart that reached mock-evil (nginx logs each request to stdout).
+evil_hits() { docker logs "$EVIL_CTR" 2>&1 | grep -c "GET /${HELM_CHART}" || true; }
+
+begin_test "CONTROL: a Helm Remote over the squid-routed mock-upstream reads its index (the chart URL names mock-evil)"
+payload=$(jq -n --arg key "$HELM_KEY" --arg url "http://172.31.${DTF_SLOT}.50/helm" \
+  '{key:$key, name:$key, format:"helm", repo_type:"remote", upstream_url:$url, is_public:true}')
+c_status=$(curl -s -o "${WORK_DIR}/helm-create" -w '%{http_code}' --max-time 30 -X POST \
+  -H "$(auth_header)" -H "Content-Type: application/json" -d "$payload" \
+  "${BASE_URL}/api/v1/repositories" 2>/dev/null) || c_status="000"
+i_status=$(curl -s -o "${WORK_DIR}/helm-index" -w '%{http_code}' --max-time 40 \
+  -H "$(auth_header)" "${BASE_URL}/helm/${HELM_KEY}/index.yaml" 2>/dev/null) || i_status="000"
+if ! docker exec "$BACKEND_CTR" printenv ALL_PROXY 2>/dev/null | grep -q 'mock-evil'; then
+  infra_fail "the backend's ALL_PROXY does not name mock-evil: profile proxy.squid-allproxy-shadowed not applied"
+elif [ "${c_status:0:1}" != "2" ]; then
+  fail "Helm Remote create answered ${c_status}: $(head -c 200 "${WORK_DIR}/helm-create")"
+elif [ "$i_status" = "200" ] && grep -q 'dtfshadow' "${WORK_DIR}/helm-index"; then
+  pass
+else
+  fail "the Helm Remote's index answered ${i_status} without the dtfshadow chart: $(head -c 200 "${WORK_DIR}/helm-index")"
+fi
+
+begin_test "FIX #6359: a chart URL on the NO_PROXY host that only a shadowed ALL_PROXY names is refused by the SSRF resolver, and mock-evil is never contacted"
+hits_before=$(evil_hits)
+since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+d_status=$(curl -s -o "${WORK_DIR}/helm-chart" -w '%{http_code}' --max-time 40 \
+  -H "$(auth_header)" "${BASE_URL}/helm/${HELM_KEY}/charts/${HELM_CHART}" 2>/dev/null) || d_status="000"
+sleep 1
+hits_after=$(evil_hits)
+blocked=$(docker logs --since "$since" "$BACKEND_CTR" 2>&1 | grep 'SSRF DNS guard blocked' | grep -c 'mock-evil' || true)
+detail="chart GET -> ${d_status}; mock-evil chart GETs ${hits_before} -> ${hits_after}; resolver refusals of mock-evil logged: ${blocked}"
+echo "   ${detail}"
+if grep -q 'DTF-EVIL-INTERNAL' "${WORK_DIR}/helm-chart" 2>/dev/null || [ "$hits_after" -gt "$hits_before" ]; then
+  fail "SSRF: the backend connected to mock-evil (a private address outside the allowlist) because the unused ALL_PROXY host was exempt. ${detail}"
+elif [ "$d_status" = "200" ]; then
+  fail "the chart GET answered 200 without reaching mock-evil; expected a refusal. ${detail}"
+elif [ "$blocked" -lt 1 ]; then
+  fail "the chart GET answered ${d_status} but the resolver logged no refusal of mock-evil, so the request may not have reached it at all. ${detail}"
+else
+  pass
+fi
+
 end_suite

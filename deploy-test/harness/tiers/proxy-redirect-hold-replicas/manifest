@@ -32,11 +32,28 @@
 #                   within the LRU's 30 s backend answers the virtual 409, not
 #                   302 (RED on main: 302 to the held object).
 #
-# Red: main before the fix. Green: an image carrying artifact-keeper#6361.
+# #6416  A PyPI virtual's member row whose storage_key is a proxy-cache key
+#        (how releases before 1.2.0 recorded a cached file) was served with no
+#        look at its cache sidecar: signed after only an existence check on
+#        `backend` (presigned downloads on), streamed on `backend-b` (off, the
+#        default), a HEAD included. (FIX) on both replicas a held row answers
+#        409, a row whose stored scan verdict refuses it 403 (also through a
+#        virtual that scans over a member that does not, #3023, and on the
+#        Remote's own route), a row with no
+#        sidecar or a key naming another Remote is not served (404), and a
+#        stale row is not redirected to (the walk hands it to the Remote
+#        path); (CONTROL) a fresh unheld row still redirects (backend)
+#        and streams the exact bytes (backend-b). RED on main: 302 / 200.
+# #6418  A HEAD of a fresh cached PyPI file got a redirect to a URL signed for
+#        GET, which the object store refuses for a HEAD (403). (FIX) the HEAD
+#        answers 200 with the file's length; (CONTROL) the GET redirects.
+#
+# Red: main before the fix. Green: an image carrying artifact-keeper#6361
+# (and #6416, #6418 for their cases).
 # RATE_LIMIT_ENABLED=false: admin calls back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet
 # (backend-b takes it from the shell; it has no CIDR allowlist).
-COVERS="6361"
+COVERS="6361 6416 6418"
 PROFILES="storage.s3 storage.s3-presigned topology.two-replica topology.two-replica-s3 upstreams.mock-files"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
