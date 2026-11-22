@@ -1,0 +1,32 @@
+# DTF tier manifest: scan-on-proxy-repo-concurrency  (artifact-keeper#5243, for 1.13.0)
+# Profile-set: filesystem + upstreams.mock-files (the oracle writes N Maven
+# jars to the mock). LOCAL-ONLY: verdicts come from the backend image's bundled
+# Grype; the oracle recreates the backend once with the
+# scan-queue-upload-image-rescan tier's grype stub in front of it
+# (fixtures/grype-stub.yml there), so every scan takes a known extra time.
+#
+# THE CHANGE
+# #5243  Scans share MAX_CONCURRENT_SCAN_EXTRACTIONS permits (default 4), with
+#        a per-repository fair share (default 2) layered in front (#2555). A
+#        repository alone may use all 4, but a scan waiting over its fair share
+#        only woke when one of the repository's own fair-share scans finished,
+#        so after the first wave a lone repository ran 2 scans at a time and
+#        the 2 permits its first-wave bursts returned stayed idle.
+#
+# THE GATES
+#   (FIX)      RED on main before the fix, GREEN on the fix:
+#              N=12 concurrent first pulls of distinct clean jars through one
+#              fail_closed scan_on_proxy Maven Remote. The oracle samples the
+#              stubbed grype processes in the backend every 0.5 s; once the
+#              first wave of 4 has finished, 4 scans must run at once again
+#              (main: never more than 2). MEASURE prints the wall time of the
+#              whole fill and the mean scans running per sample.
+#   (CONTROL)  both images: every pull is 200 X-AK-Scan: clean with the
+#              upstream's bytes, and the first wave runs 4 at once.
+#
+# RATE_LIMIT_ENABLED=false: 12 pulls at once, plus setup calls.
+COVERS="5243"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

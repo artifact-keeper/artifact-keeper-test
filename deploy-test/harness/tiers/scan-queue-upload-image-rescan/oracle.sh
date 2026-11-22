@@ -23,6 +23,9 @@
 #   9  queue+worker on, stub hangs, no limit     CONTROL live claim's row stays
 #      then the backend is killed mid-scan and   FIX #6232 recovery fails the
 #      its claim lapses                          row the dead claim left running
+#  10  queue+worker on, grype 75 s, its claim  CONTROL its row failed
+#      lapses on the job's last attempt          FIX #6423 one more run lands
+#                                                a verdict, late write refused
 #
 # Repositories (keys suffixed per run; all scan_enabled + scan_on_upload):
 #   C_GEN generic, C_OCI docker     phase 0 (queue off)
@@ -628,5 +631,107 @@ else
   fi
 fi
 finish_case "the scan row a dead worker left running stayed running after recovery requeued its job"
+
+
+# =============================================================================
+# Phase 10: a slow worker whose claim lapses on the job's last attempt
+#   (artifact-keeper#6423)
+# =============================================================================
+# A scan_on_upload upload's worker creates its grype row and sits in the stub
+# for SLOWW seconds before the real grype runs. The oracle ages its claim and
+# charges the job's attempts up to the last one, so the next recovery sweep
+# (every 30 s) revokes the claim on that last attempt and fails the row. The
+# worker is alive, only slow, but the claim guard (#6232) refuses its late
+# verdict. Before the fix recovery also ended the job `failed`, so nothing
+# reran it and the artifact's grype verdict stayed `failed` until a manual
+# rescan. With the fix recovery grants the job one more run, which records
+# the verdict in a new row; the slow worker's row stays as recovery left it.
+SLOWW=75
+LAST="sq-last-${SUF}"
+ALL_REPOS="${ALL_REPOS} ${LAST}"
+NOID="00000000-0000-0000-0000-000000000000"
+# row_of ID -> "status|error" of one scan row
+row_of() {
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAF'|' -c \
+    "SELECT status, coalesce(left(error_message, 300), '') FROM scan_results WHERE id = '${1:-$NOID}'" 2>/dev/null | head -1
+}
+# rerun_row -> "status|seconds from T_REC to completed_at|id" of the newest grype row other than SROW
+rerun_row() {
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAF'|' -c \
+    "SELECT status, coalesce(extract(epoch FROM completed_at - '${T_REC:-now}'::timestamptz)::int::text, ''), id
+     FROM scan_results WHERE artifact_id = '${SART:-$NOID}' AND scan_type = 'grype' AND id <> '${SROW:-$NOID}'
+     ORDER BY created_at DESC LIMIT 1" 2>/dev/null | head -1
+}
+last_job() {
+  docker exec "$DB_CONTAINER" psql -U registry -d artifact_registry -tAF'|' -c \
+    "SELECT state, attempts, max_attempts, coalesce(claim_token::text, ''), coalesce(left(last_error, 200), '')
+     FROM scan_queue WHERE kind = 'hosted_upload' AND artifact_id = '${SART:-$NOID}'" 2>/dev/null | head -1
+}
+
+begin_test "setup: recreate the backend with the queue and worker on and a grype that takes ${SLOWW}s"
+if DTF_GRYPE_STUB_DELAY="$SLOWW" DTF_SCANNER_PROCESS_TIMEOUT=3600 DTF_GRYPE_STUB_BUSYBOX="${W}/busybox" \
+     recreate_backend true grype-stub.yml && create_repo "$LAST" generic local && scan_on "$LAST"; then pass
+else fail "recreate or repository setup failed"; fi
+
+reset_case
+begin_test "CONTROL: a slow worker's claim that lapses on the job's last attempt is recovered: its grype row is failed with the recovery reason"
+SFX="${W}/fx-last"; mkdir -p "$SFX"
+python3 -I "$MAKE_FX" "$SFX" "${SUF}last" >/dev/null 2>>"${W}/mk.err"
+s_up=$(put "${SFX}/npm.tgz" "${BASE_URL}/api/v1/repositories/${LAST}/artifacts/pkg/last-${SUF}.tgz")
+SART="$(psql_q "SELECT a.id FROM artifacts a JOIN repositories r ON r.id = a.repository_id
+               WHERE r.key = '${LAST}' AND a.is_deleted = false LIMIT 1")"
+SROW=""
+last_running() {
+  SROW="$(psql_q "SELECT id FROM scan_results WHERE artifact_id = '${SART:-$NOID}'
+                  AND scan_type = 'grype' AND status = 'running' ORDER BY created_at LIMIT 1")"
+  [ -n "$SROW" ] && case "$(last_job)" in running\|*) return 0;; *) return 1;; esac
+}
+wait_until "slow queued grype row" 60 last_running
+note "upload=${s_up} artifact=${SART:-none} grype row=${SROW:-none} job=$(last_job)"
+# Age the claim and spend all but the last attempt; again every 2 s while the
+# job is running, since a heartbeat may renew the claim before the sweep runs.
+# Recovered = no longer running under that claim.
+recovered() {
+  psql_x "UPDATE scan_queue SET claim_expires_at = now() - interval '1 second', attempts = max_attempts - 1
+          WHERE kind = 'hosted_upload' AND artifact_id = '${SART:-$NOID}' AND state = 'running'"
+  case "$(last_job)" in running\|*|"") return 1;; *) return 0;; esac
+}
+if [ -n "$SROW" ]; then wait_until "recovery revokes the last-attempt claim" 50 recovered; fi
+T_REC="$(db_now)"
+job_r="$(last_job)"; row_r="$(row_of "$SROW")"
+note "after recovery: job=${job_r} slow worker's grype row=${row_r}"
+[ -n "$SROW" ] || fail_g "the queued upload's grype row never showed running under a claimed job"
+case "$job_r" in running\|*|"") fail_g "recovery did not revoke the last-attempt claim: '${job_r}'";; esac
+case "$row_r" in failed\|*"claim"*"lapsed"*) ;; *) fail_g "recovery did not fail the slow worker's row with its reason: '${row_r}'";; esac
+finish_case "recovery of a last-attempt claim did not fail the slow worker's row"
+
+reset_case
+begin_test "FIX #6423: recovery on the job's last attempt runs the job once more, so the artifact gets a grype verdict, and the slow worker's late result still does not overwrite its row"
+case "$job_r" in
+  pending\|*) RECOVERED_OK=1 ;;
+  failed\|*) RECOVERED_OK=1 ;;
+  *) RECOVERED_OK=0 ;;
+esac
+if [ -z "$SROW" ] || [ "$RECOVERED_OK" != 1 ]; then
+  infra_fail "no last-attempt claim was recovered (the control above could not stage one)"
+else
+  case "$job_r" in pending\|*) ;; *) fail_g "recovery ended the job instead of running it once more: '${job_r}'";; esac
+  # Skip the 120 s recovery backoff, as phase 9 skips the claim TTL.
+  psql_x "UPDATE scan_queue SET next_attempt_at = now() WHERE kind = 'hosted_upload'
+          AND artifact_id = '${SART}' AND state = 'pending'"
+  rerun_done() { case "$(rerun_row)" in completed*) return 0;; *) return 1;; esac; }
+  # The rerun's own stubbed grype (SLOWW s), the real grype, a worker tick and
+  # the slow worker's stub still finishing in parallel: 90 s of headroom.
+  wait_until "the extra run's verdict" $(( SLOWW + 90 )) rerun_done
+  IFS='|' read -r r_st r_sec _ <<<"$(rerun_row)"
+  slow_now="$(row_of "$SROW")"; job_f="$(last_job)"
+  if [ "$r_st" = "completed" ]; then landed="${r_sec} s after"; else landed="never ($(( SLOWW + 90 )) s) after"; fi
+  note "extra run's grype row: ${r_st:-none} slow worker's row: ${slow_now} job: ${job_f:-retired}"
+  note "MEASURE: the artifact's grype verdict landed ${landed} recovery revoked the last-attempt claim (before the fix: never, the job ended failed and nothing reran it)"
+  [ "$r_st" = "completed" ] || fail_g "no completed grype row for the artifact $(( SLOWW + 90 ))s after recovery: nothing reran the job"
+  case "$slow_now" in failed\|*"claim"*"lapsed"*) ;; *) fail_g "the slow worker's late result overwrote the row recovery failed: '${slow_now}'";; esac
+  [ -z "$job_f" ] || fail_g "the job was not retired once the extra run completed: '${job_f}'"
+fi
+finish_case "a job whose claim lapsed on its last attempt was not run again, so its artifact kept no grype verdict"
 
 end_suite
