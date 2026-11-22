@@ -34,7 +34,8 @@
 #     member's wheel metadata answers 403, with and without a row (GET and
 #     HEAD); a cached member wheel with no verdict while the CVE engine is
 #     down (grype stubbed) gets the wheel's own answer (423) for its
-#     metadata. RED on main: 200.
+#     metadata; a version the download age gate withholds answers 451 for
+#     its metadata (GET and HEAD). RED on main: 200.
 #   (FIX) #5983: the client-facing index (JSON, as uv asks, and HTML, as pip
 #     asks) is asked for gzip; after it, four concurrent cold sidecars of the
 #     project read no upstream index (1 index read in all, 2 on main). The

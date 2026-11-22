@@ -101,9 +101,9 @@ publish(){
     is_ok "$(mock_put "/${P}/files/$f.metadata" "$W/$f.metadata")" || err="${err} $f.metadata"
     echo "$f $(sha_of "$W/$f")" >> "$W/$proj.entries"
   done
-  python3 - "$W/$proj.entries" "$UP/${P}/files" "$proj" "$filler" "$W/$proj.html" "$W/$proj.json" <<'PY'
+  python3 - "$W/$proj.entries" "$UP/${P}/files" "$proj" "$filler" "$W/$proj.html" "$W/$proj.json" "${UPLOAD_TIME:-2025-01-01T00:00:00.000000Z}" <<'PY'
 import json, sys
-entries, base, proj, filler, html_out, json_out = sys.argv[1:7]
+entries, base, proj, filler, html_out, json_out, uploaded = sys.argv[1:8]
 rows = [l.split() for l in open(entries) if l.strip()]
 fill = [(f"{proj}-0.{i}-py3-none-any.whl", f"{i:064x}") for i in range(int(filler))]
 files = fill + [(f, s) for f, s in rows]
@@ -117,7 +117,7 @@ with open(json_out, "w") as j:
                "files": [{"filename": f, "url": f"{base}/{f}", "hashes": {"sha256": s},
                           "requires-python": ">=3.8", "core-metadata": {"sha256": s},
                           "data-dist-info-metadata": {"sha256": s}, "yanked": False,
-                          "size": 1000, "upload-time": "2025-01-01T00:00:00.000000Z"} for f, s in files]}, j)
+                          "size": 1000, "upload-time": uploaded} for f, s in files]}, j)
 PY
   is_ok "$(mock_put "/${P}/simple/${proj}/" "$W/$proj.html" "&ctype=text/html&gzip=1")" || err="${err} index"
   is_ok "$(mock_put "/${P}/simple/${proj}/" "$W/$proj.json" "&ctype=${JSON_CT//+/%2B}&gzip=1&when_accept=${JSON_CT//+/%2B}")" || err="${err} json"
@@ -199,6 +199,8 @@ read -r dw dm vw vm <<<"$r"
 [ "$vm" = "409" ] || fail_g "virtual metadata answered ${vm} while the wheel is held"
 h="$(head_code "/pypi/${VL}/simple/${HMETA}")"; note "virtual metadata HEAD: ${h}"
 [ "$h" = "409" ] || fail_g "a HEAD of the virtual metadata answered ${h} while the wheel is held"
+h="$(head_code "/pypi/${L}/simple/${HMETA}")"; note "direct metadata HEAD: ${h}"
+[ "$h" = "409" ] || fail_g "a HEAD of the direct metadata answered ${h} while the wheel is held"
 ! grep -q 'dtf-6439-hosted' "$W/hmeta" "$W/hvmeta" || fail_g "served the held wheel's METADATA"
 finish_case "a held distribution's METADATA was served"
 
@@ -295,13 +297,38 @@ get "/pypi/${R}/simple/${UP_P}/${UW}" "" "$W/ufill"; f="$CODE"
 [ -z "$SETUP_ERR" ] && [ "$f" = "200" ] || fail_g "setup: the Remote did not cache the wheel (${f})${SETUP_ERR}"
 break_grype || fail_g "setup: could not stub grype in ${BACKEND_CTR}"
 get "/pypi/${VS}/simple/${UP_P}/${UW}.metadata" "" "$W/umeta"; m="$CODE"
+mh="$(head_code "/pypi/${VS}/simple/${UP_P}/${UW}.metadata")"
 get "/pypi/${VS}/simple/${UP_P}/${UW}" "" "$W/uwheel"; w="$CODE"
 restore_grype
-note "metadata ${m} $(head -c 80 "$W/umeta" | tr '\n' ' '); wheel ${w}"
+note "metadata ${m} (HEAD ${mh}) $(head -c 80 "$W/umeta" | tr '\n' ' '); wheel ${w}"
+[ "$mh" = "$w" ] || fail_g "a HEAD of the metadata answered ${mh} where the wheel answered ${w}"
 case "$w" in 423|403) ;; *) note "(premise) the wheel answered ${w}, expected 423" ;; esac
 [ "$m" = "$w" ] || fail_g "the metadata answered ${m} where the wheel answered ${w}"
 ! grep -q 'dtf-upstream-sidecar' "$W/umeta" || fail_g "served the upstream sidecar of an unscanned wheel"
 finish_case "the metadata of a wheel the scan gate could not clear was served"
+
+# A Remote with the download age gate on (upstream publish time, 7 days),
+# over a project whose only version was published just now.
+RA="pmg-ra-${SUF}"; AP="pmga${SUF}"; AW="${AP}-1.0-py3-none-any.whl"
+begin_test "FIX #6439: the metadata of a version the download age gate withholds answers the wheel's 451 on the Remote's route, GET and HEAD"
+reset_case
+SETUP_ERR=""
+UPLOAD_TIME="$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)" publish "$AP" 0 1.0
+c="$(mkrepo "$RA" remote "${UP}/${P}")"; is_ok "$c" || SETUP_ERR="${SETUP_ERR} repo ${c}"
+c="$(curl -s -o "$W/ag.out" -w '%{http_code}' --max-time 30 -X PUT "${BASE}/api/v1/repositories/${RA}/age-gate" \
+  -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"min_age_days":7,"mode":"upstream_publish_time"}' 2>/dev/null || echo 000)"
+is_ok "$c" || SETUP_ERR="${SETUP_ERR} age-gate ${c} $(head -c 120 "$W/ag.out")"
+[ -z "$SETUP_ERR" ] || fail_g "setup:${SETUP_ERR}"
+get "/pypi/${RA}/simple/${AP}/${AW}" "" "$W/awheel"; w="$CODE"
+get "/pypi/${RA}/simple/${AP}/${AW}.metadata" "" "$W/ameta"; m="$CODE"
+mh="$(head_code "/pypi/${RA}/simple/${AP}/${AW}.metadata")"
+note "wheel ${w}; metadata ${m} (HEAD ${mh}) $(head -c 80 "$W/ameta" | tr '\n' ' ')"
+[ "$w" = "451" ] || note "(premise) the wheel answered ${w}, expected 451"
+[ "$m" = "451" ] || fail_g "the metadata answered ${m} while the version is withheld"
+[ "$mh" = "451" ] || fail_g "a HEAD of the metadata answered ${mh} while the version is withheld"
+! grep -q 'dtf-upstream-sidecar' "$W/ameta" || fail_g "served the withheld version's sidecar"
+finish_case "the metadata of a version the age gate withholds was served"
 
 # =============================================================================
 # #5983
@@ -364,7 +391,7 @@ for client in json html; do
   finish_case "the sidecars re-read the upstream index, or it was fetched uncompressed"
 done
 
-begin_test "CONTROL: a release published upstream after the index was cached resolves, with the new sidecar's bytes; earlier sidecars are unchanged"
+begin_test "CONTROL: a release published upstream after the index was cached resolves to that release's METADATA; earlier sidecars are unchanged"
 reset_case
 publish "$JP" 3000 1.0 1.1 1.2 1.3 2.0
 # The resolver reuses one upstream index read for 30 s (#3356); within a
@@ -375,7 +402,10 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 note "new release metadata: ${CODE} $(head -c 90 "$W/new" | tr '\n' ' ')"
-[ "$CODE" = "200" ] && cmp -s "$W/new" "$W/${JP}-2.0-py3-none-any.whl.metadata" || fail_g "the new release's metadata answered ${CODE} with other bytes"
+# The upstream's sidecar, or (where an earlier miss was negative-cached) the
+# METADATA extracted from the release's own wheel: either way release 2.0's.
+[ "$CODE" = "200" ] && grep -q "^Version: 2.0$" "$W/new" && grep -q "^Name: ${JP}$" "$W/new" \
+  || fail_g "the new release's metadata answered ${CODE} without release 2.0's METADATA: $(head -c 120 "$W/new")"
 get "/pypi/${RP}/simple/${JP}/${JP}-1.0-py3-none-any.whl.metadata" "" "$W/old"
 cmp -s "$W/old" "$W/${JP}-1.0-py3-none-any.whl.metadata" || fail_g "an earlier sidecar changed"
 finish_case "a release published since the index was cached does not resolve"
