@@ -1,0 +1,43 @@
+# DTF tier manifest: proxy-redirect-hold-replicas
+#   (artifact-keeper#6361, 1.13.0)
+# Profile-set: S3 (MinIO) with presigned redirect downloads on `backend`
+# (storage.s3 + storage.s3-presigned), a second replica `backend-b` on the same
+# database and bucket (topology.two-replica + topology.two-replica-s3), and
+# upstreams.mock-files (a stdlib-python server on 172.16.<slot>.76 whose files
+# and forced statuses the oracle sets over a control API). backend-b has no
+# presign settings: it only fills the cache.
+#
+# THE BUG
+# #6361  A presigned-redirect fast path read the proxy-cache sidecar twice: once
+#        for freshness (straight from storage) and again for the Package Age
+#        Policy hold (through the 30 s in-process sidecar LRU). When the second
+#        read came back empty, the hold check passed and the held entry was
+#        signed. The second read is empty when the entry is evicted between
+#        the two reads, and, deterministically, when this replica memoised a
+#        miss for the sidecar and another replica filled the entry within the
+#        LRU's 30 s: the oracle drives that window. A Virtual's member
+#        redirect (here a CRAN virtual over a CRAN Remote) then answered 302 to
+#        a presigned URL of an object inside its hold, where the fetch paths
+#        answer 409.
+#
+# THE GATES
+#   (CONTROL) on every image: a CRAN virtual over a Remote with no hold
+#             redirects a fresh cache hit (302, Location on the public S3
+#             endpoint, the exact bytes): the fast path is active here;
+#             the held Remote answers its cold download on backend-b 409;
+#             after the LRU entry expires (31 s) backend answers the held
+#             path 409.
+#   (FIX)     #6361 backend memoised a sidecar miss (the upstream answered
+#                   503), backend-b filled the entry inside its hold, and
+#                   within the LRU's 30 s backend answers the virtual 409, not
+#                   302 (RED on main: 302 to the held object).
+#
+# Red: main before the fix. Green: an image carrying artifact-keeper#6361.
+# RATE_LIMIT_ENABLED=false: admin calls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet
+# (backend-b takes it from the shell; it has no CIDR allowlist).
+COVERS="6361"
+PROFILES="storage.s3 storage.s3-presigned topology.two-replica topology.two-replica-s3 upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

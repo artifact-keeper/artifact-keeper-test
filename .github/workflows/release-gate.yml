@@ -4104,6 +4104,16 @@ jobs:
           # THIS LINE on a 1.12.x candidate. Required.
           - group: perf-1.13.0-scan
             tiers: proxy-scan-db-update-grace
+          # 1.13.0 (artifact-keeper#6361): a presigned-redirect fast path takes
+          # the Package Age Policy hold from the sidecar its freshness probe
+          # read, so a replica that memoised a sidecar miss before the other
+          # replica filled a held entry answers 409, not a redirect to the
+          # held object (proxy-redirect-hold-replicas; MinIO with presigned
+          # downloads, a second replica, upstreams.mock-files; about 1 min).
+          # Red on main before the fix, NOT ON THIS LINE on a 1.12.x
+          # candidate. Required.
+          - group: security-1.13.0-proxy-redirect
+            tiers: proxy-redirect-hold-replicas
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}

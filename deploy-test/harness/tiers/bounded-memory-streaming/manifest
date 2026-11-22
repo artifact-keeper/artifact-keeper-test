@@ -28,6 +28,11 @@
 #        OOM; the observable is the re-read itself.
 # #4924  A cold `repomd.xml` render of a hosted RPM root loaded every row's
 #        metadata JSON and built each uncompressed document in memory.
+# #6358  The generic download of whatever is stored at a Docker manifest path
+#        (`/api/v1/repositories/<docker>/download/v2/<name>/manifests/<ref>`)
+#        buffered the whole stored object to learn its length (the row's
+#        size_bytes is the image size), on a HEAD too. Nothing caps that
+#        object: the manifest PUT takes up to max_upload_size_bytes.
 # #5130  The published image was glibc malloc, which keeps freed burst
 #        memory in per-thread arenas (RSS ratchets up and OOMs). Only the
 #        allocator facet is gated: no RSS-over-time assertion.
@@ -57,6 +62,12 @@
 #                   the cap raised to BMS_HELPER_MEMORY (6g) and the backend
 #                   is restarted under the cap again, so the restore is still
 #                   judged under 768m;
+#             #6358 a BIG_MIB object stored at a manifest path (a small
+#                   manifest pushed, then the stored object and the row's
+#                   digest replaced): a HEAD answers its length and the
+#                   backend reads < 1 MiB; a GET serves it byte-exact under
+#                   the cap (red: the HEAD and the GET buffer it whole and
+#                   the backend is OOM-killed);
 #             #4924 1000 synthetic packages (419 MiB of file-list metadata,
 #                   seeded straight into Postgres, the
 #                   artifact-keeper-test#621 approach) in an
@@ -72,7 +83,7 @@
 # note; memory.peak is not used, it counts reclaimable page cache.
 #
 # RATE_LIMIT_ENABLED=false: many admin and download requests back to back.
-COVERS="4924 5126 5336 5364 5133 5130"
+COVERS="4924 5126 5336 5364 5133 5130 6358"
 PROFILES="storage.filesystem logging.json-file limits.memory"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
