@@ -58,11 +58,22 @@
 # (commit_delay, commit_siblings 0; reset afterwards), 24 concurrent cold
 # fills land their catalog rows in under half of the 2.4 s that queue needs
 # by construction (main: >= 2.4 s).
-COVERS="5635"
+#
+# #6429 (1.13.0): a cached file whose catalog row was lost (the async commit
+# above, or a failed best-effort write) came back only when the file was read
+# again, so its bytes stayed missing from the Remote's ledger. FIX (with
+# proxy.recatalog-fast: a sweep pass every 10 s, sidecars older than 5 s):
+# two catalog rows deleted with their files kept come back within 120 s with
+# the sidecar's size and digest, the ledger's proxy_bytes equals the live sum,
+# and the upstream is not fetched again (main: never back). An invalidated
+# entry, an entry whose legacy artifacts row is in the trash and a cached
+# upstream 404 get no row, checked after a sentinel row lost at the same time
+# is back (main: the sentinel never comes back).
+COVERS="5635 6429"
 #
 # RATE_LIMIT_ENABLED=false: ~40 authenticated calls back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
-PROFILES="storage.filesystem upstreams.mock-files"
+PROFILES="storage.filesystem upstreams.mock-files proxy.recatalog-fast"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

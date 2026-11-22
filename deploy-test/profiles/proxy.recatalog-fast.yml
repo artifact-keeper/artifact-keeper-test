@@ -1,0 +1,25 @@
+# =============================================================================
+# profiles/proxy.recatalog-fast.yml: the proxy-cache re-catalog sweep on a
+# short interval
+# =============================================================================
+# The proxy-download-ledger tier needs the 1.13.0 re-catalog sweep
+# (artifact-keeper#6429) to run inside the oracle's wait:
+#
+#   PROXY_CACHE_RECATALOG_INTERVAL_SECS=10   a pass every 10 s (after a 10 to
+#                                            40 s startup delay). Default six
+#                                            hours.
+#   PROXY_CACHE_RECATALOG_MIN_AGE_SECS=5     sidecars older than 5 s are
+#                                            eligible. Default 600 s. Kept
+#                                            above 0 so a pass never races a
+#                                            fill that is still committing its
+#                                            own row (the #5635 case times
+#                                            those).
+#
+# A release without #6429 ignores both. Nothing else changes, so it composes
+# onto any storage / upstream profile.
+# =============================================================================
+services:
+  backend:
+    environment:
+      PROXY_CACHE_RECATALOG_INTERVAL_SECS: "10"
+      PROXY_CACHE_RECATALOG_MIN_AGE_SECS: "5"

@@ -13,6 +13,8 @@
 #   #4341 an npm tarball GET through a Remote (no scan-on-proxy) is counted
 #   #5635 concurrent cold fills into one Remote do not queue on its
 #         usage-ledger row (1.13.0)
+#   #6429 the re-catalog sweep restores a lost catalog row from its sidecar
+#         without a read, and leaves removed entries alone (1.13.0)
 # See the manifest for the bugs, the primitives and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
@@ -425,5 +427,103 @@ note "commit_delay=${delay}; ${ok}/${FILL_N} bodies served; ${landed:-?}/${FILL_
 [ "${landed:-0}" -ge "$FILL_N" ] || fail_g "only ${landed:-0}/${FILL_N} catalog rows landed"
 [ "$ms" -lt $((floor / 2)) ] || fail_g "the ${FILL_N} fills' catalog rows took ${ms} ms to land, at least the ${floor} ms a one-flush-at-a-time ledger queue needs: the fills still serialise on the Remote's usage-ledger row (#5635)"
 finish_case "concurrent cold fills still queue on the Remote's usage-ledger row"
+
+
+# =============================================================================
+# FIX #6429: a cached file whose catalog row was lost is re-cataloged by the
+# background sweep, without a read; a removed entry is not.
+#
+# Since #5635 the fill's catalog row commits asynchronously, so a database
+# crash or failover can lose it while the cached file and its sidecar stay.
+# Before #6429 only a later read of that file brought the row back, so its
+# bytes stayed missing from the Remote's usage ledger (quota, cache cap) and
+# from eviction. The oracle loses the rows itself (DELETE, which debits the
+# ledger through the same trigger) and keeps the files.
+# profiles/proxy.recatalog-fast.yml runs a pass every 10 s.
+# =============================================================================
+SW_WAIT_SECS="${SW_WAIT_SECS:-120}"
+R_SW="pdl-sweep-${SUF}"
+[ "$(mk "$(repo_json "$R_SW" generic remote "${UP}/g/")")" = "$R_SW" ] || fail_g "could not create ${R_SW}"
+ID_SW="$(repo_id "$R_SW")"
+SW_SHA=()
+for i in 1 2 3 4 5 6; do
+  head -c $((4000 + i)) /dev/urandom > "$W/sw-${i}.bin"
+  SW_SHA[i]="$(sha_of "$W/sw-${i}.bin")"
+  mock_put "/g/s/sw-${SUF}-${i}.bin" "$W/sw-${i}.bin" >/dev/null
+done
+sw_path(){ echo "s/sw-${SUF}-$1.bin"; }
+sw_row(){ psql_q "SELECT size_bytes || ':' || COALESCE(checksum_sha256,'') FROM proxy_cache_artifacts WHERE repository_id = '${ID_SW}' AND path = '$(sw_path "$1")'"; }
+sw_lose(){ psql_q "WITH d AS (DELETE FROM proxy_cache_artifacts WHERE repository_id = '${ID_SW}' AND path = '$(sw_path "$1")' RETURNING 1) SELECT count(*) FROM d"; }
+sw_ledger(){ psql_q "SELECT (SELECT proxy_bytes FROM repository_usage_ledger WHERE repository_id = '${ID_SW}') || '/' || (SELECT COALESCE(SUM(size_bytes),0) FROM proxy_cache_artifacts WHERE repository_id = '${ID_SW}')"; }
+# Cold-fill every file, then wait for each catalog row.
+SW_FILL_ERR=""
+for i in 1 2 3 4 5 6; do
+  code="$(get "$BASE/api/v1/repositories/${R_SW}/download/$(sw_path "$i")" "$W/sw-${i}.out" "pdl-sw-${SUF}")"
+  [ "$code" = "200" ] && [ "$(sha_of "$W/sw-${i}.out")" = "${SW_SHA[$i]}" ] || SW_FILL_ERR="${SW_FILL_ERR} ${i}:${code}"
+done
+for i in 1 2 3 4 5 6; do
+  for _ in $(seq 1 40); do [ "$(sw_row "$i")" = "$((4000 + i)):${SW_SHA[$i]}" ] && break; sleep 0.25; done
+done
+# A cached upstream 404 (a negative-cache sidecar with no body).
+code="$(get "$BASE/api/v1/repositories/${R_SW}/download/s/absent-${SUF}.bin" "$W/absent.out" "pdl-sw-${SUF}")"
+SW_ABSENT_CODE="$code"
+
+begin_test "FIX #6429: a cached file whose catalog row was lost is re-cataloged from its sidecar without a read, and the Remote's ledger equals the live sum again"
+reset_case
+[ -z "$SW_FILL_ERR" ] || fail_g "cold fills did not return the upstream bytes:${SW_FILL_ERR}"
+for i in 1 2 3; do [ "$(sw_row "$i")" = "$((4000 + i)):${SW_SHA[$i]}" ] || fail_g "fill ${i} has no catalog row to lose ($(sw_row "$i"))"; done
+ups_before="$(for i in 1 2; do mock_gets "/g/$(sw_path "$i")"; done | tr '\n' ' ')"
+lost=0
+for i in 1 2; do [ "$(sw_lose "$i")" = "1" ] && lost=$((lost + 1)); done
+[ "$lost" = "2" ] || fail_g "could not delete the two catalog rows (${lost})"
+note "after losing rows 1 and 2: ledger/live = $(sw_ledger)"
+t0="$(date +%s)"
+back=0
+for _ in $(seq 1 "$SW_WAIT_SECS"); do
+  back=0
+  for i in 1 2; do [ "$(sw_row "$i")" = "$((4000 + i)):${SW_SHA[$i]}" ] && back=$((back + 1)); done
+  [ "$back" = "2" ] && break
+  sleep 1
+done
+ups_after="$(for i in 1 2; do mock_gets "/g/$(sw_path "$i")"; done | tr '\n' ' ')"
+ledger="$(sw_ledger)"
+note "rows restored: ${back}/2 after $(( $(date +%s) - t0 )) s; ledger/live = ${ledger}; upstream GETs before/after: ${ups_before}/ ${ups_after}"
+[ "$back" = "2" ] || fail_g "${back}/2 lost catalog rows came back within ${SW_WAIT_SECS} s: nothing re-catalogs a cached file until it is read again (#6429)"
+[ "${ledger%/*}" = "${ledger#*/}" ] && [ -n "${ledger%/*}" ] || fail_g "the Remote's ledger proxy_bytes and the live catalog sum differ (${ledger})"
+[ "$ups_before" = "$ups_after" ] || fail_g "the upstream was fetched again (${ups_before}-> ${ups_after})"
+finish_case "a cached file whose catalog row was lost is not re-cataloged without a read"
+
+begin_test "FIX #6429: the sweep does not re-catalog an invalidated entry, an entry whose legacy artifacts row is in the trash, or a cached upstream 404"
+reset_case
+# 4: purged through the API (files first, then the row).
+inv="$(curl -s --max-time 30 -X POST -H "Authorization: Bearer $TOK" \
+  "$BASE/api/v1/repositories/${R_SW}/cache/invalidate?path=$(sw_path 4)" | jqr '.invalidated // empty')"
+[ "$inv" = "true" ] || fail_g "POST cache/invalidate did not answer invalidated:true (got '${inv}')"
+# 5: an operator trashed the entry's pre-1.2.0 artifacts row; its catalog row
+# is lost too.
+KEY5="$(psql_q "SELECT storage_key FROM proxy_cache_artifacts WHERE repository_id = '${ID_SW}' AND path = '$(sw_path 5)'")"
+[ -n "$KEY5" ] || fail_g "fill 5 has no catalog row"
+docker exec "$DBC" psql -U registry -d artifact_registry -v ON_ERROR_STOP=1 -tAc \
+  "INSERT INTO artifacts (repository_id, path, name, size_bytes, checksum_sha256, content_type, storage_key, is_deleted) VALUES ('${ID_SW}', '$(sw_path 5)', 'sw-5.bin', 4005, '${SW_SHA[5]}', 'application/octet-stream', '${KEY5}', true)" \
+  >/dev/null 2>&1 || fail_g "could not seed the trashed artifacts row"
+[ "$(sw_lose 5)" = "1" ] || fail_g "could not delete fill 5's catalog row"
+# 6: a sentinel lost at the same moment; once it is back, a pass has run
+# since 4 and 5 were removed.
+[ "$(sw_lose 6)" = "1" ] || fail_g "could not delete fill 6's catalog row"
+back6=""
+for _ in $(seq 1 "$SW_WAIT_SECS"); do
+  [ "$(sw_row 6)" = "4006:${SW_SHA[6]}" ] && back6=1 && break
+  sleep 1
+done
+# One more interval, so a pass that started before the deletes has finished.
+sleep 12
+r4="$(sw_row 4)"; r5="$(sw_row 5)"
+r404="$(psql_q "SELECT count(*) FROM proxy_cache_artifacts WHERE repository_id = '${ID_SW}' AND path = 's/absent-${SUF}.bin'")"
+note "sentinel restored: ${back6:-no}; invalidated row: '${r4}'; trashed row: '${r5}'; 404 (GET answered ${SW_ABSENT_CODE}) rows: ${r404}; ledger/live = $(sw_ledger)"
+[ "$back6" = "1" ] || fail_g "the sentinel row did not come back within ${SW_WAIT_SECS} s, so no sweep pass ran (#6429)"
+[ -z "$r4" ] || fail_g "the invalidated entry was re-cataloged (${r4})"
+[ -z "$r5" ] || fail_g "the entry whose artifacts row is in the trash was re-cataloged (${r5})"
+[ "$r404" = "0" ] || fail_g "the cached upstream 404 has a catalog row (${r404})"
+finish_case "the sweep re-catalogs removed entries, or never ran"
 
 end_suite
