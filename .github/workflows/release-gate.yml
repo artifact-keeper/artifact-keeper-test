@@ -4061,8 +4061,11 @@ jobs:
           # scan queue with one rescan per digest after a DB build change
           # (scan-queue-upload-image-rescan, #5946 #5947; bundled Grype, about
           # 95 s green; since 1.12.3 also a grype that never returns, #5942,
-          # through a busybox grype stub, about 2.5 min more). Same 1.12.0-only
-          # rule for its first phases. Required.
+          # through a busybox grype stub, about 2.5 min more; for 1.13.0 also
+          # a replica dying mid-scan, #6232, and a claim lapsing on the job's
+          # last attempt, #6423, about 2.5 min more). Same 1.12.0-only rule
+          # for its first phases. The #6232 and #6423 phases are 1.13.0
+          # fixes: never cherry-pick them onto release/1.12.x. Required.
           - group: fixes-1.12.0-wave2-storage-scan
             tiers: backup-restore-s3-faults backup-scoped-restore scan-results-durability scan-queue-upload-image-rescan
           # OpenSCAP scans evaluate the image's unpacked root filesystem, not

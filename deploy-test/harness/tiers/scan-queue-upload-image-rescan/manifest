@@ -103,8 +103,22 @@
 #              and, within 60 s, fails the dead claim's grype row with an
 #              error naming the lapsed claim.
 #
+# #6423 (artifact-keeper, for 1.13.0): a slow worker whose claim lapses on the
+#   job's last attempt.
+#   (CONTROL)  both images: queue and worker on, the grype stub takes 75 s.
+#              The oracle ages the live claim and spends all but the job's
+#              last attempt; the next sweep revokes the claim and fails its
+#              grype row with the recovery reason.
+#   (FIX)      RED on main after #6239 (recovery ends the job `failed`, the
+#              claim guard refuses the slow worker's late verdict, and nothing
+#              reruns the job: the artifact keeps no grype verdict). GREEN on
+#              the fix: recovery runs the job once more (the oracle skips its
+#              120 s backoff), that run's grype row completes within 165 s, the
+#              slow worker's row stays as recovery failed it, and the job is
+#              retired.
+#
 # RATE_LIMIT_ENABLED=false: ~200 API calls back to back.
-COVERS="5946 5947 5942 6282 6232"
+COVERS="5946 5947 5942 6282 6232 6423"
 PROFILES="storage.filesystem"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
