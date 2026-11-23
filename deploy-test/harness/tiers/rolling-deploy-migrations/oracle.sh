@@ -110,23 +110,37 @@ else
   fail "the backend did not come back on a ledger a newer release migrated (${ST}): an older pod restarted mid-rollout crash-loops" "$(startup_log "$T0")"
 fi
 
-begin_test "setup: release N+1 also records a contract migration"
-CONTRACT_V=$(( EXPAND_V + 1 ))
+begin_test "setup: release N+1 also contracts an expand this binary has (contract of ${MAXV})"
+COVERED_V=$(( EXPAND_V + 1 ))
 OUT="$(psql_db "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
-    VALUES (${CONTRACT_V}, 'contract dtf rolling drop old column', true, '\\x00'::bytea, 1)")"
-if [ "$(psql_db "SELECT count(*) FROM _sqlx_migrations WHERE version = ${CONTRACT_V}")" = "1" ]; then pass
-else CONTRACT_V=""; infra_fail "could not record the simulated contract migration" "$OUT"; end_suite; fi
+    VALUES (${COVERED_V}, 'contract of ${MAXV} dtf rolling drop superseded index', true, '\\x00'::bytea, 1)")"
+if [ "$(psql_db "SELECT count(*) FROM _sqlx_migrations WHERE version = ${COVERED_V}")" = "1" ]; then CONTRACT_V="$COVERED_V"; pass
+else infra_fail "could not record the simulated contract migration" "$OUT"; end_suite; fi
 
-begin_test "CONTROL: restarted on a ledger with a newer contract migration, the backend never serves"
+begin_test "FIX #5920: restarted with a newer contract of an expand it has, the backend serves"
+T2="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ST="$(restart_backend 120)"
+C1="$(req GET "$DL_URL")"
+if [ "$ST" = "serving" ] && [ "$C1" = "200" ]; then pass
+else fail "restart ${ST}, download ${C1}: a pod already past the expand must survive its contract" "$(startup_log "$T2")"; fi
+
+begin_test "setup: release N+1 also records a contract of its own expand (${EXPAND_V})"
+UNCOVERED_V=$(( EXPAND_V + 2 ))
+OUT="$(psql_db "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+    VALUES (${UNCOVERED_V}, 'contract of ${EXPAND_V} dtf rolling drop old column', true, '\\x00'::bytea, 1)")"
+if [ "$(psql_db "SELECT count(*) FROM _sqlx_migrations WHERE version = ${UNCOVERED_V}")" = "1" ]; then CONTRACT_V="${COVERED_V},${UNCOVERED_V}"; pass
+else infra_fail "could not record the simulated contract migration" "$OUT"; end_suite; fi
+
+begin_test "CONTROL: restarted on a ledger with a newer contract of an expand it lacks, the backend never serves"
 T1="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ST="$(restart_backend 60)"
 LOG="$(startup_log "$T1")"
 if [ "$ST" != "serving" ]; then echo "  ${ST}"; pass
 else fail "the backend served on a schema with an unknown contract migration" "$LOG"; fi
 
-begin_test "FIX #5920: the refusal names the newer contract migration"
-if printf '%s' "$LOG" | grep -q "refusing to start" && printf '%s' "$LOG" | grep -q "${CONTRACT_V}"; then pass
-else fail "startup log does not refuse the contract migration ${CONTRACT_V} by name" "$LOG"; fi
+begin_test "FIX #5920: the refusal names that contract migration"
+if printf '%s' "$LOG" | grep -q "refusing to start" && printf '%s' "$LOG" | grep -q "${UNCOVERED_V}"; then pass
+else fail "startup log does not refuse the contract migration ${UNCOVERED_V} by name" "$LOG"; fi
 
 begin_test "CONTROL after: with the simulated migrations removed the backend restarts and serves"
 undo_simulation; EXPAND_V=""; CONTRACT_V=""

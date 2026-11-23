@@ -88,8 +88,8 @@ fi
 read -r C _ <<<"$(req PUT "${BASE_URL}/api/v1/repositories/${REPO}/artifacts/${ART}" -H "$BEARER" \
   -H 'Content-Type: application/octet-stream' --data-binary "$BYTES")"
 case "$C" in 200|201) ;; *) infra_fail "PUT of the fixture artifact returned ${C}" "$(body)"; end_suite ;; esac
-# DATABASE_MIN_CONNECTIONS=5: wait until the request pool has opened them
-# all (plus the probe pool's one), so "busy" is the pool's steady state.
+# DATABASE_MIN_CONNECTIONS=12: wait until the request pool has opened them
+# all, so "busy" is the pool's steady state.
 open=0
 for _ in $(seq 1 60); do
   open="$(psql_db "SELECT count(*) FROM pg_stat_activity WHERE datname = 'artifact_registry'
@@ -136,12 +136,17 @@ for i in $(seq 1 "$SLOW_REQUESTS"); do
   sleep 0.7
 done
 sleep 1
-waiting="$(lock_waiters)"
-if [ "${waiting:-0}" -ge 8 ] 2>/dev/null; then
-  echo "  ${waiting} backend sessions waiting on the lock"
+# Our own blocked downloads: the slow requests not answered yet (a shed one
+# has its status written). Background sessions waiting on the lock are not
+# counted.
+waiting=0
+for i in $(seq 1 "$SLOW_REQUESTS"); do [ -s "${WORK}/slow.${i}" ] || waiting=$((waiting + 1)); done
+# At least the 6 slots anonymous requests may take on the fix (main lets 8+).
+if [ "$waiting" -ge 6 ]; then
+  echo "  ${waiting} slow downloads blocked on the lock ($(lock_waiters) backend sessions waiting, background included)"
   pass
 else
-  infra_fail "only ${waiting} sessions waiting on the lock (want at least 8)" \
+  infra_fail "only ${waiting} slow downloads blocked on the lock (want at least 6)" \
     "$(psql_db "SELECT application_name, state, wait_event_type, left(query, 80) FROM pg_stat_activity WHERE datname = 'artifact_registry'")"
   end_suite
 fi
