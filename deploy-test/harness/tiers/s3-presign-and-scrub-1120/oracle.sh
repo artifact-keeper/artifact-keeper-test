@@ -9,6 +9,10 @@
 #   #5078 reindex-storage / backfill-debian audit a `started` row before the
 #         work and a completion row with the counts, tied by run_id; an
 #         unknown key is audited
+#   #5129 a fresh cached Cargo/npm download through a Virtual redirects to a
+#         presigned URL; a held one is still 409
+#   #4323 a corrupted cached npm tarball is never served whole on the Remote
+#         route, and the retry refetches it upstream
 # See the manifest for the bugs and the gates.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_PASS, RUN_ID, DTF_SLOT,
@@ -300,5 +304,151 @@ note "reindex-storage ${NOPE} -> ${c}; audit rows naming it: phases [ $(echo "$r
 echo "$rows" | jq -e 'select(.details.phase=="started")' >/dev/null 2>&1 || fail_g "no 'started' audit row for the unknown key"
 echo "$rows" | jq -e 'select(.details.phase=="failed")' >/dev/null 2>&1 || fail_g "no 'failed' audit row for the unknown key"
 finish_case "a repair call for an unknown repository key is not audited"
+
+# -----------------------------------------------------------------------------
+# #5129: a Cargo or npm download through a Virtual whose Remote member holds a
+# fresh cached copy is answered with a presigned redirect, once the fast-path
+# gates pass; a held entry is still the hold's 409. #4323: a cached object
+# whose bytes changed in storage is never delivered complete on the Remote's
+# own route, and the next read refetches it upstream.
+# The npm and Cargo fixtures are those of scan-proxy-identity-npm-cargo.
+FXB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../scan-proxy-identity-npm-cargo/fixtures/build_fixtures.py"
+uri(){ jq -rn --arg v "$1" '$v|@uri'; }
+fx(){ awk -F'\t' -v p="$1" '$1==p {print $2; exit}' "$W/fx/files.tsv"; }
+hdr_of(){ tr -d '\r' < "$1" | awk -v h="$2" 'tolower($1)==h":"{print $2}' | head -n1; }
+member(){ api POST "/api/v1/repositories/$1/members" "$(jq -nc --arg k "$2" '{member_key:$k,priority:1}')" >/dev/null; case "$(code)" in 2??) return 0;; esac; return 1; }
+# cache_key <remote-key> <name fragment>: the proxy-cache content object of a
+# cached file in the bucket.
+cache_key(){ mcx "mc find 'local/${BUCKET}/' --name __content__" 2>/dev/null | sed "s#^local/${BUCKET}/##" \
+  | grep "/$1/" | grep -F "$2" | head -n1; }
+# corrupt_mid <key> <original>: one byte flipped in the middle, same length.
+corrupt_mid(){
+  local bad="$W/bad-mid.bin" off
+  cp "$2" "$bad"; off=$(( $(stat -c %s "$2") / 2 ))
+  printf '\377' | dd of="$bad" bs=1 seek="$off" conv=notrunc 2>/dev/null
+  cmp -s "$bad" "$2" && printf '\000' | dd of="$bad" bs=1 seek="$off" conv=notrunc 2>/dev/null
+  obj_put "$1" "$bad" && [ "$(obj_sha "$1")" = "$(sha_of "$bad")" ]
+}
+
+begin_test "setup #5129/#4323: npm and Cargo fixtures on the mock, Remotes (one pair under a Package Age Policy hold) and Virtuals over them"
+reset_case
+mkdir -p "$W/fx"
+n="$(BURST=1 python3 -I "$FXB" "$W/fx" "$UP" 2>"$W/fx.err")" || n=""
+[ -n "$n" ] || fail_g "fixture build failed: $(head -c 300 "$W/fx.err")"
+while IFS=$'\t' read -r p f ct; do
+  curl -s --max-time 20 -X PUT --data-binary @"$f" "${MOCK}/__file?path=$(uri "$p")&ctype=$(uri "$ct")" >/dev/null \
+    || fail_g "mock PUT ${p}"
+done < "$W/fx/files.tsv"
+NR="sps-npmr-${SUF}"; NV="sps-npmv-${SUF}"; NH="sps-npmh-${SUF}"; NHV="sps-npmhv-${SUF}"
+CR="sps-crr-${SUF}";  CV="sps-crv-${SUF}";  CH="sps-crh-${SUF}";  CHV="sps-crhv-${SUF}"
+for spec in "$NR|npm|${UP}/npm" "$NH|npm|${UP}/npm" "$CR|cargo|${UP}/cargo" "$CH|cargo|${UP}/cargo"; do
+  IFS='|' read -r k f u <<<"$spec"; [ -n "$(mk "$k" "$f" remote "$u")" ] || fail_g "create ${k}: $(code)"
+done
+for spec in "$NV|npm|$NR" "$NHV|npm|$NH" "$CV|cargo|$CR" "$CHV|cargo|$CH"; do
+  IFS='|' read -r k f m <<<"$spec"; [ -n "$(mk "$k" "$f" virtual)" ] && member "$k" "$m" || fail_g "virtual ${k} over ${m}: $(code)"
+done
+for k in "$NH" "$CH"; do
+  api PATCH "/api/v1/repositories/${k}" '{"quarantine_enabled":true,"quarantine_duration_minutes":60}' >/dev/null
+  case "$(code)" in 2??) ;; *) fail_g "hold on ${k}: $(code) $(head -c 120 "$W/api.out")";; esac
+done
+finish_case "the #5129/#4323 setup failed"
+
+NPM_P="dtf-idclean/-/dtf-idclean-1.0.0.tgz"; NPM_F="$(fx "/npm/${NPM_P}")"
+CR_P="api/v1/crates/dtf-idcrate/1.0.0/download"; CR_F="$(fx "/cargo/api/v1/crates/dtf-idcrate/1.0.0/download")"
+# get <url> <tag>: one GET, no redirect following; sets ST, LOC, BYTES, BSHA.
+get(){
+  : > "$W/$2.h"
+  ST="$(curl -s --max-time 60 -D "$W/$2.h" -o "$W/$2.b" -w '%{http_code}' "$1" 2>/dev/null)" || true
+  LOC="$(hdr_of "$W/$2.h" location)"; BYTES="$(stat -c %s "$W/$2.b" 2>/dev/null || echo 0)"; BSHA="$(sha_of "$W/$2.b")"
+}
+
+for spec in "npm|$NV|$NPM_P|$NPM_F" "cargo|$CV|$CR_P|$CR_F"; do
+  IFS='|' read -r f v p file <<<"$spec"
+  want="$(sha_of "$file")"; size="$(stat -c %s "$file" 2>/dev/null)"
+  url="$BASE/${f}/${v}/${p}"
+  begin_test "CONTROL #5129 (${f}): the cold download through the Virtual is 200 with the exact file"
+  reset_case
+  get "$url" cold
+  note "cold GET -> ${ST}, ${BYTES} bytes"
+  [ "$ST" = "200" ] && [ "$BSHA" = "$want" ] || fail_g "cold ${f} download through ${v} answered ${ST}, bytes $( [ "$BSHA" = "$want" ] && echo match || echo differ)"
+  finish_case "the cold ${f} virtual download failed"
+
+  begin_test "FIX #5129 (${f}): a fresh cached download through the Virtual answers a redirect to a presigned object-store URL with the exact bytes"
+  reset_case
+  for i in $(seq 1 20); do get "$url" warm; [ "$ST" = "302" ] || [ "$ST" = "307" ] && break; sleep 0.5; done
+  note "warm GET -> ${ST} (after ${i} tries), Location '${LOC%%\?*}'"
+  if [ "$ST" != "302" ] && [ "$ST" != "307" ]; then
+    fail_g "a fresh cached ${f} file answered ${ST} with ${BYTES} body bytes streamed through the backend, expected a redirect to the object store"
+  else
+    case "$LOC" in "http://127.0.0.1:${S3_PORT}/"*) ;; *) fail_g "Location '${LOC%%\?*}' is not the public S3 endpoint" ;; esac
+    c3="$(curl -s --max-time 60 -o "$W/pre.b" -w '%{http_code}' "$LOC" || true)"
+    [ "$c3" = "200" ] && [ "$(sha_of "$W/pre.b")" = "$want" ] || fail_g "the presigned URL answered ${c3}, bytes not the file"
+  fi
+  # Measured: what 20 more warm downloads cost the backend in body bytes.
+  t0=$(date +%s%N); tot=0; codes=""
+  for j in $(seq 1 20); do get "$url" m; tot=$((tot + BYTES)); codes="${codes}${ST} "; done
+  t1=$(date +%s%N)
+  note "MEASURE ${f}: 20 warm virtual downloads of a ${size}-byte file: backend body bytes ${tot}, wall $(( (t1 - t0) / 1000000 )) ms, statuses $(echo $codes | tr ' ' '\n' | sort | uniq -c | tr '\n' ' ' | tr -s ' ')"
+  case " ${codes}" in *" 200 "*) fail_g "the backend streamed warm downloads (${tot} body bytes over 20), expected every one redirected" ;; esac
+  # A HEAD is never presigned (#3209): it is answered with the file's length.
+  hc="$(curl -s --max-time 30 -I -o "$W/head.h" -w '%{http_code}' "$url" || true)"
+  note "HEAD -> ${hc}, Content-Length $(hdr_of "$W/head.h" content-length)"
+  [ "$hc" = "200" ] || fail_g "HEAD through the Virtual answered ${hc}, expected 200"
+  finish_case "fresh cached ${f} downloads through a Virtual stream through the backend instead of redirecting"
+done
+
+for spec in "npm|$NHV|$NPM_P" "cargo|$CHV|$CR_P"; do
+  IFS='|' read -r f v p <<<"$spec"
+  url="$BASE/${f}/${v}/${p}"
+  begin_test "GATE #5129 (${f}): a cached file inside its Package Age Policy hold is the hold's 409 through the Virtual, never a redirect"
+  reset_case
+  get "$url" held1; s1="$ST"; sleep 1
+  get "$url" held2; s2="$ST"; l2="$LOC"
+  note "held GETs through ${v}: ${s1}, then ${s2} (Location '${l2%%\?*}')"
+  [ "$s1" = "409" ] || fail_g "the first held ${f} download answered ${s1}, expected 409: $(head -c 160 "$W/held1.b")"
+  [ "$s2" = "409" ] || fail_g "the cached held ${f} download answered ${s2}, expected the hold's 409, never a redirect"
+  finish_case "a held ${f} file is handed out through a Virtual"
+done
+
+begin_test "FIX #4323 (npm): a cached tarball whose stored bytes were corrupted is never served whole on the Remote's route; the retry refetches the upstream bytes"
+reset_case
+NPM_L="dtf-late/-/dtf-late-1.0.0.tgz"; NPM_LF="$(fx "/npm/${NPM_L}")"; want="$(sha_of "$NPM_LF")"
+url="$BASE/npm/${NR}/${NPM_L}"
+get "$url" c1
+# The cache publish of the first download completes asynchronously: poll.
+key=""; for i in $(seq 1 20); do key="$(cache_key "$NR" "dtf-late-1.0.0.tgz")"; [ -n "$key" ] && break; sleep 0.5; done
+note "first GET -> ${ST} (${BYTES} bytes); cached object '${key}'"
+if [ "$ST" != "200" ] || [ "$BSHA" != "$want" ] || [ -z "$key" ]; then
+  fail_g "the first npm Remote download did not cache the tarball (${ST}, key '${key}')"
+else
+  sleep 1
+  g0="$(mock_gets "/npm/${NPM_L}")"
+  corrupt_mid "$key" "$NPM_LF" || fail_g "could not corrupt ${key}"
+  bad="$(sha_of "$W/bad-mid.bin")"
+  t0=$(date +%s%N)
+  ST="$(curl -s --max-time 60 -o "$W/c2.b" -w '%{http_code}' "$url" 2>/dev/null)"; rc=$?
+  t1=$(date +%s%N)
+  got="$(sha_of "$W/c2.b")"; n2="$(stat -c %s "$W/c2.b" 2>/dev/null || echo 0)"
+  note "GET over the corrupted object -> ${ST}, curl exit ${rc}, ${n2} of $(stat -c %s "$NPM_LF") bytes, $( [ "$got" = "$bad" ] && echo 'the CORRUPTED bytes' || ([ "$got" = "$want" ] && echo 'the upstream bytes' || echo 'a partial body')) in $(( (t1 - t0) / 1000000 )) ms"
+  [ "$got" = "$bad" ] && fail_g "the corrupted cached tarball was delivered whole (${n2} bytes, sha ${bad:0:12}) under a 200"
+  ok=""; for i in $(seq 1 20); do get "$url" c3; [ "$ST" = "200" ] && [ "$BSHA" = "$want" ] && { ok=1; break; }; sleep 0.5; done
+  g1="$(mock_gets "/npm/${NPM_L}")"
+  note "retry -> ${ST} after ${i} tries, $( [ "$BSHA" = "$want" ] && echo 'the upstream bytes' || echo 'other bytes'); upstream tarball GETs ${g0} -> ${g1}"
+  [ -n "$ok" ] || fail_g "the retry did not serve the upstream tarball (${ST})"
+  [ "${g1:-0}" -gt "${g0:-0}" ] || fail_g "the retry was not refetched upstream (GETs ${g0} -> ${g1}): the corrupt entry was not evicted"
+fi
+finish_case "a corrupted cached npm tarball is served whole on the Remote route"
+
+begin_test "MEASURE #4323: warm streamed downloads on the npm Remote route (the verification hashes each cached body as it streams)"
+reset_case
+# A tarball nothing corrupted, warmed first: the cost of a healthy hit.
+NPM_M="dtf-late-liar/-/dtf-late-liar-1.0.0.tgz"; NPM_LF="$(fx "/npm/${NPM_M}")"; want="$(sha_of "$NPM_LF")"
+url="$BASE/npm/${NR}/${NPM_M}"
+for i in $(seq 1 20); do get "$url" w; [ "$ST" = "200" ] && [ -n "$(cache_key "$NR" "dtf-late-liar-1.0.0.tgz")" ] && break; sleep 0.5; done
+t0=$(date +%s%N); tot=0
+for j in $(seq 1 30); do get "$url" w; tot=$((tot + BYTES)); [ "$ST" = "200" ] && [ "$BSHA" = "$want" ] || fail_g "warm download ${j}: ${ST}"; done
+t1=$(date +%s%N)
+note "MEASURE: 30 warm downloads of a $(stat -c %s "$NPM_LF")-byte tarball: ${tot} bytes, wall $(( (t1 - t0) / 1000000 )) ms"
+finish_case "warm downloads on the npm Remote route failed"
 
 end_suite

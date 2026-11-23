@@ -49,9 +49,29 @@
 #                   of an unknown key is 404 with `started` + `failed` rows.
 #                   (backfill-debian does not exist on 1.11.13: 404.)
 #
+# 1.13.0 (artifact-keeper#5129, #4323), on the npm and Cargo fixtures of
+# scan-proxy-identity-npm-cargo:
+# #5129  A Cargo or npm download through a Virtual whose Remote member held a
+#        fresh cached copy was always streamed through the backend, also with
+#        PRESIGNED_DOWNLOADS_ENABLED + S3_REDIRECT_DOWNLOADS (the other formats'
+#        virtual walk has redirected since #1555).
+#        (CONTROL) the cold download is 200 with the exact file; a HEAD is 200.
+#        (FIX) the warm download answers 302 with Location on the public S3
+#        endpoint, the presigned URL serves the exact file, and 20 more warm
+#        downloads are all redirects (MEASURE: the body bytes the backend sent).
+#        (GATE) a Remote under a Package Age Policy hold answers 409 through
+#        its Virtual on the cold and on the cached download, never a redirect.
+# #4323  A proxy-cache hit was streamed without checking the bytes against the
+#        digest its sidecar records, so an object corrupted in the bucket was
+#        served whole under a 200 until the entry expired.
+#        (FIX) with one byte of the cached npm tarball flipped in MinIO (same
+#        length), the Remote's own tarball route never delivers those bytes
+#        whole; the retry serves the upstream bytes, fetched again upstream
+#        (the corrupt entry was evicted). (MEASURE) 30 warm streamed downloads.
+#
 # RATE_LIMIT_ENABLED=false: admin calls back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
-COVERS="5015 4985 5168 5078"
+COVERS="5015 4985 5168 5078 5129 4323"
 PROFILES="storage.s3 storage.s3-presigned upstreams.mock-files"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
