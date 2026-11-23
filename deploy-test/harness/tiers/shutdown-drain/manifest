@@ -1,0 +1,65 @@
+# DTF tier manifest: shutdown-drain  (artifact-keeper#5921, 1.13.0)
+# Profile-set: filesystem + lifecycle.shutdown-drain (passes
+# SHUTDOWN_DRAIN_SECS through to the backend).
+#
+# THE PROBLEM (#5921)
+# On SIGTERM the backend closed its HTTP listener at once. A load balancer or
+# ingress learns that an endpoint is gone asynchronously (EndpointSlices reach
+# ingress-nginx in about 1-2 s), so requests still sent to the terminating
+# replica in that window were refused and the proxy answered 502, on every
+# rolling update, scale-down and node drain. With one ready replica left the
+# proxy's retries had no other peer.
+#
+# THE FIX (1.13.0)
+# On SIGTERM the process marks itself draining: /readyz answers 503 with
+# `shutting_down` in `failing`, /livez stays 200, background workers stop
+# claiming new work. It keeps serving normally for SHUTDOWN_DRAIN_SECS
+# (default 0, close at once; 5-10 s recommended behind a load balancer, so
+# the tier sets 12), then closes the listeners, lets in-flight requests finish,
+# waits for running scheduler jobs until the end of the drain, releases the
+# scheduler leases it holds and exits 0. Each phase is logged.
+#
+# THE PRIMITIVE
+# The oracle waits until the backend holds a live scheduler lease (the health
+# monitor takes one 15-45 s after boot, TTL 90 s), starts one request that is
+# held in flight by an ACCESS EXCLUSIVE lock on `users` (the oracle's own psql
+# session; the anonymous downloads probed meanwhile do not read `users`),
+# then sends SIGTERM to its own slot's backend container
+# (`docker kill -s TERM ak-dtf<slot>-backend`) and probes. It ends the lock
+# DRAIN + 3 s after SIGTERM, so the held request is still in flight when the
+# listeners close, waits for the process to exit, checks the exit and the
+# lease table, and starts the container again. Only this slot's containers
+# are touched; an EXIT trap ends the lock and restarts the backend if the
+# oracle dies midway.
+#
+# Oracle (discriminating, RELEASE_GATE=1), SHUTDOWN_DRAIN_SECS=12:
+#   (CONTROL) before SIGTERM: /readyz and /livez 200, the anonymous download
+#             of a public generic artifact 200 + bytes, a live scheduler lease
+#             held by this backend.
+#   (FIX #5921) within 1 s of SIGTERM /readyz answers 503 with
+#             `shutting_down` in `failing`. RED on main: the port is closed
+#             (curl 000).
+#   (FIX #5921) /livez answers 200 during the drain. RED on main: 000.
+#   (FIX #5921) from 1 s to 6 s after SIGTERM every download (one each
+#             0.5 s) answers 200 with the bytes. RED on main: 000.
+#   (FIX #5921) /livez still answers 200 at DRAIN - 1 s (11 s): the drain is
+#             honoured. RED on main: 000.
+#   (CONTROL) at DRAIN + 1 s (13 s) a new connection is refused (000) while
+#             the held request is still in flight: the listener closed with a
+#             request outstanding.
+#   (CONTROL) the held request, released at DRAIN + 3 s, completes 200:
+#             in-flight requests finish after the listener closes. The
+#             process then exits with status 0, after the held request and
+#             within 30 s of SIGTERM. After `docker start` it is ready again.
+#   (FIX #5921) the log names each phase: "draining for 12s", "closing the
+#             listeners", "shutdown complete". RED on main: none.
+#   (FIX #5921) after the exit no scheduler lease owned by this backend is
+#             still live. RED on main: the health monitor lease stays live
+#             for its 90 s TTL.
+#
+# RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
+PROFILES="storage.filesystem lifecycle.shutdown-drain"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="5921"
+export SHUTDOWN_DRAIN_SECS="12"
