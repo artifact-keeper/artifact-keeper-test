@@ -1,0 +1,26 @@
+# =============================================================================
+# profiles/sync.partition-fast.yml: peer sync retries on a short backoff, with
+# heartbeat probes off
+# =============================================================================
+# The push-sync-partition-retry tier (artifact-keeper#6134) needs instance A's
+# sync worker to make several attempts at a push while the peer is down but
+# still looks online, inside the oracle's wait:
+#
+#   SYNC_TASK_RETRY_BACKOFF_MAX_SECS=5  a failed transfer backs the peer off
+#                                       5 s (the base defaults to the max), so
+#                                       the next 10 s worker tick retries it.
+#                                       Default 300 s.
+#   PEER_HEARTBEAT_ENABLED=false        no outbound heartbeat probes, so A
+#                                       does not demote the peer to degraded
+#                                       on failed probes and transfers; it
+#                                       stays online until its heartbeat goes
+#                                       stale (5 minutes), as a peer that
+#                                       sends its own heartbeats does.
+#
+# Only `backend` (instance A) is patched; peer-backend (B) keeps the defaults.
+# =============================================================================
+services:
+  backend:
+    environment:
+      SYNC_TASK_RETRY_BACKOFF_MAX_SECS: "5"
+      PEER_HEARTBEAT_ENABLED: "false"

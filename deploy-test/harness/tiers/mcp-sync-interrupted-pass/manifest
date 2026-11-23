@@ -1,0 +1,38 @@
+# DTF tier manifest: mcp-sync-interrupted-pass  (artifact-keeper#6390, 1.13.0)
+# Profile-set: filesystem + webhooks.mock-blackhole (hook-sink at
+# 172.16.<slot>.79; its :81 accepts a request and never answers). The Remote
+# MCP repository's upstream is that black hole, so a sync pass stays on its
+# first page for as long as the oracle needs.
+#
+# THE BUG
+# #6390  A Remote MCP sync pass that loses its process (pod loss, a panic, a
+#        cancellation) releases the repository's sync lock when its database
+#        connection drops, but records nothing. GET .../mcp/sync then answers
+#        `running: false` with the previous pass's lastFinishedAt / lastError
+#        (here none at all), so a client polling for the pass's end cannot
+#        tell that it ended. Fixed: the first poll that finds the lock free and
+#        a start with no later finish records the pass as ended, with
+#        lastError "the sync pass ended without recording an outcome (...)".
+#
+# THE GATES
+#   (CONTROL) every image: the manual trigger answers 202 and a poll sees the
+#     pass running (lock held, lastStartedAt set, no lastFinishedAt) against
+#     the black hole; after `docker kill` + `docker start` of the backend (the
+#     loss of the pass's process) the backend is healthy again.
+#   (FIX) #6390: the first poll after the restart answers running:false with
+#     lastFinishedAt at or after lastStartedAt and lastError naming the pass
+#     that ended without an outcome; a second poll answers the same record.
+#     RED on main before the fix (lastFinishedAt and lastError null).
+#
+# The scheduled pass cannot interfere: the repository is not due (its pass
+# started seconds ago; the interval is one hour) and the scheduler waits 90 s
+# after startup.
+#
+# Wall clock: about 1 minute.
+# RATE_LIMIT_ENABLED=false: polls back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the black hole sits on a private address.
+COVERS="6390"
+PROFILES="storage.filesystem webhooks.mock-blackhole"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

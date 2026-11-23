@@ -19,6 +19,15 @@
 #        LicenseRef that is exactly the wrapped form of the other scanner's
 #        text gives way to that text. Licenses that differ are never swapped.
 #
+# #6379  (1.13.0) A Trivy license LIST that joins a compound expression with
+#        another license, ["MIT AND PSF-2.0", "ISC"] (a composer.lock array),
+#        was stored as `LicenseRef-MIT-AND-PSF-2.0 AND ISC`: an expression
+#        with an opaque operand, which the #5629 swap (one wrapped term only)
+#        cannot repair. Fixed: an element that is already a conjunctive SPDX
+#        expression (AND / WITH, no OR) is kept as written, so the row is
+#        `MIT AND LicenseRef-PSF-2.0 AND ISC` (PSF-2.0 is outside the
+#        recognised id list and is wrapped alone). An element with OR stays wrapped (#1152).
+#
 # THE GATES
 #   (CONTROL) every image: both scans complete; the Trivy filesystem scan
 #     stored dtf-compound as LicenseRef-MIT-AND-PSF-2.0 and Grype as the
@@ -27,11 +36,22 @@
 #   (FIX) #5629: dtf-compound is {"expression":"MIT AND PSF-2.0"} and dtf-free
 #     is {"license":{"name":"Public Domain"}}. RED before the fix.
 #
+#   (CONTROL) #6379: dtf/choice (["MIT OR Apache-2.0", "ISC"]) is stored as
+#     `LicenseRef-MIT-OR-Apache-2.0 AND ISC` on every image.
+#   (FIX) #6379: the Trivy filesystem scan stores dtf/joined as
+#     `MIT AND LicenseRef-PSF-2.0 AND ISC` (main: `LicenseRef-MIT-AND-PSF-2.0
+#     AND ISC`) and its SBOM licenses never carry the compound as one
+#     LicenseRef. RED before the fix.
+#     Grype stores this entry as `ISC` alone and the SBOM keeps whichever
+#     row sorts first, so the SBOM entry may be `ISC` (a separate gap).
+#   Since #6379 Trivy stores dtf-compound as `MIT AND LicenseRef-PSF-2.0`; the
+#   first CONTROL accepts either form, and the #5629 swap keeps Grype's text.
+#
 # The sbom-license-expression tier (dtf-gate) gates #3866 with Grype alone;
 # it has no adapter, which is why it never saw this.
 #
 # RATE_LIMIT_ENABLED=false: requests back to back.
-COVERS="5629"
+COVERS="5629 6379"
 PROFILES="storage.filesystem scanners.trivy"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

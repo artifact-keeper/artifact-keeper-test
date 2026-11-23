@@ -1,0 +1,44 @@
+# DTF tier manifest: push-sync-partition-retry  (artifact-keeper#6134, 1.13.0)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`) +
+# sync.partition-fast (instance A retries a failed push every worker tick and
+# keeps the peer online: no heartbeat probes).
+#
+# THE BUG
+# #6134  A push written on A as its peer B becomes unreachable is retried
+#        while B still looks online (its heartbeat is not stale yet). Every
+#        attempt fails to connect, and each one used up one of the task's 3
+#        retries (SYNC_TASK_MAX_RETRIES). The task was terminal before B was
+#        marked down, and nothing re-queued it when B came back: B never got
+#        the write. Fixed: a transfer that never connected is charged to the
+#        peer (backoff, failure counters) but does not use up an attempt, so
+#        the push is retried once B is reachable and is delivered.
+#
+# THE PEERS
+# B is registered on A as a push peer of a generic repository, with a
+# `*`-scoped admin API key minted on B, and set online in A's DB. A reaches B
+# at http://peer-backend:8080. The outage is `docker stop` of peer-backend (B
+# closes its connections, so A's pooled connection to it is not left
+# half-open, and its name stops resolving); the heal is `docker start`. A's
+# view of B's heartbeat is kept fresh throughout, as a peer whose own
+# heartbeats still arrive.
+#
+# THE GATES
+#   (CONTROL) every image: a push made while B is up reaches B (sha256 equal);
+#     while B is down, A records at least 3 failed transfers of the write.
+#   (FIX) #6134: after B is back, the write reaches B within 90 s and its push
+#     row on A is completed. RED on main before the fix (the row stays failed
+#     at 3/3 and B never gets it).
+#
+# Teardown note: `harness/run.sh down --slot N` only knows the --<dimension>
+# profiles. A tier run without --keep tears B down itself.
+#
+# Wall clock: about 2.5 minutes.
+# RATE_LIMIT_ENABLED=false: authenticated calls back to back on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: peer endpoints go through
+# validate_outbound_url and both instances sit on private compose addresses.
+COVERS="6134"
+PROFILES="storage.filesystem peer.second-instance sync.partition-fast"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
