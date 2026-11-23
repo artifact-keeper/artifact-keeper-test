@@ -4147,6 +4147,16 @@ jobs:
           # on 172.16.<slot>.76; about a minute). Required.
           - group: security-1.13.0-proxy-redirect
             tiers: proxy-redirect-hold-replicas pypi-metadata-gate-index-fetch
+          # 1.13.0 (artifact-keeper#6276): the plugin host on wasmtime 48 runs
+          # real, signed format plugins built with a current Rust toolchain
+          # (WASI 0.2.12 imports, which wasmtime 36 lacks). Their validate and
+          # parse-metadata answers reach the stored row, a guest over its
+          # memory cap traps inside the call, a guest that spins is stopped by
+          # fuel, and the runtime keeps serving (wasm-plugin-execution;
+          # filesystem + plugins.example-signed; under a minute). Red on main
+          # before the fix, NOT ON THIS LINE on a 1.12.x candidate. Required.
+          - group: security-1.13.0-plugins
+            tiers: wasm-plugin-execution
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}

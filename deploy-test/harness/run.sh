@@ -571,7 +571,7 @@ case "$CMD" in
              deps-1.12.0-controls secrets-file-env protobuf-bsr-proxy proxy-stale-if-error \
              image-build-spec-validation repo-read-hiding restricted-token-refresh download-route-token-basic \
              rest-mutation-authz-1-11 token-repo-restriction generic-route-scan-gate index-metadata-cred-scoping \
-             upstream-url-userinfo-redaction virtual-member-gates plugin-reload-ssrf http-edge-limits \
+             upstream-url-userinfo-redaction virtual-member-gates plugin-reload-ssrf wasm-plugin-execution http-edge-limits \
              admin-setup-gate plugins-disabled xff-authz-trust ci-oidc-exchange upload-slot-exhaustion \
              ci-oidc-token-lifetime ci-oidc-provider-token-ttl \
              repo-mutation-authz migration-authz token-colon-scope ledger-triggers-authoritative quota-admission-o1 \

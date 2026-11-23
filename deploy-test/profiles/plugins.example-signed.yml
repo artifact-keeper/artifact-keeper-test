@@ -1,0 +1,19 @@
+# =============================================================================
+# profiles/plugins.example-signed.yml: trust the wasm-plugin-execution fixture
+# =============================================================================
+# Sets PLUGINS_TRUSTED_PUBKEY to the Ed25519 key that signed the plugin.wasm of
+# both ZIPs in harness/tiers/wasm-plugin-execution/fixtures/ (the
+# Unity format handler from artifact-keeper-example-plugin, see the manifest).
+# The private half was discarded after signing. PLUGINS_REQUIRE_SIGNED stays at
+# the shipped default (true), so the install goes through the signature gate as
+# a production install does.
+# =============================================================================
+services:
+  backend:
+    environment:
+      PLUGINS_TRUSTED_PUBKEY: "noOx5+eNhMkG2D7BeAFu0zfYDOhbRdbzRq/G+4uuJaQ="
+    # The memory-cap case reads the backend's log for the guest trap. Pin the
+    # json-file driver so docker logs has it (rootless podman's journald
+    # driver can drop lines).
+    logging:
+      driver: json-file

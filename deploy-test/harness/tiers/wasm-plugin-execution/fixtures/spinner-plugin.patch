@@ -1,0 +1,27 @@
+diff --git a/plugins/unity-format/src/lib.rs b/plugins/unity-format/src/lib.rs
+index 6db7b99..0f7af45 100644
+--- a/plugins/unity-format/src/lib.rs
++++ b/plugins/unity-format/src/lib.rs
+@@ -24,7 +24,7 @@ struct UnityFormatHandler;
+ 
+ impl Guest for UnityFormatHandler {
+     fn format_key() -> String {
+-        "unity".to_string()
++        "spinner".to_string()
+     }
+ 
+     fn parse_metadata(path: String, data: Vec<u8>) -> Result<Metadata, String> {
+@@ -51,6 +51,13 @@ impl Guest for UnityFormatHandler {
+     }
+ 
+     fn validate(path: String, data: Vec<u8>) -> Result<(), String> {
++        // DTF wasm-plugin-execution: a guest that never returns.
++        if path.contains("spin-forever") {
++            let mut n: u64 = 0;
++            loop {
++                n = core::hint::black_box(n.wrapping_add(1));
++            }
++        }
+         if data.is_empty() {
+             return Err("Unity package cannot be empty".to_string());
+         }

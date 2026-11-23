@@ -1,0 +1,68 @@
+# DTF tier manifest: wasm-plugin-execution  (artifact-keeper#6276, 1.13.0)
+# Profile-set: filesystem + plugins.example-signed (PLUGINS_TRUSTED_PUBKEY for
+# the fixture's detached signature).
+#
+# WHY
+# The other plugin tiers install the smallest valid component (no sections)
+# and never call into it, so nothing in the gate runs guest code. #6276 moves
+# the plugin host from wasmtime 36 to 48, a major engine upgrade. This tier
+# installs a real, separately built format plugin and drives it through the
+# upload path, where the backend calls the guest's validate and
+# parse-metadata exports.
+#
+# THE FIXTURE (fixtures/unity-format-plugin.zip)
+# plugins/unity-format of artifact-keeper-example-plugin (MIT) at commit
+# 12ec6fd, built with its own release command, `cargo build --release
+# --target wasm32-wasip2` (rustc 1.100.0, wit-bindgen 0.36): a component,
+# sha256 4daec482e4b198d536c77ebba6622e8637b9cbfed4be37582bc42b51360e208a.
+# The project's published v1.0.0-a1 asset is a core module, not a component,
+# and no backend loads it ("failed to parse WebAssembly module"). The ZIP adds
+# a [requirements] table to its plugin.toml (the limits the backend applies)
+# and a detached Ed25519 signature; the private key was discarded.
+#
+# fixtures/spinner-plugin.zip is the same source with
+# fixtures/spinner-plugin.patch applied: format key `spinner`, and validate
+# loops forever for a path containing `spin-forever`. Its plugin.toml is
+# renamed (spin-format / spinner) with timeout_secs = 2 (200M fuel). Same
+# signing key.
+#
+# RED ON WASMTIME 36 (main before #6276, sha-0a3e08d): only the controls pass.
+# A component built by a current Rust toolchain (1.100, wasm32-wasip2)
+# imports WASI 0.2.12 (`wasi:cli/exit@0.2.12`, ...), which wasmtime-wasi 36
+# does not provide, so every call fails at instantiation ("component imports
+# instance `wasi:cli/exit@0.2.12`, but a matching implementation was not found
+# in the linker") and every upload to the repository answers 500. Plugin
+# authors on a current toolchain could not ship to the backend at all.
+# GREEN on wasmtime 48: all pass.
+#
+# THE CASES
+#   CONTROL  the signed ZIP installs (format key `unity`), the plugin is listed
+#            and a repository of format `unity` can be created.
+#   EXEC     a gzip .unitypackage uploaded with Content-Type
+#            application/octet-stream is stored with the guest's answers:
+#            content type application/gzip and version 4.5.6, parsed by the
+#            guest from the filename. The host's own path fallback derives no
+#            version from a one-segment path, so only the guest can produce it.
+#   EXEC     validate refusals carry the guest's own messages: a non-gzip body
+#            ("Invalid gzip header: expected [1f, 8b], got [50, 4b]"), a wrong
+#            extension ("Expected .unitypackage extension") and a gzip stream
+#            whose method byte is not deflate. Nothing is stored for them.
+#   SANDBOX  the plugin's 32 MB memory cap ([requirements] max_memory_mb): an
+#            8 MiB package is accepted; a 40 MiB one traps inside the call
+#            (the guest cannot allocate the argument: the backend logs "WASM
+#            function call failed"), is refused and not stored.
+#            The log names the reason: "guest trapped (wasm trap: wasm `unreachable`
+#            instruction executed)" from the guest's cabi_realloc.
+#   SANDBOX  a guest that never returns (the spinner plugin) is stopped by
+#            fuel on the production call_async path: the upload is refused in
+#            seconds, nothing is stored, and the log says "WASM execution
+#            exceeded fuel limit" (the trap code, read with downcast_ref).
+#   SANDBOX  after the traps and the refusals the runtime still serves: a
+#            further upload is accepted, so a guest failure costs one store,
+#            not the engine.
+#
+# RATE_LIMIT_ENABLED=false: one admin login, a dozen API calls.
+PROFILES="storage.filesystem plugins.example-signed"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="6276"
