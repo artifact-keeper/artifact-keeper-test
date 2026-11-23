@@ -1,0 +1,56 @@
+# DTF tier manifest: disk-usage-thresholds (artifact-keeper#5191)
+# Profile-set: storage.filesystem + storage.disk-thresholds (STORAGE_PATH is a
+# 64 MiB tmpfs volume; STORAGE_DISK_WARN_PERCENT=60,
+# STORAGE_DISK_BLOCK_PERCENT=80, STORAGE_DISK_CHECK_INTERVAL_SECS=1).
+#
+# THE BUG
+# #5191  The backend did not watch free space on the storage volume. The
+#        storage quotas count stored bytes, not the disk; per-repository
+#        quotas can add up to more than the volume and proxy caches grow on
+#        their own, so with the filesystem backend the first signal of a full
+#        disk was a write failing once it was already full (507), with
+#        nothing in between. Fix: instance-wide disk usage thresholds measured
+#        with statvfs and cached for a few seconds. At the warn threshold a
+#        rate-limited warn line and ak_storage_disk_state=1; at the block
+#        threshold every write that stores new bytes is refused with
+#        403 DISK_THRESHOLD_EXCEEDED (reason "Disk Threshold Exceeded",
+#        message "server storage nearly full: free disk or add storage ...",
+#        OCI: 403 DENIED in the /v2 envelope) before its body is read, while
+#        downloads, listing and deletes keep working. Writes resume once the
+#        volume is a point below the threshold.
+#
+# THE PRIMITIVE
+#   A helper container (postgres:16-alpine) mounts the same tmpfs volume
+#   (ak-dtf<slot>_disk) and grows a fill file to 70 % and then 90 % of the
+#   volume, then removes it. The EXIT trap removes it too.
+#
+# THE GATES
+#   (FIX)     at 70 %: /api/v1/system/quota .disk.state = warning; a 64 KiB
+#             upload still succeeds; a 12 MiB upload whose Content-Length
+#             would take the volume past 80 % is refused 403
+#             DISK_THRESHOLD_EXCEEDED before its body is sent (curl, with
+#             Expect: 100-continue, sends less than the body).
+#             at 90 %: state = blocked and ak_storage_disk_state = 2; a
+#             generic REST PUT, a Maven PUT and a chunked PUT without
+#             Content-Length -> 403 DISK_THRESHOLD_EXCEEDED with the reason
+#             phrase and message; an OCI blob upload start -> 403 DENIED with
+#             the message in the /v2 envelope, and so is a chunk PATCH to an
+#             OCI upload session opened before the block; the backend log
+#             carries the blocked warn line.
+#             freed: state = ok, generic and Maven uploads succeed and
+#             download.
+#   (CONTROL) below the thresholds uploads, downloads, an OCI image push and
+#             an upload session start work (50 timed uploads report p50/p95);
+#             while blocked generic and Maven downloads (byte-identical), the
+#             artifact listing, a DELETE and an OCI blob mount from another image
+#             (no bytes written) keep working.
+#
+# RED: main before #5191 accepts every upload until the volume is actually
+# full (no state, no gauge, no refusal): every FIX case fails, every CONTROL
+# passes.
+#
+# RATE_LIMIT_ENABLED=false: ~40 back-to-back API calls.
+COVERS="5191"
+PROFILES="storage.filesystem storage.disk-thresholds"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
