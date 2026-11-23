@@ -3,7 +3,8 @@
 # =============================================================================
 # tiers/webhook-delivery-fairness/oracle.sh
 #   Webhook delivery is fair per endpoint (#5661): a backlog for receivers that
-#   never answer no longer starves a live receiver. The legacy
+#   never answer no longer starves a live receiver, and does not delay it
+#   either: each new live delivery lands within seconds (#5195). The legacy
 #   X-Webhook-Signature signs the body alone (#5234). See the manifest.
 #
 # run.sh exported BASE_URL, DB_CONTAINER, ADMIN_USER, ADMIN_PASS, RUN_ID,
@@ -46,6 +47,17 @@ DEAD_HOOKS=4
 DEAD_UPLOADS=5
 LIVE_BOUND=120
 LIVE_WAIT=150
+# Latency (#5195), measured with the black-hole backlog still in flight.
+# Pre-fix the worker claims every 30 s and a pass lasts until its slowest send
+# times out (30 s), so a live delivery enqueued mid-pass waits for the pass to
+# end: about 25-30 s for an upload made right after the previous live delivery
+# landed. Fixed: the producer wakes the worker, the live webhook has its own
+# lane and the black holes are in backoff, so it lands in a second or two.
+# FAST_SAMPLES uploads, one after another; the slowest must be within
+# FAST_BOUND. FAST_WAIT caps each wait so a red run stays short.
+FAST_SAMPLES=4
+FAST_BOUND=10
+FAST_WAIT=45
 
 # api <METHOD> <PATH> [JSON]: admin bearer call, sets CODE and BODY.
 api(){
@@ -189,5 +201,28 @@ else
   fi
 fi
 finish_case "one unreachable receiver starves every other webhook"
+
+# =============================================================================
+begin_test "FIX #5195: with receivers that never answer still queued, each new live delivery lands within ${FAST_BOUND}s"
+reset_case
+if [ "${hang:-0}" -lt 1 ] 2>/dev/null; then
+  fail_g "the black-hole backlog was never in flight (see the #5661 case)"
+else
+  slowest=0; lat=""
+  for i in $(seq 1 "$FAST_SAMPLES"); do
+    have="$(sink_count 80 "$LIVE_PATH")"
+    c="$(upload "$R_LIVE" "fast-${i}.bin")"
+    is_2xx "$c" || { fail_g "live upload ${i} answered ${c}"; continue; }
+    if wait_live "$LIVE_PATH" $((have + 1)) "$FAST_WAIT"; then
+      lat="${lat} ${WAITED}s"
+    else
+      lat="${lat} >${FAST_WAIT}s"
+    fi
+    [ "$WAITED" -gt "$slowest" ] && slowest="$WAITED"
+  done
+  note "live delivery latency per upload:${lat}; slowest ${slowest}s (bound ${FAST_BOUND}s); black hole reached $(sink_count 81 /hook/dead) time(s) in all"
+  [ "$slowest" -le "$FAST_BOUND" ] || fail_g "a live delivery took ${slowest}s behind receivers that never answer, over the ${FAST_BOUND}s bound (the worker waited for its slowest send, then for its next 30 s tick)"
+fi
+finish_case "a receiver that never answers delays every other webhook's deliveries"
 
 end_suite
