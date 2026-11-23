@@ -372,6 +372,19 @@ for m in 503 403; do
   virt "vmo-kgv${m}-${SUF}" cargo "vmo-k404-${SUF}" "vmo-kg${m}-${SUF}"
 done
 
+# Composer p2/ and v1 p/ metadata (#5620, review of the w16 PR): the same
+# [404, 503] / [404, 403] shape. A missing member falls back to v1 provider
+# discovery (packages.json, which the mock 404s), so it stays a miss.
+ZPKG="dtfz/z${SUF}"
+for m in z503:503 z403:403; do
+  for f in "p2/${ZPKG}.json" "p/${ZPKG}.json"; do
+    [ "$(mock_status "/${P}/${m%%:*}/${f}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}:${f}"
+  done
+done
+for m in 404 503 403; do mk "vmo-z${m}-${SUF}" composer remote "${UP}/${P}/z${m}"; done
+virt "vmo-zv503-${SUF}" composer "vmo-z404-${SUF}" "vmo-z503-${SUF}"
+virt "vmo-zv403-${SUF}" composer "vmo-z404-${SUF}" "vmo-z403-${SUF}"
+
 # Uploads: the hosted .apk and the hosted Maven jar.
 up(){ # <path> <file>
   local c
@@ -681,7 +694,16 @@ get "/cargo/vmo-kgv403-${SUF}/index/${CRATE_IDX}" "$W/kg403"; note "control carg
 CONTROLS_5620="${CONTROLS_5620} cargo-gated=${ST}"
 finish_case "an unavailable age-gated member made the Cargo sparse index 404"
 
-begin_test "CONTROL (#5620): the PyPI JSON API and the gated Cargo index over [404 member, 403 member] answer 404"
+begin_test "FIX #5620: a Composer virtual [404 member, 503 member] answers p2/ and v1 p/ metadata 503 with Retry-After, not 404"
+reset_case
+for r in "p2/${ZPKG}.json" "p/${ZPKG}.json"; do
+  get "/composer/vmo-zv503-${SUF}/${r}" "$W/zc503"; want_503 "composer ${r} [404, 503]" "$W/zc503" "$ST"
+  get "/composer/vmo-zv403-${SUF}/${r}" "$W/zc403"; note "control composer ${r} [404, 403] -> ${ST}"
+  CONTROLS_5620="${CONTROLS_5620} composer-${r}=${ST}"
+done
+finish_case "an unavailable member made the Composer metadata 404"
+
+begin_test "CONTROL (#5620): the PyPI JSON API, the Composer metadata and the gated Cargo index over [404 member, 403 member] answer 404"
 reset_case
 for c in $CONTROLS_5620; do
   [ "${c##*=}" = "404" ] || fail_g "${c%=*} answered ${c##*=}, expected 404"

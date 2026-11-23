@@ -3454,7 +3454,7 @@ jobs:
           - group: core
             tiers: smoke isolation
           - group: upgrade-origins
-            tiers: upgrade-v156-origin upgrade-v158-origin upgrade upgrade-v270-origin
+            tiers: upgrade-v156-origin upgrade-v158-origin upgrade upgrade-v270-origin curation-ascii-lookalikes-upgrade
           - group: security-authz
             tiers: vvc3-scoped-admin qcmj-webhook-authz f7qf-peer-authz 5f2q-upload-scope qxxr-refresh-race oci-push-scope api-alias-repo-key oci-rest-delete-digest-authority empty-repo-key-no-body-read
           - group: security-boundary

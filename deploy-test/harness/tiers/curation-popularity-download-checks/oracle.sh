@@ -105,7 +105,7 @@ curate "$ON"; curate "$OFF"; curate "$VON"; curate "$PYON"; curate "$PYOFF"; cur
 rule "$ON" true; rule "$VON" true; rule "$OFF" false
 rule "$PYON" true '["click"]'; rule "$PYOFF" false '["click"]'
 rule "$ASC" true '["dtf-he1d"]'
-rule "$PYSTRICT" true '["click"]' '{"block_ascii_confusables":true}'
+rule "$PYSTRICT" true '["click"]' '{"ascii_lookalikes":"block"}'
 if [ -z "$ERR" ]; then pass; else infra_fail "$ERR"; end_suite; fi
 
 # --- opted in ---------------------------------------------------------------------
@@ -145,7 +145,9 @@ simple() {
     "${BASE_URL}/pypi/$1/simple/$2/" 2>/dev/null || echo 000
 }
 # #5840 (1.13.0): an ALL-ASCII skeleton collision is a flag on a download,
-# not a refusal; `block_ascii_confusables: true` restores the 1.12 refusal.
+# not a refusal for a rule without `ascii_lookalikes` (a rule written after
+# the upgrade); `ascii_lookalikes: "block"` keeps the 1.12 refusal. Rules that
+# existed before 1.13 are stamped "block" (curation-ascii-lookalikes-upgrade).
 # (Until 1.13.0 the PYON case below was "refuses c1ick", #5274.)
 st="$(simple "$PYON" c1ick)"; b=0; blocked && b=1
 begin_test "FIX #5840: opted-in PyPI Remote does not refuse the ASCII confusable c1ick (a flag, not 403 curation_blocked)"
@@ -153,7 +155,7 @@ if [ "$st" != "403" ] && [ "$b" = "0" ]; then pass
 else fail "HTTP ${st} (blocked=${b}); want anything but 403 curation_blocked" "$(head -c 300 "$W/tgz.out" 2>/dev/null)"; fi
 
 st="$(simple "$PYSTRICT" c1ick)"
-begin_test "CONTROL (#5840): with block_ascii_confusables the PyPI Remote refuses c1ick (403 curation_blocked)"
+begin_test "CONTROL (#5840): with ascii_lookalikes \"block\" the PyPI Remote refuses c1ick (403 curation_blocked)"
 if [ "$st" = "403" ] && blocked; then pass
 else fail "HTTP ${st}, want 403 curation_blocked" "$(head -c 300 "$W/tgz.out" 2>/dev/null)"; fi
 

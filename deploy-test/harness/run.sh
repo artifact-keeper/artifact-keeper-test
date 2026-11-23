@@ -596,7 +596,7 @@ case "$CMD" in
              bazel-bzlmod-registry maven-upload-tx-and-quality-s3 github-release-mirror vscode-gallery-protocol \
              pacman-hosted debian-flat-remote conan-protocol-1-11 native-client-modules-and-lfs \
              quota-native-and-rpm-races s3-copy-length-required azure-default-backend oci-blob-journal-per-repo \
-             replicated-and-chunked-uploads upgrade-v270-origin upload-staging-object-store \
+             replicated-and-chunked-uploads upgrade-v270-origin curation-ascii-lookalikes-upgrade upload-staging-object-store \
              lifecycle-signing-webhook-config api-contracts-1110 catalog-backfill-liveness \
              webhook-artifact-uploaded-formats stock-compose-caddy startup-config-and-format-indexes \
              trivy-server-mode \

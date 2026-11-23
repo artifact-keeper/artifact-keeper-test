@@ -35,7 +35,8 @@
 #        The last two walks (1.13.0): the PyPI JSON API (`pypi/{p}/json`,
 #        `pypi/{p}/{v}/json`) dropped every member error, and the Cargo sparse
 #        index merge read a fetch failure of an AGE-GATED member as a miss;
-#        both answered 404 over [404, 503].
+#        both answered 404 over [404, 503]. So did the Composer `p2/` and
+#        v1 `p/` metadata walk (`resolve_virtual_composer_metadata`).
 # #6417  The rest of #5620: through a Virtual [404, 503] the Helm chart .tgz,
 #        the OCI manifest (tag and digest, GET and HEAD), blob and tag list,
 #        and a PyPI distribution file answered 404 (`Chart not found`,
@@ -85,7 +86,8 @@
 #                    virtual [404, 503] answer 503 + Retry-After; then (RED on
 #                    main sha-0a3e08d, GREEN with the w16 proxy PR) the PyPI
 #                    JSON API project and release forms over [404, 503], and
-#                    the Cargo sparse index over [404, age-gated 503];
+#                    the Cargo sparse index over [404, age-gated 503], and
+#                    Composer p2/ and p/ over [404, 503];
 #              #6417 (RED on main before the fix, GREEN with it) helm chart
 #                    .tgz, OCI manifest GET/HEAD by tag, GET by digest, blob
 #                    GET/HEAD and tag list, and a PyPI file, through a virtual
@@ -110,7 +112,8 @@
 #              byte, and one over a remote that 404s answers an empty 200
 #              index.
 #              #5620: the same three walks over [404, 403] answer 404, and
-#                    so do the PyPI JSON API and the gated Cargo index.
+#                    so do the PyPI JSON API, Composer and the gated Cargo
+#                    index.
 #              #6417: the same Helm, OCI, PyPI file and Go walks over [404,
 #              403] answer 404, and so does a plain OCI Remote whose upstream
 #              404s; a Go virtual [404, 503] answers @v/list, @latest and

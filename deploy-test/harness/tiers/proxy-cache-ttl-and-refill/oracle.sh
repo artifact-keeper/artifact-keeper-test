@@ -346,7 +346,7 @@ for i in $(seq 1 "$CAP_N"); do
   [ "$(mock_delay "/cargo/${c:0:2}/${c:2:2}/${c}" 3000)" = "3000" ] || CAP_ERR="${CAP_ERR} delay:${c}"
 done
 [ -z "$CAP_ERR" ] || fail_g "mock setup:${CAP_ERR}"
-refused0="$(metric ak_proxy_detached_fills_total 'outcome="refused"')"
+refused0="$(metric ak_proxy_detached_fills_total 'outcome="refused"')"; refused0="${refused0%.*}"
 for i in $(seq 1 "$CAP_N"); do
   c="dtfcap${i}x${DTF_SLOT}x$$"
   ( fetch "$BASE/cargo/${R_CARGO}/index/${c:0:2}/${c:2:2}/${c}" "$W/cap-${i}.o" > "$W/cap-${i}.code" ) &

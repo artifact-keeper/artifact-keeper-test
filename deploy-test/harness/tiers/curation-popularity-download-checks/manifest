@@ -30,7 +30,7 @@
 #         (#5840): its UTS #39 skeleton is `dtf-held`, so the served package
 #         `dtf-held` is an ALL-ASCII skeleton collision, and `dtf-hеld`
 #         (Cyrillic е, U+0435) a Unicode lookalike of the same name
-#   PYSTRICT PyPI Remote, like PYON plus "block_ascii_confusables": true
+#   PYSTRICT PyPI Remote, like PYON plus "ascii_lookalikes": "block"
 #
 # Cases:
 #   FIX #5274   ON refuses the homoglyph tarball: 403 curation_blocked, and
@@ -48,7 +48,10 @@
 #               case was "FIX #5274: PYON refuses c1ick": an all-ASCII
 #               skeleton collision (1 -> l) is a one-character lexical
 #               difference, so it now flags like edit distance.
-#   CONTROL     PYSTRICT (block_ascii_confusables) refuses `c1ick` with 403.
+#   CONTROL     PYSTRICT (ascii_lookalikes "block") refuses `c1ick` with 403.
+#               (Rules created by this tier are new rules: the 1.13 default
+#               "flag" applies. Existing rules are stamped "block" on upgrade,
+#               which curation-ascii-lookalikes-upgrade proves.)
 #   CONTROL     PYOFF does not refuse `c1ick`.
 #   FIX #5840   ASC serves `dtf-held` (200), an all-ASCII skeleton match.
 #   CONTROL     ASC refuses the Cyrillic `dtf-hеld` with 403 curation_blocked:
