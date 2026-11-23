@@ -106,6 +106,8 @@ EV_MD="check: HTTP $(code_of minio_down) in $(secs_of minio_down)s: $(services_i
 echo "  ${EV_MD}" >&2
 curl -s -m 15 -H "$(auth_header)" "${BASE_URL}${MON}/health-log?service=storage&limit=20" -o "${WORK}/log_storage.json" 2>/dev/null
 curl -s -m 15 -H "$(auth_header)" "${BASE_URL}${MON}/alerts" -o "${WORK}/alerts.json" 2>/dev/null
+curl -s -m 15 -H "$(auth_header)" "${BASE_URL}/api/v1/admin/metrics" -o "${WORK}/metrics_down.txt" 2>/dev/null
+UP_STORAGE="$(grep -E '^ak_health_monitor_up\{service="storage"\}' "${WORK}/metrics_down.txt" | awk '{print $NF}' | head -1)"
 LOG_UNHEALTHY="$(jq '[.[] | select(.status == "unhealthy")] | length' "${WORK}/log_storage.json" 2>/dev/null || echo 0)"
 ALERT_STORAGE="$(jq -r '[.[] | select(.service_name == "storage")] | first | "\(.current_status) failures=\(.consecutive_failures)"' "${WORK}/alerts.json" 2>/dev/null)"
 
@@ -115,6 +117,13 @@ if [ "$(status_in minio_down storage)" = "unhealthy" ] && [ "${LOG_UNHEALTHY:-0}
   pass
 else
   fail "a MinIO outage was not recorded" "${EV_MD}; health-log unhealthy rows=${LOG_UNHEALTHY}; alert=${ALERT_STORAGE}"
+fi
+
+begin_test "FIX #5651: with MinIO stopped /api/v1/admin/metrics has ak_health_monitor_up{service=\"storage\"} 0"
+if [ "$UP_STORAGE" = "0" ]; then
+  pass
+else
+  fail "no storage up-gauge at 0" "ak_health_monitor_up{service=\"storage\"}=${UP_STORAGE:-absent}"
 fi
 
 # The probes are bounded and concurrent: one check with the object store down
@@ -179,11 +188,17 @@ for _ in 1 2 3 4 5; do
 done
 curl -s -m 15 -H "$(auth_header)" "${BASE_URL}${MON}/health-log?service=database&limit=10" -o "${WORK}/log_db.json" 2>/dev/null
 RESTART_ROWS="$(jq '[.[] | select(.status == "unavailable" and ((.message // "") | startswith("Postgres restarted at")))] | length' "${WORK}/log_db.json" 2>/dev/null || echo 0)"
-EV_PG="check after restart: HTTP $(code_of after_restart): $(services_in after_restart); database log: $(jq -c '[.[] | {status, message}] | .[0:3]' "${WORK}/log_db.json" 2>/dev/null | head -c 400)"
+# A second check (the scheduler may also run one) must not record it again.
+run_check after_restart2
+curl -s -m 15 -H "$(auth_header)" "${BASE_URL}${MON}/health-log?service=database&limit=10" -o "${WORK}/log_db.json" 2>/dev/null
+RESTART_ROWS="$(jq '[.[] | select(.status == "unavailable" and ((.message // "") | startswith("Postgres restarted at")))] | length' "${WORK}/log_db.json" 2>/dev/null || echo 0)"
+RESTARTS_METRIC="$(curl -s -m 15 -H "$(auth_header)" "${BASE_URL}/api/v1/admin/metrics" 2>/dev/null | awk '/^ak_health_monitor_postgres_restarts_total/ {print int($NF)}' | head -1)"
+EV_PG="restart rows=${RESTART_ROWS}, restarts metric=${RESTARTS_METRIC:-absent}; check after restart: HTTP $(code_of after_restart): $(services_in after_restart); database log: $(jq -c '[.[] | {status, message}] | .[0:3]' "${WORK}/log_db.json" 2>/dev/null | head -c 400)"
 echo "  ${EV_PG}" >&2
 
-begin_test "FIX #5651: a Postgres restart between two checks is recorded as a database 'unavailable' row"
-if [ "${RESTART_ROWS:-0}" -ge 1 ] && [ "$(status_in after_restart database)" = "healthy" ]; then
+begin_test "FIX #5651: a Postgres restart between two checks is recorded once as a database 'unavailable' row and counted in ak_health_monitor_postgres_restarts_total"
+if [ "${RESTART_ROWS:-0}" = "1" ] && [ "$(status_in after_restart database)" = "healthy" ] \
+   && [ "${RESTARTS_METRIC:-0}" -ge 1 ]; then
   pass
 else
   fail "the Postgres restart left no trace in the health log (pre-fix behaviour)" "$EV_PG"

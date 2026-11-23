@@ -4159,7 +4159,7 @@ jobs:
             tiers: wasm-plugin-execution
           # 1.13.0 (artifact-keeper#5651, #5656, #5601): the health monitor
           # records a MinIO outage, a scanner-adapter outage and a Postgres
-          # restart, and /readyz answers within 2.5 s with Postgres stopped
+          # restart, and /readyz answers within 2.5 s with Postgres paused
           # (health-monitor-dependencies; MinIO and a python stand-in
           # adapter, no Trivy DB; about a minute); a fresh install logs no
           # Postgres notices, uploads log no quality-check INFO lines, generic

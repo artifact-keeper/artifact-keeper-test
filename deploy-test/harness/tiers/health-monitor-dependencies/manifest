@@ -23,13 +23,17 @@
 #   (CONTROL)    with everything up, a check reports database healthy.
 #   (FIX)        storage and scanner-adapter are checked and healthy.
 #   (FIX)        MinIO stopped: storage is recorded unhealthy in the check, the
-#                health log and the alert state; MinIO started: healthy again,
-#                previous_status unhealthy. RED on main (no storage entry).
+#                health log and the alert state, and
+#                ak_health_monitor_up{service="storage"} is 0; MinIO started:
+#                healthy again, the log has the unhealthy -> healthy row. RED
+#                on main (no storage entry, no gauge).
 #   (FIX)        mock adapter stopped: scanner-adapter recorded unavailable;
 #                started: healthy. RED on main.
-#   (FIX)        Postgres restarted between two checks: the health log has a
-#                database `unavailable` row "Postgres restarted at ...". RED
-#                on main (only healthy rows).
+#   (FIX)        Postgres restarted between two checks: the health log has
+#                exactly one database `unavailable` row "Postgres restarted at
+#                ..." after two checks, and
+#                ak_health_monitor_postgres_restarts_total >= 1. RED on main
+#                (only healthy rows).
 #   (FIX)        Postgres paused (hung, not refusing): /readyz answers 503
 #                within 2.5 s. RED on main (its queries wait on the hung
 #                connection).

@@ -191,8 +191,10 @@ st="$(policy "${P}-pol-unk" "$ID_CU" "{\"conda\":{\"allowed_channels\":[\"${C_U}
 # allowlist (which names this very repository) must fail closed.
 psql_q "UPDATE artifact_metadata SET metadata = jsonb_set(metadata, '{identity,purl}', to_jsonb(regexp_replace(metadata->'identity'->>'purl', '&?channel=[^&]*', '', 'g'))) WHERE artifact_id='${A_CU}' AND metadata ? 'identity'" >/dev/null
 
-# Quality gates. A generic file's computed health score is 0 (grade F), so a
-# min_health_score of 50 fails it; wait until the scores exist.
+# Quality gates. An unscanned generic file has no component score: on 1.13
+# it is unrated (NULL score, artifact-keeper#5656), before that it scored 0
+# (grade F). Either way a min_health_score of 50 fails it; wait until the
+# health rows exist.
 st="$(gate "${P}-gate-warn" "$ID_W" warn)"; [ "$st" = "200" ] || [ "$st" = "201" ] || fail_g "warn gate -> HTTP ${st}"
 st="$(gate "${P}-gate-block" "$ID_B" block)"; [ "$st" = "200" ] || [ "$st" = "201" ] || fail_g "block gate -> HTTP ${st}"
 hs_ready(){ [ "$(psql_q "SELECT count(*) FROM artifact_health_scores WHERE artifact_id IN ('${A_W1}','${A_W2}','${A_B1}','${A_B2}')" | tr -d '[:space:]')" = "4" ]; }

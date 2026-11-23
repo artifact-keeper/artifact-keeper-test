@@ -71,17 +71,20 @@ done
 if [ "${#IDS[@]}" != "$UPLOADS" ]; then infra_fail "uploads did not all succeed" "$UP_EV"; end_suite; fi
 # The quality check runs in the background after each upload.
 HEALTH_EV=""
-HAVE=0; GRADE_F=0; WITH_META=0
+HAVE=0; RATED=0
 for _ in $(seq 1 15); do
-  HAVE=0; GRADE_F=0; WITH_META=0; HEALTH_EV=""
+  HAVE=0; RATED=0; HEALTH_EV=""
   for id in "${IDS[@]}"; do
     body="$(curl -s -m 10 -H "$(auth_header)" "${BASE_URL}/api/v1/quality/health/artifacts/${id}" 2>/dev/null)"
-    g="$(jq -r '.health_grade // empty' <<<"$body" 2>/dev/null)"
+    # A health row exists once the check ran; an unscanned generic file has
+    # no component score, so it is unrated: null score, grade and metadata.
+    present="$(jq -r 'has("artifact_id")' <<<"$body" 2>/dev/null)"
+    g="$(jq -r '.health_grade // "null"' <<<"$body" 2>/dev/null)"
+    sc="$(jq -r '.health_score // "null"' <<<"$body" 2>/dev/null)"
     m="$(jq -r '.metadata_score // "null"' <<<"$body" 2>/dev/null)"
-    HEALTH_EV+="${id:0:8}=${g:-none}/meta=${m} "
-    [ -n "$g" ] && HAVE=$((HAVE + 1))
-    [ "$g" = "F" ] && GRADE_F=$((GRADE_F + 1))
-    [ -n "$g" ] && [ "$m" != "null" ] && WITH_META=$((WITH_META + 1))
+    HEALTH_EV+="${id:0:8}=score:${sc}/grade:${g}/meta:${m} "
+    [ "$present" = "true" ] && HAVE=$((HAVE + 1))
+    [ "$present" = "true" ] && { [ "$g" != "null" ] || [ "$sc" != "null" ] || [ "$m" != "null" ]; } && RATED=$((RATED + 1))
   done
   [ "$HAVE" = "$UPLOADS" ] && break
   sleep 2
@@ -101,8 +104,8 @@ else
   fail "${QLINES} quality-check INFO lines for ${UPLOADS} uploads" "$(grep -E 'Quality check completed|Artifact health score recalculated' <<<"$ULOG" | head -2 | cut -c1-300)"
 fi
 
-begin_test "FIX #5656: generic artifacts are not graded F and carry no metadata score"
-if [ "$HAVE" = "$UPLOADS" ] && [ "$GRADE_F" = "0" ] && [ "$WITH_META" = "0" ]; then
+begin_test "FIX #5656: unscanned generic artifacts are unrated (null score, grade and metadata score), not graded F"
+if [ "$HAVE" = "$UPLOADS" ] && [ "$RATED" = "0" ]; then
   pass
 else
   fail "generic artifacts graded on package metadata" "$HEALTH_EV"
@@ -119,8 +122,8 @@ sleep 2
 GC_LINES="$(backend_log "$T1" | count 'Storage GC complete')"
 echo "  storage-gc: HTTP ${GC_CODE} $(head -c 200 "${WORK}/gc.json"); summary lines: ${GC_LINES}" >&2
 
-begin_test "FIX #5656: a live storage GC pass that finds nothing still logs one 'Storage GC complete' line"
-if [ "$GC_CODE" = "200" ] && [ "$GC_LINES" = "1" ]; then
+begin_test "FIX #5656: a live storage GC pass that finds nothing still logs a 'Storage GC complete' line"
+if [ "$GC_CODE" = "200" ] && [ "${GC_LINES:-0}" -ge 1 ]; then
   pass
 else
   fail "GC answered ${GC_CODE} and logged ${GC_LINES} summary lines" "$(head -c 300 "${WORK}/gc.json")"

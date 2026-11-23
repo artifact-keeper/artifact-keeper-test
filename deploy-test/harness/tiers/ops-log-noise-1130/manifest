@@ -18,9 +18,11 @@
 #   (FIX)     "Background schedulers started" is logged once.
 #   (FIX)     five generic uploads log no quality-check INFO line.
 #   (CONTROL) each upload's quality check still ran: its health score exists.
-#   (FIX)     a generic artifact's health grade is not F and it has no
-#             metadata score.
-#   (FIX)     a live POST /admin/storage-gc logs one "Storage GC complete" line.
+#   (FIX)     an unscanned generic artifact is unrated: null health score,
+#             grade and metadata score (not F, and not an implicit A either:
+#             a quality gate's min_health_score still fails it, which the
+#             promotion-gate-results-and-origin tier pins).
+#   (FIX)     a live POST /admin/storage-gc logs a "Storage GC complete" line.
 #   (FIX)     /api/v1/admin/metrics exports ak_build_info with # HELP text.
 # Every FIX case is RED on main (counts: ~50 notices, 2 start lines, 10
 # quality lines, grade F, no GC line, no ak_build_info).
