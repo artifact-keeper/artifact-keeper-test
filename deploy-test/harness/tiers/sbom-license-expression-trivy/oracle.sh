@@ -44,10 +44,24 @@ api(){ # <METHOD> <path> [json] -> HTTP code; body in $W/api.body
 abody(){ cat "$W/api.body" 2>/dev/null || true; }
 # lic <component> -> that component's licenses[] in the SBOM as compact JSON
 lic(){ jq -c --arg n "$1" '[.components[]? | select(.name == $n) | .licenses][0]' "$W/sbom.cdx.json" 2>/dev/null || echo null; }
-# stored <scan_type> <component> -> the license that scan stored for it
+# stored <scan_type> <component> [artifact] -> the license that scan stored for it
 stored(){
   psqlq "SELECT sp.license FROM scan_packages sp JOIN scan_results sr ON sr.id = sp.scan_result_id
-         WHERE sr.artifact_id='${A_GEN}' AND sr.scan_type='$1' AND sp.name='$2' LIMIT 1"
+         WHERE sr.artifact_id='${3:-$A_GEN}' AND sr.scan_type='$1' AND sp.name='$2' LIMIT 1"
+}
+# clic <component> -> that component's licenses[] in the composer.lock SBOM
+clic(){ jq -c --arg n "$1" '[.components[]? | select(.name == $n or (.group // "") + "/" + .name == $n) | .licenses][0]' "$W/sbom-composer.cdx.json" 2>/dev/null || echo null; }
+# scan_both <artifact> -> waits for a completed grype and filesystem scan; echoes "<grype> <filesystem> <secs>"
+scan_both(){
+  local t=0 g=0 f=0
+  api POST /api/v1/security/scan "{\"artifact_id\":\"$1\"}" >/dev/null
+  while [ "$t" -lt "$SCAN_WAIT" ]; do
+    g="$(psqlq "SELECT count(*) FROM scan_results WHERE artifact_id='$1' AND scan_type='grype' AND status='completed'")"
+    f="$(psqlq "SELECT count(*) FROM scan_results WHERE artifact_id='$1' AND scan_type='filesystem' AND status='completed'")"
+    [ "${g:-0}" -ge 1 ] 2>/dev/null && [ "${f:-0}" -ge 1 ] 2>/dev/null && break
+    sleep 3; t=$((t+3))
+  done
+  echo "${g:-0} ${f:-0} ${t}"
 }
 
 # =============================================================================
@@ -104,7 +118,12 @@ note "scan rows: $(psqlq "SELECT string_agg(scan_type||'='||status, ',') FROM sc
 [ "${g:-0}" -ge 1 ] 2>/dev/null || fail_g "no completed grype scan"
 [ "${f:-0}" -ge 1 ] 2>/dev/null || fail_g "no completed Trivy filesystem scan"
 [ "$sg" = "MIT AND PSF-2.0" ] || fail_g "grype stored dtf-compound as '${sg}', expected 'MIT AND PSF-2.0'"
-[ "$sf" = "LicenseRef-MIT-AND-PSF-2.0" ] || fail_g "the Trivy filesystem scan stored dtf-compound as '${sf}', expected 'LicenseRef-MIT-AND-PSF-2.0' (without it the FIX case discriminates nothing)"
+# Up to #6379 Trivy wraps the compound as one LicenseRef, which is what the
+# #5629 FIX case discriminates on; since #6379 it keeps the conjunction as
+# expression with the unlisted PSF-2.0 wrapped alone, and the #5629 swap
+# keeps Grype's text for the SBOM either way.
+[ "$sf" = "LicenseRef-MIT-AND-PSF-2.0" ] || [ "$sf" = "MIT AND LicenseRef-PSF-2.0" ] \
+  || fail_g "the Trivy filesystem scan stored dtf-compound as '${sf}', expected 'LicenseRef-MIT-AND-PSF-2.0' (before #6379) or 'MIT AND LicenseRef-PSF-2.0' (since)"
 finish_case "both scanners' inventories"
 
 begin_test "setup: generate the package-lock's CycloneDX SBOM"
@@ -134,5 +153,52 @@ note "dtf-compound: ${c}; dtf-free: ${f}"
 [ "$c" = '[{"expression":"MIT AND PSF-2.0"}]' ] || fail_g "dtf-compound licenses ${c}, expected [{\"expression\":\"MIT AND PSF-2.0\"}]"
 [ "$f" = '[{"license":{"name":"Public Domain"}}]' ] || fail_g "dtf-free licenses ${f}, expected [{\"license\":{\"name\":\"Public Domain\"}}]"
 finish_case "the Trivy LicenseRef row replaced the license text"
+
+# =============================================================================
+# #6379: a Trivy license list that joins a compound expression with another
+# license. composer.lock lists licenses as an array, which Trivy reports
+# element by element: ["MIT AND PSF-2.0", "ISC"].
+# =============================================================================
+begin_test "setup: a composer.lock whose packages list a compound license beside another one"
+reset_case
+jq -nc '{packages:[
+  {name:"dtf/joined",version:"1.0.0",type:"library",license:["MIT AND PSF-2.0","ISC"]},
+  {name:"dtf/choice",version:"1.0.0",type:"library",license:["MIT OR Apache-2.0","ISC"]}],
+  "packages-dev":[]}' > "$W/composer.lock"
+A_COMP="$(curl -s --max-time 30 -X PUT -H "Authorization: Bearer $TOK" --data-binary "@$W/composer.lock" \
+  "$BASE/api/v1/repositories/${GEN}/artifacts/php/composer.lock" | jqr '.id // empty')"
+[ -n "$A_COMP" ] || fail_g "composer.lock upload failed"
+read -r cg cf ct <<<"$(scan_both "${A_COMP:-x}")"
+TJ="$(stored filesystem dtf/joined "$A_COMP")"; GJ="$(stored grype dtf/joined "$A_COMP")"
+TC="$(stored filesystem dtf/choice "$A_COMP")"
+note "completed scans: grype ${cg}, filesystem ${cf} (after ${ct}s); dtf/joined stored as filesystem '${TJ}', grype '${GJ}'; dtf/choice filesystem '${TC}'"
+[ "${cf:-0}" -ge 1 ] 2>/dev/null || fail_g "no completed Trivy filesystem scan of composer.lock"
+[ -n "$TJ" ] || fail_g "the Trivy filesystem scan did not catalog dtf/joined with a license"
+code="$(api POST /api/v1/sbom "{\"artifact_id\":\"${A_COMP}\",\"format\":\"cyclonedx\",\"force_regenerate\":true}")"
+SBOM_C="$(abody | jqr '.id // empty')"
+code2="$(api GET "/api/v1/sbom/${SBOM_C}")"
+abody | jq '.content // .' > "$W/sbom-composer.cdx.json" 2>/dev/null || true
+[ "$code" = "200" ] && [ "$code2" = "200" ] || fail_g "composer.lock SBOM generate/GET failed: $(abody | head -c 300)"
+finish_case "composer.lock not catalogued by the Trivy filesystem scan"
+
+begin_test "CONTROL: an element offering a choice (OR) is still wrapped as a LicenseRef (#1152)"
+reset_case
+note "dtf/choice: filesystem '${TC}'"
+[ "$TC" = "LicenseRef-MIT-OR-Apache-2.0 AND ISC" ] || fail_g "dtf/choice stored as '${TC}', expected 'LicenseRef-MIT-OR-Apache-2.0 AND ISC'"
+finish_case "OR element handling"
+
+begin_test "FIX #6379: the joined compound license is stored and exported as an expression of real licenses"
+reset_case
+j="$(clic dtf/joined)"
+note "dtf/joined: stored '${TJ}', SBOM ${j}"
+[ "$TJ" = "MIT AND LicenseRef-PSF-2.0 AND ISC" ] || fail_g "the Trivy filesystem scan stored dtf/joined as '${TJ}', expected 'MIT AND LicenseRef-PSF-2.0 AND ISC' (the conjunction kept; PSF-2.0, an id outside the recognised list, wrapped alone)"
+# Which scanner's row the SBOM keeps is the merge's choice (Grype stores
+# this composer.lock entry as `ISC` alone, a separate gap); the gate here is
+# that the compound is not one opaque LicenseRef in the SBOM.
+case "$j" in
+  *LicenseRef-MIT-AND*) fail_g "the SBOM licenses of dtf/joined carry the compound as one opaque LicenseRef: ${j}" ;;
+  null|'') fail_g "dtf/joined has no licenses in the SBOM" ;;
+esac
+finish_case "the Trivy license list lost the compound expression"
 
 end_suite

@@ -4173,6 +4173,19 @@ jobs:
           # 1.11.x. Required.
           - group: ops-1.13.0
             tiers: health-monitor-dependencies ops-log-noise-1130 multi-replica-cold-boot
+          # 1.13.0 robustness fixes. A Remote MCP sync pass whose process is
+          # killed (docker kill of the backend mid-pass, against the
+          # webhooks.mock-blackhole :81 upstream) is reported by GET
+          # .../mcp/sync as ended, not as running:false beside the previous
+          # state (artifact-keeper#6390, mcp-sync-interrupted-pass, about a
+          # minute). A push written as its peer goes down is delivered once
+          # the peer is back instead of using up its 3 retries during the
+          # outage (artifact-keeper#6134, push-sync-partition-retry;
+          # peer.second-instance + sync.partition-fast, about 2.5 minutes).
+          # Red on main before the fixes, NOT ON THIS LINE on a 1.12.x
+          # candidate. Local containers only, so required.
+          - group: fixes-1.13.0-robustness
+            tiers: mcp-sync-interrupted-pass push-sync-partition-retry
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}
