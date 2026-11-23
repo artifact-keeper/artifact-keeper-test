@@ -655,7 +655,7 @@ case "$CMD" in
              scanner-adapter-max-image-size scanner-adapter-fair-queue \
              proxy-scan-db-update-grace proxy-redirect-hold-replicas \
              scan-on-proxy-repo-concurrency \
-             mcp-sync-interrupted-pass push-sync-partition-retry; do
+             mcp-sync-interrupted-pass push-sync-partition-retry db-read-retry-failover shutdown-drain; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

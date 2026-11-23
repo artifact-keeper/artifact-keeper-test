@@ -1,0 +1,76 @@
+# DTF tier manifest: db-read-retry-failover  (artifact-keeper#5941, 1.13.0)
+# Profile-set: filesystem / single. The behaviour is in the HTTP layer in
+# front of every handler, so the storage dimension is irrelevant.
+#
+# THE PROBLEM (#5941)
+# A PostgreSQL switchover or failover (CloudNativePG, Patroni, a managed
+# database's maintenance) terminates the backend's pooled connections:
+# `terminating connection due to administrator command` (57P01), a reset
+# socket, `the database system is shutting down`. Every request whose
+# statement was on one of them answered a 5xx, idempotent reads included, so
+# a package client failed its build where the same request a moment later
+# would have worked.
+#
+# THE FIX (1.13.0)
+# A router-wide layer replays a bodiless GET or HEAD exactly once, after a
+# jittered 250-500 ms pause, when it answered 5xx after a database error
+# classified as a lost connection (SQLSTATE class 08, 57P01/57P02/57P03,
+# 25006, a socket error). Writes are never replayed. Each replay is counted in
+# ak_db_read_retries_total{outcome="recovered"|"failed"}.
+# DATABASE_READ_RETRY=false turns it off; the default is on.
+#
+# THE PRIMITIVE: A DETERMINISTIC MID-QUERY TERMINATION
+# The oracle opens its own psql session in this slot's Postgres container that
+# takes ACCESS EXCLUSIVE on `repositories` and sleeps. It then issues three
+# reads (the admin repository list by GET and by HEAD, and the anonymous
+# public repository list) and one write (an admin repository create). Each
+# takes a pooled connection and blocks on the lock, so each is provably in
+# the middle of a statement. The oracle then pg_terminate_backend()s exactly
+# those sessions, the same 57P01 a switchover delivers, waits for them to be
+# gone, and ends the lock session. A session counts as the tier's own only if
+# it is blocked by the oracle's lock session, its statement started after the
+# requests were sent and names `repositories`, and it was not already waiting
+# before they were sent; unless exactly four match, the tier stops as INFRA
+# and terminates nothing, so a background worker's session is never touched. Only this slot's own
+# Postgres (DB_CONTAINER) is touched; an EXIT trap ends the lock session if
+# the oracle dies mid-window.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) before the window: /readyz 200, the admin and anonymous
+#             repository lists 200. After the window: the lists answer 200
+#             again and /readyz is ready (the pool replaced the terminated
+#             connections).
+#   (FIX #5941) the backend log says "database read retry on: write
+#             detection verified": its startup self-test saw a write
+#             statement through the real subscriber, without which nothing
+#             is ever replayed. RED on main: no such line.
+#   (FIX #5941) each of the three reads whose connection was terminated
+#             answers 200 with a well-formed body (the admin GET list names
+#             the fixture repository; the HEAD has no body). RED on main:
+#             503 DATABASE_UNAVAILABLE.
+#   (FIX #5941) ak_db_read_retries_total{outcome="recovered"} on
+#             /api/v1/admin/metrics is at least 3 and no replay is counted
+#             "failed". RED on main: no such series.
+#   (CONTROL, the write rule) the terminated write answers a 5xx and the
+#             repository it tried to create does not exist afterwards: it was
+#             not replayed. True on both images.
+#
+# WINDOW 2: A GET THAT WRITES. A user's first HTTP Basic login records
+# last_login_at, an UPDATE of its users row, so a GET of the repository list
+# with Basic credentials writes. The oracle row-locks a fresh user
+# (SELECT ... FOR UPDATE in its own session): the GET's reads pass, its login
+# UPDATE blocks, and the oracle terminates exactly that session.
+#   (CONTROL) a Basic-auth GET of the list by another fresh user answers 200
+#             and records its login: this GET does write.
+#   (CONTROL, the write rule for GETs) the GET whose login UPDATE was
+#             terminated answers a 5xx and last_login_at is still NULL: it
+#             was not replayed (a replay logs in again and answers 200). True
+#             on both images.
+#   (FIX #5941) ak_db_read_retries_total{outcome="skipped_wrote"} is at
+#             least 1. RED on main: no such series.
+#
+# RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="5941"

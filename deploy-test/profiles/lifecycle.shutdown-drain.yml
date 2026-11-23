@@ -1,0 +1,19 @@
+# =============================================================================
+# profiles/lifecycle.shutdown-drain.yml: pass the shutdown drain length
+# through to the backend (artifact-keeper#5921, 1.13.0)
+# =============================================================================
+# SHUTDOWN_DRAIN_SECS is how long a backend keeps serving after SIGTERM, with
+# /readyz answering 503, before it closes its listeners. A tier sets it by
+# exporting it from its manifest. Unset, it is passed as an empty string,
+# which the backend treats as unset (its default, 0: close at once), so
+# stacking this overlay without exporting anything leaves the default in force. Images before 1.13.0
+# ignore it and close at once.
+#
+# stop_grace_period covers drain + the in-flight request the tier holds, so a
+# `docker stop` from teardown never SIGKILLs a backend mid-drain.
+# =============================================================================
+services:
+  backend:
+    stop_grace_period: 40s
+    environment:
+      SHUTDOWN_DRAIN_SECS: ${SHUTDOWN_DRAIN_SECS:-}

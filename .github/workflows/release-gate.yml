@@ -3517,8 +3517,17 @@ jobs:
           # 403 DISK_THRESHOLD_EXCEEDED before the body is read while
           # downloads keep working, and writes resume once disk is freed.
           # storage.filesystem + storage.disk-thresholds, about 1 min.
+          # db-read-retry-failover (artifact-keeper#5941): reads whose
+          # database connection is terminated mid-statement (a switchover's
+          # 57P01) are replayed once and answer 200; a write, and a GET that
+          # writes, is not replayed. HTTP + its own Postgres, under 1 min.
+          # shutdown-drain (artifact-keeper#5921): after SIGTERM /readyz fails
+          # at once, the backend keeps serving for SHUTDOWN_DRAIN_SECS,
+          # finishes a request still in flight after the listeners close,
+          # exits 0 and releases its scheduler leases; it stops and starts its own
+          # backend, about 2 min (most of it waiting for the first lease).
           - group: resilience-1.13.0
-            tiers: db-pool-load-shed upload-commit-records db-pool-fairness rolling-deploy-migrations disk-usage-thresholds
+            tiers: db-pool-load-shed upload-commit-records db-pool-fairness rolling-deploy-migrations disk-usage-thresholds db-read-retry-failover shutdown-drain
           # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
           # #499-#502): green on main, red on 1.11.3. api is pure HTTP + DB
           # plus the mock OIDC IdP; features stands up the conda, BSR, static
