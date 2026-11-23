@@ -1,0 +1,29 @@
+# DTF tier manifest: multi-replica-cold-boot  (artifact-keeper#5601 / #5993)
+# Profile-set: filesystem + topology.three-replica-cold (three replicas on one
+# database, each with restart: on-failure). The oracle stops all three,
+# recreates an empty database and starts the three at the same moment, so
+# the stack's own `up --wait` is never part of the race.
+#
+# THE BUG (#5601, #5993; fixed by #5999 in 1.12.0)
+# On a fresh database with several replicas starting together, the replica
+# holding the migration lock runs a non-transactional CREATE INDEX
+# CONCURRENTLY. The index build waits for every transaction with an older
+# snapshot, including the other replicas, which blocked in
+# pg_advisory_lock() inside a statement. Postgres broke the cycle by aborting
+# one side with 40P01 deadlock detected; the losing pod exited and restarted
+# 1-2 times before the install converged. #5999 makes waiting replicas poll
+# pg_try_advisory_lock() between statements (no snapshot held while they
+# wait) and repairs any INVALID index a lost build left behind.
+#
+# Oracle (discriminating, RELEASE_GATE=1). A regression pin: green on 1.12.0
+# and later (every CONCURRENTLY migration up to the image's newest, 417 on
+# 1.13.0), red on 1.11.x (5 restarts in 3 replicas on 1.11.11, measured).
+#   (FIX)        none of the three replicas restarted (RestartCount 0) and no
+#                replica log has "deadlock detected".
+#   (FIX)        the database has no INVALID index.
+#   (CONTROL)    all three replicas answer /readyz 200, each logged
+#                "Database migrations complete", and every migration in the
+#                ledger succeeded.
+COVERS="5601"
+PROFILES="storage.filesystem topology.three-replica-cold"
+ORACLE="oracle.sh"

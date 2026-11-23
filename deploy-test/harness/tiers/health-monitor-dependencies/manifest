@@ -1,0 +1,46 @@
+# DTF tier manifest: health-monitor-dependencies  (artifact-keeper#5651, 1.13.0)
+# Profile-set: storage.s3 (MinIO) + scanners.mock-adapter (a python stand-in
+# for the scanner adapter that answers GET /probe/healthy; TRIVY_ADAPTER_URL
+# points at it).
+#
+# THE BUG (#5651)
+# The health monitor (health log + alert state under
+# /api/v1/admin/monitoring) checked the database, the Trivy server,
+# OpenSearch, OpenSCAP and Dependency-Track only. A MinIO outage, an evicted
+# scanner adapter and a Postgres restart between two 60 s checks all left
+# only healthy rows. /readyz with the database down answered after 7-10 s:
+# two sequential pool acquires before the dependency probes.
+#
+# THE FIX
+# The monitor checks storage (through the /health storage check) and the
+# scanner adapter (/probe/healthy), probes concurrently, and records a
+# Postgres restart (pg_postmaster_start_time() after the last database check)
+# as an `unavailable` row. /readyz runs one database query bounded to 1 s,
+# alongside the dependency probes.
+#
+# Oracle (discriminating, RELEASE_GATE=1). POST /admin/monitoring/check runs a
+# check at once, so nothing waits for the 60 s scheduler.
+#   (CONTROL)    with everything up, a check reports database healthy.
+#   (FIX)        storage and scanner-adapter are checked and healthy.
+#   (FIX)        MinIO stopped: storage is recorded unhealthy in the check, the
+#                health log and the alert state, and
+#                ak_health_monitor_up{service="storage"} is 0; MinIO started:
+#                healthy again, the log has the unhealthy -> healthy row. RED
+#                on main (no storage entry, no gauge).
+#   (FIX)        mock adapter stopped: scanner-adapter recorded unavailable;
+#                started: healthy. RED on main.
+#   (FIX)        Postgres restarted between two checks: the health log has
+#                exactly one database `unavailable` row "Postgres restarted at
+#                ..." after two checks, and
+#                ak_health_monitor_postgres_restarts_total >= 1. RED on main
+#                (only healthy rows).
+#   (FIX)        Postgres paused (hung, not refusing): /readyz answers 503
+#                within 2.5 s. RED on main (its queries wait on the hung
+#                connection).
+#   (CONTROL)    with MinIO and the adapter both down, one check returns
+#                within 8 s (the probes are bounded and concurrent); /readyz
+#                is 200 again after Postgres is resumed.
+COVERS="5651"
+PROFILES="storage.s3 scanners.mock-adapter"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -1,0 +1,69 @@
+# =============================================================================
+# profiles/topology.three-replica-cold.yml - three backend replicas for a
+#                                            cold first-boot race
+# =============================================================================
+# Adds `backend-b` and `backend-c`: the same image and configuration as
+# `backend`, on the same Postgres and /data volume, like three pods of one
+# deployment. The stack itself comes up the ordinary way (b and c wait for
+# `backend` to be healthy), so `up --wait` is reliable on every image. The
+# race artifact-keeper#5601 / #5993 is about is staged by the oracle: it
+# stops all three, recreates an empty database and starts the three
+# together.
+#
+# Every replica has `restart: on-failure`, so a replica that loses that race
+# and exits is restarted (as a Kubernetes pod would be) and the oracle can
+# count it in `RestartCount`.
+#
+# backend-b and backend-c are on the dtf network with no host port; an oracle
+# reaches them with `docker exec ak-dtf<slot>-backend-b curl
+# http://127.0.0.1:8080/...` (the image ships curl for its healthcheck).
+#
+# Required vars (run.sh exports them): DTF_SLOT, BACKEND_IMAGE.
+# =============================================================================
+x-cold-replica: &cold-replica
+  image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
+  restart: on-failure
+  depends_on:
+    postgres:
+      condition: service_healthy
+    backend:
+      condition: service_healthy
+  environment:
+    DATABASE_URL: postgresql://registry:registry@postgres:5432/artifact_registry
+    STORAGE_PATH: /data/storage
+    BACKUP_PATH: /data/backups
+    PLUGINS_DIR: /data/plugins
+    JWT_SECRET: ${JWT_SECRET:-dtf-nonprod-cobalt-harbor-lantern-7f3a9c2e5b81}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:-TestRunner!2026secure}
+    RUST_LOG: ${RUST_LOG:-info}
+    HOST: 0.0.0.0
+    PORT: "8080"
+    STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
+    STORAGE_KEY_SCHEME: ${STORAGE_KEY_SCHEME:-}
+    RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+    UPSTREAM_ALLOW_PRIVATE_IPS: ${UPSTREAM_ALLOW_PRIVATE_IPS:-false}
+  volumes:
+    - dtf_data:/data
+  logging:
+    driver: json-file
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+    interval: 5s
+    timeout: 10s
+    start_period: 40s
+    retries: 24
+  networks: [dtf]
+
+services:
+  backend:
+    restart: on-failure
+    logging:
+      driver: json-file
+
+  backend-b:
+    <<: *cold-replica
+    container_name: ak-dtf${DTF_SLOT}-backend-b
+
+  backend-c:
+    <<: *cold-replica
+    container_name: ak-dtf${DTF_SLOT}-backend-c
