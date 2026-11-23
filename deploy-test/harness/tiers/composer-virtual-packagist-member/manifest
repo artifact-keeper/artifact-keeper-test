@@ -24,7 +24,10 @@
 # Remote. Off (the default): the upstream is never asked. Five identical
 # searches cost one upstream read. A Virtual over a Local and an opted-in
 # Remote whose upstream answers 503 returns the Local's package with 200 and
-# names the Remote in X-AK-Partial-Members. Red on main before the fix
+# names the Remote in X-AK-Partial-Members. The setting is refused (400) on
+# an npm Remote and a Composer Local. A Virtual over an opted-in Remote whose
+# every hit curation blocks and the down Remote returns nothing, so it
+# answers 503 (#5495), not an empty 200. Red on main before the fix
 # (artifact-keeper 1.13.0).
 PROFILES="storage.filesystem upstreams.mock-scan-formats client.composer"
 ORACLE="oracle.sh"

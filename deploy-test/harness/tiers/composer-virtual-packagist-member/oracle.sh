@@ -39,14 +39,19 @@ R_ON="cvpm-ron-${SUF}"    # Remote opted into upstream search (#6332)
 R_OFF="cvpm-roff-${SUF}"  # Remote left at the default (off)
 R_DOWN="cvpm-rdn-${SUF}"  # opted in, upstream answers 503 to everything
 V4="cvpm-v4-${SUF}"       # Virtual over L3 and R_DOWN
+R_CUR="cvpm-rcur-${SUF}"  # opted in, curation blocks every upstream hit
+V5="cvpm-v5-${SUF}"       # Virtual over R_CUR and R_DOWN, no hosted member
+N_NPM="cvpm-npm-${SUF}"   # an npm Remote: the setting does not apply
 CLIENT="ak-dtf${DTF_SLOT}-client-composer"
 INT="http://backend:8080/composer"
 
 cleanup() {
   local k
-  for k in "$V4" "$V3" "$L3" "$V" "$V2" "$R" "$R2" "$R_CTL" "$R_ON" "$R_OFF" "$R_DOWN"; do
+  for k in "$V5" "$R_CUR" "$N_NPM" "$V4" "$V3" "$L3" "$V" "$V2" "$R" "$R2" "$R_CTL" "$R_ON" "$R_OFF" "$R_DOWN"; do
     api_delete "/api/v1/repositories/${k}" >/dev/null 2>&1 || true
   done
+  [ -n "${CUR_RULE:-}" ] && curl -s --max-time 10 -o /dev/null -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/curation/rules/${CUR_RULE}" >/dev/null 2>&1 || true
 }
 add_exit_handler "cleanup"
 
@@ -189,6 +194,47 @@ if [ "$st_dn $code $n" = "200 200 1" ] && [ "$partial" = "$R_DOWN" ] && [ "$aske
   pass
 else
   fail "PATCH=${st_dn} HTTP ${code} local hit=${n} partial='${partial}' upstream asked=${asked}" "$(head -c 300 "$W/v4_search.json")"
+fi
+
+# patch KEY JSON -> HTTP status of PATCH /api/v1/repositories/KEY
+patch_repo() {
+  curl -s --max-time 30 -o "$W/patch_$1.json" -w '%{http_code}' -X PATCH -H "$(auth_header)" \
+    -H 'Content-Type: application/json' -d "$2" "${BASE_URL}/api/v1/repositories/$1" 2>/dev/null || echo 000
+}
+WORD9="cur${SUF//[^a-z0-9]/}"
+CUR_RULE=""
+
+begin_test "FIX #6332: composer_upstream_search is refused (400) on an npm Remote and on a Composer Local"
+create_repo "$N_NPM" npm remote "${UP}/npm" >/dev/null 2>&1 || true
+st_npm=$(patch_repo "$N_NPM" '{"composer_upstream_search": true}')
+st_loc=$(patch_repo "$L3" '{"composer_upstream_search": true}')
+if [ "$st_npm $st_loc" = "400 400" ]; then pass; else fail "npm remote=${st_npm} composer local=${st_loc}" "$(head -c 200 "$W/patch_${N_NPM}.json")"; fi
+
+begin_test "FIX #6332: a Virtual that returns nothing (every upstream hit curated out) while a member is down answers 503"
+err=""
+create_repo "$R_CUR" composer remote "${UP}/composer" || err+="create R_CUR; "
+create_repo "$V5" composer virtual || err+="create V5; "
+st=$(patch_repo "$R_CUR" '{"curation_enabled": true, "curation_default_action": "allow"}'); [ "$st" = "200" ] || err+="curation on ${st}; "
+rid=$(jq -r '.id // empty' "$W/patch_${R_CUR}.json" 2>/dev/null || true)
+code=$(curl -s --max-time 30 -o "$W/rule.json" -w '%{http_code}' -X POST -H "$(auth_header)" -H 'Content-Type: application/json' \
+  -d "{\"staging_repo_id\":\"${rid}\",\"package_pattern\":\"dtfup6332/*\",\"action\":\"block\",\"reason\":\"#6332 tier block\",\"priority\":5}" \
+  "${BASE_URL}/api/v1/curation/rules" 2>/dev/null || echo 000)
+CUR_RULE=$(jq -r '.id // empty' "$W/rule.json" 2>/dev/null || true)
+[ "$code" = "201" ] || err+="rule HTTP ${code}; "
+api_post "/api/v1/repositories/${V5}/members" "{\"member_key\":\"${R_CUR}\"}" >/dev/null 2>&1 || err+="member V5 R_CUR; "
+api_post "/api/v1/repositories/${V5}/members" "{\"member_key\":\"${R_DOWN}\"}" >/dev/null 2>&1 || err+="member V5 R_DOWN; "
+st_on=$(patch_repo "$R_CUR" '{"composer_upstream_search": true}')
+st_dn=$(patch_repo "$R_DOWN" '{"composer_upstream_search": true}')
+if [ -n "$err" ]; then
+  infra_fail "curated-Virtual setup did not complete" "$err"
+else
+  code=$(hget "${P}/${V5}/search.json?q=${WORD9}" "$W/v5_search.json")
+  asked=$(upstream_hits "/composer/search.json?q=${WORD9}")
+  if [ "$st_on $st_dn $code" = "200 200 503" ] && [ "$asked" = "1" ]; then
+    pass
+  else
+    fail "PATCH=${st_on}/${st_dn} HTTP ${code} curated upstream asked=${asked}" "$(head -c 300 "$W/v5_search.json")"
+  fi
 fi
 
 begin_test "FIX #4951: a real composer update --prefer-dist against the Virtual alone installs from dist"
