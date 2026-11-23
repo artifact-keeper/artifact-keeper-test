@@ -8,6 +8,9 @@
 # has its own Remote so no check is answered from a cache another one warmed.
 # artifact-keeper#6285: a third Virtual over a Local (one published package)
 # and the Remote finds the Local's package through its own search.json.
+# artifact-keeper#6332: search.json forwarded to a Remote's upstream only when
+# that Remote opts in (composer_upstream_search), one upstream read for a
+# burst of identical searches, and the local answer when the upstream is down.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${COMMON_SH:?}"; : "${DTF_SLOT:?}"; : "${TRIVY_PORT:?}"; : "${RUN_ID:?}"
@@ -32,14 +35,23 @@ WORD3="search${SUF//[^a-z0-9]/}"
 PKG3="dtf6285/${WORD3}"
 REF="0123456789abcdef0123456789abcdef01234567"
 DIST="dist/dtf/cleanpkg/1.0.0/${REF}.zip"
+R_ON="cvpm-ron-${SUF}"    # Remote opted into upstream search (#6332)
+R_OFF="cvpm-roff-${SUF}"  # Remote left at the default (off)
+R_DOWN="cvpm-rdn-${SUF}"  # opted in, upstream answers 503 to everything
+V4="cvpm-v4-${SUF}"       # Virtual over L3 and R_DOWN
+R_CUR="cvpm-rcur-${SUF}"  # opted in, curation blocks every upstream hit
+V5="cvpm-v5-${SUF}"       # Virtual over R_CUR and R_DOWN, no hosted member
+N_NPM="cvpm-npm-${SUF}"   # an npm Remote: the setting does not apply
 CLIENT="ak-dtf${DTF_SLOT}-client-composer"
 INT="http://backend:8080/composer"
 
 cleanup() {
   local k
-  for k in "$V3" "$L3" "$V" "$V2" "$R" "$R2" "$R_CTL"; do
+  for k in "$V5" "$R_CUR" "$N_NPM" "$V4" "$V3" "$L3" "$V" "$V2" "$R" "$R2" "$R_CTL" "$R_ON" "$R_OFF" "$R_DOWN"; do
     api_delete "/api/v1/repositories/${k}" >/dev/null 2>&1 || true
   done
+  [ -n "${CUR_RULE:-}" ] && curl -s --max-time 10 -o /dev/null -X DELETE -H "$(auth_header)" \
+    "${BASE_URL}/api/v1/curation/rules/${CUR_RULE}" >/dev/null 2>&1 || true
 }
 add_exit_handler "cleanup"
 
@@ -116,6 +128,114 @@ begin_test "CONTROL: the Virtual's search.json answers 0 for a term no member ha
 st=$(hget "${P}/${V3}/search.json?q=nomatch${WORD3}" "$W/v3_none.json")
 total=$(jq -r '.total // empty' "$W/v3_none.json" 2>/dev/null || true)
 if [ "$st" = "200" ] && [ "$total" = "0" ]; then pass; else fail "HTTP ${st}" "$(head -c 200 "$W/v3_none.json")"; fi
+
+# --- #6332: upstream search, opt-in per Remote ------------------------------
+# upstream_hits PREFIX: GETs the mock saw whose raw path starts with PREFIX.
+upstream_hits() { curl -s --max-time 10 "${MOCK}/__hits?prefix=$(jq -rn --arg p "$1" '$p|@uri')" | jq -r '.count // -1' 2>/dev/null || echo -1; }
+# opt_in KEY: PATCH composer_upstream_search on; prints the HTTP status.
+opt_in() {
+  curl -s --max-time 30 -o "$W/optin_$1.json" -w '%{http_code}' -X PATCH -H "$(auth_header)" \
+    -H 'Content-Type: application/json' -d '{"composer_upstream_search": true}' \
+    "${BASE_URL}/api/v1/repositories/$1" 2>/dev/null || echo 000
+}
+WORD6="on${SUF//[^a-z0-9]/}"
+WORD7="off${SUF//[^a-z0-9]/}"
+WORD8="burst${SUF//[^a-z0-9]/}"
+
+begin_test "setup: Remotes for upstream search (on, off, down) and a Virtual over the Local and the down one"
+err=""
+create_repo "$R_ON" composer remote "${UP}/composer" || err+="create R_ON; "
+create_repo "$R_OFF" composer remote "${UP}/composer" || err+="create R_OFF; "
+create_repo "$R_DOWN" composer remote "${UP}/failing/503/composer" || err+="create R_DOWN; "
+create_repo "$V4" composer virtual || err+="create V4; "
+api_post "/api/v1/repositories/${V4}/members" "{\"member_key\":\"${L3}\"}" >/dev/null 2>&1 || err+="member V4 L3; "
+api_post "/api/v1/repositories/${V4}/members" "{\"member_key\":\"${R_DOWN}\"}" >/dev/null 2>&1 || err+="member V4 R_DOWN; "
+if [ -n "$err" ]; then infra_fail "upstream search setup did not complete" "$err"; else pass; fi
+
+begin_test "FIX #6332: with composer_upstream_search on, a Remote's search.json returns the upstream's packages"
+st_on=$(opt_in "$R_ON")
+st_get=$(hget "/api/v1/repositories/${R_ON}" "$W/ron.json")
+flag=$(jq -r '.composer_upstream_search // empty' "$W/ron.json" 2>/dev/null || true)
+st=$(hget "${P}/${R_ON}/search.json?q=${WORD6}" "$W/ron_search.json")
+hit=$(jq -r --arg n "dtfup6332/${WORD6}" '[.results[]? | select(.name==$n)][0] | "\(.description)|\(.url)"' "$W/ron_search.json" 2>/dev/null || true)
+if [ "$st_on $st_get $flag $st" = "200 200 true 200" ] && \
+   [ "$hit" = "upstream hit for ${WORD6}|/composer/${R_ON}/p2/dtfup6332/${WORD6}.json" ]; then
+  pass
+else
+  fail "PATCH=${st_on} GET=${st_get} flag='${flag}' search=${st} hit='${hit}'" "$(head -c 300 "$W/ron_search.json")"
+fi
+
+begin_test "CONTROL: with the setting off (the default), search.json never reaches the upstream"
+st_get=$(hget "/api/v1/repositories/${R_OFF}" "$W/roff.json")
+st=$(hget "${P}/${R_OFF}/search.json?q=${WORD7}" "$W/roff_search.json")
+n=$(jq -r '[.results[]? | select(.name | startswith("dtfup6332/"))] | length' "$W/roff_search.json" 2>/dev/null || echo x)
+asked=$(upstream_hits "/composer/search.json?q=${WORD7}")
+if [ "$st" = "200" ] && [ "$n" = "0" ] && [ "$asked" = "0" ]; then
+  pass
+else
+  fail "HTTP ${st} upstream hits in answer=${n} upstream asked=${asked} flag=$(jq -c '.composer_upstream_search' "$W/roff.json" 2>/dev/null)"
+fi
+
+begin_test "FIX #6332: a burst of 5 identical searches costs one upstream read"
+for _ in 1 2 3 4 5; do hget "${P}/${R_ON}/search.json?q=${WORD8}" "$W/burst.json" >/dev/null; done
+asked=$(upstream_hits "/composer/search.json?q=${WORD8}")
+n=$(jq -r --arg n "dtfup6332/${WORD8}" '[.results[]? | select(.name==$n)] | length' "$W/burst.json" 2>/dev/null || echo x)
+echo "    upstream reads for 5 identical searches: ${asked}"
+if [ "$asked" = "1" ] && [ "$n" = "1" ]; then pass; else fail "upstream reads=${asked} hit in last answer=${n}"; fi
+
+begin_test "FIX #6332: with the upstream down, the Virtual's search.json returns the local results, no error"
+st_dn=$(opt_in "$R_DOWN")
+code=$(curl -s --max-time 60 -D "$W/v4_hdr.txt" -o "$W/v4_search.json" -w '%{http_code}' -H "$(auth_header)" \
+  "${BASE_URL}${P}/${V4}/search.json?q=${WORD3}" 2>/dev/null || echo 000)
+n=$(jq -r --arg p "$PKG3" '[.results[]? | select(.name==$p)] | length' "$W/v4_search.json" 2>/dev/null || echo x)
+partial=$({ grep -i '^x-ak-partial-members:' "$W/v4_hdr.txt" || true; } | tr -d '\r' | cut -d' ' -f2-)
+asked=$(upstream_hits "/failing/503/composer/search.json")
+if [ "$st_dn $code $n" = "200 200 1" ] && [ "$partial" = "$R_DOWN" ] && [ "$asked" -ge 1 ] 2>/dev/null; then
+  pass
+else
+  fail "PATCH=${st_dn} HTTP ${code} local hit=${n} partial='${partial}' upstream asked=${asked}" "$(head -c 300 "$W/v4_search.json")"
+fi
+
+# patch KEY JSON -> HTTP status of PATCH /api/v1/repositories/KEY
+patch_repo() {
+  curl -s --max-time 30 -o "$W/patch_$1.json" -w '%{http_code}' -X PATCH -H "$(auth_header)" \
+    -H 'Content-Type: application/json' -d "$2" "${BASE_URL}/api/v1/repositories/$1" 2>/dev/null || echo 000
+}
+WORD9="cur${SUF//[^a-z0-9]/}"
+CUR_RULE=""
+
+begin_test "FIX #6332: composer_upstream_search is refused (400) on an npm Remote and on a Composer Local"
+create_repo "$N_NPM" npm remote "${UP}/npm" >/dev/null 2>&1 || true
+st_npm=$(patch_repo "$N_NPM" '{"composer_upstream_search": true}')
+st_loc=$(patch_repo "$L3" '{"composer_upstream_search": true}')
+if [ "$st_npm $st_loc" = "400 400" ]; then pass; else fail "npm remote=${st_npm} composer local=${st_loc}" "$(head -c 200 "$W/patch_${N_NPM}.json")"; fi
+
+begin_test "FIX #6332: a Virtual that returns nothing (every upstream hit curated out) while a member is down answers 503"
+err=""
+create_repo "$R_CUR" composer remote "${UP}/composer" || err+="create R_CUR; "
+create_repo "$V5" composer virtual || err+="create V5; "
+st=$(patch_repo "$R_CUR" '{"curation_enabled": true, "curation_default_action": "allow"}'); [ "$st" = "200" ] || err+="curation on ${st}; "
+rid=$(jq -r '.id // empty' "$W/patch_${R_CUR}.json" 2>/dev/null || true)
+code=$(curl -s --max-time 30 -o "$W/rule.json" -w '%{http_code}' -X POST -H "$(auth_header)" -H 'Content-Type: application/json' \
+  -d "{\"staging_repo_id\":\"${rid}\",\"package_pattern\":\"dtfup6332/*\",\"action\":\"block\",\"reason\":\"#6332 tier block\",\"priority\":5}" \
+  "${BASE_URL}/api/v1/curation/rules" 2>/dev/null || echo 000)
+CUR_RULE=$(jq -r '.id // empty' "$W/rule.json" 2>/dev/null || true)
+[ "$code" = "201" ] || err+="rule HTTP ${code}; "
+api_post "/api/v1/repositories/${V5}/members" "{\"member_key\":\"${R_CUR}\"}" >/dev/null 2>&1 || err+="member V5 R_CUR; "
+api_post "/api/v1/repositories/${V5}/members" "{\"member_key\":\"${R_DOWN}\"}" >/dev/null 2>&1 || err+="member V5 R_DOWN; "
+st_on=$(patch_repo "$R_CUR" '{"composer_upstream_search": true}')
+st_dn=$(patch_repo "$R_DOWN" '{"composer_upstream_search": true}')
+if [ -n "$err" ]; then
+  infra_fail "curated-Virtual setup did not complete" "$err"
+else
+  code=$(hget "${P}/${V5}/search.json?q=${WORD9}" "$W/v5_search.json")
+  asked=$(upstream_hits "/composer/search.json?q=${WORD9}")
+  if [ "$st_on $st_dn $code" = "200 200 503" ] && [ "$asked" = "1" ]; then
+    pass
+  else
+    fail "PATCH=${st_on}/${st_dn} HTTP ${code} curated upstream asked=${asked}" "$(head -c 300 "$W/v5_search.json")"
+  fi
+fi
 
 begin_test "FIX #4951: a real composer update --prefer-dist against the Virtual alone installs from dist"
 cat > "$W/composer.json" <<JSON

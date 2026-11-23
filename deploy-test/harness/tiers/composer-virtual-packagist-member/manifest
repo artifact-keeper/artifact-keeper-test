@@ -18,8 +18,19 @@
 # installable through the Virtual but never found by its search.json. A third
 # Virtual over a Local and the Remote must find the Local's package. Red on
 # main before the fix (artifact-keeper 1.12.4).
+#
+# #6332: search.json forwarded to a Remote's upstream, opt-in per Remote
+# (composer_upstream_search). On: the upstream's package is found through the
+# Remote. Off (the default): the upstream is never asked. Five identical
+# searches cost one upstream read. A Virtual over a Local and an opted-in
+# Remote whose upstream answers 503 returns the Local's package with 200 and
+# names the Remote in X-AK-Partial-Members. The setting is refused (400) on
+# an npm Remote and a Composer Local. A Virtual over an opted-in Remote whose
+# every hit curation blocks and the down Remote returns nothing, so it
+# answers 503 (#5495), not an empty 200. Red on main before the fix
+# (artifact-keeper 1.13.0).
 PROFILES="storage.filesystem upstreams.mock-scan-formats client.composer"
 ORACLE="oracle.sh"
-COVERS="4951 6285"
+COVERS="4951 6285 6332"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"

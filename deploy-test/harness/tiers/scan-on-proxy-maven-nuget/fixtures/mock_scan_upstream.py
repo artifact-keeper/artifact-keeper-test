@@ -117,6 +117,11 @@
 #   GET /__golden/<path>          the exact bytes served at /<path>
 #   GET /__sha256/<path>          their sha256 hex
 #
+# Composer search (counted like any data-plane GET; artifact-keeper#6332):
+#   GET /composer/search.json?q=<term>   Packagist's search shape with one hit,
+#                                 dtfup6332/<term> (term reduced to [a-z0-9-]),
+#                                 "total": 1; an empty term finds nothing
+#
 # Failing upstream (counted like any data-plane GET):
 #   GET /failing/<code>/<path>    answers status <code> (400-599) for every
 #                                 path, whatever FILES holds: a Remote whose
@@ -774,6 +779,12 @@ class Handler(BaseHTTPRequestHandler):
         failing = re.fullmatch(r"failing/([45][0-9][0-9])/.*", key)
         if failing:
             return self._send(int(failing.group(1)), b"mock upstream failure", "text/plain", head)
+        if key == "composer/search.json":
+            term = re.sub(r"[^a-z0-9-]", "", q.get("q", [""])[0].lower())
+            hits = [{"name": f"dtfup6332/{term}", "description": f"upstream hit for {term}",
+                     "url": f"https://packagist.example/packages/dtfup6332/{term}"}] if term else []
+            body = json.dumps({"results": hits, "total": len(hits)}).encode()
+            return self._send(200, body, "application/json", head)
         if key in FILES:
             return self._send(200, FILES[key], ctype(key), head)
         return self._send(404, b"not found", "text/plain", head)

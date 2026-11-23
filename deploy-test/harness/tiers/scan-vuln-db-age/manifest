@@ -1,0 +1,33 @@
+# DTF tier manifest: scan-vuln-db-age  (artifact-keeper#5177, 1.13.0)
+# Profile-set: storage.filesystem + scanners.mock-vulndb (a python stand-in
+# for an air-gapped scanner adapter whose imported Trivy DB was built 30 days
+# ago; TRIVY_ADAPTER_URL points at it, SCAN_VULN_DB_MAX_AGE_HOURS=168).
+#
+# THE GAP (#5177)
+# Nothing told an operator how old the vulnerability database behind their
+# scans was: the age lived only on individual scan rows, and a DB that had
+# stopped updating (an air-gapped install nobody re-imported into) raised no
+# warning, so "no findings" could overstate how safe an artifact was.
+#
+# THE FIX
+# GET /api/v1/admin/security/vuln-db reports each engine's DB version, build
+# time, age, source and whether it is past SCAN_VULN_DB_MAX_AGE_HOURS. The
+# gauges ak_scanner_vuln_db_age_seconds / ak_scanner_vuln_db_stale{engine}
+# follow it, a stale engine logs a warning (counted in
+# ak_scanner_vuln_db_stale_warnings_total), and the report is cached so
+# polling it does not probe the adapter each time. Verdicts are unchanged
+# (report only, affects_verdicts=false).
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (FIX)  the route reports trivy: source adapter, offline, version
+#          trivy-db-v2, age ~30 days, state stale, limit 604800 s. RED on
+#          main (404).
+#   (FIX)  /api/v1/admin/metrics has ak_scanner_vuln_db_stale{engine="trivy"}
+#          1, an age of ~30 days and at least one stale warning. RED on main.
+#   (FIX)  the backend log carries the stale warning. RED on main.
+#   (FIX)  10 back-to-back reads of the route cost at most one adapter probe.
+#          RED on main (no route).
+COVERS="5177"
+PROFILES="storage.filesystem scanners.mock-vulndb"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
