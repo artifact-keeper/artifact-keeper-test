@@ -6,7 +6,7 @@
 # ASCII and its confusable skeleton matches a popular name (`paypa1` for
 # `paypal`). New rules default to "flag". Through 1.12 a
 # `block_typosquat: true` rule refused those names, and an upgrade must not
-# weaken an existing install, so migration 419 stamps "block" on every
+# weaken an existing install, so migration 421 stamps "block" on every
 # existing `block_typosquat` rule.
 #
 # PHASE 1 (UPGRADE_OLD_IMAGE, 1.12.4): an npm Remote with curation on and a
@@ -22,7 +22,7 @@
 #   CONTROL    on both Remotes the Cyrillic `pаypal` (а U+0430) is refused.
 #   FIX #5840  `ascii_lookalikes: "Block"` is refused with 400.
 #
-# RED with main sha-0a3e08d as the candidate: no migration 419 (no stamp) and
+# RED with main sha-0a3e08d as the candidate: no migration 421 (no stamp) and
 # every ASCII lookalike refused, so the "new rule flags" case fails. GREEN
 # with the artifact-keeper PR for #5840.
 COVERS="5840"
