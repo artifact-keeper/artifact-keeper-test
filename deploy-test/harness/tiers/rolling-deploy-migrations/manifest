@@ -1,0 +1,44 @@
+# DTF tier manifest: rolling-deploy-migrations  (artifact-keeper#5920, 1.13.0)
+# Profile-set: filesystem + migrations.ignore-missing.
+#
+# THE PROBLEM (#5920)
+# In a rolling update the new pods apply their migrations as they start, so
+# the previous release serves on the newer schema until the rollout ends. A
+# pod of the previous release that restarts in that window (OOM, node drain)
+# finds versions in _sqlx_migrations it does not embed, and sqlx fails with
+# VersionMissing: the pod crash-loops until the rollout finishes, and for good
+# if the rollout is paused or rolled back.
+#
+# THE FIX (1.13.0)
+# MIGRATIONS_IGNORE_MISSING=true: the backend starts on a newer ledger when
+# every newer migration is an expand, or a contract of an expand it embeds
+# (description `contract of MMM ...`, from a NNN_contract_of_MMM_<what>.sql
+# file the expand/contract CI check requires). It refuses a newer contract
+# of an expand it does not have.
+#
+# THE PRIMITIVE: THE NEXT RELEASE'S EXPAND MIGRATION, SIMULATED
+# The oracle plays release N+1 against this slot's own Postgres: it adds a
+# nullable column to `repositories` (an expand) and records it in
+# _sqlx_migrations under a version far above the binary's, with a plain
+# description. It then restarts the backend container, which is "release N
+# restarting mid-rollout".
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) before: /readyz 200, a public download 200.
+#   (FIX #5920) after the restart on the newer expand-only ledger the backend
+#             serves: /readyz 200 within 120 s, the download 200 + bytes, and
+#             an upload 201 on the expanded table. RED on main: the container
+#             exits with VersionMissing.
+#   (FIX #5920) with a newer `contract of <the binary's newest migration>`
+#             recorded too, the restarted backend serves: it is past that
+#             expand. RED on main: VersionMissing.
+#   (CONTROL) with a newer `contract of <the simulated expand>` recorded as
+#             well, the restarted backend never serves (both images exit).
+#   (FIX #5920) the refusal names that contract migration. RED on main: only
+#             VersionMissing.
+#   (CONTROL) with the simulated rows and column removed, the backend
+#             restarts and serves again.
+PROFILES="storage.filesystem migrations.ignore-missing"
+ORACLE="oracle.sh"
+COVERS="5920"
+export MIGRATIONS_IGNORE_MISSING="true"

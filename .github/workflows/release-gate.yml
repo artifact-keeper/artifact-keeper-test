@@ -3505,8 +3505,15 @@ jobs:
           # the metadata or revision write failing, an upload stores nothing
           # (no package without its index metadata), and one upload writes
           # its catalog row once. HTTP + its own Postgres, under 1 min.
+          # db-pool-fairness (artifact-keeper#6344): with an anonymous flood
+          # holding the admission slots on a busy pool, an authenticated
+          # client keeps getting answers. HTTP + its own Postgres, about 1 min.
+          # rolling-deploy-migrations (artifact-keeper#5920): a backend
+          # restarted on a ledger a newer release migrated (expand-only)
+          # serves with MIGRATIONS_IGNORE_MISSING=true, and refuses a newer
+          # contract migration. Restarts its own backend, about 2 min.
           - group: resilience-1.13.0
-            tiers: db-pool-load-shed upload-commit-records
+            tiers: db-pool-load-shed upload-commit-records db-pool-fairness rolling-deploy-migrations
           # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
           # #499-#502): green on main, red on 1.11.3. api is pure HTTP + DB
           # plus the mock OIDC IdP; features stands up the conda, BSR, static

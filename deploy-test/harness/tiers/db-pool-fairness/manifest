@@ -1,0 +1,59 @@
+# DTF tier manifest: db-pool-fairness  (artifact-keeper#6344, 1.13.0)
+# Profile-set: filesystem + limits.db-pool (passes the pool sizing and
+# admission knobs through to the backend).
+#
+# THE PROBLEM (#6344)
+# The database admission gate of #4182 hands its slots to whoever arrives
+# first, before authentication. An anonymous flood that holds every slot
+# while the pool is busy gets every other client shed with
+# 503 POOL_EXHAUSTED, authenticated users and CI tokens included.
+#
+# THE FIX (1.13.0)
+# DATABASE_REQUEST_CREDENTIALED_RESERVE_PERCENT (default 25) of the slots can
+# only be taken by a request presenting a credential (Authorization,
+# X-API-Key, the session cookie, /t/<token>/), and a client at
+# DATABASE_REQUEST_CLIENT_SHARE_PERCENT of the slots yields to a waiting one.
+# This tier exercises the defaults; every request of the harness comes from
+# one address, so it isolates the reserve.
+#
+# THE PRIMITIVE: A BUSY POOL WITH SPARE CONNECTIONS
+# DATABASE_MAX_CONNECTIONS=12 and DATABASE_MIN_CONNECTIONS=12 (all open),
+# DATABASE_REQUEST_CONCURRENCY=8 (on the fix 2 of them reserved by default),
+# DATABASE_REQUEST_ACQUIRE_WAIT_MS=500. The oracle's own psql session takes
+# ACCESS EXCLUSIVE on `repositories`, then sends 12 anonymous downloads of a
+# public artifact one by one ("slow requests"); each one admitted blocks on
+# the lock holding a pooled connection. The gate lets requests run without a
+# slot while a quarter of the pool (3) is idle, so on both images the slow
+# requests take connections until 2 are idle, and the rest are shed.
+#   * main: the slow requests hold all 8 slots. An authenticated request finds
+#     no slot and a busy pool, and is shed after the 500 ms wait, although 2
+#     connections are idle.
+#   * fix: anonymous requests may take 6 slots. The 2 reserved slots stay
+#     free, and an authenticated request takes one and an idle connection.
+#     Two spare connections leave room for one background query blocking on
+#     the lock too.
+# While the authenticated client polls, 6 anonymous loops keep flooding the
+# same download.
+#
+# Oracle (discriminating, RELEASE_GATE=1):
+#   (CONTROL) before the window: the anonymous download and GET
+#             /api/v1/auth/me with the admin token answer 200. During the
+#             window: the flood never gets a 2xx, and a wrong Basic password
+#             is never 2xx. After the window: the slow requests complete,
+#             and the download and /auth/me answer 200 again.
+#   (FIX #6344) during the window at least 9 of 10 authenticated
+#             /api/v1/auth/me requests answer 200. RED on main: 0 of 10,
+#             each 503 POOL_EXHAUSTED.
+#   (FIX #6344) the flood absorbs the sheds: ak_db_admission_sheds_total
+#             counts anonymous sheds and no credentialed ones. RED on main:
+#             no such series.
+#
+# RATE_LIMIT_ENABLED=false so a 429 can never masquerade as either verdict.
+PROFILES="storage.filesystem limits.db-pool"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="6344"
+export DATABASE_MAX_CONNECTIONS="12"
+export DATABASE_MIN_CONNECTIONS="12"
+export DATABASE_REQUEST_CONCURRENCY="8"
+export DATABASE_REQUEST_ACQUIRE_WAIT_MS="500"

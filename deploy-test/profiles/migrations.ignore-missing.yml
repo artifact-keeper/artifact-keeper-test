@@ -1,0 +1,14 @@
+# =============================================================================
+# profiles/migrations.ignore-missing.yml: pass MIGRATIONS_IGNORE_MISSING
+# (artifact-keeper#5920) through to the backend
+# =============================================================================
+# MIGRATIONS_IGNORE_MISSING=true lets a backend start on a database a newer
+# release migrated, when every newer migration is expand-only, and refuses a
+# newer contract migration (1.13). A tier sets it by exporting it from its
+# manifest; unset it is passed as an empty string, which the backend reads as
+# off.
+# =============================================================================
+services:
+  backend:
+    environment:
+      MIGRATIONS_IGNORE_MISSING: ${MIGRATIONS_IGNORE_MISSING:-}
