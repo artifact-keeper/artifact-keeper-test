@@ -333,61 +333,140 @@ finish_case "the metadata of a version the age gate withholds was served"
 # =============================================================================
 # #6444: a stale cached wheel with no verdict under fail_closed
 # =============================================================================
-# The Remote caches the wheel while it does not scan. Its sidecar is then
-# made stale on disk (a wheel is immutable, so only an old sidecar or one
-# stamped with a short TTL is ever stale), and the Remote is switched to
-# fail_closed. The wheel's own request refetches a stale copy; its metadata
-# must not.
-RS="pmg-rs-${SUF}"; SP="pmgs${SUF}"; SW="${SP}-1.0-py3-none-any.whl"
-wheel_gets(){ mock_req "/${P}/files/${SW}" | jqr '.get // 0'; }
-begin_test "FIX #6444: under fail_closed, the metadata of a stale cached wheel with no verdict fetches no wheel from the upstream, and answers as the wheel does"
-reset_case
+# A Remote caches wheels while it does not scan. Their sidecars are then made
+# stale on disk (a wheel is immutable, so only an old sidecar or one stamped
+# with a short TTL is ever stale), and the Remote is switched to fail_closed.
+# The wheel's own request refetches a stale copy; its metadata must not, and
+# the METADATA it serves is the one inside the cached wheel that was gated.
+#   SP   clean wheel, the Remote's own route (GET and HEAD)
+#   jinja2 2.10, whose cached bytes the CVE engine grades vulnerable
+#   SV   clean wheel, through a virtual over the Remote
+#   SR   clean wheel whose file name the upstream then reuses for other bytes
+RS="pmg-rs-${SUF}"; VRS="pmg-vrs-${SUF}"
+SP="pmgs${SUF}"; SW="${SP}-1.0-py3-none-any.whl"
+JJ="jinja2"; JWV="2.10"; JW="${JJ}-${JWV}-py3-none-any.whl"
+SV="pmgsv${SUF}"; SVW="${SV}-1.0-py3-none-any.whl"
+SR="pmgsr${SUF}"; SRW="${SR}-1.0-py3-none-any.whl"
+file_gets(){ mock_req "/${P}/files/$1" | jqr '.get // 0'; }
+# age_sidecar <remote> <project> <file>: the cache entry's expires_at in the
+# past. The image has no shell: the sidecar is copied out, aged, and copied
+# back as a tar owned by the backend's user, so its refill can replace it.
+# The cache key carries the cache scope, so it is found on the volume.
+age_sidecar(){
+  local d buser
+  d="$(docker cp "${BACKEND_CTR}:/data/storage/proxy-cache" - 2>/dev/null | tar -t 2>/dev/null \
+    | grep -F "/$1/simple/$2/$3/__cache_meta__.json" | head -n1)"
+  [ -n "$d" ] || return 1
+  d="/data/storage/${d%/__cache_meta__.json}"
+  rm -rf "$W/age"; mkdir -p "$W/age"
+  docker cp "${BACKEND_CTR}:${d}/__cache_meta__.json" "$W/age/__cache_meta__.json" >/dev/null 2>&1 || return 1
+  jq -c '.expires_at = "2020-01-01T00:00:00Z"' "$W/age/__cache_meta__.json" > "$W/age/aged.json" || return 1
+  mv "$W/age/aged.json" "$W/age/__cache_meta__.json"
+  buser="$(docker inspect -f '{{.Config.User}}' "$BACKEND_CTR" 2>/dev/null)"
+  tar -C "$W/age" --owner="${buser%%:*}" --group="${buser%%:*}" -cf - __cache_meta__.json \
+    | docker cp -a - "${BACKEND_CTR}:${d}" >/dev/null 2>&1 || return 1
+  docker cp "${BACKEND_CTR}:${d}/__cache_meta__.json" - 2>/dev/null | tar -xOf - 2>/dev/null \
+    | jq -e '.expires_at | startswith("2020-")' >/dev/null 2>&1
+}
+# stale_case <base path> <project> <file>: the metadata (GET, then HEAD) and
+# then the wheel, on one route; MC MH WC the statuses, MG the upstream GETs of
+# the file the metadata requests caused, WG the wheel's.
+stale_case(){
+  local g0 g1 g2
+  g0="$(file_gets "$3")"
+  get "$1/simple/$2/$3.metadata" "" "$W/meta-$2"; MC="$CODE"; M_MS="$TIME_MS"
+  MH="$(head_code "$1/simple/$2/$3.metadata")"
+  g1="$(file_gets "$3")"
+  get "$1/simple/$2/$3" "" "$W/wheel-$2"; WC="$CODE"
+  g2="$(file_gets "$3")"
+  MG=$((g1 - g0)); WG=$((g2 - g1))
+}
+
+begin_test "setup (#6444): a Remote caches four wheels while it does not scan, a virtual over it; the sidecars are aged and the Remote switched to fail_closed"
 SETUP_ERR=""
 publish "$SP" 0 1.0
-c="$(mkrepo "$RS" remote "${UP}/${P}")"; is_ok "$c" || SETUP_ERR="${SETUP_ERR} repo ${c};"
+publish "$JJ" 0 "$JWV"
+publish "$SV" 0 1.0
+publish "$SR" 0 1.0
+for spec in "$RS remote ${UP}/${P}" "$VRS virtual"; do
+  # shellcheck disable=SC2086
+  c="$(mkrepo $spec)"; is_ok "$c" || SETUP_ERR="${SETUP_ERR} repo ${spec%% *} ${c};"
+done
+is_ok "$(member "$VRS" "$RS")" || SETUP_ERR="${SETUP_ERR} member ${VRS};"
 RS_ID="$(repo_id "$RS")"
-get "/pypi/${RS}/simple/${SP}/${SW}" "" "$W/sfill"
-[ "$CODE" = "200" ] || SETUP_ERR="${SETUP_ERR} fill ${CODE};"
-# The image has no shell: the sidecar is copied out, aged, and copied back
-# as a tar owned by the backend's user, so its refill can replace it.
-# The cache key carries the cache scope, so it is found on the volume.
-SDIR="$(docker cp "${BACKEND_CTR}:/data/storage/proxy-cache" - 2>/dev/null | tar -t 2>/dev/null \
-  | grep -F "/${RS}/simple/${SP}/${SW}/__cache_meta__.json" | head -n1)"
-SDIR="/data/storage/${SDIR%/__cache_meta__.json}"
-mkdir -p "$W/age"
-docker cp "${BACKEND_CTR}:${SDIR}/__cache_meta__.json" "$W/age/__cache_meta__.json" >/dev/null 2>&1 \
-  && jq -c '.expires_at = "2020-01-01T00:00:00Z"' "$W/age/__cache_meta__.json" > "$W/age/aged.json" \
-  && mv "$W/age/aged.json" "$W/age/__cache_meta__.json" \
-  && BUSER="$(docker inspect -f '{{.Config.User}}' "$BACKEND_CTR" 2>/dev/null)" \
-  && tar -C "$W/age" --owner="${BUSER%%:*}" --group="${BUSER%%:*}" -cf - __cache_meta__.json \
-     | docker cp -a - "${BACKEND_CTR}:${SDIR}" >/dev/null 2>&1 \
-  || SETUP_ERR="${SETUP_ERR} could not age ${SDIR}/__cache_meta__.json;"
-docker cp "${BACKEND_CTR}:${SDIR}/__cache_meta__.json" - 2>/dev/null | tar -xOf - 2>/dev/null \
-  | jq -e '.expires_at | startswith("2020-")' >/dev/null 2>&1 \
-  || SETUP_ERR="${SETUP_ERR} the sidecar is not stale;"
+for pw in "${SP}/${SW}" "${JJ}/${JW}" "${SV}/${SVW}" "${SR}/${SRW}"; do
+  get "/pypi/${RS}/simple/${pw}" "" "$W/sfill"
+  [ "$CODE" = "200" ] || SETUP_ERR="${SETUP_ERR} fill ${pw} ${CODE};"
+done
+for pf in "${SP} ${SW}" "${JJ} ${JW}" "${SV} ${SVW}" "${SR} ${SRW}"; do
+  # shellcheck disable=SC2086
+  age_sidecar "$RS" $pf || SETUP_ERR="${SETUP_ERR} could not age ${pf#* };"
+done
+for f in "$SW" "$JW" "$SVW" "$SRW"; do
+  [ "$(psqlq "SELECT count(*) FROM proxy_scan_results WHERE checksum_sha256 = '$(sha_of "$W/$f")'")" = "0" ] \
+    || SETUP_ERR="${SETUP_ERR} ${f} already has a verdict;"
+done
 [[ "$(psqlq "INSERT INTO scan_configs (repository_id, scan_enabled, scan_on_upload, scan_on_proxy, block_on_policy_violation, severity_threshold, proxy_scan_action)
              VALUES ('${RS_ID}', true, false, true, false, 'high', 'fail_closed')
              ON CONFLICT (repository_id) DO UPDATE SET scan_enabled = true, scan_on_proxy = true, proxy_scan_action = 'fail_closed'
              RETURNING 'cfg-ok'")" = *cfg-ok* ]] || SETUP_ERR="${SETUP_ERR} scan config;"
-[ "$(psqlq "SELECT count(*) FROM proxy_scan_results WHERE checksum_sha256 = '$(sha_of "$W/$SW")'")" = "0" ] \
-  || SETUP_ERR="${SETUP_ERR} the wheel already has a verdict;"
-[ -z "$SETUP_ERR" ] || fail_g "setup:${SETUP_ERR}"
-# The sidecar LRU keeps what the fill read for 30 s.
+# SR: the upstream now serves other bytes under the same file name, with a
+# matching index and sidecar.
+cp "$W/$SRW" "$W/$SRW.d1"
+wheel "$W/$SRW" "$SR" "1.0" "dtf-6444-reused"
+printf 'Metadata-Version: 2.1\nName: %s\nVersion: 1.0\nSummary: dtf-6444-reused-sidecar\n' "$SR" > "$W/$SRW.metadata"
+is_ok "$(mock_put "/${P}/files/$SRW" "$W/$SRW")" || SETUP_ERR="${SETUP_ERR} reuse wheel;"
+is_ok "$(mock_put "/${P}/files/$SRW.metadata" "$W/$SRW.metadata")" || SETUP_ERR="${SETUP_ERR} reuse sidecar;"
+cmp -s "$W/$SRW" "$W/$SRW.d1" && SETUP_ERR="${SETUP_ERR} the reused wheel has the same bytes;"
+# The sidecar LRU keeps what the fills read for 30 s.
 sleep 31
-g0="$(wheel_gets)"
-get "/pypi/${RS}/simple/${SP}/${SW}.metadata" "" "$W/smeta"; m="$CODE"; m_ms="$TIME_MS"
-g1="$(wheel_gets)"
-get "/pypi/${RS}/simple/${SP}/${SW}" "" "$W/swheel"; w="$CODE"
-g2="$(wheel_gets)"
-note "metadata ${m} in ${m_ms} ms, upstream wheel GETs for it $((g1 - g0)); wheel ${w}, upstream wheel GETs for it $((g2 - g1))"
-echo "MEASURE stale-unscanned metadata_status=${m} metadata_ms=${m_ms} metadata_wheel_fetches=$((g1 - g0)) wheel_status=${w} wheel_fetches=$((g2 - g1))"
-[ "$((g1 - g0))" = "0" ] || fail_g "the .metadata request fetched the wheel from the upstream $((g1 - g0)) time(s)"
-[ "$((g2 - g1))" -ge 1 ] || note "(premise) the wheel's own request did not refetch the stale copy"
-[ "$m" = "$w" ] || fail_g "the metadata answered ${m} where the wheel answered ${w}"
-case "$m" in 200)
-  grep -q 'dtf-upstream-sidecar' "$W/smeta" || fail_g "the metadata is not the wheel's: $(head -c 120 "$W/smeta")" ;;
-esac
+if [ -n "$SETUP_ERR" ]; then infra_fail "setup failed:${SETUP_ERR}"; else pass; fi
+
+begin_test "FIX #6444: a clean stale unscanned cached wheel: its metadata fetches no wheel, answers as the wheel does (GET and HEAD), and is the cached wheel's own METADATA"
+reset_case
+stale_case "/pypi/${RS}" "$SP" "$SW"
+note "metadata ${MC} (HEAD ${MH}) in ${M_MS} ms, upstream wheel GETs for it ${MG}; wheel ${WC}, upstream wheel GETs for it ${WG}"
+echo "MEASURE stale-unscanned case=clean metadata_status=${MC} metadata_head=${MH} metadata_ms=${M_MS} metadata_wheel_fetches=${MG} wheel_status=${WC} wheel_fetches=${WG}"
+[ "$MG" = "0" ] || fail_g "the .metadata requests fetched the wheel from the upstream ${MG} time(s)"
+[ "$WG" -ge 1 ] || note "(premise) the wheel's own request did not refetch the stale copy"
+[ "$MC" = "$WC" ] || fail_g "the metadata answered ${MC} where the wheel answered ${WC}"
+[ "$MH" = "$WC" ] || fail_g "a HEAD of the metadata answered ${MH} where the wheel answered ${WC}"
+grep -q 'dtf-6439-in-wheel' "$W/meta-$SP" || fail_g "the metadata is not the cached wheel's METADATA: $(head -c 120 "$W/meta-$SP")"
 finish_case "a .metadata request downloaded the whole wheel, or answered otherwise than the wheel"
+
+begin_test "FIX #6444: a stale unscanned cached wheel the CVE engine grades vulnerable (jinja2 ${JWV}): its metadata fetches no wheel and is refused as the wheel is (GET and HEAD)"
+reset_case
+stale_case "/pypi/${RS}" "$JJ" "$JW"
+note "metadata ${MC} (HEAD ${MH}) in ${M_MS} ms, upstream wheel GETs for it ${MG}; wheel ${WC}, upstream wheel GETs for it ${WG}; $(head -c 100 "$W/meta-$JJ" | tr '\n' ' ')"
+echo "MEASURE stale-unscanned case=vulnerable metadata_status=${MC} metadata_head=${MH} metadata_ms=${M_MS} metadata_wheel_fetches=${MG} wheel_status=${WC} wheel_fetches=${WG}"
+[ "$MG" = "0" ] || fail_g "the .metadata requests fetched the wheel from the upstream ${MG} time(s)"
+[ "$WC" = "403" ] || note "(premise) the wheel answered ${WC}, expected 403"
+[ "$MC" = "$WC" ] || fail_g "the metadata answered ${MC} where the wheel answered ${WC}"
+[ "$MH" = "$WC" ] || fail_g "a HEAD of the metadata answered ${MH} where the wheel answered ${WC}"
+case "$MC" in 2??) fail_g "served the METADATA of a wheel the gate refuses" ;; esac
+finish_case "the metadata of a vulnerable cached wheel was served, or the wheel was downloaded for it"
+
+begin_test "FIX #6444: through a virtual over the Remote, a stale unscanned member wheel's metadata fetches no wheel and answers as the wheel does"
+reset_case
+stale_case "/pypi/${VRS}" "$SV" "$SVW"
+note "metadata ${MC} (HEAD ${MH}), upstream wheel GETs for it ${MG}; wheel ${WC}, upstream wheel GETs for it ${WG}"
+echo "MEASURE stale-unscanned case=virtual metadata_status=${MC} metadata_head=${MH} metadata_wheel_fetches=${MG} wheel_status=${WC} wheel_fetches=${WG}"
+[ "$MG" = "0" ] || fail_g "the .metadata requests fetched the wheel from the upstream ${MG} time(s)"
+[ "$MC" = "$WC" ] || fail_g "the metadata answered ${MC} where the wheel answered ${WC}"
+[ "$MH" = "$WC" ] || fail_g "a HEAD of the metadata answered ${MH} where the wheel answered ${WC}"
+finish_case "a virtual's .metadata request downloaded the member's wheel, or answered otherwise than the wheel"
+
+begin_test "FIX #6444: when the upstream reuses a stale cached wheel's file name for other bytes, the metadata served is the cached wheel's, which was gated, and no wheel is fetched for it"
+reset_case
+g0="$(file_gets "$SRW")"
+get "/pypi/${RS}/simple/${SR}/${SRW}.metadata" "" "$W/meta-$SR"; m="$CODE"
+g1="$(file_gets "$SRW")"
+note "metadata ${m}, upstream wheel GETs for it $((g1 - g0)); $(head -c 120 "$W/meta-$SR" | tr '\n' ' ')"
+[ "$((g1 - g0))" = "0" ] || fail_g "the .metadata request fetched the wheel from the upstream $((g1 - g0)) time(s)"
+[ "$m" = "200" ] || fail_g "the metadata answered ${m}"
+grep -q 'dtf-6439-in-wheel' "$W/meta-$SR" || fail_g "the metadata is not the gated cached wheel's"
+! grep -q 'dtf-6444-reused' "$W/meta-$SR" || fail_g "served METADATA of bytes that were not gated"
+finish_case "the metadata described bytes the gate did not decide on"
 
 # =============================================================================
 # #5983
