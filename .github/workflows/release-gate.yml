@@ -3512,8 +3512,13 @@ jobs:
           # restarted on a ledger a newer release migrated (expand-only)
           # serves with MIGRATIONS_IGNORE_MISSING=true, and refuses a newer
           # contract migration. Restarts its own backend, about 2 min.
+          # disk-usage-thresholds (artifact-keeper#5191): on a 64 MiB tmpfs
+          # storage volume, past the block threshold writes answer
+          # 403 DISK_THRESHOLD_EXCEEDED before the body is read while
+          # downloads keep working, and writes resume once disk is freed.
+          # storage.filesystem + storage.disk-thresholds, about 1 min.
           - group: resilience-1.13.0
-            tiers: db-pool-load-shed upload-commit-records db-pool-fairness rolling-deploy-migrations
+            tiers: db-pool-load-shed upload-commit-records db-pool-fairness rolling-deploy-migrations disk-usage-thresholds
           # 1.12.0 fix coverage (artifact-keeper-test#470-#479, #490, #491,
           # #499-#502): green on main, red on 1.11.3. api is pure HTTP + DB
           # plus the mock OIDC IdP; features stands up the conda, BSR, static

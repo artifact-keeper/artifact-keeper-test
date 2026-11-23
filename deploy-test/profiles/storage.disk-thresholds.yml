@@ -1,0 +1,35 @@
+# =============================================================================
+# profiles/storage.disk-thresholds.yml: a small storage volume with the disk
+# usage thresholds on (artifact-keeper#5191)
+# =============================================================================
+# Layer on storage.filesystem. STORAGE_PATH (/data/storage) becomes its own
+# 64 MiB tmpfs volume, so the backend's statvfs sees a filesystem an oracle can
+# fill in a second. The volume is a named local volume of type tmpfs rather
+# than a `tmpfs:` mount, so a helper container can mount the same filesystem
+# (`docker run -v ak-dtf<slot>_disk:/fill ...`) to fill and free it; the
+# backend image has no shell.
+#
+#   STORAGE_DISK_WARN_PERCENT=60   warn (log + ak_storage_disk_state=1)
+#   STORAGE_DISK_BLOCK_PERCENT=80  refuse writes, 403 DISK_THRESHOLD_EXCEEDED
+#   STORAGE_DISK_CHECK_INTERVAL_SECS=1
+#
+# An image without #5191 ignores the three variables, so the same profile runs
+# the RED leg.
+# =============================================================================
+services:
+  backend:
+    environment:
+      STORAGE_DISK_WARN_PERCENT: "60"
+      STORAGE_DISK_BLOCK_PERCENT: "80"
+      STORAGE_DISK_CHECK_INTERVAL_SECS: "1"
+    volumes:
+      - dtf_disk:/data/storage
+
+volumes:
+  dtf_disk:
+    name: ak-dtf${DTF_SLOT}_disk
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=64m,mode=1777"
