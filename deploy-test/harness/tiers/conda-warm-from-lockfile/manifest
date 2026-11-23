@@ -1,0 +1,36 @@
+# DTF tier manifest: conda-warm-from-lockfile
+#   (artifact-keeper#4184 warm a Remote's cache from an ingested lockfile;
+#    artifact-keeper#4187 the conda scale fixture generator)
+#
+# Profile-set: filesystem / single + upstreams=mock-conda (for its per-slot
+# 172.16.<slot>.0/24 network and the backend's private-IP allowance; the
+# oracle adds its own upstream on .71, a stdlib server over the generated
+# channel that counts package fetches) + client.conda (micromamba) +
+# conda.warm-fast (CONDA_WARM_UPSTREAM_RPS=100, CONDA_WARM_ITEM_LEASE_SECS=30).
+#
+# THE GAP (#4184): a fleet installing one locked environment from a cold
+# Remote sends each package's first request upstream from every job at once.
+# There was no way to fill the Remote's cache from the lock beforehand:
+# POST /api/v1/conda/{repo}/warm did not exist (404).
+#
+# THE FIX: the warm route takes a stored environment's id and fills the
+# Remote's (or a Virtual's Remote members') proxy cache through the Remote's
+# own fetch path, bounded (8 in flight, a per-second upstream rate),
+# idempotent (an active job is returned; a cached entry is not refetched),
+# resumable (claims under a lease survive a restart), with progress on the
+# API and ak_conda_warm_* metrics, for repo-write callers only. A package
+# inside the Remote's Package Age Policy hold is recorded `held` and is still
+# refused when a client asks for it.
+#
+# FIXTURE #4187 cases prove the generator: 3,000 names x 10 artifacts (.conda
+# and .tar.bz2) with dependency edges in under two minutes, reproducible from
+# its seed, 1k/2k/3k lockfiles closed under their edges, an idempotent
+# parallel upload, and a real micromamba solve and link of 50 names.
+#
+# RED: main's image before #4184 (the warm route answers 404). GREEN: the fix.
+# RATE_LIMIT_ENABLED=false: a fleet of parallel downloads from one address.
+PROFILES="storage.filesystem upstreams.mock-conda client.conda conda.warm-fast"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+COVERS="4184"

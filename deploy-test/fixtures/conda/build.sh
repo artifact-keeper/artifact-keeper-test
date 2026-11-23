@@ -13,10 +13,16 @@
 # merely that repodata listed it).
 #
 # Usage:
-#   build.sh <out-dir> [name] [version] [build] [subdir] [marker-token]
+#   build.sh <out-dir> [name] [version] [build] [subdir] [marker-token] [format]
 #
-# Deterministic; writes <out-dir>/<name>-<version>-<build>.tar.bz2 and echoes
-# that path on stdout. Nothing is committed to the tree (built into $WORK_DIR).
+# format is `tar.bz2` (v1, the default) or `conda` (v2: an outer zip holding
+# metadata.json, info-<stem>.tar.zst and pkg-<stem>.tar.zst; artifact-keeper#4187).
+# CONDA_PKG_FORMAT sets it too. The .conda path goes through gen_channel.py
+# (see gen-channel.sh for its Python 3.14 / python:3.14-slim requirement) and
+# is byte-deterministic; the v1 path stays a plain host `tar -cjf`.
+#
+# Writes <out-dir>/<name>-<version>-<build>.<format> and echoes that path on
+# stdout. Nothing is committed to the tree (built into $WORK_DIR).
 # =============================================================================
 set -euo pipefail
 
@@ -26,6 +32,14 @@ VERSION="${3:-1.0}"
 BUILD="${4:-0}"
 SUBDIR="${5:-noarch}"
 MARKER_TOKEN="${6:-DTF-CONDA-INSTALLED-${VERSION}}"
+FORMAT="${7:-${CONDA_PKG_FORMAT:-tar.bz2}}"
+
+if [ "$FORMAT" = "conda" ]; then
+  exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gen-channel.sh" package \
+    --out "$OUT_DIR" --name "$NAME" --version "$VERSION" --build "$BUILD" \
+    --subdir "$SUBDIR" --format conda --marker "$MARKER_TOKEN"
+fi
+[ "$FORMAT" = "tar.bz2" ] || { echo "build.sh: format must be tar.bz2 or conda, got '$FORMAT'" >&2; exit 2; }
 
 mkdir -p "$OUT_DIR"
 work="$(mktemp -d)"
