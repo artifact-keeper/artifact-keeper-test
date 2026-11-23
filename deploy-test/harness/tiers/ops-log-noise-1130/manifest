@@ -1,0 +1,30 @@
+# DTF tier manifest: ops-log-noise-1130  (artifact-keeper#5656, 1.13.0)
+# Profile-set: filesystem + logging.json-file (the oracle reads `docker logs`).
+#
+# THE BUG (#5656): operator noise found by the 1.12.0 customer-random-ops swarm
+#   * a fresh install logged ~50 INFO `sqlx::postgres::notice` lines: the
+#     migrations' `... does not exist, skipping` notices and "0 row(s)" repair
+#     notices;
+#   * "Background schedulers started" was logged twice;
+#   * every upload logged two INFO quality-check lines ("Quality check
+#     completed", "Artifact health score recalculated");
+#   * every generic file was graded F (the metadata-completeness check scores
+#     a description/license/author/docs a generic upload never carries);
+#   * a storage GC pass that found nothing logged no summary;
+#   * no build-info metric.
+#
+# Oracle (discriminating, RELEASE_GATE=1)
+#   (FIX)     the fresh-install log has no `sqlx::postgres::notice` line.
+#   (FIX)     "Background schedulers started" is logged once.
+#   (FIX)     five generic uploads log no quality-check INFO line.
+#   (CONTROL) each upload's quality check still ran: its health score exists.
+#   (FIX)     a generic artifact's health grade is not F and it has no
+#             metadata score.
+#   (FIX)     a live POST /admin/storage-gc logs one "Storage GC complete" line.
+#   (FIX)     /api/v1/admin/metrics exports ak_build_info with # HELP text.
+# Every FIX case is RED on main (counts: ~50 notices, 2 start lines, 10
+# quality lines, grade F, no GC line, no ak_build_info).
+COVERS="5656"
+PROFILES="storage.filesystem logging.json-file"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -4157,6 +4157,22 @@ jobs:
           # before the fix, NOT ON THIS LINE on a 1.12.x candidate. Required.
           - group: security-1.13.0-plugins
             tiers: wasm-plugin-execution
+          # 1.13.0 (artifact-keeper#5651, #5656, #5601): the health monitor
+          # records a MinIO outage, a scanner-adapter outage and a Postgres
+          # restart, and /readyz answers within 2.5 s with Postgres stopped
+          # (health-monitor-dependencies; MinIO and a python stand-in
+          # adapter, no Trivy DB; about a minute); a fresh install logs no
+          # Postgres notices, uploads log no quality-check INFO lines, generic
+          # files are not graded F, a GC pass logs its summary and
+          # ak_build_info is exported (ops-log-noise-1130; filesystem; under a
+          # minute). Both red on main before the fix, NOT ON THIS LINE on a
+          # 1.12.x candidate. Also a regression pin for #5601: three replicas
+          # started together on an empty database come up with no restart and
+          # no INVALID index (multi-replica-cold-boot; filesystem, three
+          # replicas; under a minute), green since #5999 (1.12.0), red on
+          # 1.11.x. Required.
+          - group: ops-1.13.0
+            tiers: health-monitor-dependencies ops-log-noise-1130 multi-replica-cold-boot
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}
