@@ -349,6 +349,29 @@ for spec in "rhas/api/v1/gems/${GEM}.json:gem.json" "rhas/quick/Marshal.4.8/${GE
   [ -n "$(mock_put "/${P}/${spec%%:*}" "$W/${spec##*:}")" ] || SETUP_ERR="${SETUP_ERR} mock:${spec%%:*}"
 done
 
+# --- the last #5620 walks (1.13.0, w16): the PyPI JSON API through the PyPI
+# virtuals above, and the Cargo sparse index through a virtual whose
+# unavailable member has an age gate (the gated arm of the index merge read a
+# failed member fetch as a miss). Gated Remotes of their own, over the same
+# failing upstream paths, so their circuits are their own.
+for m in p503:503 p403:403; do
+  for f in "pypi/${PYPKG}/json" "pypi/${PYPKG}/1.0/json"; do
+    [ "$(mock_status "/${P}/${m%%:*}/${f}" "${m#*:}")" = "${m#*:}" ] || SETUP_ERR="${SETUP_ERR} mock:${m}:${f}"
+  done
+done
+age_gate_on(){ # <key>: Package age gate on, upstream_publish_time, 7 days
+  local c
+  c="$(curl -s -o "$W/ag.json" -w '%{http_code}' -X PUT "$BASE/api/v1/repositories/$1/age-gate" \
+    -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+    -d '{"enabled":true,"min_age_days":7,"mode":"upstream_publish_time"}' || true)"
+  [ "$c" = "200" ] || SETUP_ERR="${SETUP_ERR} age-gate:$1:${c}:$(snip "$W/ag.json")"
+}
+for m in 503 403; do
+  mk "vmo-kg${m}-${SUF}" cargo remote "${UP}/${P}/k${m}"
+  age_gate_on "vmo-kg${m}-${SUF}"
+  virt "vmo-kgv${m}-${SUF}" cargo "vmo-k404-${SUF}" "vmo-kg${m}-${SUF}"
+done
+
 # Uploads: the hosted .apk and the hosted Maven jar.
 up(){ # <path> <file>
   local c
@@ -638,6 +661,33 @@ for r in "@v/list" "@latest" "@v/v1.0.0.info"; do
   case "$ST" in 5??) ;; *) fail_g "plain Go Remote ${r} answered ${ST}, expected a 5xx for an upstream outage";; esac
 done
 finish_case "a permanent member 4xx did not read as a miss, or a plain Go Remote reported its outage as a miss"
+
+# The last #5620 walks (artifact-keeper 1.13.0): the PyPI JSON API, and the
+# Cargo sparse index through an age-gated unavailable member.
+CONTROLS_5620=""
+begin_test "FIX #5620: a PyPI virtual [404 member, 503 member] answers the JSON API (project and release) 503 with Retry-After, not 404"
+reset_case
+for r in "pypi/${PYPKG}/json" "pypi/${PYPKG}/1.0/json"; do
+  get "/pypi/vmo-pv503-${SUF}/${r}" "$W/pj503"; want_503 "pypi ${r} [404, 503]" "$W/pj503" "$ST"
+  get "/pypi/vmo-pv403-${SUF}/${r}" "$W/pj403"; note "control pypi ${r} [404, 403] -> ${ST}"
+  CONTROLS_5620="${CONTROLS_5620} pypi-${r}=${ST}"
+done
+finish_case "an unavailable member made the PyPI JSON API 404"
+
+begin_test "FIX #5620: a Cargo virtual [404 member, age-gated 503 member] answers the sparse index 503 with Retry-After, not 404"
+reset_case
+get "/cargo/vmo-kgv503-${SUF}/index/${CRATE_IDX}" "$W/kg503"; want_503 "cargo index [404, gated 503]" "$W/kg503" "$ST"
+get "/cargo/vmo-kgv403-${SUF}/index/${CRATE_IDX}" "$W/kg403"; note "control cargo [404, gated 403] -> ${ST}"
+CONTROLS_5620="${CONTROLS_5620} cargo-gated=${ST}"
+finish_case "an unavailable age-gated member made the Cargo sparse index 404"
+
+begin_test "CONTROL (#5620): the PyPI JSON API and the gated Cargo index over [404 member, 403 member] answer 404"
+reset_case
+for c in $CONTROLS_5620; do
+  [ "${c##*=}" = "404" ] || fail_g "${c%=*} answered ${c##*=}, expected 404"
+done
+note "controls:${CONTROLS_5620}"
+finish_case "a permanent member 4xx did not read as a miss"
 
 begin_test "FIX #5504: a Maven virtual over a hosted member whose stored object is gone answers .sha1 503, not 404"
 reset_case
