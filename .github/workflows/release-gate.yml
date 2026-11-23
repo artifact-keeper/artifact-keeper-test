@@ -4206,6 +4206,20 @@ jobs:
           # candidate. Local containers only, so required.
           - group: fixes-1.13.0-robustness
             tiers: mcp-sync-interrupted-pass push-sync-partition-retry
+          # 1.13.0 (artifact-keeper#4184, fixtures #4187): POST
+          # /api/v1/conda/{repo}/warm fills a Remote's proxy cache from an
+          # ingested 1k lockfile (deploy-test/fixtures/conda/gen-channel.sh,
+          # 3,000 names x 10 artifacts generated at test time, about 6 s, and
+          # cached under $RUNNER_TEMP for the job). After the warm, 8 parallel
+          # installers through a Virtual make 0 upstream package fetches (a
+          # cold Remote: >= 1,000), a held package stays 409, the warm keeps
+          # to 8 in flight and its upstream rate, and it resumes across a
+          # backend restart (conda-warm-from-lockfile; filesystem,
+          # upstreams.mock-conda network, client.conda, conda.warm-fast; about
+          # 3 min). Red on main before the fix (404), NOT ON THIS LINE on a
+          # 1.12.x candidate. Local containers only, so required.
+          - group: perf-1.13.0-conda
+            tiers: conda-warm-from-lockfile
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}
