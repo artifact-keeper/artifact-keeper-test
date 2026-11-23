@@ -11,11 +11,14 @@
 #
 # PHASE 1 (UPGRADE_OLD_IMAGE, 1.12.4): an npm Remote with curation on and a
 #   popularity rule {download_name_checks, block_typosquat, popular
-#   ["paypal"]}, written the 1.12 way (no ascii_lookalikes). It refuses
-#   `paypa1` there.
+#   ["paypal"]}, written the 1.12 way (no ascii_lookalikes), plus a
+#   global-scope rule the same way with popular ["docker"]. They refuse
+#   `paypa1` and `d0cker` there.
 # PHASE 2 (the candidate, same volume and database):
 #   FIX #5840  the existing rule carries ascii_lookalikes "block" and still
 #              refuses `paypa1` with 403 curation_blocked.
+#   FIX #5840  the global rule is stamped "block" too and still refuses
+#              `d0cker` on both Remotes.
 #   FIX #5840  a rule created after the upgrade the same way (no
 #              ascii_lookalikes) on a second Remote does NOT refuse
 #              `paypa1` (a flag; the mock answers 404 for the unknown name).

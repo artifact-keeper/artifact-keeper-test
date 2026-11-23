@@ -85,10 +85,16 @@ if ! wait_health 80; then infra_fail "the old image did not become healthy"; end
 TOK="$(login)"
 [ -n "$TOK" ] || { infra_fail "admin login failed on the old image"; end_suite; }
 remote_with_rule "$OLD_R"
+# A global-scope rule too (it applies to every curated Remote), with its own
+# popular name so it does not touch the paypal cases: d0cker for docker.
+need2xx "$(api POST /api/v1/curation/rules "$(jq -nc \
+  '{scope:"global",rule_type:"popularity",action:"block",priority:30,reason:"dtf #5840 global",config:{download_name_checks:true,block_typosquat:true,popular_packages:["docker"]}}')")" "global rule"
+GLOBAL_ID="$(jqr '.id // empty' < "$W/api.json")"
 st_old="$(tarball "$OLD_R" paypa1)"; b_old=0; blocked && b_old=1
+st_gold="$(tarball "$OLD_R" d0cker)"; b_gold=0; blocked && b_gold=1
 if [ -n "$ERR" ]; then infra_fail "$ERR"; end_suite; fi
-if [ "$st_old" = "403" ] && [ "$b_old" = "1" ]; then pass
-else infra_fail "the old image did not refuse paypa1 (HTTP ${st_old}); wrong UPGRADE_OLD_IMAGE?"; end_suite; fi
+if [ "$st_old$b_old$st_gold$b_gold" = "40314031" ]; then pass
+else infra_fail "the old image did not refuse paypa1 (HTTP ${st_old}) and d0cker (HTTP ${st_gold}); wrong UPGRADE_OLD_IMAGE?"; end_suite; fi
 
 # =============================================================================
 # PHASE 2: the candidate on the same volume and database.
@@ -112,6 +118,14 @@ st="$(tarball "$NEW_R" paypa1)"; b=0; blocked && b=1
 begin_test "FIX #5840: a rule written after the upgrade (no ascii_lookalikes) flags paypa1 instead of refusing it"
 if [ -z "$ERR" ] && [ "$st" != "403" ] && [ "$b" = "0" ]; then pass
 else fail "setup:${ERR:- ok}; HTTP ${st} (blocked=${b}); want anything but 403 curation_blocked"; fi
+
+api GET "/api/v1/curation/rules/${GLOBAL_ID}" >/dev/null
+gstamp="$(jqr '.config.ascii_lookalikes // empty' < "$W/api.json")"
+g1="$(tarball "$OLD_R" d0cker)"; gb1=0; blocked && gb1=1
+g2="$(tarball "$NEW_R" d0cker)"; gb2=0; blocked && gb2=1
+begin_test "FIX #5840: the global-scope rule written before the upgrade is stamped \"block\" and still refuses d0cker on every curated Remote"
+if [ "$gstamp" = "block" ] && [ "$g1$gb1$g2$gb2" = "40314031" ]; then pass
+else fail "config.ascii_lookalikes='${gstamp}'; old Remote HTTP ${g1} (blocked=${gb1}); new Remote HTTP ${g2} (blocked=${gb2})"; fi
 
 s1="$(tarball "$OLD_R" "$UNI_ENC")"; b1=0; blocked && b1=1
 s2="$(tarball "$NEW_R" "$UNI_ENC")"; b2=0; blocked && b2=1
