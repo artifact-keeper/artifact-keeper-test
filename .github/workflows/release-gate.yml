@@ -4175,9 +4175,15 @@ jobs:
           # started together on an empty database come up with no restart and
           # no INVALID index (multi-replica-cold-boot; filesystem, three
           # replicas; under a minute), green since #5999 (1.12.0), red on
-          # 1.11.x. Required.
+          # 1.11.x. An air-gapped scanner adapter's 30-day-old Trivy DB is
+          # reported with its age and as stale by
+          # /api/v1/admin/security/vuln-db, in ak_scanner_vuln_db_stale and
+          # in the log, and polling the report probes the adapter at most
+          # once (artifact-keeper#5177, scan-vuln-db-age; a python stand-in
+          # adapter, no Trivy DB; under a minute), red on main before the
+          # fix, NOT ON THIS LINE on a 1.12.x candidate. Required.
           - group: ops-1.13.0
-            tiers: health-monitor-dependencies ops-log-noise-1130 multi-replica-cold-boot
+            tiers: health-monitor-dependencies ops-log-noise-1130 multi-replica-cold-boot scan-vuln-db-age
           # 1.13.0 robustness fixes. A Remote MCP sync pass whose process is
           # killed (docker kill of the backend mid-pass, against the
           # webhooks.mock-blackhole :81 upstream) is reported by GET
