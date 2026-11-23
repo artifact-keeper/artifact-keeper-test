@@ -324,4 +324,50 @@ note "HTTP ${code}; versions ${n:-none}; latest ${lat}"
 [ "$lat" = "1.0.11" ] || fail_g "dist-tags.latest = '${lat}', expected 1.0.11"
 finish_case "a mixed-prerelease packument is not served through the age gate"
 
+# =============================================================================
+# #5617: exhausting PROXY_UPSTREAM_MAX_DETACHED_FILLS (default 16) is counted.
+# 20 cold Cargo sparse-index reads of distinct crates, each held 3 s by the
+# mock, at once: 16 buffered fills take a detached permit, the rest find none
+# and fill in their request. All are served; before 1.13.0 the refusals were
+# a DEBUG line only, with no metric.
+# =============================================================================
+mock_delay(){ curl -s --max-time 5 -X POST "${MOCK}/__delay?path=$1&ms=$2" | jqr '.ms // empty'; }
+metric(){ # <name> [label filter] -> the sample value, empty when absent
+  curl -s --max-time 10 -H "$(auth)" "$BASE/api/v1/admin/metrics" 2>/dev/null \
+    | grep -E "^$1(\{| )" | grep -F "${2:-}" | awk '{print $NF}' | head -1 || true
+}
+begin_test "FIX #5617: 20 concurrent cold fills over the default cap of 16 detached fills are all served and the refusals are counted"
+reset_case
+CAP_N=20; CAP_ERR=""
+for i in $(seq 1 "$CAP_N"); do
+  c="dtfcap${i}x${DTF_SLOT}x$$"
+  printf '{"name":"%s","vers":"1.0.0","deps":[],"cksum":"%064d","features":{},"yanked":false}\n' "$c" 0 > "$W/cap.idx"
+  [ -n "$(mock_put "/cargo/${c:0:2}/${c:2:2}/${c}" "$W/cap.idx" text/plain)" ] || CAP_ERR="${CAP_ERR} put:${c}"
+  [ "$(mock_delay "/cargo/${c:0:2}/${c:2:2}/${c}" 3000)" = "3000" ] || CAP_ERR="${CAP_ERR} delay:${c}"
+done
+[ -z "$CAP_ERR" ] || fail_g "mock setup:${CAP_ERR}"
+refused0="$(metric ak_proxy_detached_fills_total 'outcome="refused"')"; refused0="${refused0%.*}"
+for i in $(seq 1 "$CAP_N"); do
+  c="dtfcap${i}x${DTF_SLOT}x$$"
+  ( fetch "$BASE/cargo/${R_CARGO}/index/${c:0:2}/${c:2:2}/${c}" "$W/cap-${i}.o" > "$W/cap-${i}.code" ) &
+done
+wait
+ok=0; codes=""
+for i in $(seq 1 "$CAP_N"); do
+  code="$(cat "$W/cap-${i}.code" 2>/dev/null || echo 000)"; codes="${codes} ${code}"
+  [ "$code" = "200" ] && grep -q "dtfcap${i}x" "$W/cap-${i}.o" && ok=$((ok + 1))
+done
+refused="$(metric ak_proxy_detached_fills_total 'outcome="refused"')"
+started="$(metric ak_proxy_detached_fills_total 'outcome="started"')"
+limit="$(metric ak_proxy_detached_fills_limit)"
+in_flight="$(metric ak_proxy_detached_fills_in_flight 'kind="buffered"')"
+note "statuses:${codes}"
+note "refused ${refused0:-absent} -> ${refused:-absent}; started ${started:-absent}; limit ${limit:-absent}; buffered in flight ${in_flight:-absent}"
+[ "$ok" = "$CAP_N" ] || fail_g "${ok}/${CAP_N} index reads served with their crate (a refused permit must still fill in the request)"
+[ -n "$refused" ] && [ "${refused%.*}" -gt "${refused0:-0}" ] 2>/dev/null \
+  || fail_g "ak_proxy_detached_fills_total{outcome=\"refused\"} did not go up (${refused0:-absent} -> ${refused:-absent})"
+[ -n "$started" ] && [ "${started%.*}" -ge 1 ] 2>/dev/null || fail_g "no detached fill counted as started (${started:-absent})"
+[ "${limit%.*}" = "16" ] || fail_g "ak_proxy_detached_fills_limit = ${limit:-absent}, expected the default 16"
+finish_case "exhausting the detached-fill cap left no metric"
+
 end_suite

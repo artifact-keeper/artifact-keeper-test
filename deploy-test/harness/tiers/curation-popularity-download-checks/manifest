@@ -26,6 +26,11 @@
 #   NONE  Remote, curation off, no rules
 #   PYON  PyPI Remote, curation on, opted-in rule with popular list ["click"]
 #   PYOFF PyPI Remote, curation on, the same rule WITHOUT download_name_checks
+#   ASC   npm Remote, curation on, opted-in rule with popular list ["dtf-he1d"]
+#         (#5840): its UTS #39 skeleton is `dtf-held`, so the served package
+#         `dtf-held` is an ALL-ASCII skeleton collision, and `dtf-hеld`
+#         (Cyrillic е, U+0435) a Unicode lookalike of the same name
+#   PYSTRICT PyPI Remote, like PYON plus "ascii_lookalikes": "block"
 #
 # Cases:
 #   FIX #5274   ON refuses the homoglyph tarball: 403 curation_blocked, and
@@ -38,16 +43,31 @@
 #   CONTROL     OFF serves `dtf-held`, does not 403 the homoglyph, and logs no
 #               flag line for OFF (upgrade safety: an existing rule changes
 #               no download).
-#   FIX #5274   PYON refuses the ASCII confusable `c1ick` (simple index,
-#               403 curation_blocked). PyPI refuses non-PEP 508 names, so an
-#               ASCII confusable is the only lookalike that reaches the check.
+#   FIX #5840   PYON does NOT refuse the ASCII confusable `c1ick` (simple
+#               index; a flag, not 403 curation_blocked). Until 1.13.0 this
+#               case was "FIX #5274: PYON refuses c1ick": an all-ASCII
+#               skeleton collision (1 -> l) is a one-character lexical
+#               difference, so it now flags like edit distance.
+#   CONTROL     PYSTRICT (ascii_lookalikes "block") refuses `c1ick` with 403.
+#               (Rules created by this tier are new rules: the 1.13 default
+#               "flag" applies. Existing rules are stamped "block" on upgrade,
+#               which curation-ascii-lookalikes-upgrade proves.)
 #   CONTROL     PYOFF does not refuse `c1ick`.
+#   FIX #5840   ASC serves `dtf-held` (200), an all-ASCII skeleton match.
+#   CONTROL     ASC refuses the Cyrillic `dtf-hеld` with 403 curation_blocked:
+#               a lookalike with a non-ASCII character still blocks.
+#   FIX #5840   four more pulls from ASC are all 200, the backend logs ONE
+#               flag line for ASC/dtf-held (one per pull before), and
+#               ak_curation_proxy_flags_total{repository=ASC} is at least 5.
 #   CONTROL     NONE serves `dtf-held` and does not 403 the homoglyph.
 #
 # Red on an image without #5275 (ghcr ...:main before the merge): every FIX
-# case fails (no name checks on downloads, no warnings field); every CONTROL
-# passes. Green on the #5275 image.
-COVERS="5274"
+# #5274 case fails (no name checks on downloads, no warnings field); every
+# CONTROL passes. Green on the #5275 image.
+# #5840: RED on main sha-0a3e08d (c1ick and dtf-held refused, a flag line per
+# pull, no counter), GREEN with the w16 proxy PR; its CONTROL cases pass on
+# both.
+COVERS="5274 5840"
 PROFILES="storage.filesystem upstreams.mock-npm logging.json-file"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

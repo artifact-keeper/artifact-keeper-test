@@ -1,0 +1,35 @@
+# DTF tier manifest: curation-ascii-lookalikes-upgrade  (artifact-keeper#5840, 1.13.0)
+# Profile-set: filesystem + the mock npm upstream (upstreams.mock-npm).
+#
+# 1.13.0 adds the `popularity` rule setting `ascii_lookalikes` ("block" |
+# "flag"). It decides whether a download is refused when the name is all
+# ASCII and its confusable skeleton matches a popular name (`paypa1` for
+# `paypal`). New rules default to "flag". Through 1.12 a
+# `block_typosquat: true` rule refused those names, and an upgrade must not
+# weaken an existing install, so migration 421 stamps "block" on every
+# existing `block_typosquat` rule.
+#
+# PHASE 1 (UPGRADE_OLD_IMAGE, 1.12.4): an npm Remote with curation on and a
+#   popularity rule {download_name_checks, block_typosquat, popular
+#   ["paypal"]}, written the 1.12 way (no ascii_lookalikes), plus a
+#   global-scope rule the same way with popular ["docker"]. They refuse
+#   `paypa1` and `d0cker` there.
+# PHASE 2 (the candidate, same volume and database):
+#   FIX #5840  the existing rule carries ascii_lookalikes "block" and still
+#              refuses `paypa1` with 403 curation_blocked.
+#   FIX #5840  the global rule is stamped "block" too and still refuses
+#              `d0cker` on both Remotes.
+#   FIX #5840  a rule created after the upgrade the same way (no
+#              ascii_lookalikes) on a second Remote does NOT refuse
+#              `paypa1` (a flag; the mock answers 404 for the unknown name).
+#   CONTROL    on both Remotes the Cyrillic `pаypal` (а U+0430) is refused.
+#   FIX #5840  `ascii_lookalikes: "Block"` is refused with 400.
+#
+# RED with main sha-0a3e08d as the candidate: no migration 421 (no stamp) and
+# every ASCII lookalike refused, so the "new rule flags" case fails. GREEN
+# with the artifact-keeper PR for #5840.
+COVERS="5840"
+PROFILES="storage.filesystem upstreams.mock-npm"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPGRADE_OLD_IMAGE="${UPGRADE_OLD_IMAGE:-ghcr.io/artifact-keeper/artifact-keeper-backend:1.12.4}"

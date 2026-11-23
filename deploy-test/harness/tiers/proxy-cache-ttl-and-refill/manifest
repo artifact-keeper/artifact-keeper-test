@@ -23,6 +23,8 @@
 #        (confusing-browser-globals) and the client saw a dropped connection.
 # #4432  The age gate overwrote dist-tags.latest with the newest allowed
 #        version, prereleases included.
+# #5617  (1.13.0) Exhausting PROXY_UPSTREAM_MAX_DETACHED_FILLS was a DEBUG
+#        line only: no metric counted a fill that found no detached permit.
 #
 # THE GATES
 #   (FIX)      RED on 1.10.0, GREEN on 1.11.0 and main:
@@ -46,6 +48,12 @@
 #              #4432 latest 1.1.0 allowed with an allowed 2.0.0-beta.1 -> latest
 #                    stays 1.1.0; latest 1.2.0 published today -> repointed to
 #                    1.1.0 (1.10.0: 2.0.0-beta.1 both times).
+#   (FIX)      RED on main sha-0a3e08d, GREEN with the w16 proxy PR:
+#              #5617 20 concurrent cold Cargo sparse-index reads, each held
+#                    3 s by the mock, over the default cap of 16: all 20
+#                    served, ak_proxy_detached_fills_total{outcome="refused"}
+#                    goes up, `started` is counted and
+#                    ak_proxy_detached_fills_limit is 16 (main: no metric).
 #   (CONTROL)  must hold on BOTH images: a warm generic entry under a 3600 s
 #              TTL is served without an upstream request; a Go Remote serves
 #              .info and @v/list and revalidates @v/list after the TTL; an
@@ -55,6 +63,7 @@
 #
 # RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back.
 # UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5617"
 PROFILES="storage.filesystem upstreams.mock-files"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

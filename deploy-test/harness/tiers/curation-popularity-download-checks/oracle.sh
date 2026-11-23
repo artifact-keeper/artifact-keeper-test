@@ -26,9 +26,16 @@ OFF="dtf-popdl-off-${SUF}"
 NONE="dtf-popdl-none-${SUF}"
 PYON="dtf-popdl-pyon-${SUF}"
 PYOFF="dtf-popdl-pyoff-${SUF}"
+ASC="dtf-popdl-asc-${SUF}"
+PYSTRICT="dtf-popdl-pystrict-${SUF}"
 PKG="dtf-held"
 # Cyrillic о (U+043E, UTF-8 D0 BE) for the `o` of the popular name dtf-hold.
 HOMO_ENC="dtf-h%D0%BEld"
+# #5840: the ASC rule's popular list is ["dtf-he1d"]. Its UTS #39 skeleton is
+# `dtf-held` (digit 1 folds to l), so the served package `dtf-held` is an
+# ALL-ASCII skeleton collision, and `dtf-hеld` (Cyrillic е, U+0435, UTF-8 D0
+# B5) is a Unicode lookalike of the same name.
+ASC_UNI_ENC="dtf-h%D0%B5ld"
 
 api() { # <method> <path> [json] -> HTTP code, body in $W/api.json
   local -a args=(-s -o "$W/api.json" -w '%{http_code}' --max-time 30 -X "$1" -H "Authorization: Bearer ${TOK}")
@@ -59,7 +66,7 @@ RULES=()
 cleanup() {
   local r
   for r in "${RULES[@]}"; do api DELETE "/api/v1/curation/rules/${r}" >/dev/null || true; done
-  for r in "$VON" "$ON" "$OFF" "$NONE" "$PYON" "$PYOFF"; do api DELETE "/api/v1/repositories/${r}" >/dev/null || true; done
+  for r in "$VON" "$ON" "$OFF" "$NONE" "$PYON" "$PYOFF" "$ASC" "$PYSTRICT"; do api DELETE "/api/v1/repositories/${r}" >/dev/null || true; done
 }
 add_exit_handler "cleanup"
 ERR=""
@@ -72,12 +79,13 @@ curate() { # <key>
   need2xx "$(api PATCH "/api/v1/repositories/$1" '{"curation_enabled":true,"curation_default_action":"allow"}')" "curation on $1"
 }
 repo_id() { api GET "/api/v1/repositories/$1" >/dev/null; jq -r '.id // empty' "$W/api.json" 2>/dev/null || true; }
-# rule <repo key> <opt-in true|false> [popular list JSON] -> saves the response as $W/rule-<key>.json
+# rule <repo key> <opt-in true|false> [popular list JSON] [extra config JSON] -> saves the response as $W/rule-<key>.json
 rule() {
-  local id cfg popular="${3:-[\"dtf-hold\"]}"
+  local id cfg none='{}' popular="${3:-[\"dtf-hold\"]}"
+  local extra="${4:-$none}"
   id="$(repo_id "$1")"
-  cfg="$(jq -nc --argjson p "$popular" --argjson o "$2" \
-    '{block_typosquat:true,popular_packages:$p} + (if $o then {download_name_checks:true} else {} end)')"
+  cfg="$(jq -nc --argjson p "$popular" --argjson o "$2" --argjson x "$extra" \
+    '{block_typosquat:true,popular_packages:$p} + (if $o then {download_name_checks:true} else {} end) + $x')"
   need2xx "$(api POST /api/v1/curation/rules "$(jq -nc --arg r "$id" --argjson c "$cfg" \
     '{staging_repo_id:$r,rule_type:"popularity",action:"block",priority:10,reason:"dtf #5274 popularity",config:$c}')")" "rule on $1"
   cp "$W/api.json" "$W/rule-$1.json"
@@ -90,10 +98,14 @@ mk "$NONE" remote "${MOCK}/none"
 mk "$VON" virtual
 mk "$PYON" remote "${MOCK}/pyon" pypi
 mk "$PYOFF" remote "${MOCK}/pyoff" pypi
+mk "$ASC" remote "${MOCK}/asc"
+mk "$PYSTRICT" remote "${MOCK}/pystrict" pypi
 need2xx "$(api POST "/api/v1/repositories/${VON}/members" "$(jq -nc --arg m "$NONE" '{member_key:$m}')")" "member of ${VON}"
-curate "$ON"; curate "$OFF"; curate "$VON"; curate "$PYON"; curate "$PYOFF"
+curate "$ON"; curate "$OFF"; curate "$VON"; curate "$PYON"; curate "$PYOFF"; curate "$ASC"; curate "$PYSTRICT"
 rule "$ON" true; rule "$VON" true; rule "$OFF" false
 rule "$PYON" true '["click"]'; rule "$PYOFF" false '["click"]'
+rule "$ASC" true '["dtf-he1d"]'
+rule "$PYSTRICT" true '["click"]' '{"ascii_lookalikes":"block"}'
 if [ -z "$ERR" ]; then pass; else infra_fail "$ERR"; end_suite; fi
 
 # --- opted in ---------------------------------------------------------------------
@@ -132,8 +144,18 @@ simple() {
   curl -s -o "$W/tgz.out" -w '%{http_code}' --max-time 60 -H "Authorization: Bearer ${TOK}" \
     "${BASE_URL}/pypi/$1/simple/$2/" 2>/dev/null || echo 000
 }
-st="$(simple "$PYON" c1ick)"
-begin_test "FIX #5274: opted-in PyPI Remote refuses an ASCII confusable (c1ick for click, 403 curation_blocked)"
+# #5840 (1.13.0): an ALL-ASCII skeleton collision is a flag on a download,
+# not a refusal for a rule without `ascii_lookalikes` (a rule written after
+# the upgrade); `ascii_lookalikes: "block"` keeps the 1.12 refusal. Rules that
+# existed before 1.13 are stamped "block" (curation-ascii-lookalikes-upgrade).
+# (Until 1.13.0 the PYON case below was "refuses c1ick", #5274.)
+st="$(simple "$PYON" c1ick)"; b=0; blocked && b=1
+begin_test "FIX #5840: opted-in PyPI Remote does not refuse the ASCII confusable c1ick (a flag, not 403 curation_blocked)"
+if [ "$st" != "403" ] && [ "$b" = "0" ]; then pass
+else fail "HTTP ${st} (blocked=${b}); want anything but 403 curation_blocked" "$(head -c 300 "$W/tgz.out" 2>/dev/null)"; fi
+
+st="$(simple "$PYSTRICT" c1ick)"
+begin_test "CONTROL (#5840): with ascii_lookalikes \"block\" the PyPI Remote refuses c1ick (403 curation_blocked)"
 if [ "$st" = "403" ] && blocked; then pass
 else fail "HTTP ${st}, want 403 curation_blocked" "$(head -c 300 "$W/tgz.out" 2>/dev/null)"; fi
 
@@ -141,6 +163,31 @@ st="$(simple "$PYOFF" c1ick)"; b=0; blocked && b=1
 begin_test "CONTROL: a PyPI rule without download_name_checks does not refuse c1ick"
 if [ "$st" != "403" ] && [ "$b" = "0" ]; then pass
 else fail "HTTP ${st} (blocked=${b}); want anything but 403 curation_blocked"; fi
+
+# --- #5840: ASCII lookalike served, Unicode lookalike refused, one flag line ---------
+st="$(tarball "$ASC" "$PKG")"
+begin_test "FIX #5840: an all-ASCII name whose skeleton matches a popular name downloads (dtf-held for dtf-he1d, 200)"
+if [ "$st" = "200" ]; then pass
+else fail "HTTP ${st}, want 200 (a flag serves)" "$(head -c 300 "$W/tgz.out" 2>/dev/null)"; fi
+
+st="$(tarball "$ASC" "$ASC_UNI_ENC")"
+begin_test "CONTROL (#5840): the Unicode lookalike of the same popular name is still refused (403 curation_blocked)"
+if [ "$st" = "403" ] && blocked; then pass
+else fail "HTTP ${st}, want 403 curation_blocked" "$(head -c 300 "$W/tgz.out" 2>/dev/null)"; fi
+
+# Four more pulls of the flagged package: still served, but the flag line is
+# written once per (repository, package, rule) per hour.
+codes=""
+for _ in 1 2 3 4; do codes="${codes} $(tarball "$ASC" "$PKG")"; done
+backend_log
+n="$(flag_lines "$ASC")"
+flags="$(curl -s --max-time 10 -H "Authorization: Bearer ${TOK}" "${BASE_URL}/api/v1/admin/metrics" 2>/dev/null \
+  | grep '^ak_curation_proxy_flags_total' | grep -F "repository=\"${ASC}\"" | grep -oE '[0-9.]+$' | head -1 || true)"
+begin_test "FIX #5840: five pulls of a flagged package log one flag line and count every flag"
+if [ "$(echo "$codes" | tr ' ' '\n' | grep -c '^200$')" = "4" ] && [ "${n:-0}" = "1" ] \
+   && [[ "${flags%.*}" =~ ^[0-9]+$ ]] && [ "${flags%.*}" -ge 5 ]; then pass
+else fail "pulls:${codes}; ${n:-?} flag line(s) for ${ASC}/${PKG} (want 1); ak_curation_proxy_flags_total=${flags:-absent} (want at least 5)" \
+  "$(grep 'curation flagged' "$W/backend.log" | grep -F "$ASC" | tail -3)"; fi
 
 # --- not opted in / no curation: unchanged ----------------------------------------
 st="$(tarball "$OFF" "$PKG")"
