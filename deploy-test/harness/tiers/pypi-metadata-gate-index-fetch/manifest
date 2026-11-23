@@ -45,14 +45,18 @@
 #     project read no upstream index (1 index read in all, 2 on main). The
 #     oracle prints the index bytes on the wire and the sidecars' wall time
 #     for the before/after numbers.
-#   (FIX) #6444: a Remote caches wheels while it does not scan; their
-#     sidecars are aged on disk and the Remote switched to fail_closed. Their
-#     `.metadata` fetches the wheel from the upstream 0 times (1 on main) and
-#     answers what the wheel answers, GET and HEAD: a clean wheel (its
-#     METADATA is the cached wheel's own), jinja2 2.10 whose cached bytes
-#     grade vulnerable (403), and a clean wheel through a virtual. When the
-#     upstream reuses a cached file name for other bytes, the metadata served
-#     is the cached wheel's, which was gated. MEASURE lines print the counts.
+#   (FIX) #6444: a Remote caches wheels and their indexes while it does
+#     not scan (real upstreams: the sidecar is the wheel's METADATA and the
+#     index advertises its hash); the wheels' sidecars are aged on disk and
+#     the Remote switched to fail_closed. Their `.metadata` fetches the wheel
+#     from the upstream 0 times (1 on main) and answers what the wheel
+#     answers, GET and HEAD: a clean wheel (its sha256 is the index's
+#     core-metadata), jinja2 2.10 whose cached bytes grade vulnerable (403),
+#     a clean wheel through a virtual. pip downloads a stale wheel through
+#     its metadata. When the upstream reuses a cached file name for other
+#     bytes, the metadata is 503 with Retry-After until the wheel's own
+#     request has gated the new bytes, then the new METADATA. MEASURE lines
+#     print the counts.
 #
 # Red: main before the fix. Green: an image carrying artifact-keeper#6439,
 # artifact-keeper#5983 and artifact-keeper#6444.
