@@ -1,0 +1,13 @@
+# DTF tier manifest: verify-skip-client-verified-oci-default  (artifact-keeper#6468)
+#
+# The default-off half of verify-skip-client-verified-oci: the same oracle on
+# a backend WITHOUT DOWNLOAD_VERIFY_SKIP_CLIENT_VERIFIED. The oracle reads the
+# backend container's environment and, with the option unset, asserts:
+#   DEFAULT: a corrupted OCI blob (one byte flipped on disk) is still refused
+#            502 STORED_OBJECT_INTEGRITY, so the skip is strictly opt-in;
+#   CONTROL: a corrupted generic artifact is 502 and an intact blob is served
+#            whole, as on the opt-in deployment.
+# Green on main and on the change alike: a guard on the default.
+PROFILES="storage.filesystem"
+ORACLE="../verify-skip-client-verified-oci/oracle.sh"
+RATE_LIMIT_ENABLED="false"

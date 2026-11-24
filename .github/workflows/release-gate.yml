@@ -4202,10 +4202,22 @@ jobs:
           # the peer is back instead of using up its 3 retries during the
           # outage (artifact-keeper#6134, push-sync-partition-retry;
           # peer.second-instance + sync.partition-fast, about 2.5 minutes).
+          # A lifecycle sweep updates each format's derived state the way a
+          # single delete does: Maven stored metadata, the Cargo index cache
+          # (and the REST delete's), peer delete sync, audit, artifact.deleted
+          # and search documents (artifact-keeper#6469,
+          # lifecycle-sweep-derived-state; search.mock-opensearch and
+          # webhooks.mock-receiver on 172.16.<slot>.78, about a minute).
+          # DOWNLOAD_VERIFY_SKIP_CLIENT_VERIFIED=oci serves a corrupted OCI
+          # blob unverified for the client to refuse by digest, while the
+          # generic route still answers 502; with the option unset the
+          # corrupted blob is still 502 (artifact-keeper#6468,
+          # verify-skip-client-verified-oci and its -default twin;
+          # filesystem, under a minute each).
           # Red on main before the fixes, NOT ON THIS LINE on a 1.12.x
           # candidate. Local containers only, so required.
           - group: fixes-1.13.0-robustness
-            tiers: mcp-sync-interrupted-pass push-sync-partition-retry
+            tiers: mcp-sync-interrupted-pass push-sync-partition-retry lifecycle-sweep-derived-state verify-skip-client-verified-oci verify-skip-client-verified-oci-default
           # 1.13.0 (artifact-keeper#4184, fixtures #4187): POST
           # /api/v1/conda/{repo}/warm fills a Remote's proxy cache from an
           # ingested 1k lockfile (deploy-test/fixtures/conda/gen-channel.sh,

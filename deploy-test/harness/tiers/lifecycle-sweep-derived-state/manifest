@@ -1,0 +1,41 @@
+# DTF tier manifest: lifecycle-sweep-derived-state  (artifact-keeper#6469)
+#
+# THE BUG (#6469, found by the #6333 audit)
+#   A lifecycle/retention sweep soft-deletes in bulk SQL
+#   (LifecycleService::execute_in_repository), so it never reaches the
+#   per-artifact delete's post-commit steps (ArtifactService::finish_delete
+#   and the REST delete handler). After a sweep:
+#     * Maven: the stored maven-metadata.xml `mvn deploy` uploaded still lists
+#       the swept version in <versions>/<latest>/<release>, and the stored
+#       SNAPSHOT version-level document still names the swept build;
+#     * Cargo: the sparse-index file stays cached (300 s) and keeps listing
+#       the swept version, in the repository and in a Virtual over it; the
+#       REST delete had the same gap (the cache was cleared on publish only);
+#     * peers: no delete sync task, so push/mirror peers keep the version;
+#     * audit: no ARTIFACT_DELETED row;
+#     * events: no artifact.deleted, so no webhook delivery;
+#     * search: the OpenSearch document is never removed.
+#
+# THE ORACLE (oracle.sh)
+#   Each case publishes two versions, backdates one with SQL, runs a
+#   max_age_days policy on that repository through the execute API, and
+#   reads the derived state:
+#     Maven:   GET maven-metadata.xml (GA level and SNAPSHOT level);
+#     Cargo:   GET the sparse index on the Local and the Virtual, warmed
+#              before the sweep; and the same after a REST delete;
+#     generic: SQL on sync_tasks, audit_log and webhook_deliveries, and the
+#              mock OpenSearch request log (BULK delete lines).
+#   CONTROLs (both images): each sweep removes exactly the aged rows; a REST
+#   delete in the generic repository produces the delete task, the audit row,
+#   the webhook delivery and the search DELETE, so the probes can see them.
+#   FIX cases are RED on main and GREEN on the fix.
+#
+# PROFILES
+#   search.mock-opensearch: OPENSEARCH_URL toward the logging mock;
+#   webhooks.mock-receiver + webhooks.v2-producer: a webhook target and the
+#   producer that writes webhook_deliveries. Filesystem storage.
+#
+# RATE_LIMIT_ENABLED=false: ~80 authenticated calls back to back.
+PROFILES="storage.filesystem search.mock-opensearch webhooks.mock-receiver webhooks.v2-producer"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
