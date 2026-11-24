@@ -1,0 +1,23 @@
+# DTF tier manifest: verify-skip-client-verified-oci  (artifact-keeper#6468)
+#
+# THE CHANGE (#6468)
+#   Serve-time SHA-256 verification costs about 7 CPU-seconds per GiB on a
+#   core without SHA extensions and caps one verified stream near 140 MB/s.
+#   DOWNLOAD_VERIFY_SKIP_CLIENT_VERIFIED=oci (opt-in; default unset) turns it
+#   off on OCI blob GETs only, where every client checks the digest it pulled.
+#
+# THE ORACLE (oracle.sh), with the knob set (profile
+# verify.skip-client-verified-oci):
+#   FIX:     a corrupted OCI blob (one byte flipped on disk) is served 200 in
+#            full, unverified, so its body does not hash to the digest the
+#            client asked for (the client is the check). Main ignores the knob
+#            and answers 502 STORED_OBJECT_INTEGRITY.
+#   CONTROL: a corrupted generic artifact on the same backend is still
+#            refused (502), so the knob reaches no other route; an intact blob
+#            is served whole on both images.
+# The default (knob unset): verify-skip-client-verified-oci-default runs this
+# oracle without the option, where a corrupted blob is still 502; and
+# storage-integrity and oci-manifest-scrub still verify OCI blobs.
+PROFILES="storage.filesystem verify.skip-client-verified-oci"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

@@ -1,0 +1,11 @@
+# =============================================================================
+# profiles/verify.skip-client-verified-oci.yml: DOWNLOAD_VERIFY_SKIP_CLIENT_VERIFIED=oci
+# =============================================================================
+# Opts the backend out of serve-time SHA-256 verification on OCI blob GETs
+# only (artifact-keeper#6468): every OCI client checks a blob against the
+# digest it pulled. Every other route keeps verifying.
+# =============================================================================
+services:
+  backend:
+    environment:
+      DOWNLOAD_VERIFY_SKIP_CLIENT_VERIFIED: "oci"
