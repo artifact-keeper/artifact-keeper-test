@@ -260,13 +260,18 @@ fi
 
 # ---------------------------------------------------------------------------
 # 11. Short-lived incident repository in the ops project
-# Expected: create 200; delete 202 with a job (#4311); key then 404.
+# Expected: create 201 with Location (#5744); delete 202 with a job (#4311); key then 404.
 # ---------------------------------------------------------------------------
 INC_KEY="${HAL}-ops-incident-$(date +%s)"
 cs_http POST /api/v1/repositories "$J" "${JSON[@]}" \
   -d "$(jq -nc --arg k "$INC_KEY" --arg p "$HAL_PROJECT_OPS_ID" \
         '{key:$k,name:$k,format:"generic",repo_type:"local",visibility:"private",project_id:$p}')"
-if cs_expect "11 Priya creates incident repo ${INC_KEY} in ${HAL_PROJECT_OPS}" 200; then
+if cs_expect "11 Priya creates incident repo ${INC_KEY} in ${HAL_PROJECT_OPS}" 201; then
+  if [ "$(cs_header location)" = "/api/v1/repositories/${INC_KEY}" ]; then
+    cs_record "11 create points Location at the new repository (#5744)" PASS "$(cs_header location)"
+  else
+    cs_record "11 create points Location at the new repository (#5744)" FAIL "Location $(cs_header location)"
+  fi
   if [ "$(cs_json '.project_id')" = "$HAL_PROJECT_OPS_ID" ]; then
     cs_record "11 incident repo is assigned to the ops project" PASS "project_id ${HAL_PROJECT_OPS_ID}"
   else
