@@ -1,0 +1,46 @@
+# DTF tier manifest: go-zip-gomod-size-bound  (artifact-keeper#6405, fixed by
+# artifact-keeper#6493, 1.13.0)
+# Profile-set: filesystem. The read happens in the Go format handler, ahead of
+# any storage-backend choice.
+#
+# THE BUG (#6405)
+# GoHandler::extract_go_mod_from_zip read the first `go.mod` / `*/go.mod` entry
+# of a module zip with an unbounded read_to_string. The request-size limit
+# bounds the compressed zip, not the inflated entry, so a zip of a few hundred
+# KiB whose go.mod inflates to hundreds of MiB made the server decompress and
+# hold all of it, once in parse_metadata and again in validate. It also took
+# the first `*/go.mod` match, which can be a nested module's file.
+# The fix reads the entry through bounded_archive::read_metadata_from_zip_limited
+# (a 1 MiB cap, re-checked with a capped read when the header understates the
+# size), refuses an oversized go.mod as a validation error, and prefers the
+# `module@version/go.mod` entry.
+#
+# THE PATH
+# The handler runs with the zip body on POST /api/v1/formats/go/test (admin;
+# parse_metadata then validate, body {path, content, base64}). The native
+# PUT /go/{key}/<module>/@v/<ver>.zip stores the zip without reading go.mod
+# (its identity probe on the proxy side was already bounded); chunked uploads
+# call parse_metadata with an empty body. Both stay controls here.
+#
+# Oracle (oracle.sh, RELEASE_GATE=1):
+#   (FIX)     a module zip whose `module@version/go.mod` is 256 MiB of real
+#             content (about 260 KiB deflated) is refused: valid=false naming
+#             "maximum allowed size", answered within 10 s, and the backend's
+#             peak RSS (VmHWM) grows by less than 64 MiB. RED on main d4dd0d4:
+#             valid=true, VmHWM up by hundreds of MiB.
+#   (GUARD)   the same entry with local and central headers rewritten to claim
+#             1 KiB (CRC still of the real content) is refused with no RSS
+#             growth. Green on main too: the zip crate stops the entry at its
+#             declared size ("File is larger than its declared uncompressed
+#             size"), ahead of the capped re-read.
+#   (FIX)     a zip listing a nested `vendor/.../go.mod` before the module's own
+#             is validated against the module's own go.mod (valid=true). RED on
+#             main: the nested module path is read and the zip is refused.
+#   (CONTROL) a normal module zip validates on both images with version v1.0.0;
+#             the native PUT of the normal zip and of the 256 MiB-go.mod zip
+#             answers 201 and both download byte for byte with no RSS growth;
+#             /health stays 200 and the backend container never restarts.
+COVERS="6405"
+PROFILES="storage.filesystem"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

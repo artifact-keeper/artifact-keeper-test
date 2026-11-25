@@ -4232,6 +4232,16 @@ jobs:
           # 1.12.x candidate. Local containers only, so required.
           - group: perf-1.13.0-conda
             tiers: conda-warm-from-lockfile
+          # 1.13.0 (artifact-keeper#6405, fixed by #6493): the Go handler reads
+          # a module zip's go.mod through the bounded archive reader. A zip
+          # whose module@version/go.mod inflates to 256 MiB is refused naming
+          # the cap with the backend's peak RSS up by less than 64 MiB, and a
+          # nested vendor go.mod listed first no longer wins over the
+          # module's own (go-zip-gomod-size-bound; filesystem; under a
+          # minute). Red on main before the fix, NOT ON THIS LINE on a 1.12.x
+          # candidate. Local containers only, so required.
+          - group: security-1.13.0-archive-bounds
+            tiers: go-zip-gomod-size-bound
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}
