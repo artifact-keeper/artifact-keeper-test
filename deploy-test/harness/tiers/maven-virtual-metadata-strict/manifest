@@ -1,0 +1,67 @@
+# DTF tier manifest: maven-virtual-metadata-strict
+#   (artifact-keeper#5777, PR #5925; 1.13.0)
+# Profile-set: filesystem + a run-time-filled upstream (upstreams.mock-files:
+# a stdlib-python server on 172.16.<slot>.76 whose files the oracle writes over
+# a control API). One mock stands in for every Remote member: each member's
+# upstream URL is its own path prefix, and the oracle makes a member
+# unavailable by forcing 503 on its paths (POST /__status) and brings it back
+# by clearing them.
+#
+# THE CHANGE (#5777)
+#   Since #5809 a Maven virtual whose Remote member is unavailable serves the
+#   merge of the members that answered as a 200, marked partial
+#   (X-AK-Partial-Members, Cache-Control: no-store, Warning: 199) and not
+#   cached. Maven, Gradle and coursier keep resolved metadata locally whatever
+#   the headers say, so a `<versions>` list missing that member's versions is
+#   kept and picks the wrong `latest`/`release`. #5925 adds an opt-in strict
+#   mode on the existing `virtual_member_fallback` setting (#5810): with
+#   `strict`, a GA `maven-metadata.xml` merge missing an unavailable member,
+#   and its `.sha1`, answer the retryable 503 with Retry-After instead. Unset
+#   or `available` keeps the #5809 partial merge. `.meta/prefixes.txt` is out
+#   of scope and must behave as before.
+#
+# Topology (keys suffixed per run; G = com/example/dtfmvs<run>, artifact a):
+#   H   hosted, a 1.0 uploaded (also publishes the groupId in prefixes.txt)
+#   RS, RA, RD  Remotes on the mock, each its own prefix; a's metadata lists
+#       2.0, prefixes.txt lists /org/dtfmvs<run>; both forced to 503 at setup
+#   RN  Remote on the mock with nothing stored (404 for every path)
+#   VS  strict    [RS, H]     VA  explicit `available` [RA, H]
+#   VD  untouched [RD, H]     VN  strict    [RN, H]
+# No metadata path is requested before its outage, so no Remote has a cached
+# copy to serve stale.
+#
+# THE GATES
+#   (FIX)      RED on ghcr main (`strict` is stored but the merge ignores it:
+#              VS answers the marked partial 200). GREEN on main + #5925.
+#              #5777 VS during the outage: maven-metadata.xml and its .sha1
+#                    answer 503 with Retry-After, the body is not a metadata
+#                    document, the answer is not cacheable (no `public`, no
+#                    positive max-age), and a repeat is 503 again.
+#   (GUARD)    must hold on BOTH images (the default must not move):
+#              VD and VA during the outage answer 200 with the hosted 1.0 and
+#              without the down member's 2.0, X-AK-Partial-Members names the
+#              Remote, Cache-Control no-store, Warning 199; the .sha1 answers
+#              200 with the same marks and the SHA-1 of that body.
+#              `.meta/prefixes.txt` during the outage answers the same non-200
+#              status on VS as on VD (never a partial 200, never a different
+#              answer for strict); VN (strict, a Remote that 404s) answers
+#              404, not 503 (#5743).
+#   (CONTROL)  must hold on BOTH images:
+#              VN maven-metadata.xml answers 200 with 1.0, not partial (a 404
+#              member is a miss, not unavailable, even when strict).
+#              Once RS is back (polled up to 75 s for the circuit breaker),
+#              VS answers 200 with 1.0 and 2.0 and no partial mark, and the
+#              .sha1 matches it: nothing from the outage was cached. With the
+#              Remotes' prefix files served, prefixes.txt on VS and VD is the
+#              same 200 union listing both members' prefixes.
+#
+# TIMING: under a minute without the recovery poll; the poll can add the
+# breaker's open period (10-12 s, doubling).
+#
+# RATE_LIMIT_ENABLED=false: ~60 requests back to back.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the mock upstream is on a private subnet.
+COVERS="5777"
+PROFILES="storage.filesystem upstreams.mock-files"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

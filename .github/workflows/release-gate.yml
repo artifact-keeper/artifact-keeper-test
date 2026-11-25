@@ -4214,10 +4214,16 @@ jobs:
           # corrupted blob is still 502 (artifact-keeper#6468,
           # verify-skip-client-verified-oci and its -default twin;
           # filesystem, under a minute each).
+          # With virtual_member_fallback=strict, a Maven virtual whose Remote
+          # member is unavailable answers maven-metadata.xml and its .sha1
+          # with 503 + Retry-After instead of a partial merge; the default
+          # keeps the marked partial merge and .meta/prefixes.txt is
+          # unchanged (artifact-keeper#5777, maven-virtual-metadata-strict;
+          # upstreams.mock-files, about a minute).
           # Red on main before the fixes, NOT ON THIS LINE on a 1.12.x
           # candidate. Local containers only, so required.
           - group: fixes-1.13.0-robustness
-            tiers: mcp-sync-interrupted-pass push-sync-partition-retry lifecycle-sweep-derived-state verify-skip-client-verified-oci verify-skip-client-verified-oci-default
+            tiers: mcp-sync-interrupted-pass push-sync-partition-retry lifecycle-sweep-derived-state verify-skip-client-verified-oci verify-skip-client-verified-oci-default maven-virtual-metadata-strict
           # 1.13.0 (artifact-keeper#4184, fixtures #4187): POST
           # /api/v1/conda/{repo}/warm fills a Remote's proxy cache from an
           # ingested 1k lockfile (deploy-test/fixtures/conda/gen-channel.sh,

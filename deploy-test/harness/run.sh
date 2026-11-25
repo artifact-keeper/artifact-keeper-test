@@ -657,7 +657,8 @@ case "$CMD" in
              scan-on-proxy-repo-concurrency \
              mcp-sync-interrupted-pass push-sync-partition-retry db-read-retry-failover shutdown-drain \
              lifecycle-sweep-derived-state verify-skip-client-verified-oci \
-             verify-skip-client-verified-oci-default go-zip-gomod-size-bound; do
+             verify-skip-client-verified-oci-default go-zip-gomod-size-bound \
+             maven-virtual-metadata-strict; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;
