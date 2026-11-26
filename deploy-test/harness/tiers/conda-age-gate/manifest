@@ -1,0 +1,40 @@
+# DTF tier manifest: conda-age-gate  (artifact-keeper#6526, docs #6530)
+# Profile-set: filesystem / single + upstreams.mock-conda. The mock's `/gate/`
+# channel serves noarch/repodata.json (and .bz2) with four real packages:
+#   dtfgate-old    indexed_timestamp 30 days ago
+#   dtfgate-young  indexed_timestamp 1 hour ago
+#   dtfgate-noidx  no indexed_timestamp (builder timestamp 2015)
+#   dtfgate-later  no indexed_timestamp (builder timestamp 2015)
+#
+# THE FEATURE (#6526): the age gate, until now npm, PyPI, Go, Cargo, VS Code,
+# Maven and MCP only, covers conda Remotes and the Virtuals over them. A
+# record's age is its upstream CEP 47 `indexed_timestamp`, else the time the
+# backend first saw the file (never the builder `timestamp`). Young records are
+# left out of repodata.json (.json/.bz2/.zst), current_repodata.json and the
+# CEP-16 shards; a young package file answers 451 age_gate_blocked and records
+# a pending review; an approved review serves it.
+#
+# THE GATES (Remote R over /gate/, gate on, min_age_days 7, mode
+# upstream_publish_time, cache_ttl_secs 2; Virtual V with R as its only member):
+#   (FIX)     R's repodata.json, .bz2 and .zst list only dtfgate-old;
+#             current_repodata.json and the shard index name only dtfgate-old;
+#             x-ak-age-gate-withheld is 3; the young file answers 451
+#             age_gate_blocked (dtfgate-young 1.0), is never fetched upstream,
+#             and records one pending review; V lists only dtfgate-old and
+#             refuses the young file with 451; first sightings are stored;
+#             after dtfgate-noidx's first sighting is moved 8 days back it is
+#             served while dtfgate-later stays withheld; right after the
+#             young review is approved R lists dtfgate-young.
+#             RED on main: the age-gate config is refused for conda (the oracle
+#             then enables the gate in the database), every record is listed
+#             and every file downloads.
+#   (CONTROL) both images: dtfgate-old keeps the upstream indexed_timestamp
+#             and downloads with the mock's bytes from R and V; a record
+#             served after aging carries no indexed_timestamp (none is
+#             injected); the approved young file downloads with the mock's
+#             bytes.
+COVERS="6526"
+PROFILES="storage.filesystem upstreams.mock-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

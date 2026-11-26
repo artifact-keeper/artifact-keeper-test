@@ -49,6 +49,15 @@
 #           Starts with dtfsyn-alpha 1.0 (.tar.bz2), dtfsyn-alpha 2.0 (.conda)
 #           and dtfsyn-beta 1.0.
 #
+#   /gate/  the conda age gate channel (conda-age-gate tier,
+#           artifact-keeper#6526): noarch/repodata.json and .bz2 with four
+#           real packages, dated relative to the mock's start:
+#             dtfgate-old 1.0    indexed_timestamp 30 days ago
+#             dtfgate-young 1.0  indexed_timestamp 1 hour ago
+#             dtfgate-noidx 1.0  no indexed_timestamp, builder timestamp 2015
+#             dtfgate-later 1.0  no indexed_timestamp (aged by the oracle)
+#           `GET /__gatelog` lists the /gate/ paths requested so far.
+#
 # Env: MOCK_PORT (default 80), MOCK_MARKER (default dtfmockconda).
 # `/__readyz` answers `ok` for the compose healthcheck.
 # =============================================================================
@@ -222,6 +231,42 @@ FILES = {
 }
 
 
+import time as _time
+
+GATE_NOW_MS = int(_time.time() * 1000)
+GATE_DAY_MS = 86_400_000
+GATE_PKGS = {}
+GATE_RECORDS = {}
+for _name, _indexed in (
+    ("dtfgate-old", GATE_NOW_MS - 30 * GATE_DAY_MS),
+    ("dtfgate-young", GATE_NOW_MS - 3_600_000),
+    ("dtfgate-noidx", None),
+    ("dtfgate-later", None),
+):
+    _fn = f"{_name}-1.0-0.tar.bz2"
+    _blob = build_package(_name, "1.0", "0")
+    GATE_PKGS[f"/gate/noarch/{_fn}"] = _blob
+    _rec = record(_name, "1.0", _blob)
+    # An old builder claim: the gate must never age a record by it.
+    _rec["timestamp"] = 1420070400000
+    if _indexed is not None:
+        _rec["indexed_timestamp"] = _indexed
+    GATE_RECORDS[_fn] = _rec
+GATE_REPODATA = {
+    "info": {"subdir": "noarch"},
+    "packages": GATE_RECORDS,
+    "packages.conda": {},
+    "removed": [],
+    "repodata_version": 1,
+}
+GATE_LOG = []
+GATE_LOG_LOCK = threading.Lock()
+PREFIXED["/gate/noarch/repodata.json"] = ("application/json", js(GATE_REPODATA))
+PREFIXED["/gate/noarch/repodata.json.bz2"] = ("application/x-bzip2", bz2.compress(js(GATE_REPODATA)))
+for _path, _blob in GATE_PKGS.items():
+    PREFIXED[_path] = ("application/x-bzip2", _blob)
+
+
 SYNTH_LOCK = threading.Lock()
 SYNTH = {"packages": {}, "packages.conda": {}}
 
@@ -278,10 +323,18 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/synth/"):
             self._send(404, "text/plain", b"not found", head)
             return
+        if path == "/__gatelog":
+            with GATE_LOG_LOCK:
+                body = "\n".join(GATE_LOG).encode()
+            self._send(200, "text/plain", body, head)
+            return
+        if path.startswith("/gate/"):
+            with GATE_LOG_LOCK:
+                GATE_LOG.append(path)
         if path == HUGE_PATH:
             self._send(200, "application/json", huge_repodata(), head)
             return
-        if path.startswith(("/m2/", "/big/", "/huge/")):
+        if path.startswith(("/m2/", "/big/", "/huge/", "/gate/")):
             hit = PREFIXED.get(path)
         else:
             hit = FILES.get(path)

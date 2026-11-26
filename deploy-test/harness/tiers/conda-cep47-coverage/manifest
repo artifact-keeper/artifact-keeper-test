@@ -1,0 +1,26 @@
+# DTF tier manifest: conda-cep47-coverage  (artifact-keeper#6530)
+# Profile-set: filesystem / single + upstreams.mock-conda (its `/gate/`
+# channel: dtfgate-old carries an upstream indexed_timestamp, dtfgate-noidx
+# none).
+#
+# COVERAGE for CEP 47 `indexed_timestamp` beyond the hosted/virtual
+# repodata.json cases of conda-virtual-shadow-and-cache:
+#   * hosted: repodata.json, .bz2, .zst, current_repodata.json and the CEP-16
+#     shard carry the same indexed_timestamp, at or after the upload;
+#   * promotion: a package promoted from a staging channel into a local one
+#     is listed there with an indexed_timestamp;
+#   * pass-through: an ungated Remote and a Virtual over it serve the
+#     upstream's value unchanged (repodata.json and the synthesised shard) and
+#     inject none into a record that has none;
+#   * a real client: pixi `exclude-newer` against a hosted channel locks the
+#     version published before the cutoff, and without it the newer one.
+#     pixi 0.81 dates records by the builder `timestamp` (it does not read
+#     indexed_timestamp yet: with two versions that differ only in
+#     indexed_timestamp it locked the newer one), so the two versions carry
+#     builder timestamps on the same side of the cutoff as their uploads.
+# Every gate is a CONTROL: green on main and on the #6526 branch.
+# No COVERS: every case is a CONTROL (coverage for #6530, no fix to prove).
+PROFILES="storage.filesystem upstreams.mock-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"

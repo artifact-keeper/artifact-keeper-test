@@ -63,8 +63,13 @@ else
   noarch_field=''
   platform_field='"platform":"linux",'
 fi
+# CONDA_PKG_TIMESTAMP (Unix ms) sets the builder `timestamp`; unset, none.
+timestamp_field=''
+if [ -n "${CONDA_PKG_TIMESTAMP:-}" ]; then
+  timestamp_field="\"timestamp\":${CONDA_PKG_TIMESTAMP},"
+fi
 cat > "$work/info/index.json" <<JSON
-{"name":"${NAME}","version":"${VERSION}","build":"${BUILD}","build_number":0,${noarch_field}${platform_field}"subdir":"${SUBDIR}","depends":[],"license":"MIT"}
+{"name":"${NAME}","version":"${VERSION}","build":"${BUILD}","build_number":0,${noarch_field}${platform_field}${timestamp_field}"subdir":"${SUBDIR}","depends":[],"license":"MIT"}
 JSON
 
 # --- info/paths.json ----------------------------------------------------------
