@@ -500,6 +500,17 @@ for spec in "GET|${TOK}|" "GET|-|" "POST|${TOK}|{\"name\":\"x\"}"; do
 done
 finish_case "an unknown /api/v1 path falls through to the format routes"
 
+# req_h <METHOD> <PATH> <JSON body>: like req, signed in as admin, and also
+# sets WARN to the response's Warning header(s) and LOC to Location ('' when absent).
+req_h(){
+  : >"${W}/body"; : >"${W}/hdrs"
+  CODE="$(curl -s -o "${W}/body" -D "${W}/hdrs" -w '%{http_code}' --max-time 60 -X "$1" \
+    -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/json' --data-binary "$3" "${BASE}$2")"
+  BODY="$(cat "${W}/body" 2>/dev/null || true)"
+  WARN="$(grep -i '^warning:' "${W}/hdrs" 2>/dev/null | cut -d' ' -f2- | tr -d '\r' | paste -sd'|' -)"
+  LOC="$(grep -i '^location:' "${W}/hdrs" 2>/dev/null | cut -d' ' -f2- | tr -d '\r' | head -1)"
+}
+
 # =============================================================================
 # #5744 (1.14.0) repository create answers 201 with Location
 # =============================================================================
@@ -518,16 +529,6 @@ finish_case "repository create returned 200 without a Location header"
 # =============================================================================
 # #6063 (1.12.4) versioning_enabled on a format whose uploads ignore it
 # =============================================================================
-# req_h <METHOD> <PATH> <JSON body>: like req, signed in as admin, and also
-# sets WARN to the response's Warning header(s) and LOC to Location ('' when absent).
-req_h(){
-  : >"${W}/body"; : >"${W}/hdrs"
-  CODE="$(curl -s -o "${W}/body" -D "${W}/hdrs" -w '%{http_code}' --max-time 60 -X "$1" \
-    -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/json' --data-binary "$3" "${BASE}$2")"
-  BODY="$(cat "${W}/body" 2>/dev/null || true)"
-  WARN="$(grep -i '^warning:' "${W}/hdrs" 2>/dev/null | cut -d' ' -f2- | tr -d '\r' | paste -sd'|' -)"
-  LOC="$(grep -i '^location:' "${W}/hdrs" 2>/dev/null | cut -d' ' -f2- | tr -d '\r' | head -1)"
-}
 vers_row(){ psql_q "SELECT versioning_enabled FROM repositories WHERE key = '$1';"; }
 V_GEN="ac12f-vers-gen-${SFX}"
 V_NPM="ac12f-vers-npm-${SFX}"
