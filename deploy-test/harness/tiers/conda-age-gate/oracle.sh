@@ -15,6 +15,8 @@ R="dtf-cgate-r-${SUF}"     # gated remote
 R2="dtf-cgate-u-${SUF}"    # ungated remote over the same upstream
 V="dtf-cgate-v-${SUF}"     # virtual over R
 V2="dtf-cgate-m-${SUF}"    # virtual over R2 (first) and R
+L="dtf-cgate-l-${SUF}"     # hosted channel holding its own dtfgate-young
+V3="dtf-cgate-h-${SUF}"    # virtual over R (first) and L
 UPSTREAM="http://172.16.${DTF_SLOT}.70/gate/"
 MOCK_CTR="ak-dtf${DTF_SLOT}-mock-conda"
 BACKEND_CTR="ak-dtf${DTF_SLOT}-backend"
@@ -30,7 +32,7 @@ SERVED_NAMES='["dtfgate-noidx","dtfgate-old","dtfgate-rej"]'
 WORK="$(mktemp -d -t dtf-cgate-XXXXXX)"
 cleanup() {
   docker rm -f "$PIXI_CTR" >/dev/null 2>&1 || true
-  for k in "$V2" "$V" "$R2" "$R"; do api_delete "/api/v1/repositories/${k}" >/dev/null 2>&1 || true; done
+  for k in "$V3" "$V2" "$V" "$L" "$R2" "$R"; do api_delete "/api/v1/repositories/${k}" >/dev/null 2>&1 || true; done
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -82,6 +84,15 @@ create_repo "$V2" conda virtual >/dev/null 2>&1 || setup_err+="create V2; "
 api_post "/api/v1/repositories/${V}/members" "{\"member_key\":\"${R}\",\"priority\":1}" >/dev/null 2>&1 || setup_err+="V member; "
 api_post "/api/v1/repositories/${V2}/members" "{\"member_key\":\"${R2}\",\"priority\":1}" >/dev/null 2>&1 || setup_err+="V2 member R2; "
 api_post "/api/v1/repositories/${V2}/members" "{\"member_key\":\"${R}\",\"priority\":2}" >/dev/null 2>&1 || setup_err+="V2 member R; "
+create_repo "$L" conda local >/dev/null 2>&1 || setup_err+="create L; "
+create_repo "$V3" conda virtual >/dev/null 2>&1 || setup_err+="create V3; "
+api_post "/api/v1/repositories/${V3}/members" "{\"member_key\":\"${R}\",\"priority\":1}" >/dev/null 2>&1 || setup_err+="V3 member R; "
+api_post "/api/v1/repositories/${V3}/members" "{\"member_key\":\"${L}\",\"priority\":2}" >/dev/null 2>&1 || setup_err+="V3 member L; "
+mkdir -p "$WORK/hosted"
+bash "${DTF_DIR}/fixtures/conda/build.sh" "$WORK/hosted" dtfgate-young 1.0 0 noarch >/dev/null 2>&1 || setup_err+="build hosted young; "
+up="$(curl -s --max-time 60 -o "$WORK/put.out" -w '%{http_code}' -X PUT -H "$(auth_header)" \
+  --data-binary "@$WORK/hosted/$(f young)" "${BASE_URL}/conda/${L}/noarch/$(f young)" 2>/dev/null || echo 000)"
+case "$up" in 200|201) ;; *) setup_err+="upload hosted young ${up}; " ;; esac
 RID="$(psql_q "SELECT id FROM repositories WHERE key='${R}'")"
 R2ID="$(psql_q "SELECT id FROM repositories WHERE key='${R2}'")"
 [ -n "$RID" ] && [ -n "$R2ID" ] || setup_err+="no remote id; "
@@ -211,6 +222,15 @@ else fail "#6526: mixed virtual shard index names ${got}"; fi
 st="$(get m.young "/conda/${V2}/noarch/$(f young)")"
 begin_test "FIX #6526: through the mixed virtual the young package answers 451"
 if [ "$st" = "451" ]; then pass; else fail "#6526: mixed virtual young HTTP ${st}"; fi
+
+st="$(get h.young "/conda/${V3}/noarch/$(f young)")"
+begin_test "CONTROL #6526: a virtual whose hosted member holds the file the gated member withholds serves the hosted copy"
+if [ "$st" = "200" ] && [ "$(sha "$WORK/h.young")" = "$(sha "$WORK/hosted/$(f young)")" ]; then pass
+else fail "#6526: hosted-member young file HTTP ${st}" "$(head -c 300 "$WORK/h.young")"; fi
+st="$(get h.json "/conda/${V3}/noarch/repodata.json")"; got="$(listed h.json json)"
+begin_test "CONTROL #6526: that virtual's repodata.json lists the hosted copy"
+if [ "$st" = "200" ] && echo "$got" | jq -e --arg y "$(f young)" 'index($y) != null' >/dev/null 2>&1; then pass
+else fail "#6526: hosted-member virtual repodata HTTP ${st} lists ${got}"; fi
 
 # ---------------------------------------------------------------------------
 # A real client: pixi solves against the gated remote

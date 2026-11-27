@@ -12,15 +12,16 @@
 # THE GATES
 #   (FIX)     the migrated row's created_at is the source's created time
 #             (1767225600000), and the destination's repodata.json lists the
-#             package with that indexed_timestamp (#6532: main did not list a
-#             migrated conda package at all); a re-import that revives a
+#             package with that indexed_timestamp (listing a migrated conda
+#             package at all needs the subdir-path fix of #6532,
+#             artifact-keeper#6541); a re-import that revives a
 #             soft-deleted row counts it from the revival, unless the age-gate
 #             sighting ledger holds the same sha256, which keeps that time.
 #             RED on main: the import time, no repodata record, and the
 #             deleted row's old time on both revivals.
 #   (CONTROL) the migration completes with the one file into a conda
 #             repository.
-COVERS="6528 6532"
+COVERS="6528"
 PROFILES="storage.filesystem upstreams.mock-artifactory-conda"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

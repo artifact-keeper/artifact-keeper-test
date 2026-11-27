@@ -20,7 +20,8 @@
 # Virtual over it, including one whose ungated member comes first.
 #
 # THE GATES (Remote R gated at 7 days; R2 ungated over the same upstream;
-# V over R; V2 over R2 then R; cache_ttl_secs 2):
+# V over R; V2 over R2 then R; V3 over R then a hosted L holding its own
+# dtfgate-young; cache_ttl_secs 2):
 #   (FIX)     baseline: R lists dtfgate-noidx, -old, -rej in every encoding
 #             and in current_repodata.json and the shard index, with
 #             x-ak-age-gate-withheld 4, and the baseline is recorded; the
@@ -40,7 +41,8 @@
 #   (CONTROL) both images: dtfgate-old keeps the upstream indexed_timestamp
 #             and downloads with the mock's bytes; pixi locks dtfgate-old; the
 #             approved young file downloads with the mock's bytes; the
-#             newcomer is served once its sighting is 8 days old.
+#             newcomer is served once its sighting is 8 days old; V3 serves
+#             and lists the hosted copy of the file R withholds.
 COVERS="6526"
 PROFILES="storage.filesystem upstreams.mock-conda"
 ORACLE="oracle.sh"
