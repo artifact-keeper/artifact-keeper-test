@@ -12,12 +12,10 @@
 #   * pass-through: an ungated Remote and a Virtual over it serve the
 #     upstream's value unchanged (repodata.json and the synthesised shard) and
 #     inject none into a record that has none;
-#   * a real client: pixi `exclude-newer` against a hosted channel locks the
-#     version published before the cutoff, and without it the newer one.
-#     pixi 0.81 dates records by the builder `timestamp` (it does not read
-#     indexed_timestamp yet: with two versions that differ only in
-#     indexed_timestamp it locked the newer one), so the two versions carry
-#     builder timestamps on the same side of the cutoff as their uploads.
+#   * the real-client run lives in conda-age-gate: pixi solving against a
+#     gated remote (pixi 0.81 does not read indexed_timestamp yet, so an
+#     exclude-newer run against a hosted channel would key on the builder
+#     timestamp and prove nothing about indexed_timestamp).
 # Every gate is a CONTROL: green on main and on the #6526 branch.
 # No COVERS: every case is a CONTROL (coverage for #6530, no fix to prove).
 PROFILES="storage.filesystem upstreams.mock-conda"

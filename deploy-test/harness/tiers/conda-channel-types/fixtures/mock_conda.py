@@ -50,13 +50,13 @@
 #           and dtfsyn-beta 1.0.
 #
 #   /gate/  the conda age gate channel (conda-age-gate tier,
-#           artifact-keeper#6526): noarch/repodata.json and .bz2 with four
-#           real packages, dated relative to the mock's start:
-#             dtfgate-old 1.0    indexed_timestamp 30 days ago
-#             dtfgate-young 1.0  indexed_timestamp 1 hour ago
-#             dtfgate-noidx 1.0  no indexed_timestamp, builder timestamp 2015
-#             dtfgate-later 1.0  no indexed_timestamp (aged by the oracle)
-#           `GET /__gatelog` lists the /gate/ paths requested so far.
+#           artifact-keeper#6526): noarch/repodata.json, .bz2 and .sig with
+#           real packages dated relative to the mock's start (see gate_put
+#           below), plus a package listed in no index. `POST
+#           /__gate/add?name=dtfgate-x&indexed_days_ago=N` lists a new one,
+#           `POST /__gate/swap?name=dtfgate-x` rebuilds one's bytes under the
+#           same filename, and `GET /__gatelog` lists the /gate/ paths
+#           requested so far.
 #
 # Env: MOCK_PORT (default 80), MOCK_MARKER (default dtfmockconda).
 # `/__readyz` answers `ok` for the compose healthcheck.
@@ -233,38 +233,68 @@ FILES = {
 
 import time as _time
 
+# /gate/ (conda-age-gate, artifact-keeper#6526). Times are relative to the
+# mock's start; the record set can change at run time.
 GATE_NOW_MS = int(_time.time() * 1000)
 GATE_DAY_MS = 86_400_000
-GATE_PKGS = {}
+GATE_OLD_BUILD_MS = 1420070400000  # 2015-01-01: an old builder claim
+GATE_LOCK = threading.Lock()
 GATE_RECORDS = {}
-for _name, _indexed in (
-    ("dtfgate-old", GATE_NOW_MS - 30 * GATE_DAY_MS),
-    ("dtfgate-young", GATE_NOW_MS - 3_600_000),
-    ("dtfgate-noidx", None),
-    ("dtfgate-later", None),
-):
-    _fn = f"{_name}-1.0-0.tar.bz2"
-    _blob = build_package(_name, "1.0", "0")
-    GATE_PKGS[f"/gate/noarch/{_fn}"] = _blob
-    _rec = record(_name, "1.0", _blob)
-    # An old builder claim: the gate must never age a record by it.
-    _rec["timestamp"] = 1420070400000
-    if _indexed is not None:
-        _rec["indexed_timestamp"] = _indexed
-    GATE_RECORDS[_fn] = _rec
-GATE_REPODATA = {
-    "info": {"subdir": "noarch"},
-    "packages": GATE_RECORDS,
-    "packages.conda": {},
-    "removed": [],
-    "repodata_version": 1,
-}
+GATE_PKGS = {}
 GATE_LOG = []
-GATE_LOG_LOCK = threading.Lock()
-PREFIXED["/gate/noarch/repodata.json"] = ("application/json", js(GATE_REPODATA))
-PREFIXED["/gate/noarch/repodata.json.bz2"] = ("application/x-bzip2", bz2.compress(js(GATE_REPODATA)))
-for _path, _blob in GATE_PKGS.items():
-    PREFIXED[_path] = ("application/x-bzip2", _blob)
+
+
+def gate_put(name, indexed=None, built=GATE_OLD_BUILD_MS, marker=""):
+    """(Re)build dtfgate package `name` 1.0 and list it."""
+    fn = f"{name}-1.0-0.tar.bz2"
+    blob = build_package(name + marker, "1.0", "0") if marker else build_package(name, "1.0", "0")
+    rec = record(name, "1.0", blob)
+    rec["timestamp"] = built
+    if indexed is not None:
+        rec["indexed_timestamp"] = indexed
+    with GATE_LOCK:
+        GATE_PKGS[f"/gate/noarch/{fn}"] = blob
+        GATE_RECORDS[fn] = rec
+
+
+# old: indexed 30 days ago. young: indexed 1 hour ago. noidx: no index time.
+# recentbuild: no index time, builder timestamp 1 hour ago. futurets: builder
+# timestamp a day ahead. badorder: indexed before it was built. rej: old, the
+# oracle rejects it.
+gate_put("dtfgate-old", GATE_NOW_MS - 30 * GATE_DAY_MS)
+gate_put("dtfgate-young", GATE_NOW_MS - 3_600_000)
+gate_put("dtfgate-noidx")
+gate_put("dtfgate-recentbuild", None, GATE_NOW_MS - 3_600_000)
+gate_put("dtfgate-futurets", None, GATE_NOW_MS + GATE_DAY_MS)
+gate_put("dtfgate-badorder", GATE_NOW_MS - 30 * GATE_DAY_MS, GATE_NOW_MS - 20 * GATE_DAY_MS)
+gate_put("dtfgate-rej", GATE_NOW_MS - 30 * GATE_DAY_MS)
+# Served on the package route but listed in no index.
+GATE_PKGS["/gate/noarch/dtfgate-unlisted-1.0-0.tar.bz2"] = build_package("dtfgate-unlisted", "1.0", "0")
+
+
+def gate_repodata():
+    with GATE_LOCK:
+        doc = {
+            "info": {"subdir": "noarch"},
+            "packages": dict(GATE_RECORDS),
+            "packages.conda": {},
+            "removed": [],
+            "repodata_version": 1,
+        }
+    return js(doc)
+
+
+def gate_route(path):
+    """(content type, body) for a /gate/ path, or None."""
+    if path == "/gate/noarch/repodata.json":
+        return ("application/json", gate_repodata())
+    if path == "/gate/noarch/repodata.json.bz2":
+        return ("application/x-bzip2", bz2.compress(gate_repodata()))
+    if path == "/gate/noarch/repodata.json.sig":
+        return ("application/octet-stream", f"{MARKER}-GATE-SIG\n".encode())
+    with GATE_LOCK:
+        blob = GATE_PKGS.get(path)
+    return ("application/x-bzip2", blob) if blob is not None else None
 
 
 SYNTH_LOCK = threading.Lock()
@@ -324,17 +354,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "text/plain", b"not found", head)
             return
         if path == "/__gatelog":
-            with GATE_LOG_LOCK:
+            with GATE_LOCK:
                 body = "\n".join(GATE_LOG).encode()
             self._send(200, "text/plain", body, head)
             return
         if path.startswith("/gate/"):
-            with GATE_LOG_LOCK:
+            with GATE_LOCK:
                 GATE_LOG.append(path)
+            hit = gate_route(path)
+            if hit is None:
+                self._send(404, "text/plain", b"not found", head)
+            else:
+                self._send(200, hit[0], hit[1], head)
+            return
         if path == HUGE_PATH:
             self._send(200, "application/json", huge_repodata(), head)
             return
-        if path.startswith(("/m2/", "/big/", "/huge/", "/gate/")):
+        if path.startswith(("/m2/", "/big/", "/huge/")):
             hit = PREFIXED.get(path)
         else:
             hit = FILES.get(path)
@@ -353,6 +389,25 @@ class Handler(BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlsplit
 
         parts = urlsplit(self.path)
+        if parts.path in ("/__gate/add", "/__gate/swap"):
+            q = parse_qs(parts.query)
+            name = q.get("name", [""])[0]
+            if not name.startswith("dtfgate-"):
+                self._send(400, "text/plain", b"name must start with dtfgate-")
+                return
+            if parts.path == "/__gate/add":
+                days = float(q.get("indexed_days_ago", ["0"])[0])
+                gate_put(name, int(_time.time() * 1000 - days * GATE_DAY_MS))
+            else:
+                fn = f"{name}-1.0-0.tar.bz2"
+                with GATE_LOCK:
+                    old = GATE_RECORDS.get(fn)
+                if old is None:
+                    self._send(404, "text/plain", b"no such record")
+                    return
+                gate_put(name, old.get("indexed_timestamp"), old.get("timestamp"), marker="-swapped")
+            self._send(200, "text/plain", b"ok")
+            return
         if parts.path != "/__synth/add":
             self._send(404, "text/plain", b"not found")
             return

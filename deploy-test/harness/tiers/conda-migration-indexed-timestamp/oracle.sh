@@ -80,15 +80,34 @@ begin_test "FIX #6528: the migrated row's created_at (its indexed_timestamp) is 
 if [ "$ms" = "$SOURCE_MS" ]; then pass
 else fail "#6528: created_at ${ms:-none} ms (the import time) instead of the source's ${SOURCE_MS}"; fi
 ts="$(repodata_ts)"
-echo "  repodata.json indexed_timestamp for ${PKG}: ${ts}"
+begin_test "FIX #6528/#6532: the destination's repodata.json lists the package with the source's created time as indexed_timestamp"
+if [ "$ts" = "$SOURCE_MS" ]; then pass
+else fail "#6528: repodata.json indexed_timestamp for ${PKG}: ${ts} (want ${SOURCE_MS})"; fi
 
-# Revival: an older soft-deleted row is brought back by a re-import.
+# Revival: a soft-deleted row (with an older time) is brought back by a
+# re-import. It became visible again now, so it counts from now.
 psql_q "UPDATE artifacts a SET created_at = '2000-01-01T00:00:00Z', is_deleted = true FROM repositories r WHERE r.id = a.repository_id AND r.key = '${DEST}' AND a.path LIKE '%${PKG}'" >/dev/null
+T_REVIVE="$(psql_q "SELECT (extract(epoch FROM NOW()) * 1000)::bigint")"
 JOB2="$(run_job)"
 ROW2="$(aj GET "/api/v1/migrations/${JOB2}")"
 ms="$(row_ms)"
-begin_test "FIX #6528: a re-import that revives the soft-deleted row seeds it with the source's created time"
-if [ "$ms" = "$SOURCE_MS" ]; then pass
-else fail "#6528: revived row created_at ${ms:-none} ms (status $(jqf "$ROW2" '.status // "?"' '?'), completed $(jqf "$ROW2" '.completed_items // 0' 0), skipped $(jqf "$ROW2" '.skipped_items // 0' 0))"; fi
+begin_test "FIX #6528: a re-import that revives a soft-deleted row counts it from the revival"
+if [ -n "$ms" ] && [ "$ms" -ge "$T_REVIVE" ] 2>/dev/null; then pass
+else fail "#6528: revived row created_at ${ms:-none} ms, revival at ${T_REVIVE} (status $(jqf "$ROW2" '.status // "?"' '?'), completed $(jqf "$ROW2" '.completed_items // 0' 0))"; fi
+
+# ...unless this server's age-gate sighting ledger already holds the same
+# bytes, which keep their first sighting.
+PKG_SHA="$(sha256sum "$WORK/src/${SRC_REPO}/noarch/${PKG}" | awk '{print $1}')"
+LEDGER_MS="1748736000000"   # 2025-06-01T00:00:00Z
+DEST_ID="$(psql_q "SELECT id FROM repositories WHERE key='${DEST}'")"
+psql_q "INSERT INTO conda_first_seen_channels (repository_id, subdir, upstream_fingerprint, baseline_at) VALUES ('${DEST_ID}', 'dtf-ledger', 'dtf', NOW())" >/dev/null
+CH="$(psql_q "SELECT id FROM conda_first_seen_channels WHERE repository_id='${DEST_ID}' AND subdir='dtf-ledger'")"
+psql_q "INSERT INTO conda_record_first_seen (channel_id, filename, sha256, first_seen_at) VALUES (${CH:-0}, '${PKG}', '${PKG_SHA}', '2025-06-01T00:00:00Z')" >/dev/null
+psql_q "UPDATE artifacts a SET is_deleted = true FROM repositories r WHERE r.id = a.repository_id AND r.key = '${DEST}' AND a.path LIKE '%${PKG}'" >/dev/null
+run_job >/dev/null
+ms="$(row_ms)"
+begin_test "FIX #6528: a revived row whose bytes the sighting ledger holds keeps that first sighting"
+if [ "$ms" = "$LEDGER_MS" ]; then pass
+else fail "#6528: revived row created_at ${ms:-none} ms (want the ledger's ${LEDGER_MS}; channel ${CH:-none})"; fi
 
 end_suite

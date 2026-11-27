@@ -10,15 +10,17 @@
 # re-import that revived a soft-deleted row kept the deleted row's time.
 #
 # THE GATES
-#   (FIX)     the migrated row's created_at, which a hosted channel serves as
-#             indexed_timestamp, is the source's created time
-#             (1767225600000); after the row is
-#             soft-deleted (with an older time) and the migration re-run, the
-#             revived row's created_at is the source's created time again.
-#             RED on main: the import time, and the deleted row's old time.
+#   (FIX)     the migrated row's created_at is the source's created time
+#             (1767225600000), and the destination's repodata.json lists the
+#             package with that indexed_timestamp (#6532: main did not list a
+#             migrated conda package at all); a re-import that revives a
+#             soft-deleted row counts it from the revival, unless the age-gate
+#             sighting ledger holds the same sha256, which keeps that time.
+#             RED on main: the import time, no repodata record, and the
+#             deleted row's old time on both revivals.
 #   (CONTROL) the migration completes with the one file into a conda
 #             repository.
-COVERS="6528"
+COVERS="6528 6532"
 PROFILES="storage.filesystem upstreams.mock-artifactory-conda"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
