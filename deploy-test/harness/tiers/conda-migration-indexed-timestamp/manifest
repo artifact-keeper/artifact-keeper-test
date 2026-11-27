@@ -1,0 +1,26 @@
+# DTF tier manifest: conda-migration-indexed-timestamp  (artifact-keeper#6528)
+# Profile-set: filesystem / single + upstreams.mock-artifactory-conda: the
+# catalog tier's mock Artifactory with one `conda` repository, into which the
+# oracle copies a real noarch package. The mock reports every item as
+# created 2026-01-01T00:00:00Z.
+#
+# THE BUG (#6528): the migration inserted conda rows at the import time, so
+# every migrated package's CEP 47 `indexed_timestamp` was the import time and
+# client `exclude-newer` windows held back the whole migrated channel. A
+# re-import that revived a soft-deleted row kept the deleted row's time.
+#
+# THE GATES
+#   (FIX)     the migrated row's created_at is the source's created time
+#             (1767225600000), and the destination's repodata.json lists the
+#             package with that indexed_timestamp (#6532: main did not list a
+#             migrated conda package at all); a re-import that revives a
+#             soft-deleted row counts it from the revival, unless the age-gate
+#             sighting ledger holds the same sha256, which keeps that time.
+#             RED on main: the import time, no repodata record, and the
+#             deleted row's old time on both revivals.
+#   (CONTROL) the migration completes with the one file into a conda
+#             repository.
+COVERS="6528 6532"
+PROFILES="storage.filesystem upstreams.mock-artifactory-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"

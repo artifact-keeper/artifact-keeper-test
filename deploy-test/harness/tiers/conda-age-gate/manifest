@@ -1,0 +1,48 @@
+# DTF tier manifest: conda-age-gate  (artifact-keeper#6526)
+# Profile-set: filesystem / single + upstreams.mock-conda. The mock's `/gate/`
+# channel (fixtures/mock_conda.py, gate_put) lists real packages dated
+# relative to the mock's start: dtfgate-old and dtfgate-rej (indexed 30 days
+# ago), dtfgate-young (indexed 1 hour ago), dtfgate-noidx (no index time, a
+# 2015 builder timestamp), dtfgate-recentbuild (builder timestamp 1 hour
+# ago), dtfgate-futurets (builder timestamp a day ahead), dtfgate-badorder
+# (indexed before it was built), and serves dtfgate-unlisted, which no index
+# lists. It can list a new record and swap a record's bytes at run time.
+#
+# THE FEATURE (#6526): the age gate covers conda Remotes and the Virtuals
+# over them. On first enable the gate records a baseline of the subdir:
+# baseline files are old unless a builder or index timestamp is recent, so
+# the channel is not emptied. A file seen later is aged from its first
+# sighting (an older upstream indexed_timestamp earns no credit and is
+# flagged as backdating); new bytes under a published filename are a new
+# sighting; a future builder timestamp, or one later than the index time, is
+# held. Withheld records are left out of repodata.json (.json/.bz2/.zst),
+# current_repodata.json and the CEP-16 shards of the Remote and of every
+# Virtual over it, including one whose ungated member comes first.
+#
+# THE GATES (Remote R gated at 7 days; R2 ungated over the same upstream;
+# V over R; V2 over R2 then R; cache_ttl_secs 2):
+#   (FIX)     baseline: R lists dtfgate-noidx, -old, -rej in every encoding
+#             and in current_repodata.json and the shard index, with
+#             x-ak-age-gate-withheld 4, and the baseline is recorded; the
+#             .sig answers 404; the young file answers 451 too_young naming
+#             the age basis and available_at, futurets and badorder answer 451
+#             with their reason, the unlisted file 404 age_gate_unlisted, none
+#             of them fetched upstream, one pending review; V and V2 list and
+#             shard nothing withheld and refuse the young file; pixi cannot
+#             lock dtfgate-young from R; a rejection withholds -rej at once
+#             (451 rejected); the admin lookup names each file's reason and
+#             basis; an approval lists the young record at once; a newcomer
+#             with a 30-day-old indexed_timestamp is held and flagged
+#             backdated; swapped bytes are held; re-baselining is an audited
+#             action.
+#             RED on main: the age-gate config is refused for conda (the oracle
+#             enables it in the database) and nothing is filtered or refused.
+#   (CONTROL) both images: dtfgate-old keeps the upstream indexed_timestamp
+#             and downloads with the mock's bytes; pixi locks dtfgate-old; the
+#             approved young file downloads with the mock's bytes; the
+#             newcomer is served once its sighting is 8 days old.
+COVERS="6526"
+PROFILES="storage.filesystem upstreams.mock-conda"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
