@@ -4248,6 +4248,18 @@ jobs:
           # candidate. Local containers only, so required.
           - group: security-1.13.0-archive-bounds
             tiers: go-zip-gomod-size-bound
+          # 1.13.0 (artifact-keeper#6546, #6549, #6548): a dev -> stage ->
+          # prod image promotion on S3 succeeds at every hop, and promoted
+          # copies queue a push sync task for a subscribed peer like an
+          # upload does (promotion-chain-and-peer-push; storage.s3; about a
+          # minute). A Virtual Debian repository whose members are all Local
+          # serves their packages through a real apt-get, and one with no
+          # member answers 404 instead of an empty index
+          # (debian-virtual-local-members; filesystem, client.apt; about a
+          # minute). Red on main before the fixes, NOT ON THIS LINE on a
+          # 1.12.x candidate. Local containers only, so required.
+          - group: fixes-1.13.0-promotion-debian
+            tiers: promotion-chain-and-peer-push debian-virtual-local-members
     env:
       DTF_LEG_SELECTED: ${{ inputs.only_jobs == '' || contains(format(' {0} ', inputs.only_jobs), ' dtf-gate ') || contains(format(' {0} ', inputs.only_jobs), format(' dtf-gate/{0} ', matrix.group)) }}
       BACKEND_TAG: ${{ inputs.backend_tag }}

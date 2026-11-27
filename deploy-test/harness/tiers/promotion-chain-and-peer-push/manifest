@@ -1,0 +1,33 @@
+# DTF tier manifest: promotion-chain-and-peer-push  (artifact-keeper#6546, #6549; 1.13.0)
+# Profile-set: storage.s3 (MinIO). A cloud backend is what shares one
+# content-addressed key between every repository holding an image.
+#
+# THE BUGS
+#   #6546 the promotion write guard exempted only the source and the target of
+#         a promotion. After dev -> stage, dev still owns the image's
+#         oci-manifests/<digest> key, so stage -> prod was 409 "already owned
+#         by another repository". Fixed: a repository holding the same bytes
+#         under that key does not block the hop.
+#   #6549 a promoted copy fired artifact.uploaded but queued no push sync task,
+#         so a peer subscribed to the target repository never received it.
+#         Fixed: single, bulk and approval promotions queue the push like an
+#         upload.
+#
+# THE PEER. As in npm-unpublish-and-push-sync: registered at an unresolvable
+# `.invalid` host, then set online with a day of backoff in the DB so the sync
+# worker never claims a row. sync_tasks is the observable.
+#
+# THE GATES
+#   (CONTROL) both images: an image pushed to dev (docker staging) promotes to
+#             stage (docker local) with 200; a plain upload to a
+#             push-subscribed generic repository queues a push row.
+#   (FIX)     #6546: the same manifest promotes from stage to prod with 200 and
+#             prod serves it (red on main: 409).
+#             #6549: a single promotion and a bulk promotion into the
+#             push-subscribed generic repository each queue a push row for the
+#             copy, and the docker promotion into the subscribed stage does
+#             too (red on main: no row).
+PROFILES="storage.s3"
+ORACLE="oracle.sh"
+COVERS="6546 6549"
+RATE_LIMIT_ENABLED="false"

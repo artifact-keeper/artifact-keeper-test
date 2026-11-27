@@ -1,0 +1,27 @@
+# DTF tier manifest: debian-virtual-local-members  (artifact-keeper#6548; 1.13.0)
+# Profile-set: filesystem + client.apt (debian:12).
+#
+# THE BUG
+#   #6548 a Virtual Debian repository whose members are all Local built its
+#         Release and Packages from its own artifact rows, of which it has
+#         none, so apt saw a valid (and, with a key, signed) empty index.
+#         Fixed: a Virtual's index is the union of the Local and Staging
+#         members the caller may read, in priority order; a Virtual with no
+#         readable member answers 404 instead of an empty index.
+#
+# THE PRIMITIVES
+#   Two .debs built by the real dpkg-deb in the Debian client, one uploaded to
+#   each of two public Local repositories (native pool PUT). A public Virtual
+#   lists both. apt reads it with [trusted=yes]: signing is not what broke.
+#
+# THE GATES
+#   (CONTROL) both images: each member's own Packages lists its package.
+#   (FIX)     the Virtual's Packages lists both packages and its Release
+#             vouches for that exact index (sha256 and size); a real apt-get
+#             update + install through the Virtual installs the second
+#             member's package; a Virtual with no members answers 404 on
+#             Packages (red on main: an empty 200 index, apt finds nothing).
+PROFILES="storage.filesystem client.apt"
+ORACLE="oracle.sh"
+COVERS="6548"
+RATE_LIMIT_ENABLED="false"
