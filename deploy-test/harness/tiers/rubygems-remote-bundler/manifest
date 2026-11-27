@@ -33,9 +33,38 @@
 #             the Compact Index (Bundler falls back to the Marshal indexes
 #             there, #4272) and still serves its own specs.4.8.gz.
 #
+# #5974 (artifact-keeper PR #6435): conditional and range requests on the
+# Remote Compact Index. Two more Remotes (cache TTL 1 s) over their own copy
+# of the tree: RE under /e, where the mock sends an ETag, and RN under /n,
+# where it sends none (mock_files.py &noetag=1). gen_upstream.rb also writes
+# phase2/, the same upstream after dtfbundler-dep 1.1.0 is released, with
+# `versions` grown by one appended line.
+#   (FIX)     RE: /versions replays the upstream ETag and carries
+#             `Repr-Digest: sha-256=:<base64>:` (RFC 9530 byte sequence) of
+#             the body and Accept-Ranges: bytes; If-None-Match with it answers
+#             304 with no body (also on info/<name>); a non-matching one is a
+#             full 200. `Range: bytes=<n-10>-` answers 206 with the last 10
+#             bytes, `Content-Range: bytes <n-10>-<n-1>/<n>` and the full
+#             document's Repr-Digest; a stale If-Range gets the full 200, a
+#             Range past the end 416 with `bytes */<n>`, and a Range on
+#             info/<name> the full 200. Real Bundler 2.5 (--verbose shows each
+#             request's status): a cold `bundle install` gets 200, a `bundle
+#             update --all` with the upstream unchanged gets 304 on /versions,
+#             and after phase 2 is stored, `bundle update --all` gets exactly
+#             one 206 on /versions (a 200 after it would mean Bundler rejected
+#             the Repr-Digest), locks dtfbundler-dep 1.1.0, and its appended
+#             versions cache is the upstream phase-2 document byte for byte.
+#             RED on main: no ETag and no Repr-Digest, every request a full
+#             200, so Bundler re-downloads /versions on each run.
+#   (GUARD)   RN (no upstream ETag): no ETag is made up and no Accept-Ranges
+#             is sent; Range, `If-None-Match: *` and a stale validator all get
+#             the full 200; real Bundler gets 200 on /versions for the cold
+#             install and both updates (never 206 or 304) and still locks
+#             dtfbundler-dep 1.1.0 after phase 2.
+#
 # RATE_LIMIT_ENABLED=false: Bundler issues its resolve requests back to back.
 PROFILES="storage.filesystem client.rubygems upstreams.mock-files"
 ORACLE="oracle.sh"
-COVERS="5686"
+COVERS="5686 5974"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
