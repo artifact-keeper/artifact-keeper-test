@@ -14,11 +14,17 @@
 # unwindowed re-run, a dry run with conflict_resolution=skip reports all five
 # as skipped, 0 completed, 0 bytes (red on main: 5 completed).
 #
+# #6519 (source_timestamps.sh, 1.13.0): FIX a migration with
+# import_source_timestamps keeps each asset's Nexus blobCreated as created_at
+# and records its lastDownloaded as one marker download (red on main: import
+# time, no marker). GUARD an asset never downloaded gets no marker, and a
+# migration without the flag keeps the import time.
+#
 # RATE_LIMIT_ENABLED=false: the oracle drives admin login + repeated OCI token
 # exchanges + two `docker pull`s back-to-back through one admin user; matches
 # the rig harness, which runs its pool slot the same way. (Base default stays
 # ON; a tier that must disable a shipped control does so explicitly, §2.2.)
 PROFILES="storage.filesystem upstreams.nexus"
 ORACLE="oracle.sh"
-COVERS="6195 6196"
+COVERS="6195 6196 6519"
 RATE_LIMIT_ENABLED="false"

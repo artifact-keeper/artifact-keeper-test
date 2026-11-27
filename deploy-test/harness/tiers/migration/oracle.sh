@@ -18,6 +18,9 @@
 #                            migrates only the later batch (#6195), and a dry
 #                            run over migrated content reports it as skipped
 #                            (#6196). Needs only step 1.
+#   5. source_timestamps.sh — import_source_timestamps keeps the Nexus
+#                            blobCreated and lastDownloaded (#6519). Reuses
+#                            step 4's source connection.
 # =============================================================================
 set -uo pipefail
 : "${BASE_URL:?}"; : "${DB_CONTAINER:?}"; : "${COMMON_SH:?}"; : "${DTF_SLOT:?}"
@@ -29,6 +32,8 @@ source "$COMMON_SH"
 source "${HERE}/nexus_lib.sh"
 # shellcheck source=window_dryrun.sh
 source "${HERE}/window_dryrun.sh"
+# shellcheck source=source_timestamps.sh
+source "${HERE}/source_timestamps.sh"
 
 begin_suite "migration-nexus-2457"
 
@@ -84,6 +89,7 @@ fi
 # bootstrapped Nexus, not the Docker seed.
 if [ "$BOOTSTRAP_OK" = "1" ]; then
   run_window_dryrun_cases
+  [ -n "${WD_CONN_ID:-}" ] && run_source_timestamp_cases
 else
   begin_test "setup: seed a raw Nexus repository in two batches for the #6195/#6196 cases"
   infra_fail "skipped: Nexus bootstrap failed earlier in the suite"
