@@ -4232,10 +4232,22 @@ jobs:
           # backend under 32 MiB of peak RSS (artifact-keeper#6403,
           # webhook-response-body-bound; webhooks.mock-blackhole sized-body
           # paths, under a minute).
+          # A hosted conda package's CEP 47 indexed_timestamp is the time it
+          # became visible: after a quarantine release, a scan policy
+          # deleted or a trash restore it is at or after that event in
+          # repodata.json and the CEP-16 shard; a push peer reports the
+          # source's value, a held package reaches the peer only once
+          # released and with the source's value, and a trusted replication
+          # PUT keeps its X-Artifact-Indexed-At; a builder timestamp a day
+          # ahead is flagged (X-Conda-Timestamp-Warning, audit) and still
+          # accepted (artifact-keeper#6525, #6527, #6529,
+          # conda-cep47-indexed-timestamp; peer.second-instance, about 2
+          # minutes), and refused 400 under CONDA_FUTURE_TIMESTAMP=reject
+          # (conda-cep47-future-timestamp-reject; under a minute).
           # Red on main before the fixes, NOT ON THIS LINE on a 1.12.x
           # candidate. Local containers only, so required.
           - group: fixes-1.13.0-robustness
-            tiers: mcp-sync-interrupted-pass push-sync-partition-retry lifecycle-sweep-derived-state verify-skip-client-verified-oci verify-skip-client-verified-oci-default maven-virtual-metadata-strict webhook-response-body-bound
+            tiers: mcp-sync-interrupted-pass push-sync-partition-retry lifecycle-sweep-derived-state verify-skip-client-verified-oci verify-skip-client-verified-oci-default maven-virtual-metadata-strict webhook-response-body-bound conda-cep47-indexed-timestamp conda-cep47-future-timestamp-reject
           # 1.13.0 (artifact-keeper#4184, fixtures #4187): POST
           # /api/v1/conda/{repo}/warm fills a Remote's proxy cache from an
           # ingested 1k lockfile (deploy-test/fixtures/conda/gen-channel.sh,

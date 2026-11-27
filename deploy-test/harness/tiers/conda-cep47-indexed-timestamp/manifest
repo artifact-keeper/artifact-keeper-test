@@ -1,0 +1,42 @@
+# DTF tier manifest: conda-cep47-indexed-timestamp
+#   (artifact-keeper#6525, #6527, #6529; fixed in 1.13.0)
+# Profile-set: filesystem + a real second Artifact Keeper instance
+# (peer.second-instance: `peer-backend` with its own `peer-db`, same image,
+# published on 127.0.0.1:${TRIVY_PORT}). Instance A is `backend`; B is the push
+# peer A's sync worker delivers to.
+#
+# THE BUGS (CEP 47 `indexed_timestamp`: the server-set time a package became
+# available in the channel, which client cooldowns such as pixi/conda
+# `exclude-newer` trust)
+# #6525  It was the artifact row's created_at, the upload time. A package held
+#        by the upload quarantine, refused by a scan policy or restored from the
+#        trash became visible later than it was uploaded, and appeared with an
+#        old time, so it passed a client cooldown on its first fetch. Fixed:
+#        `artifacts.indexed_at` (migration 426) is stamped by the first index
+#        build that lists the row; repodata.json, its encodings and the CEP-16
+#        shards all serve it.
+# #6527  Replication did not carry the time: a push peer stamped its own receipt
+#        time, so the two replicas of one channel disagreed. Fixed: the transfer
+#        carries the source's time (chunked session field `indexed_at`, PUT
+#        header X-Artifact-Indexed-At), and the receiving peer keeps it. A
+#        package the source still holds is not pushed until it is released,
+#        then with the source's time.
+# #6529  A future builder `timestamp` (info/index.json) was stored unchecked.
+#        Fixed: an upload whose timestamp is past now + CONDA_FUTURE_TIMESTAMP_SKEW_SECS
+#        (600) is flagged by default (201 with X-Conda-Timestamp-Warning, the
+#        upload's audit row carries `package.future_timestamp`, the
+#        ak_conda_future_timestamp_total metric counts it), or refused 400 under
+#        CONDA_FUTURE_TIMESTAMP=reject (conda-cep47-future-timestamp-reject;
+#        this tier runs the default).
+#
+# Every FIX case is RED on main before the fix and GREEN with it; every CONTROL
+# holds on both.
+#
+# RATE_LIMIT_ENABLED=false: ~60 authenticated calls back to back on A and B.
+# UPSTREAM_ALLOW_PRIVATE_IPS=true: the peer endpoint goes through
+# validate_outbound_url and B sits on a private compose address.
+PROFILES="storage.filesystem peer.second-instance"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+UPSTREAM_ALLOW_PRIVATE_IPS="true"
+COVERS="6525 6527 6529"

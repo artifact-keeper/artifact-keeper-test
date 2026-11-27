@@ -1,0 +1,18 @@
+# DTF tier manifest: conda-cep47-future-timestamp-reject
+#   (artifact-keeper#6529; fixed in 1.13.0)
+# Profile-set: filesystem + conda.future-timestamp-reject
+# (CONDA_FUTURE_TIMESTAMP=reject on the backend).
+#
+# THE BUG (#6529)  A conda upload whose builder `timestamp` (info/index.json)
+# lies in the future was stored unchecked, although CEP 47 asks a channel
+# server to reject or flag it. The default (warn) is covered by
+# conda-cep47-indexed-timestamp; this tier runs the opt-in reject mode:
+# a timestamp a day ahead is refused 400 naming the cause, nothing is stored
+# or listed, and a current timestamp (and a seconds-valued one in the past)
+# still uploads 201.
+#
+# The FIX case is RED on main before the fix (201) and GREEN with it.
+PROFILES="storage.filesystem conda.future-timestamp-reject"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="6529"
