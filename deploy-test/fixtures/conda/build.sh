@@ -14,6 +14,7 @@
 #
 # Usage:
 #   build.sh <out-dir> [name] [version] [build] [subdir] [marker-token] [format]
+#   CONDA_PKG_TIMESTAMP=<ms> adds `timestamp` to info/index.json (v1 only).
 #
 # format is `tar.bz2` (v1, the default) or `conda` (v2: an outer zip holding
 # metadata.json, info-<stem>.tar.zst and pkg-<stem>.tar.zst; artifact-keeper#4187).
@@ -63,8 +64,14 @@ else
   noarch_field=''
   platform_field='"platform":"linux",'
 fi
+# CONDA_PKG_TIMESTAMP (ms) adds the builder `timestamp` field, which is
+# absent otherwise (artifact-keeper#6529).
+timestamp_field=''
+if [ -n "${CONDA_PKG_TIMESTAMP:-}" ]; then
+  timestamp_field="\"timestamp\":${CONDA_PKG_TIMESTAMP},"
+fi
 cat > "$work/info/index.json" <<JSON
-{"name":"${NAME}","version":"${VERSION}","build":"${BUILD}","build_number":0,${noarch_field}${platform_field}"subdir":"${SUBDIR}","depends":[],"license":"MIT"}
+{"name":"${NAME}","version":"${VERSION}","build":"${BUILD}","build_number":0,${noarch_field}${platform_field}${timestamp_field}"subdir":"${SUBDIR}","depends":[],"license":"MIT"}
 JSON
 
 # --- info/paths.json ----------------------------------------------------------

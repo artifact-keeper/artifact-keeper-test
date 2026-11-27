@@ -1,0 +1,11 @@
+# =============================================================================
+# profiles/conda.future-timestamp-reject.yml: refuse a conda upload whose
+# builder `timestamp` is in the future (artifact-keeper#6529), for the
+# conda-cep47-future-timestamp-reject tier
+# =============================================================================
+# CONDA_FUTURE_TIMESTAMP=reject (default warn) and the default 600 s skew.
+# =============================================================================
+services:
+  backend:
+    environment:
+      CONDA_FUTURE_TIMESTAMP: "reject"
