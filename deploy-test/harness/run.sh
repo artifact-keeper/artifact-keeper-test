@@ -658,7 +658,7 @@ case "$CMD" in
              mcp-sync-interrupted-pass push-sync-partition-retry db-read-retry-failover shutdown-drain \
              lifecycle-sweep-derived-state verify-skip-client-verified-oci \
              verify-skip-client-verified-oci-default go-zip-gomod-size-bound \
-             maven-virtual-metadata-strict; do
+             maven-virtual-metadata-strict webhook-response-body-bound; do
       run_tier "$t" || overall=1
     done
     exit "$overall" ;;

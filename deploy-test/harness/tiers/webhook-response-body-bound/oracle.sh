@@ -205,13 +205,17 @@ finish_case "the test endpoint returned the receiver's whole body"
 begin_test "FIX #6403: a manual redelivery stores 4 KiB plus the marker"
 reset_case
 DID="$(psql_q "SELECT d.id FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE w.name = 'wrb-redeliver-${SFX}' ORDER BY d.created_at LIMIT 1")"
+# Redelivery updates the worker's row in place. Blank its body first, so the
+# row check below sees only what the redelivery wrote, not the worker's copy.
+psql_q "UPDATE webhook_deliveries SET response_body = NULL WHERE id = '${DID}'" >/dev/null
+[ -z "$(psql_q "SELECT response_body FROM webhook_deliveries WHERE id = '${DID}'")" ] || fail_g "could not blank the worker's response_body before the redelivery"
 api POST "/api/v1/webhooks/${HOOK[redeliver]}/deliveries/${DID}/redeliver"
 note "redeliver ${DID:-none}: HTTP ${CODE}, attempts $(jqr '.attempts' <<<"$BODY"), success $(jqr '.success' <<<"$BODY")"
 [ "$CODE" = "200" ] && [ "$(jqr '.success' <<<"$BODY")" = "true" ] || fail_g "redeliver answered ${CODE}: ${BODY:0:200}"
 jqr '.response_body // ""' <<<"$BODY" | head -c -1 > "${W}/redeliver.resp.txt" 2>/dev/null || true
 check_excerpt "redeliver response" "${W}/redeliver.resp.txt" " \.\.\. \[truncated, ${CAP}\+ bytes\]"
 stored redeliver "${W}/redeliver.row.txt"
-check_excerpt "redeliver row" "${W}/redeliver.row.txt" " \.\.\. \[truncated, ${CAP}\+ bytes\]"
+check_excerpt "redeliver row (written by the redelivery)" "${W}/redeliver.row.txt" " \.\.\. \[truncated, ${CAP}\+ bytes\]"
 finish_case "a manual redelivery stored the receiver's whole body"
 
 end_suite
