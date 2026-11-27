@@ -1,0 +1,40 @@
+# DTF tier manifest: webhook-response-body-bound
+#   (artifact-keeper#6403, PR #6496)
+# Profile-set: filesystem / single + secrets.webhook-key + webhooks.v2-producer
+# + webhooks.mock-blackhole (`hook-sink` at 172.16.<slot>.79; its live
+# listener on :80 answers POST /body/<mode>/<n> with <n> bytes of a repeating
+# ASCII pattern framed by Content-Length (cl), by connection close (close) or
+# as chunks (chunked), and reports how many bytes it managed to write).
+#
+# THE BUG
+# #6403 Every webhook send (the delivery worker, a manual redelivery and the
+#       test endpoint) read the receiver's whole response body into memory
+#       with `response.text()` and stored it in webhook_deliveries
+#       .response_body. The 30 s client timeout bounds time, not size: a fast
+#       receiver answering with a large page costs backend memory on every
+#       attempt and grows the delivery row by the full body.
+#
+# Oracle (oracle.sh): seven artifact_uploaded webhooks on one generic Local
+# repository, one upload, then the stored deliveries:
+#   (FIX)     the three 64 MiB answers (cl, close, chunked) are stored as the
+#             first 4096 bytes of the body plus the marker
+#             ` ... [truncated, 4096 of 67108864 bytes]` (cl) or
+#             ` ... [truncated, 4096+ bytes]` (close, chunked), so at most
+#             4 KiB plus the marker; the deliveries still succeed on the 200;
+#             the receiver could not write the full 64 MiB (the backend
+#             stopped reading); the backend's peak RSS (VmHWM) grows by less
+#             than 32 MiB over the three deliveries. The test endpoint and a
+#             manual redelivery return and store the same bounded excerpt.
+#             RED on main: each row holds the whole 64 MiB, the receiver wrote
+#             every byte, and the peak RSS grows by well over 100 MiB.
+#   (CONTROL) both images: a small JSON answer and an answer of exactly
+#             4096 bytes (cl and chunked) are stored verbatim with no marker.
+#
+# RATE_LIMIT_ENABLED=false: back-to-back admin calls.
+PROFILES="storage.filesystem secrets.webhook-key webhooks.v2-producer webhooks.mock-blackhole"
+ORACLE="oracle.sh"
+RATE_LIMIT_ENABLED="false"
+COVERS="6403"
+# A fresh 32-byte key per run (no key material in the repository).
+DTF_WEBHOOK_SECRET_KEY="$(openssl rand -base64 32)"
+export DTF_WEBHOOK_SECRET_KEY

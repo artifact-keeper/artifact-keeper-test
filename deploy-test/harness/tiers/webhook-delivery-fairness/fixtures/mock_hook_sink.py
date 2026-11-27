@@ -10,7 +10,18 @@ One process, two listeners sharing one in-memory log:
 
 Control paths on LIVE_PORT (never recorded): GET /__readyz -> ok,
 GET /__log -> JSON list of {"port", "method", "path", "headers", "body_b64",
-"t"}.
+"t"}, GET /__sent -> JSON {path: response body bytes written} for the
+sized-body paths below.
+
+Sized response bodies (webhook-response-body-bound, artifact-keeper#6403): a
+POST to LIVE_PORT whose path is /body/<mode>/<n>[/...] is recorded as usual
+and answered 200 with <n> bytes of the repeating ASCII pattern
+"0123456789abcdef", streamed in 64 KiB writes, framed by <mode>:
+  cl       Content-Length: <n>
+  close    no Content-Length, Connection: close (the body ends at EOF)
+  chunked  Transfer-Encoding: chunked, 64 KiB chunks
+A receiver that stops reading makes the write fail; /__sent then shows how
+far the sender got.
 """
 import base64
 import json
@@ -20,7 +31,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = []
+SENT = {}
 LOCK = threading.Lock()
+PATTERN = b"0123456789abcdef" * 4096  # 64 KiB
 LIVE_PORT = int(os.environ.get("LIVE_PORT", "80"))
 HANG_PORT = int(os.environ.get("HANG_PORT", "81"))
 
@@ -53,13 +66,50 @@ class Live(BaseHTTPRequestHandler):
             with LOCK:
                 data = json.dumps(LOG).encode()
             return self._send(data)
+        if self.path == "/__sent":
+            with LOCK:
+                data = json.dumps(SENT).encode()
+            return self._send(data)
         return self._send(b'{"ok":true}')
 
     def do_POST(self):  # noqa: N802
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if n > 0 else b""
         record(self, LIVE_PORT, body)
+        parts = self.path.split("/")
+        if len(parts) >= 4 and parts[1] == "body" and parts[3].isdigit():
+            return self._sized(parts[2], int(parts[3]))
         return self._send(b'{"ok":true}')
+
+    def _sized(self, mode, size):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        if mode == "cl":
+            self.send_header("Content-Length", str(size))
+        elif mode == "chunked":
+            self.send_header("Transfer-Encoding", "chunked")
+        else:
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        self.end_headers()
+        sent = 0
+        try:
+            while sent < size:
+                piece = PATTERN[: min(len(PATTERN), size - sent)]
+                if mode == "chunked":
+                    self.wfile.write(b"%x\r\n" % len(piece) + piece + b"\r\n")
+                else:
+                    self.wfile.write(piece)
+                sent += len(piece)
+                with LOCK:
+                    SENT[self.path] = sent
+            if mode == "chunked":
+                self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except OSError:
+            self.close_connection = True
+        with LOCK:
+            SENT[self.path] = sent
 
 
 class Hang(BaseHTTPRequestHandler):

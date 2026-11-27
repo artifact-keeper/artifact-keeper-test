@@ -20,6 +20,12 @@
 #
 # dtfbundler-app 1.0.0 depends on dtfbundler-dep (~> 1.0), so resolving the
 # app needs the dependency metadata of a second gem.
+#
+# <out-dir>/phase2 (artifact-keeper#5974) is the same upstream after
+# dtfbundler-dep 1.1.0 is released, the way rubygems.org publishes it:
+# `versions` is the phase-1 document with one line appended (so Bundler can
+# fetch just the tail with a Range request), `info/dtfbundler-dep` gains the
+# 1.1.0 line, and the new .gem, quick gemspec and Marshal indexes are added.
 # =============================================================================
 require 'rubygems/package'
 require 'digest'
@@ -102,3 +108,40 @@ end
 File.binwrite(File.join(out, 'versions'), versions)
 File.binwrite(File.join(out, 'names'), "---\n" + info.keys.sort.reject { |n| n == 'dtfbundler-coded' }.join("\n") + "\n")
 puts "generated #{built.size} gems into #{out}"
+
+# ---------------------------------------------------------------------------
+# phase2: dtfbundler-dep 1.1.0 is released (#5974)
+# ---------------------------------------------------------------------------
+p2 = File.join(out, 'phase2')
+%w[gems quick/Marshal.4.8 info].each { |d| FileUtils.mkdir_p(File.join(p2, d)) }
+Dir.mktmpdir do |dir|
+  Dir.chdir(dir) do
+    lib = 'lib/dtfbundler_dep.rb'
+    FileUtils.mkdir_p('lib')
+    File.write(lib, "module DtfBundler; VERSION = '1.1.0'; end\n")
+    spec = Gem::Specification.new do |s|
+      s.name = 'dtfbundler-dep'
+      s.version = '1.1.0'
+      s.summary = 'DTF fixture for artifact-keeper#5974'
+      s.authors = ['dtf']
+      s.license = 'MIT'
+      s.files = [lib]
+      s.required_ruby_version = '>= 2.0'
+    end
+    file = Gem::Package.build(spec)
+    FileUtils.cp(file, File.join(p2, 'gems', file))
+    bytes = File.binread(File.join(p2, 'gems', file))
+    File.binwrite(File.join(p2, 'quick/Marshal.4.8', "#{spec.full_name}.gemspec.rz"),
+                  Gem.deflate(Marshal.dump(spec)))
+    built << [spec, Digest::SHA256.hexdigest(bytes)]
+    dep_info = info['dtfbundler-dep'] + "1.1.0 |checksum:#{Digest::SHA256.hexdigest(bytes)},ruby:>= 2.0\n"
+    File.binwrite(File.join(p2, 'info', 'dtfbundler-dep'), dep_info)
+    File.binwrite(File.join(p2, 'versions'),
+                  versions + "dtfbundler-dep 1.1.0 #{Digest::MD5.hexdigest(dep_info)}\n")
+  end
+end
+tuples = built.map { |spec, _| [spec.name, spec.version, 'ruby'] }
+latest = tuples.group_by(&:first).map { |_, ts| ts.max_by { |t| t[1] } }
+File.binwrite(File.join(p2, 'specs.4.8.gz'), gzip(Marshal.dump(tuples)))
+File.binwrite(File.join(p2, 'latest_specs.4.8.gz'), gzip(Marshal.dump(latest)))
+puts "generated phase2 (dtfbundler-dep 1.1.0) into #{p2}"

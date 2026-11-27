@@ -18,6 +18,13 @@
 # list 150 old versions and one young one, POMs only, so dating them takes the
 # backend more than one metadata request.
 #
+# GA-level documents the gate cannot filter (artifact-keeper#6382):
+# com.example.agegate:broken lists 1.0.0 and the young 2.0.0 without the
+# groupId/artifactId the backend parses, and :latin is a well-formed
+# ISO-8859-1 document with a non-UTF-8 byte. The group-level plugin-prefix
+# document org/apache/maven/plugins/maven-metadata.xml (artifact-keeper#6411)
+# has no version index at all.
+#
 # Jar bytes are generated at start-up (a real zip in memory), so no binary is
 # committed. GET /__log returns every request path seen, one per line.
 # =============================================================================
@@ -121,6 +128,66 @@ for _a in ("bulk", "vbulk"):
         "  </versioning>\n</metadata>\n"
     ).encode()
     FILES[f"/{G}/{_a}/maven-metadata.xml"] = (_meta, "text/xml", format_datetime(_young, usegmt=True))
+
+# artifact-keeper#6382: GA-level documents the gate cannot filter.
+#   broken  a version index (latest/release 2.0.0, the young version listed)
+#           without the <groupId>/<artifactId> the backend's parser needs.
+#           A lenient resolver still reads its <versions>.
+#   latin   a well-formed GA document declared ISO-8859-1 with a non-UTF-8
+#           byte in its <name>, listing the young version.
+# POMs for both versions are served, so a pass that did date them would
+# withhold 2.0.0.
+_lm_young = format_datetime(_young, usegmt=True)
+FILES[f"/{G}/broken/maven-metadata.xml"] = (
+    (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<metadata>\n  <versioning>\n'
+        "    <latest>2.0.0</latest>\n    <release>2.0.0</release>\n"
+        "    <versions>\n      <version>1.0.0</version>\n      <version>2.0.0</version>\n    </versions>\n"
+        f"    <lastUpdated>{_young.strftime('%Y%m%d%H%M%S')}</lastUpdated>\n"
+        "  </versioning>\n</metadata>\n"
+    ).encode(),
+    "text/xml",
+    _lm_young,
+)
+FILES[f"/{G}/latin/maven-metadata.xml"] = (
+    (
+        '<?xml version="1.0" encoding="ISO-8859-1"?>\n<metadata>\n'
+        "  <groupId>com.example.agegate</groupId>\n  <artifactId>latin</artifactId>\n"
+        "  <name>Widget Caf\xe9</name>\n  <versioning>\n"
+        "    <latest>2.0.0</latest>\n    <release>2.0.0</release>\n"
+        "    <versions>\n      <version>1.0.0</version>\n      <version>2.0.0</version>\n    </versions>\n"
+        f"    <lastUpdated>{_young.strftime('%Y%m%d%H%M%S')}</lastUpdated>\n"
+        "  </versioning>\n</metadata>\n"
+    ).encode("latin-1"),
+    "text/xml",
+    _lm_young,
+)
+for _a in ("broken", "latin"):
+    for _v, _at in VERSIONS.items():
+        _body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<project xmlns="http://maven.apache.org/POM/4.0.0">'
+            f"<modelVersion>4.0.0</modelVersion><groupId>com.example.agegate</groupId>"
+            f"<artifactId>{_a}</artifactId><version>{_v}</version></project>\n"
+        ).encode()
+        FILES[f"/{G}/{_a}/{_v}/{_a}-{_v}.pom"] = (_body, "text/xml", format_datetime(_at, usegmt=True))
+
+# artifact-keeper#6411: group-level plugin-prefix metadata (what `mvn
+# compiler:compile` reads to map a prefix to a plugin). No version index and
+# no GAV ids, so the gate has nothing to filter and must serve it.
+PLUGIN_PREFIX = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n<metadata>\n  <plugins>\n'
+    "    <plugin>\n      <name>Apache Maven Compiler Plugin</name>\n"
+    "      <prefix>compiler</prefix>\n      <artifactId>maven-compiler-plugin</artifactId>\n    </plugin>\n"
+    "    <plugin>\n      <name>Apache Maven Surefire Plugin</name>\n"
+    "      <prefix>surefire</prefix>\n      <artifactId>maven-surefire-plugin</artifactId>\n    </plugin>\n"
+    "  </plugins>\n</metadata>\n"
+).encode()
+FILES["/org/apache/maven/plugins/maven-metadata.xml"] = (PLUGIN_PREFIX, "text/xml", _lm_young)
+FILES["/org/apache/maven/plugins/maven-metadata.xml.sha1"] = (
+    hashlib.sha1(PLUGIN_PREFIX).hexdigest().encode(),
+    "text/plain",
+    _lm_young,
+)
 LOG = []
 
 

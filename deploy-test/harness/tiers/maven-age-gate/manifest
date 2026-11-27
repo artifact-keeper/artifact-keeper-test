@@ -55,12 +55,31 @@
 #             the Virtual's .sha1 matches the body it served, and the young
 #             jar answers 451 through the Virtual.
 #
+# #6382 (fixed by artifact-keeper#6411): GA-level metadata the gate cannot
+# filter. On the mock, com.example.agegate:broken lists 1.0.0 and the young
+# 2.0.0 without the groupId/artifactId the backend's parser needs, and :latin
+# is a well-formed ISO-8859-1 document with a non-UTF-8 byte:
+#   (FIX)     the gated Remote answers both documents and their .sha1 with
+#             the gate's retryable 503 age_gate_unavailable naming the
+#             package, and the gated Virtual does the same for broken and its
+#             .sha1. RED on main: the Remote serves both unfiltered upstream
+#             lists (2.0.0 included) and their .sha1 with 200, so a lenient
+#             resolver picks the young version whose download then fails;
+#             the Virtual drops the member document it cannot parse and
+#             answers 404, which Maven caches as "no such artifact", instead
+#             of the retryable 503.
+#   (GUARD)   #6411: the group-level plugin-prefix document
+#             org/apache/maven/plugins/maven-metadata.xml (no version index)
+#             is still 200 byte for byte through the gated Remote with a
+#             matching .sha1, and 200 with both prefixes through the Virtual.
+#   (CONTROL) the parseable widget metadata stays 200 on both.
+#
 # The age gate has no record-only mode (that is the scan policy's
 # `record_only`); the sanctioned way to let a young version through is an
 # approved review, which this tier exercises instead.
 #
 # RATE_LIMIT_ENABLED=false: admin login + setup + a few dozen GETs back to back.
-COVERS="6284 6345"
+COVERS="6284 6345 6382"
 PROFILES="storage.filesystem upstreams.mock-maven-agegate"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

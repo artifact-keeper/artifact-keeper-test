@@ -27,6 +27,9 @@
 #                                      <p> served instead when the request's
 #                                      Accept header contains <s> (a PEP 691
 #                                      JSON page next to the HTML one).
+#                                      &noetag=1: serve <p> with no ETag and
+#                                      never answer 304 (an upstream without
+#                                      validators).
 #   POST /__delay?path=<p>&ms=<n>      hold every GET of <p> n ms before the
 #                                      status line (0 clears).
 #   POST /__status?path=<p>&code=<n>   answer every GET/HEAD of <p> with status
@@ -139,10 +142,10 @@ class Handler(BaseHTTPRequestHandler):
                           for t in self.headers.get("Accept-Encoding", "").split(",")]
                 if "gzip" in wanted:
                     body = gzip.compress(body, mtime=0)
-                    etag = etag[:-1] + '-gzip"'
+                    etag = etag[:-1] + '-gzip"' if etag else None
                     cenc = "gzip"
             inm = self.headers.get("If-None-Match")
-            if inm is not None and etag in [t.strip() for t in inm.split(",")]:
+            if etag and inm is not None and etag in [t.strip() for t in inm.split(",")]:
                 code = 304
                 self.send_response(304)
                 self.send_header("ETag", etag)
@@ -150,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
             else:
                 code = 200
-                extra = {"ETag": etag}
+                extra = {"ETag": etag} if etag else {}
                 if cenc:
                     extra["Content-Encoding"] = cenc
                 self._send(200, body, ctype, extra, head=head)
@@ -196,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         cenc = q.get("cenc", [""])[0] or None
         negotiate = q.get("gzip", [""])[0] == "1"
         when_accept = q.get("when_accept", [""])[0]
-        etag = etag_of(body)
+        etag = None if q.get("noetag", [""])[0] == "1" else etag_of(body)
         entry = (body, ctype, etag, cenc, negotiate)
         with LOCK:
             if when_accept:

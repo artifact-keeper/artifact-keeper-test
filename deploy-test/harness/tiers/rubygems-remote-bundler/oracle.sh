@@ -60,9 +60,10 @@ fetch(){
   curl -s --max-time 60 -D "$2.h" -o "$2" -w '%{http_code}' "${BASE}$1" 2>/dev/null || echo 000
 }
 hdr(){ grep -i "^$2:" "$1.h" 2>/dev/null | tail -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
-mock_put(){ # <path> <file> <content-type> [content-encoding]
+mock_put(){ # <path> <file> <content-type> [content-encoding] [extra query]
   local q="path=$1&ctype=$3"
   [ -n "${4:-}" ] && q="${q}&cenc=$4"
+  [ -n "${5:-}" ] && q="${q}&$5"
   curl -s --max-time 10 -X PUT --data-binary @"$2" "${MOCK}/__file?${q}" | jqr '.bytes // empty'
 }
 mock_gets(){ curl -s --max-time 5 "${MOCK}/__requests?path=$1" | jqr '.get // empty'; }
@@ -91,7 +92,7 @@ PUT_FAIL=0
 while IFS= read -r f; do
   rel="${f#"$UPD"}"
   case "$rel" in
-    /coded/*) continue ;;
+    /coded/*|/phase2/*) continue ;;
     /versions|/names|/info/*) ct="text/plain" ;;
     *) ct="application/octet-stream" ;;
   esac
@@ -206,5 +207,165 @@ grep -Eq '^LOCK: +dtfbundler-dep \(1\.0\.0\)$' <<<"$OUT" || fail_g "the lockfile
 grep -q '^INSTALL_RC=0$' <<<"$OUT" || fail_g "bundle install failed"
 grep -q '^LOADED=' <<<"$OUT" || fail_g "the installed gems do not load"
 finish_case "Bundler cannot resolve gems through a Remote RubyGems repository on /gems/<repo>"
+
+# =============================================================================
+# #5974: conditional and range requests on the Remote Compact Index
+# =============================================================================
+# Two more Remotes over their own copy of the tree on the mock: RE under /e
+# (the mock sends an ETag, as rubygems.org does) and RN under /n (no ETag, no
+# 304). Cache TTL 1 s, so the proxy goes back to the upstream on each run and
+# sees the phase-2 append.
+# fetchh <path> <out> [curl args...]: like fetch, with request headers.
+fetchh(){
+  local p="$1" o="$2"; shift 2
+  : >"$o"
+  curl -s --max-time 60 -D "$o.h" -o "$o" -w '%{http_code}' "$@" "${BASE}${p}" 2>/dev/null || echo 000
+}
+# repr_of <file>: the RFC 9530 byte-sequence form of its SHA-256.
+repr_of(){ python3 -I -c 'import base64,hashlib,sys; print("sha-256=:" + base64.b64encode(hashlib.sha256(open(sys.argv[1],"rb").read()).digest()).decode() + ":")' "$1"; }
+# put_tree <prefix> <dir> [extra query]: store a generated tree under <prefix>.
+put_tree(){
+  local pre="$1" dir="$2" extra="${3:-}" n=0 f rel ct
+  while IFS= read -r f; do
+    rel="${f#"$dir"}"
+    case "$rel" in /coded/*|/phase2/*) continue ;; esac
+    case "$rel" in /versions|/names|/info/*) ct="text/plain" ;; *) ct="application/octet-stream" ;; esac
+    [ -n "$(mock_put "${pre}${rel}" "$f" "$ct" "" "$extra")" ] || n=$((n+1))
+  done < <(find "$dir" -type f | sort)
+  echo "$n"
+}
+set_ttl(){ # <repo> <secs>
+  req PUT "/api/v1/repositories/$1/cache-ttl" "{\"cache_ttl_seconds\":$2}"
+  jqr '.cache_ttl_seconds // empty' <<<"$BODY"
+}
+# bundler_run <repo> <app dir> <command...>: run a Bundler command in its own
+# app dir and Bundler home with --verbose (one "HTTP <code> <msg> <uri>" line
+# per request). Sets RUN_OUT, RUN_RC, RUN_VERSIONS (the statuses of its
+# /versions requests, in order) and RUN_LOCK_DEP (the locked dtfbundler-dep).
+bundler_run(){
+  local repo="$1" app="$2"; shift 2
+  RUN_OUT="$(ruby_sh <<EOF
+set -u
+mkdir -p /work/${app} && cd /work/${app}
+[ -f Gemfile ] || printf 'source "http://backend:8080/gems/${repo}"\ngem "dtfbundler-app"\n' > Gemfile
+export BUNDLE_USER_HOME=/work/${app}-home BUNDLE_PATH=/work/${app}-vendor BUNDLE_DISABLE_VERSION_CHECK=true
+timeout 180 $* --verbose; echo "RUN_RC=\$?"
+sed 's/^/LOCK: /' Gemfile.lock 2>/dev/null
+f=\$(find /work/${app}-home -path '*compact_index*' -name versions -type f 2>/dev/null | head -1)
+[ -n "\$f" ] && echo "CACHED_VERSIONS_SHA=\$(sha256sum "\$f" | cut -d' ' -f1)"
+EOF
+)"
+  RUN_RC="$(sed -n 's/^RUN_RC=//p' <<<"$RUN_OUT" | tail -1)"
+  RUN_VERSIONS="$(grep -F "/gems/${repo}/versions" <<<"$RUN_OUT" | grep -oE 'HTTP [0-9]{3}' | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')"
+  # The resolved spec line (`    dtfbundler-dep (1.0.0)`), not the app's
+  # requirement line (`      dtfbundler-dep (~> 1.0)`).
+  RUN_LOCK_DEP="$(grep -E '^LOCK: +dtfbundler-dep \([0-9][0-9.]*\)$' <<<"$RUN_OUT" | head -1 | sed -E 's/.*\((.*)\).*/\1/')"
+  RUN_CACHED="$(sed -n 's/^CACHED_VERSIONS_SHA=//p' <<<"$RUN_OUT" | tail -1)"
+  note "$* on ${repo}: rc ${RUN_RC:-none}, /versions answered [${RUN_VERSIONS}], dtfbundler-dep ${RUN_LOCK_DEP:-unlocked}"
+}
+
+begin_test "setup #5974: Remotes over an upstream with an ETag (RE) and without one (RN), cache TTL 1 s"
+reset_case
+RE="rgb-etag-${SUF}"; mkrepo "$RE" remote "${UP}/e"
+RN="rgb-noetag-${SUF}"; mkrepo "$RN" remote "${UP}/n"
+[ "$(put_tree /e "$UPD")" = "0" ] || fail_g "storing the /e tree failed"
+[ "$(put_tree /n "$UPD" noetag=1)" = "0" ] || fail_g "storing the /n tree failed"
+[ "$(set_ttl "$RE" 1)" = "1" ] || fail_g "cache-ttl 1 on ${RE} answered ${CODE}"
+[ "$(set_ttl "$RN" 1)" = "1" ] || fail_g "cache-ttl 1 on ${RN} answered ${CODE}"
+[ -s "$UPD/phase2/versions" ] && cmp -s <(head -c "$(wc -c < "$UPD/versions")" "$UPD/phase2/versions") "$UPD/versions" \
+  || fail_g "the phase-2 versions document is not an append to the phase-1 one"
+finish_case "the #5974 setup failed"
+
+V1_LEN="$(wc -c < "$UPD/versions" | tr -d ' ')"
+TAIL_FROM=$((V1_LEN - 10))
+
+begin_test "FIX #5974: with an upstream ETag, /versions replays it with an RFC 9530 Repr-Digest of the body"
+reset_case
+c="$(fetchh "/gems/${RE}/versions" "$W/e.v")"
+ET="$(hdr "$W/e.v" etag)"
+UP_ET="$(curl -s -D - -o /dev/null "${MOCK}/e/versions" | grep -i '^etag:' | cut -d: -f2- | tr -d '\r ')"
+note "/versions: ${c}, ETag ${ET:-absent} (upstream ${UP_ET:-absent}), Repr-Digest $(hdr "$W/e.v" repr-digest)"
+[ "$c" = "200" ] && cmp -s "$W/e.v" "$UPD/versions" || fail_g "/versions answered ${c} or differs from the upstream bytes"
+[ -n "$ET" ] && [ "$ET" = "$UP_ET" ] || fail_g "the ETag is '${ET:-absent}', want the upstream's ${UP_ET:-?}"
+[ "$(hdr "$W/e.v" repr-digest)" = "$(repr_of "$UPD/versions")" ] \
+  || fail_g "Repr-Digest is '$(hdr "$W/e.v" repr-digest)', want $(repr_of "$UPD/versions")"
+[ "$(hdr "$W/e.v" accept-ranges)" = "bytes" ] || fail_g "no Accept-Ranges: bytes on /versions"
+finish_case "a Remote's Compact Index carries no upstream validator"
+
+begin_test "FIX #5974: If-None-Match with that ETag answers 304 with no body"
+reset_case
+c="$(fetchh "/gems/${RE}/versions" "$W/e.304" -H "If-None-Match: ${ET:-\"none\"}")"
+[ "$c" = "304" ] && [ ! -s "$W/e.304" ] || fail_g "If-None-Match ${ET:-none} answered ${c} with $(wc -c < "$W/e.304" | tr -d ' ') bytes"
+[ "$(hdr "$W/e.304" etag)" = "$ET" ] || fail_g "the 304 carries ETag '$(hdr "$W/e.304" etag)'"
+c="$(fetchh "/gems/${RE}/info/dtfbundler-app" "$W/e.i1")"; IET="$(hdr "$W/e.i1" etag)"
+c2="$(fetchh "/gems/${RE}/info/dtfbundler-app" "$W/e.i2" -H "If-None-Match: ${IET:-\"none\"}")"
+[ "$c" = "200" ] && [ "$c2" = "304" ] || fail_g "info/dtfbundler-app: ${c}, then ${c2} on If-None-Match ${IET:-none}"
+c="$(fetchh "/gems/${RE}/versions" "$W/e.nm" -H 'If-None-Match: "something-else"')"
+[ "$c" = "200" ] && cmp -s "$W/e.nm" "$UPD/versions" || fail_g "a non-matching If-None-Match answered ${c}"
+finish_case "a matching If-None-Match does not answer 304"
+
+begin_test "FIX #5974: a Range on /versions answers 206 with the tail, Content-Range and the full document's Repr-Digest"
+reset_case
+c="$(fetchh "/gems/${RE}/versions" "$W/e.206" -H "Range: bytes=${TAIL_FROM}-")"
+tail -c 10 "$UPD/versions" > "$W/e.tail"
+note "Range bytes=${TAIL_FROM}-: ${c}, Content-Range $(hdr "$W/e.206" content-range), Repr-Digest $(hdr "$W/e.206" repr-digest)"
+[ "$c" = "206" ] && cmp -s "$W/e.206" "$W/e.tail" || fail_g "Range answered ${c} with $(wc -c < "$W/e.206" | tr -d ' ') bytes, want 206 with the last 10"
+[ "$(hdr "$W/e.206" content-range)" = "bytes ${TAIL_FROM}-$((V1_LEN - 1))/${V1_LEN}" ] || fail_g "Content-Range is '$(hdr "$W/e.206" content-range)'"
+[ "$(hdr "$W/e.206" repr-digest)" = "$(repr_of "$UPD/versions")" ] || fail_g "the 206 Repr-Digest is not the full document's"
+c="$(fetchh "/gems/${RE}/versions" "$W/e.ir" -H "Range: bytes=${TAIL_FROM}-" -H 'If-Range: "stale-validator"')"
+[ "$c" = "200" ] && cmp -s "$W/e.ir" "$UPD/versions" || fail_g "a Range with a stale If-Range answered ${c}, want the full 200"
+c="$(fetchh "/gems/${RE}/versions" "$W/e.416" -H "Range: bytes=$((V1_LEN + 5))-")"
+[ "$c" = "416" ] && [ "$(hdr "$W/e.416" content-range)" = "bytes */${V1_LEN}" ] || fail_g "a Range past the end answered ${c} ($(hdr "$W/e.416" content-range))"
+c="$(fetchh "/gems/${RE}/info/dtfbundler-app" "$W/e.ir2" -H 'Range: bytes=2-')"
+[ "$c" = "200" ] && cmp -s "$W/e.ir2" "$UPD/info/dtfbundler-app" || fail_g "a Range on info/<name> answered ${c}, want the full 200"
+finish_case "a Range on the Remote's /versions is not served as 206 with the full document's Repr-Digest"
+
+begin_test "FIX #5974: real Bundler (ETag upstream): install, then update answers 304, then the released 1.1.0 arrives as a 206 append"
+reset_case
+note "bundler $(docker exec "$RUBY_CTR" bundle --version 2>/dev/null)"
+bundler_run "$RE" app-e bundle install
+[ "$RUN_RC" = "0" ] && [ "$RUN_LOCK_DEP" = "1.0.0" ] || fail_g "the cold bundle install failed (rc ${RUN_RC:-none}, dep ${RUN_LOCK_DEP:-unlocked})"
+[ "$RUN_VERSIONS" = "200" ] || fail_g "the cold install's /versions requests answered [${RUN_VERSIONS}], want [200]"
+bundler_run "$RE" app-e bundle update --all
+[ "$RUN_RC" = "0" ] || fail_g "bundle update (no upstream change) failed"
+[ "$RUN_VERSIONS" = "304" ] || fail_g "bundle update with an unchanged upstream got /versions [${RUN_VERSIONS}], want [304]"
+[ "$(put_tree /e "$UPD/phase2")" = "0" ] || fail_g "storing phase 2 on /e failed"
+sleep 2
+bundler_run "$RE" app-e bundle update --all
+echo "$RUN_OUT" | grep -E 'HTTP [0-9]{3}|RUN_RC|LOCK: +dtfbundler|Bundler::|rror' | sed 's/^/   | /' | tail -25
+[ "$RUN_RC" = "0" ] || fail_g "bundle update after the release failed"
+[ "$RUN_VERSIONS" = "206" ] || fail_g "bundle update after the append got /versions [${RUN_VERSIONS}], want [206] (a 200 after the 206 means Bundler rejected the Repr-Digest)"
+[ "$RUN_LOCK_DEP" = "1.1.0" ] || fail_g "the update locked dtfbundler-dep ${RUN_LOCK_DEP:-nothing}, want 1.1.0"
+[ "$RUN_CACHED" = "$(sha_of "$UPD/phase2/versions")" ] || fail_g "Bundler's appended versions cache is not the upstream phase-2 document"
+finish_case "Bundler does not get 304 / 206 appends from a Remote whose upstream sends an ETag"
+
+begin_test "GUARD #5974: without an upstream ETag, /versions has no validator and ignores Range and If-None-Match"
+reset_case
+c="$(fetchh "/gems/${RN}/versions" "$W/n.v")"
+[ "$c" = "200" ] && cmp -s "$W/n.v" "$UPD/versions" || fail_g "/versions answered ${c} or differs from the upstream"
+[ -z "$(hdr "$W/n.v" etag)" ] || fail_g "an ETag '$(hdr "$W/n.v" etag)' was made up for an upstream that sent none"
+[ -z "$(hdr "$W/n.v" accept-ranges)" ] || fail_g "Accept-Ranges '$(hdr "$W/n.v" accept-ranges)' without a validator"
+c="$(fetchh "/gems/${RN}/versions" "$W/n.r" -H "Range: bytes=${TAIL_FROM}-")"
+[ "$c" = "200" ] && cmp -s "$W/n.r" "$UPD/versions" && [ -z "$(hdr "$W/n.r" content-range)" ] || fail_g "a Range answered ${c} ($(hdr "$W/n.r" content-range)), want the full 200"
+for inm in '*' "${ET:-\"x\"}"; do
+  c="$(fetchh "/gems/${RN}/versions" "$W/n.c" -H "If-None-Match: ${inm}")"
+  [ "$c" = "200" ] && cmp -s "$W/n.c" "$UPD/versions" || fail_g "If-None-Match ${inm} answered ${c}, want the full 200"
+done
+finish_case "a Remote whose upstream sends no ETag answers conditional or range requests"
+
+begin_test "GUARD #5974: real Bundler (no-ETag upstream): install and both updates get full 200s, never 206 or 304"
+reset_case
+bundler_run "$RN" app-n bundle install
+[ "$RUN_RC" = "0" ] && [ "$RUN_LOCK_DEP" = "1.0.0" ] || fail_g "the cold bundle install failed (rc ${RUN_RC:-none})"
+[ "$RUN_VERSIONS" = "200" ] || fail_g "cold install /versions [${RUN_VERSIONS}]"
+bundler_run "$RN" app-n bundle update --all
+[ "$RUN_RC" = "0" ] && [ "$RUN_VERSIONS" = "200" ] || fail_g "bundle update (unchanged) rc ${RUN_RC:-none}, /versions [${RUN_VERSIONS}], want [200]"
+[ "$(put_tree /n "$UPD/phase2" noetag=1)" = "0" ] || fail_g "storing phase 2 on /n failed"
+sleep 2
+bundler_run "$RN" app-n bundle update --all
+[ "$RUN_RC" = "0" ] && [ "$RUN_VERSIONS" = "200" ] || fail_g "bundle update (released) rc ${RUN_RC:-none}, /versions [${RUN_VERSIONS}], want [200]"
+[ "$RUN_LOCK_DEP" = "1.1.0" ] || fail_g "the update locked dtfbundler-dep ${RUN_LOCK_DEP:-nothing}, want 1.1.0"
+[ "$RUN_CACHED" = "$(sha_of "$UPD/phase2/versions")" ] || fail_g "Bundler's versions cache is not the phase-2 document"
+finish_case "Bundler over a no-ETag upstream got a partial or not-modified answer"
 
 end_suite

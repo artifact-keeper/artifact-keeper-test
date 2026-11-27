@@ -180,6 +180,74 @@ if [ "$st" = "200" ] && [ "$(sha256_of "${WORK_DIR}/v.old.jar")" = "$(sha256_of 
 else fail "virtual old jar HTTP ${st}"; fi
 
 # ---------------------------------------------------------------------------
+# #6382: a gated GA-level document the gate cannot filter (no groupId /
+# artifactId for the parser, or not UTF-8) answers the gate's retryable 503,
+# with its .sha1, instead of the unfiltered upstream list. #6411: group-level
+# plugin-prefix metadata has no version index, so it is still served.
+# ---------------------------------------------------------------------------
+# assert_unfilterable WHERE STATUS FILE GA: 503 age_gate_unavailable for GA
+assert_unfilterable() {
+  local where="$1" st="$2" f="$3" ga="$4" err pkg
+  err="$(jqr '.error' < "$f")"; pkg="$(jqr '.package' < "$f")"
+  if [ "$st" = "503" ] && [ "$err" = "age_gate_unavailable" ] && [ "$pkg" = "com.example.agegate:${ga}" ] \
+     && ! grep -q "<version>${YOUNG}</version>" "$f"; then pass
+  else fail "#6382: ${where} answered HTTP ${st} (error ${err:-none}); want 503 age_gate_unavailable, not the unfiltered list" \
+    "$(head -c 400 "$f" 2>/dev/null)"; fi
+}
+
+for ga in broken latin; do
+  what="unparseable"; [ "$ga" = "latin" ] && what="non-UTF-8"
+  begin_test "FIX #6382: the gated Remote refuses the ${what} ${ga} maven-metadata.xml with 503"
+  f="${WORK_DIR}/u6382.${ga}.xml"
+  st=$(fetch "$REPO" "${GG}/${ga}/maven-metadata.xml" "$f")
+  echo "  #6382 Remote ${ga}: HTTP ${st}, lists [$(versions_in "$f")]"
+  assert_unfilterable "the Remote's ${what} ${ga} metadata" "$st" "$f" "$ga"
+
+  begin_test "FIX #6382: the gated Remote refuses the ${ga} maven-metadata.xml.sha1 with 503"
+  f="${WORK_DIR}/u6382.${ga}.sha1"
+  st=$(fetch "$REPO" "${GG}/${ga}/maven-metadata.xml.sha1" "$f")
+  assert_unfilterable "the Remote's ${ga} metadata .sha1" "$st" "$f" "$ga"
+done
+
+begin_test "FIX #6382: the gated Virtual refuses the unparseable broken maven-metadata.xml with 503"
+f="${WORK_DIR}/u6382.v.broken.xml"
+st=$(fetch "$VREPO" "${GG}/broken/maven-metadata.xml" "$f")
+echo "  #6382 Virtual broken: HTTP ${st}, lists [$(versions_in "$f")]"
+assert_unfilterable "the Virtual's broken metadata" "$st" "$f" broken
+
+begin_test "FIX #6382: the gated Virtual refuses the broken maven-metadata.xml.sha1 with 503"
+f="${WORK_DIR}/u6382.v.broken.sha1"
+st=$(fetch "$VREPO" "${GG}/broken/maven-metadata.xml.sha1" "$f")
+assert_unfilterable "the Virtual's broken metadata .sha1" "$st" "$f" broken
+
+PP="org/apache/maven/plugins/maven-metadata.xml"
+begin_test "GUARD #6411: the gated Remote serves group-level plugin-prefix metadata 200, byte for byte"
+f="${WORK_DIR}/pp.remote.xml"
+st=$(fetch "$REPO" "$PP" "$f")
+mock_get "$PP" > "${WORK_DIR}/pp.mock"
+if [ "$st" = "200" ] && [ -s "${WORK_DIR}/pp.mock" ] && cmp -s "$f" "${WORK_DIR}/pp.mock"; then pass
+else fail "#6411: plugin-prefix metadata through the gated Remote HTTP ${st}; mvn prefix:goal cannot resolve" "$(head -c 400 "$f" 2>/dev/null)"; fi
+
+begin_test "GUARD #6411: the gated Remote's plugin-prefix .sha1 matches the body"
+st=$(fetch "$REPO" "${PP}.sha1" "${WORK_DIR}/pp.remote.sha1")
+want="$(sha1_of "$f")"; got="$(tr -d '[:space:]' < "${WORK_DIR}/pp.remote.sha1" 2>/dev/null)"
+if [ "$st" = "200" ] && [ -n "$want" ] && [ "$got" = "$want" ]; then pass
+else fail "#6411: plugin-prefix .sha1 HTTP ${st}: ${got:-none} vs body ${want:-none}"; fi
+
+begin_test "GUARD #6411: the gated Virtual serves the plugin-prefix metadata 200 with both prefixes"
+f="${WORK_DIR}/pp.virtual.xml"
+st=$(fetch "$VREPO" "$PP" "$f")
+if [ "$st" = "200" ] && grep -q '<prefix>compiler</prefix>' "$f" && grep -q '<prefix>surefire</prefix>' "$f" \
+   && grep -q '<artifactId>maven-compiler-plugin</artifactId>' "$f"; then pass
+else fail "#6411: plugin-prefix metadata through the gated Virtual HTTP ${st}" "$(head -c 400 "$f" 2>/dev/null)"; fi
+
+begin_test "CONTROL #6382: the parseable widget metadata is still 200 through the Remote and the Virtual"
+st1=$(fetch "$REPO" "${G}/maven-metadata.xml" "${WORK_DIR}/c6382.r.xml")
+st2=$(fetch "$VREPO" "${G}/maven-metadata.xml" "${WORK_DIR}/c6382.v.xml")
+if [ "$st1" = "200" ] && [ "$st2" = "200" ] && [ "$(versions_in "${WORK_DIR}/c6382.r.xml")" = "$OLD" ]; then pass
+else fail "widget metadata Remote HTTP ${st1}, Virtual HTTP ${st2}"; fi
+
+# ---------------------------------------------------------------------------
 # #6284: while a GA is still being dated (more undated versions than one
 # listing probes), the metadata body and its checksum sidecars must describe
 # the same filtered document, and two downloads in a row must agree.

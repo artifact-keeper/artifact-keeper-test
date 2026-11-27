@@ -3842,7 +3842,10 @@ jobs:
           # adds the publish-age gate on Maven Remotes and Virtuals
           # (artifact-keeper-test#653; #4702, fixed by #4997; maven-age-gate,
           # upstreams.mock-maven-agegate on 172.16.<slot>.78, brought up and
-          # down on the group's slot after the other tiers' mocks). It also
+          # down on the group's slot after the other tiers' mocks; on the
+          # 1.13 line it also proves that a gated listing the gate cannot
+          # filter answers 503 while plugin-prefix metadata is still served,
+          # artifact-keeper#6382 fixed by #6411). It also
           # carries repository grade status and coverage in place of the F
           # floor (artifact-keeper-test#652; #4336, fixed by #4995;
           # scan-grade-status-coverage, upstreams.mock-scan-formats on
@@ -4062,7 +4065,9 @@ jobs:
           # strict virtual's 503 at the download deadline
           # (virtual-member-fallback-strict, #5810; upstreams.mock-files),
           # Bundler through a RubyGems Remote (rubygems-remote-bundler, #5686;
-          # client.rubygems + upstreams.mock-files), the real buf CLI on a
+          # client.rubygems + upstreams.mock-files; on the 1.13 line also
+          # the Compact Index 304 / 206 append with Repr-Digest behind an
+          # upstream ETag and plain 200s without one, #5974), the real buf CLI on a
           # hosted protobuf repo (protobuf-buf-cli-hosted, #5066 #5117;
           # client.buf), opted-in popularity checks on npm and PyPI downloads
           # (curation-popularity-download-checks, #5274; upstreams.mock-npm +
@@ -4220,10 +4225,17 @@ jobs:
           # keeps the marked partial merge and .meta/prefixes.txt is
           # unchanged (artifact-keeper#5777, maven-virtual-metadata-strict;
           # upstreams.mock-files, about a minute).
+          # A webhook receiver's response body is kept to 4 KiB plus a
+          # truncation marker on the delivery worker, the test endpoint and a
+          # manual redelivery, and the rest is never read: 64 MiB answers
+          # framed by Content-Length, connection close and chunks cost the
+          # backend under 32 MiB of peak RSS (artifact-keeper#6403,
+          # webhook-response-body-bound; webhooks.mock-blackhole sized-body
+          # paths, under a minute).
           # Red on main before the fixes, NOT ON THIS LINE on a 1.12.x
           # candidate. Local containers only, so required.
           - group: fixes-1.13.0-robustness
-            tiers: mcp-sync-interrupted-pass push-sync-partition-retry lifecycle-sweep-derived-state verify-skip-client-verified-oci verify-skip-client-verified-oci-default maven-virtual-metadata-strict
+            tiers: mcp-sync-interrupted-pass push-sync-partition-retry lifecycle-sweep-derived-state verify-skip-client-verified-oci verify-skip-client-verified-oci-default maven-virtual-metadata-strict webhook-response-body-bound
           # 1.13.0 (artifact-keeper#4184, fixtures #4187): POST
           # /api/v1/conda/{repo}/warm fills a Remote's proxy cache from an
           # ingested 1k lockfile (deploy-test/fixtures/conda/gen-channel.sh,
