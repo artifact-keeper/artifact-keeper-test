@@ -80,7 +80,7 @@ begin_test "FIX #6528: the migrated row's created_at (its indexed_timestamp) is 
 if [ "$ms" = "$SOURCE_MS" ]; then pass
 else fail "#6528: created_at ${ms:-none} ms (the import time) instead of the source's ${SOURCE_MS}"; fi
 ts="$(repodata_ts)"
-begin_test "FIX #6528/#6532: the destination's repodata.json lists the package with the source's created time as indexed_timestamp"
+begin_test "FIX #6532: the destination's repodata.json lists the package with the source's created time as indexed_timestamp"
 if [ "$ts" = "$SOURCE_MS" ]; then pass
 else fail "#6528: repodata.json indexed_timestamp for ${PKG}: ${ts} (want ${SOURCE_MS})"; fi
 
