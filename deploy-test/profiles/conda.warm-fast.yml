@@ -7,7 +7,9 @@
 # assert the rate bound. CONDA_WARM_CONCURRENCY stays at its default of 8.
 # CONDA_WARM_ITEM_LEASE_SECS=30 (default 600): after the tier restarts the
 # backend mid-warm, the claims the killed process held lapse in 30 s and the
-# resumed runner takes them over.
+# resumed runner takes them over. CONDA_WARM_ITEM_TIMEOUT_SECS=10 (default 300)
+# keeps #6488's trickle case short: a body that stalls past the deadline must
+# stop with the item, including on its retries.
 # =============================================================================
 services:
   backend:
@@ -15,3 +17,4 @@ services:
       CONDA_WARM_UPSTREAM_RPS: "100"
       CONDA_WARM_CONCURRENCY: "8"
       CONDA_WARM_ITEM_LEASE_SECS: "30"
+      CONDA_WARM_ITEM_TIMEOUT_SECS: "10"

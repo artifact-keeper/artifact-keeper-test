@@ -1,12 +1,14 @@
 # DTF tier manifest: conda-warm-from-lockfile
 #   (artifact-keeper#4184 warm a Remote's cache from an ingested lockfile;
-#    artifact-keeper#4187 the conda scale fixture generator)
+#    artifact-keeper#4187 the conda scale fixture generator;
+#    artifact-keeper#6488 deadline, eviction and byte-budget follow-ups)
 #
 # Profile-set: filesystem / single + upstreams=mock-conda (for its per-slot
 # 172.16.<slot>.0/24 network and the backend's private-IP allowance; the
 # oracle adds its own upstream on .71, a stdlib server over the generated
 # channel that counts package fetches) + client.conda (micromamba) +
-# conda.warm-fast (CONDA_WARM_UPSTREAM_RPS=100, CONDA_WARM_ITEM_LEASE_SECS=30).
+# conda.warm-fast (CONDA_WARM_UPSTREAM_RPS=100, CONDA_WARM_ITEM_LEASE_SECS=30,
+# CONDA_WARM_ITEM_TIMEOUT_SECS=10).
 #
 # THE GAP (#4184): a fleet installing one locked environment from a cold
 # Remote sends each package's first request upstream from every job at once.
@@ -27,10 +29,17 @@
 # its seed, 1k/2k/3k lockfiles closed under their edges, an idempotent
 # parallel upload, and a real micromamba solve and link of 50 names.
 #
+# FIX #6488 cases prove the follow-ups: a warm body that outlives the item
+# deadline stops upstream instead of draining past it (and its bytes still
+# count against the job), a checksum mismatch is evicted only after the cache
+# commit is confirmed or on the next lookup, and the byte total covers
+# timed-out retries. The mock can stall a named body after its first byte and
+# report requests still in flight; conda.warm-fast.yml sets a 10 s item timeout.
+#
 # RED: main's image before #4184 (the warm route answers 404). GREEN: the fix.
 # RATE_LIMIT_ENABLED=false: a fleet of parallel downloads from one address.
 PROFILES="storage.filesystem upstreams.mock-conda client.conda conda.warm-fast"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"
 UPSTREAM_ALLOW_PRIVATE_IPS="true"
-COVERS="4184"
+COVERS="4184 6488"
