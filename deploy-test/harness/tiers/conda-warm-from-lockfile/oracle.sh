@@ -3,7 +3,8 @@
 # tiers/conda-warm-from-lockfile/oracle.sh: warm a conda Remote's proxy cache
 # from an ingested 1k lockfile, then a fleet install makes no upstream package
 # fetch and a held package stays held (artifact-keeper#4184); the scale
-# fixture generator behind it (artifact-keeper#4187)
+# fixture generator behind it (artifact-keeper#4187); and the deadline,
+# eviction and byte-budget follow-ups (artifact-keeper#6488)
 # =============================================================================
 # run.sh has stood up storage.filesystem + upstreams.mock-conda + client.conda
 # + conda.warm-fast and exported BASE_URL, DB_CONTAINER, COMMON_SH, DTF_DIR,
@@ -21,6 +22,8 @@
 #   R2        a second Remote -> the same upstream, warmed directly from the
 #             2k lock pinned at the upstream's own URLs, with a backend
 #             restart mid-warm (resume)
+#   R3        a third Remote -> the same upstream, used by #6488's slow-body
+#             case (a warm deadline must stop the upstream body)
 #   F         hosted: the stored environments, and the #4187 50-name upload
 #             that micromamba installs
 # =============================================================================
@@ -79,7 +82,16 @@ r = urllib.request.Request('http://127.0.0.1' + sys.argv[1], method=sys.argv[2])
 print(urllib.request.urlopen(r, timeout=10).read().decode())" "$1" "${2:-GET}" 2>/dev/null || true
 }
 mock_packages() { mock /__stats | jq -r '.packages // "x"'; }
+mock_in_flight() { mock /__stats | jq -r '.in_flight // "x"'; }
+mock_max_in_flight() { mock /__stats | jq -r '.max_in_flight // "x"'; }
 mock_reset() { mock /__reset POST >/dev/null; }
+mock_slow() { # <subdir/file> <ms> -> body stalls after its first byte
+  docker exec "$MOCK_CTR" python3 -c "
+import sys, urllib.parse, urllib.request
+q = urllib.parse.urlencode({'path': sys.argv[1], 'ms': sys.argv[2]})
+r = urllib.request.Request('http://127.0.0.1/__slow?' + q, data=b'', method='POST')
+print(urllib.request.urlopen(r, timeout=10).read().decode())" "$1" "$2" 2>/dev/null || true
+}
 create() { # <key> <json extra>
   jpost "create-$1" /api/v1/repositories \
     "$(jq -nc --arg k "$1" --argjson x "$2" '{key:$k,name:$k,format:"conda",is_public:true} + $x')"
@@ -99,7 +111,7 @@ cnt() { json_of "$1" ".counts.$2"; }
 counts_line() { jq -c '{status, total, done, counts: (.counts | with_entries(select(.value > 0)))}' "$W/$1.body" 2>/dev/null; }
 backend_up() { curl -s --max-time 3 -o /dev/null -w '%{http_code}' "${BASE_URL}/health" 2>/dev/null | grep -q 200; }
 
-begin_suite "conda-warm-from-lockfile (#4184, fixtures #4187)"
+begin_suite "conda-warm-from-lockfile (#4184, fixtures #4187, follow-ups #6488)"
 
 # =============================================================================
 # SETUP
@@ -434,12 +446,47 @@ jpost warm6b "/api/v1/conda/${R5}/warm" "{\"environmentId\":\"${ENV_R5}\"}"
 JOB6B="$(json_of warm6b .id)"
 [ -n "$JOB6B" ] && wait_job job6b "$R5" "$JOB6B" 120
 up6b=$(mock_packages)
+evict6="$(jq -r '[.problems[]? | select(.status == "checksum_mismatch") | .detail] | join(" | ")' "$W/job6.body" 2>/dev/null)"
+case "$evict6" in *"removed from the cache"*|*"next lookup"*) evict6_ok=1 ;; *) evict6_ok=0 ;; esac
 if [ "$(cnt job6 checksum_mismatch)" = 1 ] && [ "$(cnt job6 fetched)" = 49 ] && [ "$up6" = 50 ] \
-   && [ "$(cnt job6b checksum_mismatch)" = 1 ] && [ "$(cnt job6b cached)" = 49 ] && [ "$up6b" = 1 ]; then
-  pass "first: $(counts_line job6), upstream ${up6}; rerun: $(counts_line job6b), upstream ${up6b}"
+   && [ "$(cnt job6b checksum_mismatch)" = 1 ] && [ "$(cnt job6b cached)" = 49 ] && [ "$up6b" = 1 ] \
+   && [ "$evict6_ok" = 1 ]; then
+  pass "first: $(counts_line job6), upstream ${up6}; rerun: $(counts_line job6b), upstream ${up6b}; eviction: ${evict6}"
 else
-  fail "first: $(counts_line job6 || body_of warm6), upstream ${up6} (want 49 fetched, 1 mismatch, 50); rerun: $(counts_line job6b || body_of warm6b), upstream ${up6b} (want 49 cached, 1 mismatch, 1)" \
+  fail "first: $(counts_line job6 || body_of warm6), upstream ${up6} (want 49 fetched, 1 mismatch, 50); rerun: $(counts_line job6b || body_of warm6b), upstream ${up6b} (want 49 cached, 1 mismatch, 1); eviction: ${evict6:-<none>}" \
     "$(jq -c '.problems[:2]' "$W/job6.body" 2>/dev/null)"
+fi
+
+# =============================================================================
+# FIX #6488: a body stopped at the item deadline, with its bytes still counted
+# =============================================================================
+# R3's one-package lock pins a file the mock trickles after its first byte.
+# CONDA_WARM_ITEM_TIMEOUT_SECS=10 (conda.warm-fast.yml) cuts each attempt short.
+bash "$GEN" locks --channel "$CH" --sizes 1 --channel-url "${BASE_URL}/conda/${R3}" \
+  --out "$W/locks-slow" >/dev/null 2>&1 || true
+SLOW_REL="$(cut -f1 "$W/locks-slow/env-1/urls.tsv" 2>/dev/null | head -1 | awk -F/ '{print $(NF-1)"/"$NF}')"
+ENV_SLOW="$(ingest ing8 "$W/locks-slow/env-1/pixi.lock" env-1-slow)"
+
+begin_test "FIX #6488: a timed-out warm stops its upstream body instead of draining it, and counts the bytes it did fetch"
+mock_reset
+mock_slow "$SLOW_REL" 60000
+jpost warm8 "/api/v1/conda/${R3}/warm" "{\"environmentId\":\"${ENV_SLOW}\"}"
+JOB8="$(json_of warm8 .id)"
+[ -n "$JOB8" ] && wait_job job8 "$R3" "$JOB8" 120
+up8=$(mock_packages)
+max8=$(mock_max_in_flight)
+sleep 2
+inflight8=$(mock_in_flight)
+bytes8="$(json_of job8 .bytesFetched)"
+detail8="$(jq -r '[.problems[]? | select(.status == "failed") | .detail] | join(" | ")' "$W/job8.body" 2>/dev/null)"
+if [ -n "$ENV_SLOW" ] && [ -n "$SLOW_REL" ] && [ "$(code_of warm8)" = 202 ] \
+   && [ "$(json_of job8 .status)" = failed ] && [ "$(cnt job8 failed)" = 1 ] \
+   && [[ "$up8" =~ ^[0-9]+$ ]] && [ "$up8" -ge 3 ] \
+   && [[ "$max8" =~ ^[0-9]+$ ]] && [ "$max8" -le 1 ] && [ "$inflight8" = 0 ] \
+   && [[ "$bytes8" =~ ^[0-9]+$ ]] && [ "$bytes8" -ge 3 ]; then
+  pass "3 timed-out attempts, upstream GETs ${up8} with max in flight ${max8} and ${inflight8} left open; bytesFetched ${bytes8}; ${detail8}"
+else
+  fail "env=${ENV_SLOW:-<none>} slow=${SLOW_REL:-<none>} HTTP $(code_of warm8): $(counts_line job8 || body_of warm8); upstream GETs ${up8:-x}, max in flight ${max8:-x}, left open ${inflight8:-x}, bytesFetched ${bytes8:-x}; ${detail8}"
 fi
 
 begin_test "FIX #4184: a warm through a Virtual that scans on proxy (its member does not) goes through the scan gate: nothing is cached unscanned"
