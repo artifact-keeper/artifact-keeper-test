@@ -440,13 +440,18 @@ fi
 
 # ---------------------------------------------------------------------------
 # 14. Mara creates a department repository herself (project admin, #2473),
-#     then deletes it (202 with a job, #4311).
+#     answered 201 with Location (#5744), then deletes it (202 with a job, #4311).
 # ---------------------------------------------------------------------------
 SCRATCH="${HAL}-fw-scratch-${FW_STAMP}"
 cs_http POST /api/v1/repositories jwt:FW_LEAD -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg k "$SCRATCH" --arg p "$HAL_PROJECT_FW_ID" \
         '{key:$k,name:$k,format:"generic",repo_type:"local",visibility:"private",project_id:$p}')"
-if cs_expect "14 Mara creates ${SCRATCH} in the firmware project (RS:4643-4656)" 200; then
+if cs_expect "14 Mara creates ${SCRATCH} in the firmware project (RS:4643-4656)" 201; then
+  if [ "$(cs_header location)" = "/api/v1/repositories/${SCRATCH}" ]; then
+    cs_record "14 create points Location at the new repository (#5744)" PASS "$(cs_header location)"
+  else
+    cs_record "14 create points Location at the new repository (#5744)" FAIL "Location $(cs_header location)"
+  fi
   cs_http DELETE "/api/v1/repositories/${SCRATCH}" jwt:FW_LEAD
   if cs_expect "14 Mara deletes ${SCRATCH} (202 with a job, #4311)" 202; then
     gone=false
@@ -477,7 +482,7 @@ cs_http POST /api/v1/repositories jwt:FW_LEAD -H 'Content-Type: application/json
         '{key:$k,name:$k,format:"generic",repo_type:"local",visibility:"private",project_id:$p}')"
 cs_expect "NOT: Mara creates a repo in the web project (403, RS:4648-4655)" 403 \
   && cs_expect_body "NOT: the refusal says insufficient permissions" "Insufficient permissions to create repositories"
-if [ "$CS_STATUS" = "200" ]; then
+if [ "$CS_STATUS" = "201" ]; then
   cs_http DELETE "/api/v1/repositories/${HAL}-web-fw-mara-${FW_STAMP}" jwt:FW_LEAD
 fi
 

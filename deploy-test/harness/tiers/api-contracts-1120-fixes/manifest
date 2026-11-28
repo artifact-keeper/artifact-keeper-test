@@ -68,11 +68,15 @@
 #     flag). CONTROL: a generic create with the flag has no Warning, and
 #     neither has an npm create or PATCH that does not send it. RED on main
 #     sha-380b43d, GREEN with the backend change.
+#   #5744 (1.14.0, artifact-keeper/artifact-keeper PR 5975) POST
+#     /api/v1/repositories answers 201 and sets Location to the new
+#     repository's GET endpoint; that URL then answers 200 (was 200 with no
+#     Location). The create assertions of the #6063 cases move to 201 with it.
 #
 # The Remotes proxy the backend itself on its container address, so the SSRF
 # guard needs UPSTREAM_ALLOW_PRIVATE_IPS. RATE_LIMIT_ENABLED=false: ~250
 # quick API calls.
-COVERS="4800 4825 4843 4834 4851 5201 5652 5694 5487 5347 5223 6299 6063"
+COVERS="4800 4825 4843 4834 4851 5201 5652 5694 5487 5347 5223 6299 6063 5744"
 PROFILES="storage.filesystem audit.upstream-fetches-all"
 ORACLE="oracle.sh"
 RATE_LIMIT_ENABLED="false"

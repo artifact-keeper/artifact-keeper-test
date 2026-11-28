@@ -500,38 +500,55 @@ for spec in "GET|${TOK}|" "GET|-|" "POST|${TOK}|{\"name\":\"x\"}"; do
 done
 finish_case "an unknown /api/v1 path falls through to the format routes"
 
-# =============================================================================
-# #6063 (1.12.4) versioning_enabled on a format whose uploads ignore it
-# =============================================================================
 # req_h <METHOD> <PATH> <JSON body>: like req, signed in as admin, and also
-# sets WARN to the response's Warning header(s) ('' when absent).
+# sets WARN to the response's Warning header(s) and LOC to Location ('' when absent).
 req_h(){
   : >"${W}/body"; : >"${W}/hdrs"
   CODE="$(curl -s -o "${W}/body" -D "${W}/hdrs" -w '%{http_code}' --max-time 60 -X "$1" \
     -H "Authorization: Bearer ${TOK}" -H 'Content-Type: application/json' --data-binary "$3" "${BASE}$2")"
   BODY="$(cat "${W}/body" 2>/dev/null || true)"
   WARN="$(grep -i '^warning:' "${W}/hdrs" 2>/dev/null | cut -d' ' -f2- | tr -d '\r' | paste -sd'|' -)"
+  LOC="$(grep -i '^location:' "${W}/hdrs" 2>/dev/null | cut -d' ' -f2- | tr -d '\r' | head -1)"
 }
+
+# =============================================================================
+# #5744 (1.14.0) repository create answers 201 with Location
+# =============================================================================
+begin_test "FIX #5744: POST /api/v1/repositories answers 201 and points Location at the new repository"
+reset_case
+C_KEY="ac12f-create-201-${SFX}"
+req_h POST /api/v1/repositories "$(jq -nc --arg k "$C_KEY" '{key:$k,name:$k,format:"generic",repo_type:"local"}')"
+note "create: ${CODE} Location='${LOC}' key=$(jqr .key <<<"$BODY")"
+[ "$CODE" = "201" ] || fail_g "creating a repository answered ${CODE}, expected 201: ${BODY:0:200}"
+[ "$(jqr .key <<<"$BODY")" = "$C_KEY" ] || fail_g "the create body names '$(jqr .key <<<"$BODY")', expected ${C_KEY}"
+[ "$LOC" = "/api/v1/repositories/${C_KEY}" ] || fail_g "Location is '${LOC}', expected /api/v1/repositories/${C_KEY}"
+req GET "$LOC" "$TOK"
+[ "$CODE" = "200" ] || fail_g "the Location URL answered ${CODE}, expected 200: ${BODY:0:200}"
+finish_case "repository create returned 200 without a Location header"
+
+# =============================================================================
+# #6063 (1.12.4) versioning_enabled on a format whose uploads ignore it
+# =============================================================================
 vers_row(){ psql_q "SELECT versioning_enabled FROM repositories WHERE key = '$1';"; }
 V_GEN="ac12f-vers-gen-${SFX}"
 V_NPM="ac12f-vers-npm-${SFX}"
 V_NPM2="ac12f-vers-npm2-${SFX}"
 
-begin_test "CONTROL: a generic repository created with versioning_enabled true answers 200 without a Warning and reads the flag back"
+begin_test "CONTROL: a generic repository created with versioning_enabled true answers 201 without a Warning and reads the flag back"
 reset_case
 req_h POST /api/v1/repositories "$(jq -nc --arg k "$V_GEN" '{key:$k,name:$k,format:"generic",repo_type:"local",versioning_enabled:true}')"
 note "create generic: ${CODE} versioning_enabled=$(jqr .versioning_enabled <<<"$BODY") Warning='${WARN}'"
-[ "$CODE" = "200" ] || fail_g "creating the generic repository answered ${CODE}: ${BODY:0:200}"
+[ "$CODE" = "201" ] || fail_g "creating the generic repository answered ${CODE}, expected 201 (#5744): ${BODY:0:200}"
 [ -z "$WARN" ] || fail_g "the generic create carries a Warning header: ${WARN}"
 req GET "/api/v1/repositories/${V_GEN}" "$TOK"
 [ "$(jqr .versioning_enabled <<<"$BODY")" = "true" ] || fail_g "GET reads versioning_enabled '$(jqr .versioning_enabled <<<"$BODY")', expected true"
 finish_case "a generic repository's versioning_enabled round trip changed"
 
-begin_test "FIX #6063: an npm repository created with versioning_enabled true answers 200 with Warning 299 and still stores and reads back true"
+begin_test "FIX #6063: an npm repository created with versioning_enabled true answers 201 with Warning 299 and still stores and reads back true"
 reset_case
 req_h POST /api/v1/repositories "$(jq -nc --arg k "$V_NPM" '{key:$k,name:$k,format:"npm",repo_type:"local",versioning_enabled:true}')"
 note "create npm: ${CODE} versioning_enabled=$(jqr .versioning_enabled <<<"$BODY") Warning='${WARN}'"
-[ "$CODE" = "200" ] || fail_g "creating the npm repository answered ${CODE}, expected 200 (patch release keeps accepting the flag): ${BODY:0:200}"
+[ "$CODE" = "201" ] || fail_g "creating the npm repository answered ${CODE}, expected 201 (#5744; the flag is still accepted): ${BODY:0:200}"
 [ "$(jqr .versioning_enabled <<<"$BODY")" = "true" ] || fail_g "the create response echoes versioning_enabled '$(jqr .versioning_enabled <<<"$BODY")', expected true (no IaC drift)"
 case "$WARN" in
   *'299 - "versioning_enabled has no effect for format npm"'*) ;;
@@ -547,7 +564,7 @@ begin_test "FIX #6063: PATCH versioning_enabled true on an npm repository answer
 reset_case
 req_h POST /api/v1/repositories "$(jq -nc --arg k "$V_NPM2" '{key:$k,name:$k,format:"npm",repo_type:"local"}')"
 note "create npm (flag omitted): ${CODE} Warning='${WARN}'"
-[ "$CODE" = "200" ] || fail_g "creating the second npm repository answered ${CODE}: ${BODY:0:200}"
+[ "$CODE" = "201" ] || fail_g "creating the second npm repository answered ${CODE}, expected 201 (#5744): ${BODY:0:200}"
 [ -z "$WARN" ] || fail_g "a create without versioning_enabled carries a Warning header: ${WARN}"
 req_h PATCH "/api/v1/repositories/${V_NPM2}" '{"versioning_enabled":true}'
 note "PATCH {versioning_enabled:true}: ${CODE} versioning_enabled=$(jqr .versioning_enabled <<<"$BODY") Warning='${WARN}'"
